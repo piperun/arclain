@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
@@ -561,13 +561,30 @@ pub(crate) struct ArchiveSession {
     id_assigner: Mutex<EntryIdAssigner>,
     /// Serializes `crate::operations::archive_mutation`'s "check
     /// `expected_revision`, mutate the backend, re-list, rebuild the
-    /// index, bump `revision`" sequence into one atomic unit per
-    /// session. Without this, two concurrent mutation operations on the
-    /// same session could both read the same starting revision, both
-    /// pass their optimistic-concurrency check, and then race each
-    /// other writing to the same underlying archive file -- the
-    /// `expected_revision` check alone only catches *sequential*
-    /// staleness, not a genuine in-flight collision.
+    /// index, bump `revision`" sequence into one atomic unit *per this
+    /// session*. Two concurrent mutation operations that both hold a
+    /// reference to *this* `ArchiveSession` value cannot race each
+    /// other -- whichever acquires this lock first runs its whole
+    /// sequence, including the reindex, before the second one even reads
+    /// `revision` -- which is what makes `expected_revision` race-free
+    /// rather than merely sequential for that case.
+    ///
+    /// That scope is real and narrower than "this archive file cannot be
+    /// concorrently rewritten twice": the lock lives on the `ArchiveSession`
+    /// value itself, not on the underlying `source_path`. Closing this
+    /// session and reopening the same path -- or a second tab
+    /// independently opening the identical path -- mints a *different*
+    /// `ArchiveSession` with its own, fresh `mutation_lock`, which knows
+    /// nothing about this one. Two such sessions over the same physical
+    /// file can therefore still race each other's whole-archive
+    /// extract-modify-recompress rewrites, exactly as a concurrent
+    /// extraction reading that same file mid-rewrite already could
+    /// pre-facade -- this is a pre-existing weakness this task does not
+    /// attempt to close; a real fix needs serialization keyed on the
+    /// resolved path itself (e.g. a process-wide `Mutex` map in
+    /// `ArchiveSessionStore`), which is a larger change than this lock's
+    /// job of making one session's own optimistic-concurrency check
+    /// trustworthy.
     ///
     /// An async `tokio::sync::Mutex`, not `parking_lot`/`std`: the
     /// critical section it guards spans real blocking backend I/O
@@ -580,6 +597,23 @@ pub(crate) struct ArchiveSession {
     /// would make a concurrent extraction's brief password peek block a
     /// live async worker thread for as long as the mutation runs.
     mutation_lock: tokio::sync::Mutex<()>,
+    /// Set once a mutation's own backend call has already succeeded but
+    /// the follow-up re-list needed to safely reindex has failed (see
+    /// `crate::operations::archive_mutation`'s relist-failure handling).
+    /// Once true, every subsequent mutation attempt on this session is
+    /// rejected outright, regardless of its own `expected_revision` --
+    /// `revision` itself is *also* bumped when this is set (see
+    /// [`Self::mark_desynced`]), but that alone is not sufficient: a
+    /// caller who happens to read the bumped revision back (via a plain
+    /// `list_entries`/`archive_snapshot` call, which does not consult this
+    /// flag) would otherwise see a `expected_revision` that looks
+    /// perfectly current, resolved against an index this session can no
+    /// longer prove is correct. Never cleared within this session's own
+    /// lifetime: nothing here can rebuild a trustworthy index from a
+    /// known-stale one without a fresh backend listing, so the only real
+    /// recovery is closing this session and opening a new one (which
+    /// starts with this `false` by construction, from a real listing).
+    desynced: AtomicBool,
 }
 
 impl ArchiveSession {
@@ -601,6 +635,7 @@ impl ArchiveSession {
             entry_index: RwLock::new(entry_index),
             id_assigner: Mutex::new(id_assigner),
             mutation_lock: tokio::sync::Mutex::new(()),
+            desynced: AtomicBool::new(false),
         }
     }
 
@@ -625,6 +660,30 @@ impl ArchiveSession {
     /// separate lock from the one guarding `archive`.
     pub(crate) fn mutation_lock(&self) -> &tokio::sync::Mutex<()> {
         &self.mutation_lock
+    }
+
+    /// True once this session has been marked desynced -- see
+    /// [`Self::mark_desynced`] and the `desynced` field's own doc
+    /// comment. Checked by `crate::operations::archive_mutation` before
+    /// every mutation attempt, independent of (and before) its own
+    /// `expected_revision` comparison.
+    pub(crate) fn is_desynced(&self) -> bool {
+        self.desynced.load(Ordering::SeqCst)
+    }
+
+    /// Marks this session desynced and bumps `revision` -- called by
+    /// `crate::operations::archive_mutation` only when a mutation's own
+    /// backend call already succeeded but the follow-up re-list needed to
+    /// safely reindex failed (see [`Self::reindex`]'s own contract: it is
+    /// simply never called in that case, since there is no fresh entry
+    /// list to build it from). Bumping `revision` here, on top of setting
+    /// the flag, is deliberate belt-and-suspenders: it ensures a stale
+    /// `expected_revision` a caller already held is rejected even if some
+    /// future call path forgot to check [`Self::is_desynced`] directly,
+    /// without relying on that omission never happening.
+    pub(crate) fn mark_desynced(&self) {
+        self.desynced.store(true, Ordering::SeqCst);
+        self.revision.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Rebuilds this session's entry index from a fresh backend listing

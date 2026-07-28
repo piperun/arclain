@@ -66,6 +66,16 @@
 //!   call has already returned success -- a failed mutation leaves the
 //!   session's index exactly as it was, still describing only what the
 //!   backend actually committed.
+//! - **Honest desync, not a silently-stale index.** If the mutating call
+//!   succeeds but the follow-up re-list needed to safely reindex fails,
+//!   the session cannot describe its own real contents anymore --
+//!   [`ArchiveSession::mark_desynced`] records that, and every subsequent
+//!   mutation attempt on this session is rejected outright (regardless of
+//!   its own `expected_revision`) until the archive is closed and
+//!   reopened fresh. Without this, a stale-but-still-"current"-looking
+//!   index could pass a later `expected_revision` check and, for example,
+//!   let a `ReplaceText` recreate a file an earlier, already-succeeded
+//!   `DeleteEntries` had removed.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -248,6 +258,23 @@ fn revision_conflict_error(
     .with_archive_session_id(session_id)
 }
 
+/// Rejected unconditionally -- regardless of what `expected_revision` a
+/// caller submits -- once [`ArchiveSession::is_desynced`] is true. See
+/// that method's own doc comment for why: a prior mutation's post-success
+/// re-list failed, so nothing in this session can prove what the archive's
+/// real contents are anymore, and no `expected_revision` a caller could
+/// supply (even one read after the desync, since `mark_desynced` also
+/// bumps `revision`) is trustworthy against a possibly-stale index.
+fn desynced_session_error(session_id: ArchiveSessionId) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::Conflict,
+        "this archive session's index could not be kept in sync with a previous change -- \
+         close and reopen the archive to continue",
+    )
+    .with_recoverability(Recoverability::Fatal)
+    .with_archive_session_id(session_id)
+}
+
 fn mutation_backend_error(action: &str, error: anyhow::Error) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::Backend, format!("failed to {action}"))
         .with_diagnostic(format!("{error:#}"))
@@ -259,17 +286,27 @@ fn mutation_backend_error(action: &str, error: anyhow::Error) -> ApplicationErro
 /// succeeded here -- only the follow-up `list()` this operation needs in
 /// order to safely reindex failed. The archive's real, on-disk content
 /// has already changed; this session's own cached index simply could not
-/// be refreshed to match it this time; `revision` is deliberately left
-/// unbumped (see [`ArchiveSession::reindex`]'s own contract) so a stale
-/// index is never mistaken for a fresh one.
-fn relist_after_mutation_failed_error(error: anyhow::Error) -> ApplicationError {
+/// be refreshed to match it this time. Unlike an ordinary backend
+/// failure, retrying will not help: the caller `session.mark_desynced()`
+/// this triggers (see its own doc comment) rejects every subsequent
+/// mutation on this session outright, so `Recoverability::Fatal` here is
+/// accurate, not conservative -- and the summary itself carries the only
+/// real recovery path (close and reopen), since the frozen
+/// `ApplicationErrorKind`/`SuggestedAction` contract has no dedicated
+/// variant for "this session needs a fresh open" to hang that guidance
+/// off of instead.
+fn relist_after_mutation_failed_error(
+    session_id: ArchiveSessionId,
+    error: anyhow::Error,
+) -> ApplicationError {
     ApplicationError::new(
         ApplicationErrorKind::Backend,
-        "the archive was modified but its updated contents could not be read back",
+        "the archive was modified but its updated contents could not be confirmed -- close and \
+         reopen this archive to continue safely",
     )
     .with_diagnostic(format!("{error:#}"))
-    .with_recoverability(Recoverability::Retry)
-    .with_retryable(true)
+    .with_recoverability(Recoverability::Fatal)
+    .with_archive_session_id(session_id)
 }
 
 fn internal_join_error(join_error: tokio::task::JoinError) -> ApplicationError {
@@ -423,19 +460,12 @@ pub(crate) async fn run_archive_mutation(
         return;
     }
 
-    if request.is_structurally_empty() {
-        let _ = inner
-            .operations()
-            .transition(
-                operation_id,
-                OperationState::Completed {
-                    result: OperationResult::None,
-                },
-            )
-            .await;
-        return;
-    }
-
+    // Session validation BEFORE anything else, including the structural
+    // no-op short-circuit just below: the contract requires every facade
+    // method to validate a reconstructed id against its owning store, and
+    // a caller submitting a bogus/closed `session_id` alongside an empty
+    // `entry_ids`/`source_paths` must still see `NotFound`, not a
+    // false-positive `Completed`.
     let session_id = request.session_id();
     let session = match inner.archive_sessions().get(session_id).await {
         Ok(session) => session,
@@ -449,6 +479,19 @@ pub(crate) async fn run_archive_mutation(
         return;
     }
 
+    if request.is_structurally_empty() {
+        let _ = inner
+            .operations()
+            .transition(
+                operation_id,
+                OperationState::Completed {
+                    result: OperationResult::None,
+                },
+            )
+            .await;
+        return;
+    }
+
     // Racing the lock acquisition itself against cancellation means a
     // mutation queued behind another one on the same session can still
     // be cancelled promptly, without waiting for the one ahead of it to
@@ -459,6 +502,16 @@ pub(crate) async fn run_archive_mutation(
             return;
         }
     };
+
+    // Unconditional -- checked before, and independent of,
+    // `expected_revision` -- see `ArchiveSession::is_desynced`'s own doc
+    // comment for why a stale index must never again pass a revision
+    // check once this is set, however "current" a caller's own revision
+    // claim looks.
+    if session.is_desynced() {
+        fail(&inner, operation_id, desynced_session_error(session_id)).await;
+        return;
+    }
 
     // Revision check BEFORE any backend work -- and, holding `guard`,
     // atomic against a second concurrent mutation on this same session
@@ -578,10 +631,18 @@ pub(crate) async fn run_archive_mutation(
                 .await;
         }
         Ok(Err(error)) => {
+            // The mutation itself already landed on the backend, but we
+            // can no longer prove what the archive's contents actually
+            // are -- see `ArchiveSession::mark_desynced`'s own doc
+            // comment. Marking this BEFORE `fail` is not load-bearing
+            // for correctness (the operation is about to go terminal
+            // either way), but keeps "the session is desynced" true from
+            // the earliest possible instant for any other reader.
+            session.mark_desynced();
             fail(
                 &inner,
                 operation_id,
-                relist_after_mutation_failed_error(error),
+                relist_after_mutation_failed_error(session_id, error),
             )
             .await;
         }

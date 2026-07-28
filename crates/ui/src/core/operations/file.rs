@@ -106,33 +106,29 @@ pub fn start_add_files(
 /// then registers the resulting operation with the bridge -- the file-
 /// edit dialog's save action. Mirrors [`start_add_files`]'s exact shape.
 ///
-/// The file-edit dialog's own editable name field
-/// (`FileEditResult::Save`'s `requested_name`) can differ from
-/// `path_in_archive` if the user typed a different one -- the facade's
+/// Always saves back to `path_in_archive` itself: the facade's
 /// `ReplaceText` mutation has no rename/move concept (the contract's
 /// `ArchiveMutationRequest` only ever replaces an existing entry's own
-/// content), so a changed name is not honored: content is always saved
-/// back to the entry it was read from, and a status message says so
-/// rather than silently discarding the user's edit. Pre-facade, this
-/// field was passed straight to `add_or_update_file_from_str` as the
-/// path to write, which never deleted the original -- so "renaming" via
-/// this field never actually renamed anything pre-facade either, it
-/// just cloned the content under a second, new path. Neither behavior is
-/// preserved: a real rename/move is a capability this facade does not
-/// expose yet (see this task's report).
+/// content). The file-edit dialog's own editable name field can differ
+/// from `path_in_archive` if the user typed a different one -- detecting
+/// that and telling the user their rename was not honored is the
+/// caller's job (`crate::core::arclain_app::dialog_handler`'s
+/// `FileEditResult::Save` handler), done synchronously and durably
+/// there (via the dialog's own `error` field) rather than through a
+/// transient status-bar write from this fire-and-forget task, which a
+/// completion event racing it on a background task could silently
+/// clobber before the user ever saw it.
 pub fn start_replace_text(
     shared: &SharedState,
     tab_id: TabId,
     session_id: ArchiveSessionId,
     path_in_archive: String,
-    requested_name: String,
     content: String,
 ) {
     let Some(app) = shared.facade.clone() else {
         tracing::error!("[file] start_replace_text: no application facade available");
         return;
     };
-    let renamed = requested_name != path_in_archive;
     let shared = shared.clone();
     let runtime = shared.services.tokio_runtime.clone();
     runtime.spawn(async move {
@@ -183,13 +179,6 @@ pub fn start_replace_text(
         };
         match app.start_archive_mutation(request).await {
             Ok(operation_id) => {
-                if renamed {
-                    shared.signals().status_bar.update(|status| {
-                        status.message = "Note: renaming while saving is not supported yet -- \
-                                           content saved under the original name"
-                            .to_string();
-                    });
-                }
                 crate::core::operation_bridge::register_operation(&shared, operation_id, tab_id)
                     .await;
             }

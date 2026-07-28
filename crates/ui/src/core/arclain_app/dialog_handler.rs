@@ -212,20 +212,17 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 // Saving now goes through the application facade
                 // (`start_archive_mutation` with `ReplaceText`), driven
                 // by `crate::core::operation_bridge` -- see that
-                // module for how the resulting `SnapshotChanged`/
-                // terminal events refresh this tab's entries once the
-                // mutation actually lands, and
-                // `operations::file::start_replace_text`'s own doc
-                // comment for why a changed `new_name` is not honored as
-                // a rename.
+                // module for how the resulting `Completed` event
+                // refreshes this tab's entries once the mutation
+                // actually lands.
                 let active_tab = app.shared_state.signals().tabs.get().active().clone();
+                let path_in_archive = edit_dialog.full_path_in_archive.clone();
                 if let Some(session_id) = active_tab.archive_session_id.get() {
                     operations::file::start_replace_text(
                         &app.shared_state,
                         active_tab.id,
                         session_id,
-                        edit_dialog.full_path_in_archive.clone(),
-                        new_name,
+                        path_in_archive,
                         content,
                     );
                 } else {
@@ -233,7 +230,12 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                         status.message = "No archive loaded".to_string();
                     });
                 }
-                edit_dialog.show = false;
+                // Keeps the dialog open with a durable notice instead of
+                // closing it when `new_name` differs from the entry's
+                // own path -- see `FileEditDialog::apply_save_outcome`'s
+                // own doc comment for why this must not be a status-bar
+                // write instead.
+                edit_dialog.apply_save_outcome(&new_name);
             }
             crate::features::file_editing::FileEditResult::Cancel => {
                 edit_dialog.show = false;

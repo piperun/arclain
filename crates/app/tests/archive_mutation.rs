@@ -89,6 +89,13 @@ struct FakeBackend {
     /// test deterministically prove a second mutation on the same
     /// session is genuinely still queued behind this one.
     add_files_gate: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// One-shot: when true, the *next* `list()` call fails (and this
+    /// resets to `false` regardless of whether that call was consumed by
+    /// an open, a re-list after a mutation, or a plain query) -- lets a
+    /// test script a mutation whose own backend call succeeds but whose
+    /// follow-up reindex-driving re-list fails, without needing a
+    /// separate "list has been called N times" counter.
+    fail_next_list: Mutex<bool>,
 }
 
 impl FakeBackend {
@@ -102,6 +109,7 @@ impl FakeBackend {
             fail_add_files: Mutex::new(None),
             fail_delete_files: Mutex::new(None),
             add_files_gate: Mutex::new(None),
+            fail_next_list: Mutex::new(false),
         }
     }
 
@@ -133,6 +141,12 @@ impl FakeBackend {
         let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
         *backend.add_files_gate.lock().unwrap() = Some((started_tx, proceed_rx));
         (backend, started_rx, proceed_tx)
+    }
+
+    /// Schedules the *next* `list()` call (whichever one it turns out to
+    /// be) to fail -- see `fail_next_list`'s own doc comment.
+    fn fail_next_list_call(&self) {
+        *self.fail_next_list.lock().unwrap() = true;
     }
 
     fn add_files_call_count(&self) -> usize {
@@ -175,6 +189,13 @@ impl arclain_core::ArchiveBackend for FakeBackend {
         _path: &Path,
         _password: Option<&str>,
     ) -> anyhow::Result<arclain_core::ArchiveInfo> {
+        {
+            let mut should_fail = self.fail_next_list.lock().unwrap();
+            if *should_fail {
+                *should_fail = false;
+                return Err(anyhow::anyhow!("scripted list failure"));
+            }
+        }
         Ok(arclain_core::ArchiveInfo {
             archive_path: PathBuf::new(),
             archive_kind: arclain_core::archive::ArchiveKind::Zip,
@@ -1081,5 +1102,146 @@ fn a_fabricated_entry_id_is_rejected_as_not_found_before_any_backend_work() {
             other => panic!("expected Failed(NotFound), got {other:?}"),
         }
         assert_eq!(backend.delete_files_call_count(), 0);
+    });
+}
+
+/// Fold: the contract requires every facade method to validate a
+/// reconstructed id against its owning store. A structurally empty
+/// request (nothing to add/delete) must not short-circuit to `Completed`
+/// before that validation runs -- a bogus `session_id` alongside an
+/// empty selection must still surface as `NotFound`.
+#[test]
+fn a_structurally_empty_request_against_an_unknown_session_is_not_found_not_completed() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let backend = Arc::new(FakeBackend::new(vec![entry("a.txt", 1)]));
+    let app = bootstrap_app(&temp, backend.clone());
+    let never_opened = ArchiveSessionId::from_raw(999_999);
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_archive_mutation(ArchiveMutationRequest::DeleteEntries {
+                session_id: never_opened,
+                expected_revision: 1,
+                entry_ids: vec![],
+            })
+            .await
+            .unwrap();
+
+        match wait_for_terminal(&app, operation_id).await {
+            OperationState::Failed { error } => {
+                assert_eq!(error.kind, ApplicationErrorKind::NotFound)
+            }
+            other => panic!(
+                "an empty request against an unknown session must be NotFound, not {other:?}"
+            ),
+        }
+        assert_eq!(backend.add_files_call_count(), 0);
+        assert_eq!(backend.delete_files_call_count(), 0);
+    });
+}
+
+/// The brief's own regression scenario for a desynced session: a
+/// mutation whose own backend call succeeds but whose follow-up re-list
+/// fails must never again let a subsequent mutation through, regardless
+/// of which `expected_revision` it claims -- neither the stale value a
+/// caller already held, nor the bumped value `mark_desynced` itself
+/// produces (proving the desync flag itself gates this, not merely the
+/// revision counter). Without this, a `ReplaceText` resolved against the
+/// stale-but-still-indexed entry could recreate content an earlier,
+/// already-successful `DeleteEntries` had genuinely removed from the
+/// backend.
+#[test]
+fn a_relist_failure_after_a_successful_mutation_desyncs_the_session_and_blocks_every_later_mutation(
+) {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let backend = Arc::new(FakeBackend::new(vec![entry("a.txt", 1)]));
+    let app = bootstrap_app(&temp, backend.clone());
+    let archive_path = temp.path().join("archive.zip");
+    let new_file = temp.path().join("new.txt");
+    std::fs::write(&new_file, b"x").unwrap();
+
+    runtime.block_on(async {
+        let session_id = open_session(&app, &archive_path).await;
+
+        // The mutation's own backend call will succeed; the follow-up
+        // re-list this operation needs in order to reindex will not.
+        backend.fail_next_list_call();
+        let first_op = app
+            .start_archive_mutation(add_files_request(session_id, 1, vec![new_file]))
+            .await
+            .unwrap();
+        match wait_for_terminal(&app, first_op).await {
+            OperationState::Failed { error } => assert_eq!(error.kind, ApplicationErrorKind::Backend),
+            other => panic!("expected the relist failure to surface as Failed(Backend), got {other:?}"),
+        }
+        // The add_files call really happened -- this is not a rejection
+        // before backend work, it is a genuine post-success desync.
+        assert_eq!(backend.add_files_call_count(), 1);
+
+        let bumped_revision = snapshot(&app, session_id).await.revision;
+        assert_eq!(bumped_revision, 2, "mark_desynced must still bump the revision");
+
+        // A second mutation submitted with the STALE (pre-desync)
+        // revision must be rejected as Conflict, never reaching the
+        // backend. Deliberately a real, non-empty `AddFiles` request --
+        // an empty one would hit the structurally-empty short-circuit
+        // before ever reaching the desync check this test targets.
+        let second_new_file = temp.path().join("second.txt");
+        std::fs::write(&second_new_file, b"y").unwrap();
+        let stale_op = app
+            .start_archive_mutation(add_files_request(session_id, 1, vec![second_new_file.clone()]))
+            .await
+            .unwrap();
+        match wait_for_terminal(&app, stale_op).await {
+            OperationState::Failed { error } => assert_eq!(error.kind, ApplicationErrorKind::Conflict),
+            other => panic!("expected Failed(Conflict) for a stale-revision mutation on a desynced session, got {other:?}"),
+        }
+        assert_eq!(
+            backend.add_files_call_count(),
+            1,
+            "a mutation on a desynced session must never reach the backend, even with a stale revision"
+        );
+
+        // A third mutation submitted with the *bumped* revision --
+        // exactly what `mark_desynced` itself produced -- must ALSO be
+        // rejected: the desync flag gates this independently of whether
+        // the claimed revision happens to match.
+        let matching_revision_op = app
+            .start_archive_mutation(add_files_request(session_id, bumped_revision, vec![second_new_file]))
+            .await
+            .unwrap();
+        match wait_for_terminal(&app, matching_revision_op).await {
+            OperationState::Failed { error } => assert_eq!(error.kind, ApplicationErrorKind::Conflict),
+            other => panic!(
+                "expected Failed(Conflict) even with the bumped revision on a desynced session, got {other:?}"
+            ),
+        }
+        assert_eq!(backend.add_files_call_count(), 1);
+
+        // Recovery: close this session and open a fresh one against the
+        // same path (the backend's own content -- still just "a.txt",
+        // since the scripted failure only affected the *reindex*, never
+        // the real `add_files` call -- doesn't matter here; what matters
+        // is that a brand new session is never desynced).
+        app.close_archive(session_id).await.unwrap();
+        let reopened_session_id = open_session(&app, &archive_path).await;
+        assert_ne!(reopened_session_id, session_id);
+
+        let third_file = temp.path().join("third.txt");
+        std::fs::write(&third_file, b"z").unwrap();
+        let recovered_op = app
+            .start_archive_mutation(add_files_request(reopened_session_id, 1, vec![third_file]))
+            .await
+            .unwrap();
+        assert_eq!(
+            wait_for_terminal(&app, recovered_op).await,
+            OperationState::Completed {
+                result: OperationResult::None
+            },
+            "a fresh session after close+reopen must not inherit the old session's desync"
+        );
+        assert_eq!(backend.add_files_call_count(), 2);
     });
 }

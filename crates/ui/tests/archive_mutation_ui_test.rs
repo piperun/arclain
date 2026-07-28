@@ -32,10 +32,11 @@ use std::path::Path;
 use std::time::Duration;
 
 /// The End Of Central Directory record for a ZIP archive with zero
-/// entries -- the smallest possible valid ZIP file. Real bytes, not a
-/// `zip` crate dependency this crate does not otherwise need: every
-/// field after the 4-byte signature is legitimately zero for an empty
-/// archive.
+/// entries -- the smallest possible valid ZIP file. Real, hand-written
+/// bytes rather than the `zip` crate (added as a dev-dependency below
+/// only for [`build_zip_fixture`]'s nested-entry case, which genuinely
+/// needs it): every field after the 4-byte signature is legitimately
+/// zero for an empty archive.
 const EMPTY_ZIP_BYTES: [u8; 22] = [
     0x50, 0x4B, 0x05, 0x06, // signature "PK\x05\x06"
     0x00, 0x00, // this disk number
@@ -49,6 +50,24 @@ const EMPTY_ZIP_BYTES: [u8; 22] = [
 
 fn write_empty_zip(path: &Path) {
     std::fs::write(path, EMPTY_ZIP_BYTES).expect("write empty zip fixture");
+}
+
+/// Builds a real ZIP fixture at `path` containing `entries`
+/// (archive-relative path -> content) -- unlike [`write_empty_zip`],
+/// this can express a nested entry (e.g. `"subdir/nested.txt"`), which a
+/// hand-written empty-archive byte literal cannot. Mirrors
+/// `crates/app/tests/archive_sessions.rs::build_zip_fixture` exactly.
+fn build_zip_fixture(path: &Path, entries: &[(&str, &[u8])]) {
+    let file = std::fs::File::create(path).expect("create zip fixture file");
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default();
+    for (entry_path, content) in entries {
+        writer
+            .start_file(*entry_path, options)
+            .expect("start zip fixture entry");
+        std::io::Write::write_all(&mut writer, content).expect("write zip fixture entry content");
+    }
+    writer.finish().expect("finish zip fixture");
 }
 
 async fn wait_for_open_completion(
@@ -190,6 +209,95 @@ fn start_add_files_reaches_a_real_backend_and_the_bridge_refreshes_the_tabs_entr
     });
 }
 
+/// The riskiest untested UI path before this test existed:
+/// `FileOpsService::delete_files` resolves its path-string selection to
+/// `EntryId`s via one `list_entries` call scoped to
+/// `origin.navigation.get().current_path` -- every prior delete test
+/// only ever exercised the root directory, where that scoping is
+/// trivially correct (an empty `ArchivePath`). This proves it end to end
+/// for a real subdirectory: the user has navigated into `subdir/`, the
+/// selected path is `subdir/nested.txt` (the full archive-relative path,
+/// matching what the browser's own selection always stores -- see
+/// `FileOpsService::delete_files`'s own doc comment), and only that file
+/// -- never the untouched root-level sibling -- must disappear.
+#[test]
+fn delete_files_from_a_subdirectory_resolves_through_the_navigated_directory_and_reaches_a_real_backend(
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let archive_path = temp.path().join("archive.zip");
+    build_zip_fixture(
+        &archive_path,
+        &[
+            ("root_level.txt", b"stays"),
+            ("subdir/nested.txt", b"goes"),
+            ("subdir/sibling.txt", b"also stays"),
+        ],
+    );
+
+    let app = bootstrap_real_app(&temp);
+    let mut shared = create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.clone();
+    arclain_ui::core::operation_bridge::spawn(&shared);
+
+    let tab = shared.signals().tabs.get().active().clone();
+    let tab_id = tab.id;
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                source_path: archive_path.clone(),
+                password: None,
+            })
+            .await
+            .expect("start_open_archive must be accepted");
+        wait_for_open_completion(&app, operation_id).await;
+        arclain_ui::core::operation_bridge::register_operation(&shared, operation_id, tab_id).await;
+    });
+
+    wait_until(
+        "the archive open never populated the tab's entries signal",
+        || tab.entries.get().len() == 3,
+    );
+
+    // Simulate the user having navigated into `subdir` before selecting
+    // and deleting `nested.txt` -- `FileOpsService::delete_files` scopes
+    // its own `list_entries` call to exactly this signal.
+    tab.navigation.update(|nav| nav.set_current_path("subdir"));
+
+    arclain_ui::features::archive_browser::application::FileOpsService.delete_files(
+        &shared,
+        tab.clone(),
+        vec!["subdir/nested.txt".to_string()],
+    );
+
+    wait_until(
+        "delete_files from a subdirectory never reached a real backend or the bridge never \
+         refreshed the tab",
+        || {
+            let entries = tab.entries.get();
+            entries.len() == 2
+                && !entries
+                    .iter()
+                    .any(|entry| entry.path == "subdir/nested.txt")
+        },
+    );
+
+    let final_entries = tab.entries.get();
+    let remaining: std::collections::HashSet<&str> = final_entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    assert!(
+        remaining.contains("root_level.txt"),
+        "the untouched root-level file must survive"
+    );
+    assert!(
+        remaining.contains("subdir/sibling.txt"),
+        "the untouched sibling in the same subdirectory must survive"
+    );
+}
+
 #[test]
 fn start_add_files_is_a_no_op_without_an_application_facade() {
     let shared = create_test_shared_state();
@@ -271,7 +379,6 @@ fn start_replace_text_is_a_no_op_without_an_application_facade() {
         &shared,
         tab_id,
         session_id,
-        "readme.txt".to_string(),
         "readme.txt".to_string(),
         "new content".to_string(),
     );

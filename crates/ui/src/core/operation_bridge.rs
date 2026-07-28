@@ -600,14 +600,13 @@ fn handle_extract_terminal(
 
 /// Re-lists `path` directly through the backend selector to refresh
 /// `tab`'s flat `entries`/`browser_entries` signals after a successful
-/// archive mutation (`OperationState::SnapshotChanged` for
-/// `OperationKind::ArchiveModify`) -- a deliberate cousin of
-/// `relist_for_browser_signals` (used for a fresh `OpenArchive`
-/// completion), not a reuse of it: a mutation never changes which
-/// archive is open, which folder the user is viewing, or its encryption
-/// status, so none of `archive_extras`/`navigation`/`current_password`/
-/// `opened_archive` are touched here, unlike that function's own full
-/// reset.
+/// archive mutation (`OperationKind::ArchiveModify` reaching
+/// `Completed`) -- a deliberate cousin of `relist_for_browser_signals`
+/// (used for a fresh `OpenArchive` completion), not a reuse of it: a
+/// mutation never changes which archive is open, which folder the user
+/// is viewing, or its encryption status, so none of `archive_extras`/
+/// `navigation`/`current_password`/`opened_archive` are touched here,
+/// unlike that function's own full reset.
 ///
 /// Selection is pruned to just the paths still present in the fresh
 /// listing rather than cleared outright: path-stable identity is what
@@ -666,24 +665,28 @@ async fn refresh_entries_after_mutation(
     Ok(())
 }
 
-/// Handles `OperationKind::ArchiveModify`'s `SnapshotChanged` event: the
-/// mutation genuinely landed, so refresh this tab's browser signals from
-/// the archive's new contents -- see [`refresh_entries_after_mutation`].
+/// Refreshes `tab_id`'s browser signals once its `ArchiveModify`
+/// operation reaches `Completed` -- see [`refresh_entries_after_mutation`].
 /// A no-op if the tab (or its archive path) is already gone -- nothing
 /// left to refresh.
 ///
-/// Also called -- unconditionally, not merely defensively -- from
-/// [`handle_archive_modify_completed`] below: `OperationRegistry` records
-/// only an operation's *latest* state, not its full history, so a
-/// caller that first observes this operation only once it has *already*
-/// reached `Completed` (a fast mutation reconciled via
-/// `register_operation`'s "catch up on whatever was missed" path, or a
-/// lagged-then-reconciled live subscriber) never separately sees the
-/// transient `SnapshotChanged` state in between -- the live event alone
-/// is not a reliable trigger. Re-running this on `Completed` too is
-/// idempotent (a second `backend.list()` against unchanged content), so
-/// doing it unconditionally there is strictly safer than trusting a
-/// live event that this exact scenario proves can be silently skipped.
+/// Deliberately *not* also wired to the transient `SnapshotChanged`
+/// state the worker emits immediately before `Completed`: an earlier
+/// version of this bridge refreshed on both, which meant every
+/// successful mutation triggered two full UI-side `backend.list()`
+/// calls back to back (three counting the facade's own internal
+/// re-list inside `run_archive_mutation` -- for a 7z-backed archive,
+/// each is a subprocess spawn plus a full central-directory read) for
+/// no benefit: the worker always emits `Completed` immediately after
+/// `SnapshotChanged`, so there is no meaningful gap between them for a
+/// live subscriber to observe one without the other. `Completed` alone
+/// is also sufficient for the *reconciliation* path (`register_operation`'s
+/// own one-shot catch-up, and `reconcile_after_lag`): both replay
+/// whichever state the registry's record currently holds, which for a
+/// finished operation is always the terminal one -- reconciliation
+/// landing on `SnapshotChanged` specifically was never something either
+/// path could rely on, since `OperationRegistry` keeps only the latest
+/// state, not a history.
 async fn refresh_tab_after_archive_modify(shared: &SharedState, tab_id: TabId) {
     let Some(tab) = shared.signals().tabs.get().get(tab_id).cloned() else {
         return;
@@ -923,9 +926,16 @@ async fn handle_event(
                 Some(error),
             )
         }
-        (OperationKind::ArchiveModify, OperationState::SnapshotChanged { .. }) => {
-            refresh_tab_after_archive_modify(shared, tab_id).await;
-        }
+        // `SnapshotChanged` deliberately has no handler of its own here:
+        // see `refresh_tab_after_archive_modify`'s own doc comment for
+        // why refreshing on it *in addition to* `Completed` doubled the
+        // UI-side re-list (and the facade's own internal one) for every
+        // successful mutation, since the worker always emits `Completed`
+        // immediately after `SnapshotChanged` -- there is no meaningful
+        // gap between them for a user to benefit from an earlier
+        // refresh, and both `register_operation`'s own reconciliation
+        // and `reconcile_after_lag` already land on whichever state is
+        // *latest*, which for a finished mutation is always `Completed`.
         (OperationKind::ArchiveModify, OperationState::Completed { .. }) => {
             handle_archive_modify_completed(shared, origins, tab_id, event.operation_id).await;
         }
