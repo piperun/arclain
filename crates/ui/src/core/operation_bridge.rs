@@ -598,6 +598,151 @@ fn handle_extract_terminal(
     });
 }
 
+/// Re-lists `path` directly through the backend selector to refresh
+/// `tab`'s flat `entries`/`browser_entries` signals after a successful
+/// archive mutation (`OperationState::SnapshotChanged` for
+/// `OperationKind::ArchiveModify`) -- a deliberate cousin of
+/// `relist_for_browser_signals` (used for a fresh `OpenArchive`
+/// completion), not a reuse of it: a mutation never changes which
+/// archive is open, which folder the user is viewing, or its encryption
+/// status, so none of `archive_extras`/`navigation`/`current_password`/
+/// `opened_archive` are touched here, unlike that function's own full
+/// reset.
+///
+/// Selection is pruned to just the paths still present in the fresh
+/// listing rather than cleared outright: path-stable identity is what
+/// the facade's own `EntryId` guarantees across a mutation-triggered
+/// reindex (see `arclain_app::operations::archive_mutation`'s own doc
+/// comment) -- pruning by path here is this flat, not-yet-`EntryId`-aware
+/// browser model's practical equivalent of that guarantee, so deleting
+/// one selected file does not also silently deselect every other one.
+async fn refresh_entries_after_mutation(
+    shared: &SharedState,
+    tab: &crate::core::tabs::TabState,
+    path: &Path,
+) -> anyhow::Result<()> {
+    let (backend, password) = {
+        let state = shared.app_state.lock();
+        (
+            state.backend_selector.select(path)?,
+            tab.current_password.get(),
+        )
+    };
+    let path_owned = path.to_path_buf();
+    // `backend.list()` is a real blocking filesystem/subprocess call --
+    // see `resolve_archive_listing`'s identical concern for why this
+    // must not run inline on the bridge's own event loop.
+    let info = tokio::task::spawn_blocking(move || backend.list(&path_owned, password.as_deref()))
+        .await
+        .map_err(|join_error| anyhow::anyhow!("archive re-list task panicked: {join_error}"))??;
+
+    let fresh_paths: std::collections::HashSet<String> = info
+        .entries
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect();
+    {
+        let mut view_state = tab.browser_view_state.get();
+        let stale: Vec<String> = view_state
+            .selection
+            .iter()
+            .filter(|selected| !fresh_paths.contains(*selected))
+            .cloned()
+            .collect();
+        let mut changed = false;
+        for stale_path in stale {
+            changed |= view_state.selection.remove(&stale_path);
+        }
+        if changed {
+            tab.browser_view_state.set_if_changed(view_state);
+        }
+    }
+
+    tab.entries.set(Arc::new(info.entries));
+    crate::core::operations::navigation_view::refresh_view_entries_for_tab(
+        shared.signals(),
+        tab.id,
+    );
+    Ok(())
+}
+
+/// Handles `OperationKind::ArchiveModify`'s `SnapshotChanged` event: the
+/// mutation genuinely landed, so refresh this tab's browser signals from
+/// the archive's new contents -- see [`refresh_entries_after_mutation`].
+/// A no-op if the tab (or its archive path) is already gone -- nothing
+/// left to refresh.
+///
+/// Also called -- unconditionally, not merely defensively -- from
+/// [`handle_archive_modify_completed`] below: `OperationRegistry` records
+/// only an operation's *latest* state, not its full history, so a
+/// caller that first observes this operation only once it has *already*
+/// reached `Completed` (a fast mutation reconciled via
+/// `register_operation`'s "catch up on whatever was missed" path, or a
+/// lagged-then-reconciled live subscriber) never separately sees the
+/// transient `SnapshotChanged` state in between -- the live event alone
+/// is not a reliable trigger. Re-running this on `Completed` too is
+/// idempotent (a second `backend.list()` against unchanged content), so
+/// doing it unconditionally there is strictly safer than trusting a
+/// live event that this exact scenario proves can be silently skipped.
+async fn refresh_tab_after_archive_modify(shared: &SharedState, tab_id: TabId) {
+    let Some(tab) = shared.signals().tabs.get().get(tab_id).cloned() else {
+        return;
+    };
+    let Some(archive_path) = tab.archive_path.get() else {
+        return;
+    };
+    if let Err(error) = refresh_entries_after_mutation(shared, &tab, &archive_path).await {
+        tracing::error!(
+            "[operation_bridge] archive mutation succeeded via the facade but the UI-side \
+             re-list failed: {error:#}"
+        );
+        shared.signals().status_bar.update(|status| {
+            status.message = format!("Archive changed but failed to refresh the view: {error:#}");
+        });
+    }
+}
+
+/// Handles `OperationKind::ArchiveModify`'s `Completed` state: refreshes
+/// the tab (see [`refresh_tab_after_archive_modify`]'s own doc comment
+/// on why this does not rely solely on having already observed
+/// `SnapshotChanged` live), reports the outcome, and forgets the
+/// operation's tracked origin.
+async fn handle_archive_modify_completed(
+    shared: &SharedState,
+    origins: &OperationOrigins,
+    tab_id: TabId,
+    operation_id: OperationId,
+) {
+    refresh_tab_after_archive_modify(shared, tab_id).await;
+    origins.forget(operation_id);
+    shared.signals().status_bar.update(|status| {
+        status.message = "Archive updated".to_string();
+    });
+}
+
+/// Handles `OperationKind::ArchiveModify`'s non-`Completed` terminal
+/// states (`Cancelled`/`Failed`). Neither ever follows a `SnapshotChanged`
+/// -- the worker only ever emits that once its mutation has already
+/// succeeded, immediately before its own `Completed` transition, and a
+/// terminal record can never be followed by another transition (see
+/// `OperationRegistry::transition`'s own terminal-state invariant) -- so
+/// there is nothing to refresh here; only the outcome is reported.
+/// Unlike extraction/open, `ArchiveModify` has no dedicated per-tab
+/// dialog or "operation in flight" signal to clear -- it is a
+/// fire-and-forget mutation with no UI state of its own beyond the
+/// status bar message.
+fn handle_archive_modify_terminal(
+    shared: &SharedState,
+    origins: &OperationOrigins,
+    operation_id: OperationId,
+    message: String,
+) {
+    origins.forget(operation_id);
+    shared.signals().status_bar.update(|status| {
+        status.message = message;
+    });
+}
+
 fn handle_password_challenge(
     shared: &SharedState,
     tab_id: TabId,
@@ -777,6 +922,24 @@ async fn handle_event(
                 event.operation_id,
                 Some(error),
             )
+        }
+        (OperationKind::ArchiveModify, OperationState::SnapshotChanged { .. }) => {
+            refresh_tab_after_archive_modify(shared, tab_id).await;
+        }
+        (OperationKind::ArchiveModify, OperationState::Completed { .. }) => {
+            handle_archive_modify_completed(shared, origins, tab_id, event.operation_id).await;
+        }
+        (OperationKind::ArchiveModify, OperationState::Cancelled) => {
+            handle_archive_modify_terminal(
+                shared,
+                origins,
+                event.operation_id,
+                "Archive change cancelled".to_string(),
+            );
+        }
+        (OperationKind::ArchiveModify, OperationState::Failed { error }) => {
+            let message = format!("Archive change failed: {}", error.summary);
+            handle_archive_modify_terminal(shared, origins, event.operation_id, message);
         }
         _ => {
             if event_is_terminal {

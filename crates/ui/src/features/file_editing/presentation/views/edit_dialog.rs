@@ -1,3 +1,24 @@
+//! Pure presentation for the file-edit dialog: renders `dialog`'s current
+//! state and returns what the user did (`Save`/`Cancel`), touching no
+//! persistence or facade of its own. `dialog.name_input`/`.content` are
+//! plain egui text-edit targets; nothing here decides whether a save can
+//! actually happen -- the `Save` button is enabled purely on
+//! `FileEditLoadState::Ready` (the content finished loading), the same
+//! way the toolbar's own Add/Delete buttons enable on selection state
+//! alone rather than a backend capability check.
+//!
+//! The actual save wiring lives in
+//! `crate::core::arclain_app::dialog_handler`'s `FileEditResult::Save`
+//! handler, which submits `dialog.content` through
+//! `crate::core::operations::file::start_replace_text` -- the
+//! application facade (`ArclainApp::start_archive_mutation` with
+//! `ReplaceText`) is what actually checks
+//! `BackendCapabilities::can_modify_files` and reports `Unsupported` if
+//! the archive's backend cannot save at all; this dialog does not
+//! pre-empt that with its own gating, matching the toolbar's existing
+//! "attempt, then surface the resulting error" convention rather than
+//! introducing a second, inconsistent one just for this dialog.
+
 use crate::features::file_editing::domain::types::{
     FileEditDialog, FileEditLoadState, FileEditResult,
 };

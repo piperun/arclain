@@ -165,29 +165,6 @@ pub fn load_archive_into_tab(shared: &SharedState, tab_id: TabId, path: &std::pa
     start_archive_open(shared, tab_id, path.to_path_buf(), None);
 }
 
-/// Re-lists `archive` and refreshes `tab`'s `entries` signal -- used
-/// after a mutation (file-edit save) that changes the archive's
-/// contents but doesn't need the full open-operation apparatus: the
-/// archive is already open in this tab with a known-working password
-/// (if any), so this is a direct backend call, not a fresh
-/// `start_open_archive`.
-pub fn refresh_entries_after_edit(
-    shared: &SharedState,
-    tab: &crate::core::tabs::TabState,
-    archive: &std::path::Path,
-) -> anyhow::Result<()> {
-    let (backend, password) = {
-        let state = shared.app_state.lock();
-        (
-            state.backend_selector.select(archive)?,
-            tab.current_password.get(),
-        )
-    };
-    let info = backend.list(archive, password.as_deref())?;
-    tab.entries.set(std::sync::Arc::new(info.entries));
-    Ok(())
-}
-
 /// Finishes an archive load once the facade's `start_open_archive`
 /// operation has completed and `crate::core::operation_bridge` has
 /// already populated the tab's flat `entries`/`archive_path`/

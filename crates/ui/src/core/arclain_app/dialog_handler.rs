@@ -209,61 +209,29 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     ) {
         match result {
             crate::features::file_editing::FileEditResult::Save { new_name, content } => {
-                if let Some(archive) = app
-                    .shared_state
-                    .signals()
-                    .tabs
-                    .get()
-                    .active()
-                    .archive_path
-                    .get()
-                {
-                    let mut status = app.shared_state.signals().status_bar.get();
-
-                    // Save the file to archive
-                    let save_result = {
-                        let state = app.shared_state.app_state.lock();
-                        state.add_or_update_file_from_str(&archive, &new_name, &content)
-                    };
-
-                    match save_result {
-                        Ok(_) => {
-                            status.message = "File saved".to_string();
-
-                            // Re-list the archive to update entries signal.
-                            // Audit finding H2: previously the error was
-                            // swallowed via `if let Ok(_) = ...` and the
-                            // user saw "File saved" with stale entries.
-                            // Now log + surface so a stale view is at
-                            // least visible.
-                            let edit_tab = app.shared_state.signals().tabs.get().active().clone();
-                            match operations::archive::refresh_entries_after_edit(
-                                &app.shared_state,
-                                &edit_tab,
-                                &archive,
-                            ) {
-                                Ok(()) => {
-                                    crate::core::operations::navigation_view::refresh_view_entries(
-                                        app.shared_state.signals(),
-                                    );
-                                }
-                                Err(e) => {
-                                    let msg = format!(
-                                        "File saved but failed to reload archive entries: {}",
-                                        e
-                                    );
-                                    crate::core::utils::log_failure("FileEdit", &msg);
-                                    status.message = msg;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let msg = format!("Failed to save file: {}", e);
-                            crate::core::utils::log_failure("FileEdit", &msg);
-                            status.message = msg;
-                        }
-                    }
-                    app.shared_state.signals().status_bar.set_if_changed(status);
+                // Saving now goes through the application facade
+                // (`start_archive_mutation` with `ReplaceText`), driven
+                // by `crate::core::operation_bridge` -- see that
+                // module for how the resulting `SnapshotChanged`/
+                // terminal events refresh this tab's entries once the
+                // mutation actually lands, and
+                // `operations::file::start_replace_text`'s own doc
+                // comment for why a changed `new_name` is not honored as
+                // a rename.
+                let active_tab = app.shared_state.signals().tabs.get().active().clone();
+                if let Some(session_id) = active_tab.archive_session_id.get() {
+                    operations::file::start_replace_text(
+                        &app.shared_state,
+                        active_tab.id,
+                        session_id,
+                        edit_dialog.full_path_in_archive.clone(),
+                        new_name,
+                        content,
+                    );
+                } else {
+                    app.shared_state.signals().status_bar.update(|status| {
+                        status.message = "No archive loaded".to_string();
+                    });
                 }
                 edit_dialog.show = false;
             }
@@ -589,9 +557,53 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
                             // must never open the same archive into two tabs
                             // (some platforms repeat the final file in the
                             // drop event). See `file_drop::dedupe_dropped_paths`.
-                            let dropped_paths = crate::core::file_drop::dedupe_dropped_paths(
+                            let deduped_paths = crate::core::file_drop::dedupe_dropped_paths(
                                 dropped.iter().filter_map(|f| f.path.clone()).collect(),
                             );
+
+                            // Partition before any zone/`DropBehavior`
+                            // routing: a non-archive file dropped while
+                            // an archive is already open in the active
+                            // tab has exactly one sensible action (add
+                            // it to that archive), not a "which tab"
+                            // question the zone overlay/`AskEachTime`
+                            // modal below exists to answer. See
+                            // `drag_drop::should_add_to_open_archive`'s
+                            // own doc comment.
+                            let active_session_id =
+                                col_snapshot.active().archive_session_id.get();
+                            let (to_add, dropped_paths): (Vec<_>, Vec<_>) =
+                                deduped_paths.into_iter().partition(|path| {
+                                    crate::features::archive_operations::application::drag_drop::should_add_to_open_archive(
+                                        path,
+                                        active_session_id,
+                                    )
+                                });
+                            if !to_add.is_empty() {
+                                match active_session_id {
+                                    Some(session_id) => {
+                                        crate::core::operations::file::start_add_files(
+                                            &app.shared_state,
+                                            col_snapshot.active_id(),
+                                            session_id,
+                                            to_add,
+                                        );
+                                    }
+                                    None => {
+                                        // Only reachable if the active session
+                                        // closed in the instant between the
+                                        // partition above and here -- defensive,
+                                        // not a normal path.
+                                        app.shared_state.signals().status_bar.update(|status| {
+                                            status.message =
+                                                "Dropped file(s) are not archives and no archive \
+                                                 is open to add them to."
+                                                    .to_string();
+                                        });
+                                    }
+                                }
+                            }
+
                             let mut tabs_to_load: Vec<(
                                 crate::core::tabs::TabId,
                                 std::path::PathBuf,

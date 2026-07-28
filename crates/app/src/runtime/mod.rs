@@ -49,7 +49,8 @@ use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::event::{OperationEvent, OperationKind, OperationSnapshot};
 use crate::ids::{ArchiveSessionId, OperationId};
 use crate::operations::{
-    ChallengeWaiters, ConvertRequest, OperationRegistry, OrganizeRequest, PipelineRequest,
+    ArchiveMutationRequest, ChallengeWaiters, ConvertRequest, OperationRegistry, OrganizeRequest,
+    PipelineRequest,
 };
 use session_store::SessionStore;
 
@@ -527,6 +528,42 @@ impl ArclainApp {
     }
 
     // ============== Task 6: extraction operation (end) ==============
+
+    // ========= Task 8: archive mutation operation (start) ==========
+
+    /// Starts an archive-mutating operation (`AddFiles`/`DeleteEntries`/
+    /// `ReplaceText`) as a cancellable, event-broadcasting operation.
+    /// Returns as soon as the operation is recorded `Accepted`; the
+    /// backend call, capability gating, revision check, and post-mutation
+    /// reindex all happen on a task spawned through this app's own
+    /// runtime handle (see `crate::operations::archive_mutation`).
+    /// Subscribe via [`Self::subscribe_operations`] to observe `Started` /
+    /// `SnapshotChanged` (on success, exactly once, immediately before
+    /// `Completed`) / `Completed` / `Cancelled` / `Failed`.
+    pub async fn start_archive_mutation(
+        &self,
+        request: ArchiveMutationRequest,
+    ) -> Result<OperationId, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let (operation_id, cancel) =
+                inner.operations().begin(OperationKind::ArchiveModify).await;
+            // See `start_extract`'s identical comment above -- the same
+            // theoretical, non-reachable-in-practice race.
+            if let Some(handle) = inner.tokio_handle() {
+                let worker_inner = inner.clone();
+                handle.spawn(crate::operations::archive_mutation::run_archive_mutation(
+                    worker_inner,
+                    operation_id,
+                    cancel,
+                    request,
+                ));
+            }
+            operation_id
+        })
+        .await
+    }
+
+    // ========== Task 8: archive mutation operation (end) ===========
 
     /// Subscribes to the operation-event stream. See
     /// `OperationRegistry::subscribe`.

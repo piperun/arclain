@@ -559,6 +559,27 @@ pub(crate) struct ArchiveSession {
     /// Persists id assignment across every `EntryIndex::build` this
     /// session performs -- see [`EntryIdAssigner`]'s own doc comment.
     id_assigner: Mutex<EntryIdAssigner>,
+    /// Serializes `crate::operations::archive_mutation`'s "check
+    /// `expected_revision`, mutate the backend, re-list, rebuild the
+    /// index, bump `revision`" sequence into one atomic unit per
+    /// session. Without this, two concurrent mutation operations on the
+    /// same session could both read the same starting revision, both
+    /// pass their optimistic-concurrency check, and then race each
+    /// other writing to the same underlying archive file -- the
+    /// `expected_revision` check alone only catches *sequential*
+    /// staleness, not a genuine in-flight collision.
+    ///
+    /// An async `tokio::sync::Mutex`, not `parking_lot`/`std`: the
+    /// critical section it guards spans real blocking backend I/O
+    /// awaited via `spawn_blocking`, and only an async mutex can be held
+    /// across an `.await` point without blocking a worker thread while
+    /// contended. Deliberately a *different* lock from `archive` above
+    /// (which stays a quick, uncontended `parking_lot` peek at the
+    /// backend/password, exactly as extraction already uses it) --
+    /// holding `archive`'s own lock for a whole mutation's duration
+    /// would make a concurrent extraction's brief password peek block a
+    /// live async worker thread for as long as the mutation runs.
+    mutation_lock: tokio::sync::Mutex<()>,
 }
 
 impl ArchiveSession {
@@ -579,6 +600,7 @@ impl ArchiveSession {
             revision: AtomicU64::new(1),
             entry_index: RwLock::new(entry_index),
             id_assigner: Mutex::new(id_assigner),
+            mutation_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -595,6 +617,59 @@ impl ArchiveSession {
     #[allow(dead_code)]
     pub(crate) fn id_assigner(&self) -> &Mutex<EntryIdAssigner> {
         &self.id_assigner
+    }
+
+    /// The lock `crate::operations::archive_mutation` holds across its
+    /// whole "check revision, mutate, re-list, reindex, bump revision"
+    /// sequence -- see [`Self`]'s own field doc comment for why this is a
+    /// separate lock from the one guarding `archive`.
+    pub(crate) fn mutation_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.mutation_lock
+    }
+
+    /// Rebuilds this session's entry index from a fresh backend listing
+    /// and bumps `revision` by exactly one, returning the new value.
+    /// Called by `crate::operations::archive_mutation` only after the
+    /// backend call that produced `entries` has already succeeded --
+    /// `revision` must never advance on the strength of a mutation this
+    /// session cannot prove landed.
+    ///
+    /// Reuses the *same* [`EntryIdAssigner`] the initial [`Self::new`]
+    /// build used (see that type's own doc comment): a path unaffected by
+    /// the mutation keeps the exact [`EntryId`] it already had, a
+    /// genuinely new path mints a fresh one, and a path that stopped
+    /// appearing simply stops being handed out again. This is what lets a
+    /// caller's cached selection survive a mutation for every entry it
+    /// did not touch.
+    ///
+    /// CPU-bound (walks every entry, synthesizes ancestor directories,
+    /// aggregates folder totals) -- callers must invoke this from a
+    /// blocking-safe context (`spawn_blocking`), matching
+    /// `ArchiveSessionStore::open`'s identical requirement for the
+    /// initial build.
+    ///
+    /// Ordering is load-bearing: the index write below happens-before
+    /// the `AcqRel` revision bump in this thread's program order, so any
+    /// caller that later observes the *new* revision via `Self::revision`'s
+    /// `Acquire` load is guaranteed to also observe this index update --
+    /// there is no window where a reader could see the bumped revision
+    /// paired with the stale index.
+    pub(crate) fn reindex(&self, entries: &[arclain_core::ArchiveEntry]) -> u64 {
+        let mut assigner = self.id_assigner.lock();
+        let new_index = EntryIndex::build(entries, &mut assigner);
+        *self.entry_index.write() = new_index;
+        self.revision.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Looks up one entry by id against this session's *current* index.
+    /// `None` if `entry_id` was never minted into this revision's index --
+    /// a stale id from a superseded revision, or one a caller fabricated.
+    /// Used by `crate::operations::archive_mutation`'s `ReplaceText`
+    /// handling to resolve the entry's current path and confirm it names
+    /// a `File` (rather than a `Directory`) before ever calling the
+    /// backend.
+    pub(crate) fn entry(&self, entry_id: EntryId) -> Option<ArchiveEntryDto> {
+        self.entry_index.read().get(entry_id).cloned()
     }
 
     /// The archive's original source path, alongside the backend handle

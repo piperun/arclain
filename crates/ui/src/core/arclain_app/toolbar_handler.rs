@@ -184,9 +184,13 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     operations::extraction::extract_all(&shared_state, &active_tab);
                 }
                 if actions.add {
-                    let mut status_info = shared_state.signals().status_bar.get();
-                    operations::file::add_files(&app.shared_state.app_state, &mut status_info);
-                    shared_state.signals().status_bar.set(status_info);
+                    // Add itself now goes through the application facade
+                    // (`start_archive_mutation` with `AddFiles`), driven
+                    // by `crate::core::operation_bridge` -- see that
+                    // module for how the resulting `SnapshotChanged`/
+                    // terminal events route back onto this tab's signals.
+                    let active_tab_id = shared_state.signals().tabs.get().active_id();
+                    operations::file::add_files(&shared_state, active_tab_id);
                 }
                 if actions.delete_selected {
                     let t = shared_state.signals().tabs.get().active().clone();

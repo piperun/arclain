@@ -16,6 +16,7 @@
 //! operation, each owning its own request type plus request-shaped
 //! (no-I/O) validation, re-exported the same way.
 
+pub mod archive_mutation;
 pub(crate) mod challenge_waiters;
 pub mod extract;
 pub(crate) mod registry;
@@ -24,6 +25,7 @@ pub mod convert;
 pub mod organize;
 pub mod pipeline;
 
+pub use archive_mutation::ArchiveMutationRequest;
 pub(crate) use challenge_waiters::ChallengeWaiters;
 pub use extract::{CollisionPolicy, ExtractRequest};
 pub(crate) use registry::OperationRegistry;

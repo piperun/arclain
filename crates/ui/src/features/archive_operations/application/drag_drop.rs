@@ -1,6 +1,30 @@
 use crate::core::utils;
 use crate::features::archive_operations::domain::state::ArchiveOperationsState;
 use eframe::egui;
+use std::path::Path;
+
+/// Whether a file dropped onto the app window should be routed into
+/// `AddFiles` against the active tab's open archive, rather than the
+/// existing "open a dropped archive" routing
+/// (`crate::core::arclain_app::dialog_handler::render_overlays`'s own
+/// zone/`DropBehavior` logic, unchanged by this task).
+///
+/// True exactly when an archive is already open in the active tab *and*
+/// the dropped path is not itself a recognized archive extension.
+/// `render_overlays` partitions every drop gesture's paths through this
+/// check before doing anything else: paths this returns `true` for go
+/// straight to `crate::core::operations::file::start_add_files`; every
+/// other path keeps going through the existing open/replace-tab zone
+/// routing exactly as before. Opening a dropped *archive* -- including
+/// one dropped while another is already open, which replaces or adds a
+/// tab -- remains that existing, unchanged frontend action; this
+/// function only decides the other half of the fork.
+pub fn should_add_to_open_archive(
+    dropped_path: &Path,
+    active_archive_session_id: Option<arclain_app::ids::ArchiveSessionId>,
+) -> bool {
+    active_archive_session_id.is_some() && !crate::core::file_drop::is_archive(dropped_path)
+}
 
 pub fn update_drag_progress(
     state: &mut ArchiveOperationsState,
@@ -73,5 +97,35 @@ pub fn update_drag_progress(
 
     if changed {
         origin_tab.drag_dialog().set(dialog);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_non_archive_dropped_onto_an_open_archive_is_routed_to_add() {
+        assert!(should_add_to_open_archive(
+            &PathBuf::from("notes.txt"),
+            Some(arclain_app::ids::ArchiveSessionId::from_raw(1))
+        ));
+    }
+
+    #[test]
+    fn a_recognized_archive_is_never_routed_to_add_even_with_one_already_open() {
+        assert!(!should_add_to_open_archive(
+            &PathBuf::from("other.zip"),
+            Some(arclain_app::ids::ArchiveSessionId::from_raw(1))
+        ));
+    }
+
+    #[test]
+    fn a_non_archive_with_no_archive_open_is_never_routed_to_add() {
+        assert!(!should_add_to_open_archive(
+            &PathBuf::from("notes.txt"),
+            None
+        ));
     }
 }

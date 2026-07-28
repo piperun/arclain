@@ -16,8 +16,13 @@ pub enum DropAction {
     OpenArchive(PathBuf),
 }
 
-/// Check if a path has a supported archive extension
-fn is_archive(path: &std::path::Path) -> bool {
+/// Check if a path has a supported archive extension.
+///
+/// `pub(crate)`: reused by `crate::features::archive_operations::
+/// application::drag_drop::should_add_to_open_archive` to decide whether
+/// a dropped file should open as a new archive or be added into the
+/// currently open one -- see that function's own doc comment.
+pub(crate) fn is_archive(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| ARCHIVE_EXTENSIONS.contains(&e.to_lowercase().as_str()))

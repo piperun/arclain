@@ -2,75 +2,89 @@
 
 use crate::core::operations;
 use crate::core::tabs::{OpGuard, TabState};
-use crate::core::utils::convert_to_file_entry_with_archive_path;
 use crate::features::archive_operations::ArchiveOperationsState;
 use crate::features::file_editing::domain::types::FileEditLoadState;
-use crate::shared::models::file_entry::FileEntry;
 use crate::shared::SharedState;
 use anyhow::{anyhow, Result};
+use arclain_app::archive::{ArchivePath, EntrySortKey, ListEntriesRequest, SortDirection};
+use arclain_app::operations::ArchiveMutationRequest;
 use arclain_core::backends::BackendSelector;
-use arclain_core::{ArchiveEntry, NavigationState};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-/// Narrow I/O boundary used to verify that archive work is scheduled rather
-/// than executed by the caller. Public only because integration tests compile
-/// as a separate crate.
+/// Narrow I/O boundary used to verify that a text read is scheduled
+/// rather than executed by the caller. Public only because integration
+/// tests compile as a separate crate.
+///
+/// Delete used to have an equivalent injectable seam here
+/// (`delete_and_list`/`DeleteListResult`) before it moved onto
+/// `arclain_app::ArclainApp::start_archive_mutation` (see
+/// [`FileOpsService::delete_files`]'s own doc comment) -- that seam is
+/// gone now: the facade's own integration tests
+/// (`crates/app/tests/archive_mutation.rs`) exercise a real,
+/// injectable-at-bootstrap fake backend, and this crate's own
+/// `crates/ui/tests/` cover the UI-side wiring end to end against a real
+/// bootstrapped `ArclainApp`. This trait stays narrowed to the one
+/// synchronous read path that has not moved.
 #[doc(hidden)]
-pub trait ArchiveFileIo: Send + Sync {
-    fn delete_and_list(&self, archive: &Path, paths: &[String]) -> Result<DeleteListResult>;
+pub trait TextReadIo: Send + Sync {
     fn read_text(&self, archive: &Path, path: &str) -> Result<String>;
 }
 
-#[doc(hidden)]
-pub struct DeleteListResult {
-    pub archive_entries: Arc<Vec<ArchiveEntry>>,
-    pub browser_entries: Vec<FileEntry>,
-}
-
-struct BackendArchiveFileIo {
+struct BackendTextReadIo {
     backend_selector: BackendSelector,
     password: Option<String>,
-    navigation: NavigationState,
 }
 
-impl BackendArchiveFileIo {
+impl BackendTextReadIo {
     fn capture(shared: &SharedState, origin: &TabState) -> Self {
         Self {
             backend_selector: shared.app_state.lock().backend_selector.clone(),
             password: origin.current_password.get(),
-            navigation: origin.navigation.get(),
         }
     }
 }
 
-impl ArchiveFileIo for BackendArchiveFileIo {
-    fn delete_and_list(&self, archive: &Path, paths: &[String]) -> Result<DeleteListResult> {
-        let backend = self.backend_selector.select(archive)?;
-        backend.delete_files(archive, paths)?;
-        let archive_entries = backend.list(archive, self.password.as_deref())?.entries;
-        let browser_entries = self
-            .navigation
-            .filter_entries_with_archive_paths(&archive_entries)
-            .into_iter()
-            .map(|item| convert_to_file_entry_with_archive_path(&item.entry, &item.archive_path))
-            .collect();
-        Ok(DeleteListResult {
-            archive_entries: Arc::new(archive_entries),
-            browser_entries,
-        })
-    }
-
+impl TextReadIo for BackendTextReadIo {
     fn read_text(&self, archive: &Path, path: &str) -> Result<String> {
         let backend = self.backend_selector.select(archive)?;
         backend.read_text_file(archive, path, self.password.as_deref())
     }
 }
 
+/// How many entries a directory-scoped `list_entries` call requests when
+/// resolving [`FileOpsService::delete_files`]'s path-string selection
+/// into `EntryId`s. The browser only ever selects rows from the
+/// currently-viewed directory (`NavigationState::filter_entries` is
+/// itself non-recursive), so one call at that directory with a
+/// generously large limit is enough to see every candidate -- there is
+/// no upper bound on a directory's own entry count worth naming more
+/// precisely than "effectively unbounded" here.
+const ALL_ENTRIES_IN_ONE_DIRECTORY: u32 = u32::MAX;
+
 pub struct FileOpsService;
 
 impl FileOpsService {
+    /// Fire-and-forget: resolves `paths` (archive-relative path strings,
+    /// scoped to `origin`'s currently-viewed directory -- the only rows a
+    /// selection can ever contain) to their `EntryId`s, then submits a
+    /// `DeleteEntries` mutation through the application facade at the
+    /// resolved listing's own revision. The bridge
+    /// (`crate::core::operation_bridge`) refreshes `origin`'s
+    /// entries/browser_entries once the mutation's `SnapshotChanged`
+    /// event arrives -- this method itself never touches those signals.
+    ///
+    /// Delete used to call `ArchiveBackend::delete_files` directly here,
+    /// synchronously inside `spawn_blocking`, serialized per tab via
+    /// `origin.archive_edit_lock` (a `parking_lot::Mutex` that also
+    /// serialized this against a concurrent save-edit on the *same*
+    /// tab, but not against a delete/edit on a *different* tab that
+    /// happened to share the same archive file). `ArchiveSession::
+    /// mutation_lock` (an async, session-scoped lock the facade now
+    /// owns) supersedes that role: it serializes every mutation kind
+    /// against every other one on the same session, regardless of which
+    /// tab initiated it.
     pub fn delete_files(&self, shared: &SharedState, origin: Arc<TabState>, paths: Vec<String>) {
         if paths.is_empty() {
             shared.signals().status_bar.update(|status| {
@@ -78,77 +92,88 @@ impl FileOpsService {
             });
             return;
         }
-
-        let io = Arc::new(BackendArchiveFileIo::capture(shared, &origin));
-        self.delete_files_with_io(shared, origin, paths, io);
-    }
-
-    #[doc(hidden)]
-    pub fn delete_files_with_io(
-        &self,
-        shared: &SharedState,
-        origin: Arc<TabState>,
-        paths: Vec<String>,
-        io: Arc<dyn ArchiveFileIo>,
-    ) {
-        let Some(archive) = origin.archive_path.get() else {
+        let Some(session_id) = origin.archive_session_id.get() else {
             shared.signals().status_bar.update(|status| {
                 status.message = "No archive loaded".to_string();
             });
             return;
         };
+        let Some(app) = shared.facade.clone() else {
+            tracing::error!("[file_ops] delete_files: no application facade available");
+            return;
+        };
 
+        let tab_id = origin.id;
+        let directory_path = origin.navigation.get().current_path.clone();
+        let shared = shared.clone();
         let runtime = shared.services.tokio_runtime.clone();
-        let status_bar = shared.signals().status_bar.clone();
-        let edit_lock = origin.archive_edit_lock.clone();
-        let guard = OpGuard::new(&origin);
-        let deleted_count = paths.len();
-
         runtime.spawn(async move {
-            let _guard = guard;
-            let worker_origin = origin.clone();
-            let worker_archive = archive.clone();
-            let worker_status_bar = status_bar.clone();
-            let worker_result = tokio::task::spawn_blocking(move || {
-                let _edit_guard = edit_lock.lock();
-                let result = io.delete_and_list(&worker_archive, &paths);
-
-                // Publication is part of the serialized edit. Releasing the
-                // lock before swapping the snapshot lets a later edit finish
-                // and publish first, after which this older result can
-                // overwrite it.
-                if worker_origin.archive_path.get().as_ref() != Some(&worker_archive) {
+            let directory =
+                ArchivePath::parse(directory_path).unwrap_or_else(|_| ArchivePath::root());
+            let page = match app
+                .list_entries(
+                    session_id,
+                    ListEntriesRequest {
+                        directory,
+                        sort_key: EntrySortKey::Name,
+                        sort_direction: SortDirection::Ascending,
+                        name_filter: None,
+                        offset: 0,
+                        limit: ALL_ENTRIES_IN_ONE_DIRECTORY,
+                    },
+                )
+                .await
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    tracing::error!("[file_ops] delete_files: list_entries failed: {error:?}");
+                    shared.signals().status_bar.update(|status| {
+                        status.message = format!("Delete failed: {}", error.summary);
+                    });
                     return;
                 }
+            };
 
-                match result {
-                    Ok(result) => {
-                        worker_origin.entries.set(result.archive_entries);
-                        worker_origin
-                            .browser_entries
-                            .update(|snapshot| snapshot.replace(result.browser_entries));
-                        worker_status_bar.update(|status| {
-                            status.message = if deleted_count == 1 {
-                                "Deleted 1 file".to_string()
-                            } else {
-                                format!("Deleted {deleted_count} files")
-                            };
-                        });
-                    }
-                    Err(error) => {
-                        let message = format!("Delete failed: {error}");
-                        tracing::error!("{message}");
-                        worker_status_bar.update(|status| status.message = message);
-                    }
+            let wanted: std::collections::HashSet<&str> =
+                paths.iter().map(String::as_str).collect();
+            let entry_ids: Vec<arclain_app::ids::EntryId> = page
+                .entries
+                .iter()
+                .filter(|entry| wanted.contains(entry.path.as_str()))
+                .map(|entry| entry.id)
+                .collect();
+            if entry_ids.is_empty() {
+                // Every selected path has already disappeared from the
+                // current listing (deleted by another action in the
+                // meantime, or the selection was stale) -- nothing left
+                // to delete.
+                shared.signals().status_bar.update(|status| {
+                    status.message = "No matching entries found to delete".to_string();
+                });
+                return;
+            }
+
+            let request = ArchiveMutationRequest::DeleteEntries {
+                session_id,
+                expected_revision: page.revision,
+                entry_ids,
+            };
+            match app.start_archive_mutation(request).await {
+                Ok(operation_id) => {
+                    crate::core::operation_bridge::register_operation(
+                        &shared,
+                        operation_id,
+                        tab_id,
+                    )
+                    .await;
                 }
-            })
-            .await;
-
-            if let Err(error) = worker_result {
-                if origin.archive_path.get().as_ref() == Some(&archive) {
-                    let message = format!("archive delete worker failed: {error}");
-                    tracing::error!("{message}");
-                    status_bar.update(|status| status.message = message);
+                Err(error) => {
+                    tracing::error!(
+                        "[file_ops] start_archive_mutation (DeleteEntries) was rejected: {error:?}"
+                    );
+                    shared.signals().status_bar.update(|status| {
+                        status.message = format!("Delete failed: {}", error.summary);
+                    });
                 }
             }
         });
@@ -168,7 +193,7 @@ impl FileOpsService {
     }
 
     pub fn read_text(&self, shared: &SharedState, origin: Arc<TabState>, path: String) {
-        let io = Arc::new(BackendArchiveFileIo::capture(shared, &origin));
+        let io = Arc::new(BackendTextReadIo::capture(shared, &origin));
         self.read_text_with_io(shared, origin, path, io);
     }
 
@@ -178,7 +203,7 @@ impl FileOpsService {
         shared: &SharedState,
         origin: Arc<TabState>,
         path: String,
-        io: Arc<dyn ArchiveFileIo>,
+        io: Arc<dyn TextReadIo>,
     ) {
         let request_id = origin.file_request_seq.fetch_add(1, Ordering::Relaxed) + 1;
         origin.file_edit_dialog.update(|dialog| {
