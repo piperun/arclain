@@ -33,7 +33,7 @@ pub struct OrganizeArgs {
 /// Validates every input exists locally, starts organizing, drives it to
 /// a terminal state. Returns the process exit code. No archive session
 /// is opened -- `OrganizeRequest` operates directly on filesystem paths.
-pub async fn run(app: &ArclainApp, args: &OrganizeArgs, json: bool) -> i32 {
+pub async fn run(app: &ArclainApp, args: &OrganizeArgs, ctx: &super::Invocation) -> i32 {
     let inputs = match super::convert::resolve_inputs(&args.inputs) {
         Ok(inputs) => inputs,
         Err(code) => return code,
@@ -63,15 +63,17 @@ pub async fn run(app: &ArclainApp, args: &OrganizeArgs, json: bool) -> i32 {
     };
 
     let interactive = crate::events::std_interactive();
-    let mut cancel = crate::events::CancelTrigger::CtrlC;
     let mut last_message = super::LastProgressMessage::default();
     let result = crate::events::drive_operation(
-        app,
-        &mut events,
-        operation_id,
-        json,
-        &interactive,
-        &mut cancel,
+        crate::events::OperationWait {
+            app,
+            events: &mut events,
+            operation_id,
+            interactive: &interactive,
+            cancel: &ctx.cancel,
+            budget: ctx.budget,
+        },
+        ctx.json,
         |event| last_message.observe(event),
     )
     .await;
@@ -79,7 +81,7 @@ pub async fn run(app: &ArclainApp, args: &OrganizeArgs, json: bool) -> i32 {
     match result {
         Ok(_) => {
             let summary = last_message.into_inner();
-            if json {
+            if ctx.json {
                 print_json_line(&MutationOutcome::completed(summary));
             } else {
                 match &summary {

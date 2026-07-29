@@ -44,14 +44,14 @@ pub struct DeleteArgs {
     pub entries: Vec<String>,
 }
 
-pub async fn dispatch(app: &ArclainApp, command: &ArchiveCommand, json: bool) -> i32 {
+pub async fn dispatch(app: &ArclainApp, command: &ArchiveCommand, ctx: &super::Invocation) -> i32 {
     match command {
-        ArchiveCommand::Add(args) => run_add(app, args, json).await,
-        ArchiveCommand::Delete(args) => run_delete(app, args, json).await,
+        ArchiveCommand::Add(args) => run_add(app, args, ctx).await,
+        ArchiveCommand::Delete(args) => run_delete(app, args, ctx).await,
     }
 }
 
-async fn run_add(app: &ArclainApp, args: &AddArgs, json: bool) -> i32 {
+async fn run_add(app: &ArclainApp, args: &AddArgs, ctx: &super::Invocation) -> i32 {
     for source in &args.sources {
         if !source.is_file() {
             print_plain_error(&format!("source not found: {}", source.display()));
@@ -60,7 +60,15 @@ async fn run_add(app: &ArclainApp, args: &AddArgs, json: bool) -> i32 {
     }
 
     let interactive = crate::events::std_interactive();
-    let snapshot = match super::open_archive_and_wait(app, &args.archive, &interactive).await {
+    let snapshot = match super::open_archive_and_wait(
+        app,
+        &args.archive,
+        &interactive,
+        &ctx.cancel,
+        ctx.budget,
+    )
+    .await
+    {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
@@ -82,12 +90,20 @@ async fn run_add(app: &ArclainApp, args: &AddArgs, json: bool) -> i32 {
         destination: ArchivePath::root(),
         source_paths,
     };
-    run_mutation(app, snapshot.session_id, request, json).await
+    run_mutation(app, snapshot.session_id, request, ctx).await
 }
 
-async fn run_delete(app: &ArclainApp, args: &DeleteArgs, json: bool) -> i32 {
+async fn run_delete(app: &ArclainApp, args: &DeleteArgs, ctx: &super::Invocation) -> i32 {
     let interactive = crate::events::std_interactive();
-    let snapshot = match super::open_archive_and_wait(app, &args.archive, &interactive).await {
+    let snapshot = match super::open_archive_and_wait(
+        app,
+        &args.archive,
+        &interactive,
+        &ctx.cancel,
+        ctx.budget,
+    )
+    .await
+    {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
@@ -107,7 +123,7 @@ async fn run_delete(app: &ArclainApp, args: &DeleteArgs, json: bool) -> i32 {
         expected_revision: snapshot.revision,
         entry_ids,
     };
-    run_mutation(app, snapshot.session_id, request, json).await
+    run_mutation(app, snapshot.session_id, request, ctx).await
 }
 
 /// Shared by `add`/`delete`: submits `request` (`expected_revision`
@@ -119,7 +135,7 @@ async fn run_mutation(
     app: &ArclainApp,
     session_id: ArchiveSessionId,
     request: ArchiveMutationRequest,
-    json: bool,
+    ctx: &super::Invocation,
 ) -> i32 {
     let mut events = app.subscribe_operations();
     let operation_id = match app.start_archive_mutation(request).await {
@@ -133,15 +149,17 @@ async fn run_mutation(
     };
 
     let interactive = crate::events::std_interactive();
-    let mut cancel = crate::events::CancelTrigger::CtrlC;
     let mut new_revision: Option<u64> = None;
     let result = crate::events::drive_operation(
-        app,
-        &mut events,
-        operation_id,
-        json,
-        &interactive,
-        &mut cancel,
+        crate::events::OperationWait {
+            app,
+            events: &mut events,
+            operation_id,
+            interactive: &interactive,
+            cancel: &ctx.cancel,
+            budget: ctx.budget,
+        },
+        ctx.json,
         |event| {
             if let OperationState::SnapshotChanged { revision, .. } = &event.state {
                 new_revision = Some(*revision);
@@ -158,7 +176,7 @@ async fn run_mutation(
             // a per-file tally message -- no `LastProgressMessage` to
             // capture here (`run_archive_mutation` never emits
             // `Progress` at all).
-            if json {
+            if ctx.json {
                 print_json_line(&MutationOutcome::completed_with_revision(new_revision));
             } else if let Some(revision) = new_revision {
                 println!("archive updated to revision {revision}");

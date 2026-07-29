@@ -16,14 +16,22 @@ pub struct InspectArgs {
 
 /// Opens `args.archive`, prints its snapshot, then closes the session.
 /// Returns the process exit code.
-pub async fn run(app: &ArclainApp, args: &InspectArgs, json: bool) -> i32 {
+pub async fn run(app: &ArclainApp, args: &InspectArgs, ctx: &super::Invocation) -> i32 {
     let interactive = crate::events::std_interactive();
-    let snapshot = match super::open_archive_and_wait(app, &args.archive, &interactive).await {
+    let snapshot = match super::open_archive_and_wait(
+        app,
+        &args.archive,
+        &interactive,
+        &ctx.cancel,
+        ctx.budget,
+    )
+    .await
+    {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
 
-    if json {
+    if ctx.json {
         print_json(&snapshot);
     } else {
         print_snapshot_human(&snapshot);

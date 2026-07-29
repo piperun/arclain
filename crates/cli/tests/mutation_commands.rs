@@ -521,6 +521,88 @@ fn extract_collision_overwrite_replaces_the_existing_file() {
     assert_eq!(std::fs::read(destination.join("a.txt")).unwrap(), b"new");
 }
 
+#[test]
+fn extract_collision_rename_keeps_the_existing_file_and_writes_a_renamed_copy() {
+    let env = Env::new();
+    let archive = build_zip_fixture(
+        env.fixture_dir(),
+        "fixture.zip",
+        &[("a.txt", b"new" as &[u8])],
+    );
+    let destination = env.fixture_dir().join("out");
+    std::fs::create_dir_all(&destination).unwrap();
+    std::fs::write(destination.join("a.txt"), b"already here").unwrap();
+
+    let output = env.run(&[
+        "extract",
+        archive.to_str().unwrap(),
+        destination.to_str().unwrap(),
+        "--collision",
+        "rename",
+    ]);
+
+    assert_eq!(
+        exit_code(&output),
+        0,
+        "stderr was: {}",
+        stderr_text(&output)
+    );
+    // The pre-existing file is left completely untouched...
+    assert_eq!(
+        std::fs::read(destination.join("a.txt")).unwrap(),
+        b"already here"
+    );
+    // ...and the extracted content lands under a renamed copy instead of
+    // being dropped or silently overwriting it (see
+    // `arclain_app::operations::extract`'s own `move_with_rename_on_collision`
+    // doc comment for the exact `" (n)"` suffix convention).
+    assert_eq!(
+        std::fs::read(destination.join("a (1).txt")).unwrap(),
+        b"new"
+    );
+}
+
+// ---------------------------------------------------------------------
+// --timeout -- the barrier-stalled-operation cases (times out and exits
+// `OPERATION_FAILURE`; without the flag, a released operation completes
+// normally) are covered deterministically in-process, against a fake
+// `ExtractRunner` this crate cannot inject into the *compiled binary*
+// this file drives as a subprocess -- see `crate::events::tests::
+// timeout_cancels_a_stalled_operation_and_exits_operation_failure`/
+// `without_a_timeout_a_released_operation_completes_normally`. This is
+// the smoke-level counterpart: proves the real `--timeout` flag itself
+// parses and threads through the real binary end to end, generous
+// enough that a real (fast) extraction is never actually at risk of
+// tripping it.
+// ---------------------------------------------------------------------
+
+#[test]
+fn extract_with_a_generous_timeout_still_completes_normally() {
+    let env = Env::new();
+    let archive = build_zip_fixture(
+        env.fixture_dir(),
+        "fixture.zip",
+        &[("a.txt", b"1" as &[u8])],
+    );
+    let destination = env.fixture_dir().join("out");
+
+    let output = env.run(&[
+        "--timeout",
+        "60",
+        "extract",
+        archive.to_str().unwrap(),
+        destination.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        exit_code(&output),
+        0,
+        "stderr was: {}",
+        stderr_text(&output)
+    );
+    assert!(destination.join("a.txt").exists());
+}
+
 // ---------------------------------------------------------------------
 // convert
 // ---------------------------------------------------------------------

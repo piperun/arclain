@@ -1,9 +1,11 @@
-//! Shared operation-event driving: the one loop every mutation command
-//! (`extract`, `convert`, `organize`, `archive add`/`delete`, `pipeline
-//! run`, `plugins action`) uses to subscribe once, filter by operation
-//! id, preserve sequence order, render progress, answer a live
-//! [`Challenge`], react to Ctrl+C, and exit only once the operation
-//! reaches a terminal state.
+//! Shared operation-event driving: the one loop every phase that waits
+//! on a facade operation -- `crate::commands::open_archive_and_wait`'s
+//! archive-open phase, and every mutation command's own [`drive_operation`]
+//! phase (`extract`, `convert`, `organize`, `archive add`/`delete`,
+//! `pipeline run`, `plugins action`) -- shares to subscribe once, filter
+//! by operation id, preserve sequence order, render progress, answer a
+//! live [`Challenge`], react to Ctrl+C, honor an optional `--timeout`,
+//! and exit only once the operation reaches a terminal state.
 //!
 //! # JSON Lines framing (`--json` mode)
 //!
@@ -24,7 +26,11 @@
 //! is the only line carrying a `schema_version` field -- a consumer can
 //! reliably tell the two kinds of line apart by checking for that field
 //! (or by simply reading the last line), without needing to buffer or
-//! pre-parse the whole stream first.
+//! pre-parse the whole stream first. The archive-open phase
+//! (`crate::commands::open_archive_and_wait`) never prints its own
+//! per-event JSON Lines -- only a *mutation* command's own operation
+//! does -- so opening an archive ahead of `extract`/`archive add`/
+//! `archive delete` never doubles up on the framing above.
 //!
 //! In human (non-`--json`) mode, [`drive_operation`] renders a short,
 //! one-line-per-event progress summary to stdout instead (percent/step
@@ -33,19 +39,70 @@
 //!
 //! # Ctrl+C
 //!
-//! [`drive_operation`] races [`CancelTrigger::wait`] against the event
-//! stream on every iteration. The first Ctrl+C calls
-//! [`ArclainApp::cancel_operation`] and stops re-arming the trigger (a
-//! second Ctrl+C does nothing new -- the operation is already being
-//! cancelled); the loop keeps consuming events exactly as before until
-//! the operation reports its own terminal `Cancelled` state, which this
-//! function maps to [`exit_code::OPERATION_FAILURE`] -- see that
-//! constant's own reuse rationale at the `Cancelled` match arm below.
-//! This means an operation still prints every event it produces after a
-//! cancellation is requested (including any final `Progress` ticks
-//! already in flight), and only actually exits once the worker
-//! cooperatively notices the cancellation and stops -- there is no
-//! forced/instant process-level abort.
+//! [`install_ctrl_c_handler`] must be called exactly once, as early as
+//! possible in `main` -- before `commands::dispatch` runs, before any
+//! facade operation is ever started. This is load-bearing, not merely
+//! tidy: `tokio::signal::ctrl_c()`'s own doc comment states plainly that
+//! the OS-level signal handler is installed on the *first poll* of its
+//! returned future, not merely by calling the function -- confirmed
+//! directly against this workspace's vendored tokio source
+//! (`tokio-1.52.3/src/signal/windows/sys.rs::global_init`, a
+//! `OnceLock`-guarded `SetConsoleCtrlHandler` call). Before this was
+//! fixed, the first (and only) place anything in this crate ever polled
+//! `ctrl_c()` was inside [`drive_operation`]'s own loop -- which only
+//! starts once an archive has *already* fully opened. A Ctrl+C pressed
+//! during `extract`/`archive add`/`archive delete`'s own open-and-index
+//! phase therefore fell through to Windows' default handling (immediate
+//! termination, `STATUS_CONTROL_C_EXIT`) instead of this crate's own
+//! cooperative cancellation -- exactly what a real manual test observed,
+//! misattributed at the time to unrelated timing. [`install_ctrl_c_handler`]
+//! closes this by spawning one background pump task that polls
+//! `ctrl_c()` in a loop for the whole life of the process and relays
+//! every occurrence through a plain [`CancelSignal`] (`Arc<Notify>`),
+//! which every operation-waiting phase -- the archive-open phase and
+//! every mutation's own [`drive_operation`] call alike -- races against
+//! uniformly. `Notify::notify_one` (not `notify_waiters`) is used
+//! deliberately: it stores a permit when nothing is currently waiting,
+//! so a Ctrl+C that arrives in the narrow gap between two phases (after
+//! the archive finished opening, before the mutation's own operation has
+//! started waiting) is never silently lost.
+//!
+//! The first Ctrl+C (or, see below, a `--timeout` expiry) calls
+//! [`ArclainApp::cancel_operation`] and stops re-arming itself for that
+//! phase (a second Ctrl+C is a documented no-op -- the operation is
+//! already being cancelled); the loop keeps consuming events exactly as
+//! before until the operation reports its own terminal `Cancelled`
+//! state, which this function maps to [`exit_code::OPERATION_FAILURE`]
+//! -- see that constant's own reuse rationale at the `Cancelled` match
+//! arm below. This means an operation still prints every event it
+//! produces after a cancellation is requested (including any final
+//! `Progress` ticks already in flight), and only actually exits once the
+//! worker cooperatively notices the cancellation and stops -- there is
+//! no forced/instant process-level abort. If the operation does not
+//! acknowledge the cancellation within a further, fixed grace period
+//! ([`CANCEL_GRACE_PERIOD`]), this process gives up waiting and exits
+//! [`exit_code::INTERNAL_FAILURE`] instead, saying plainly that the
+//! operation may still be running -- see the `--timeout` section below,
+//! whose same bounded-wait reasoning applies equally to a Ctrl+C-driven
+//! cancellation.
+//!
+//! # `--timeout SECONDS`
+//!
+//! An opt-in global flag (see `crate::commands::Cli::timeout`); absent,
+//! every phase waits exactly as unboundedly as before (a legitimate
+//! multi-hour extraction is never cut off on its own). When given, each
+//! operation-waiting phase -- the archive-open phase, then (if that
+//! phase succeeds) the mutation's own [`drive_operation`] phase -- gets
+//! its own fresh budget of that many seconds from the moment *that*
+//! phase begins, not one deadline shared across both. On expiry, this
+//! module reacts exactly like a Ctrl+C: `cancel_operation` is called,
+//! this process prints a message naming the timeout, and it waits up to
+//! [`CANCEL_GRACE_PERIOD`] further for the operation's own `Cancelled`
+//! state before exiting [`exit_code::OPERATION_FAILURE`]; if even that
+//! bounded follow-up wait expires, this process exits
+//! [`exit_code::INTERNAL_FAILURE`] with a distinct message noting the
+//! operation may still be running rather than waiting forever for an
+//! acknowledgement that might never come.
 //!
 //! # Interactive challenges
 //!
@@ -75,10 +132,12 @@
 //! Ctrl+C pressed while an ordinary progress event is being awaited.
 
 use std::io::IsTerminal;
-#[cfg(test)]
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::Notify;
+use tokio::time::Instant;
 
 use arclain_app::challenge::{Challenge, ChallengeResponse, SecretInput};
 use arclain_app::event::{OperationEvent, OperationResult, OperationState};
@@ -138,34 +197,99 @@ impl Interactive for StdInteractive {
     }
 }
 
-/// The external "please cancel the in-flight operation" trigger
-/// [`drive_operation`]'s loop races against the event stream. `CtrlC` is
-/// production's only real source; `Programmatic` lets this module's own
-/// tests fire a cancellation deterministically without sending a real OS
-/// console signal -- seed comment at the top of this file's test module
-/// for why a real signal is impractical to automate reliably here.
-pub(crate) enum CancelTrigger {
-    CtrlC,
-    #[cfg(test)]
-    Programmatic(Arc<tokio::sync::Notify>),
+/// The external "please cancel the in-flight operation" signal every
+/// operation-waiting phase races against -- see this module's own
+/// "Ctrl+C" doc section for why this must be armed exactly once, early,
+/// via [`install_ctrl_c_handler`] in production. A plain `Arc<Notify>`
+/// rather than a bespoke type: production and tests share one
+/// mechanism, tests just construct their own `Notify` and fire it
+/// programmatically instead of routing through a real OS signal (see
+/// this module's own test suite for why a real signal is impractical to
+/// automate reliably here).
+pub(crate) type CancelSignal = Arc<Notify>;
+
+/// Spawns the process-wide Ctrl+C pump task and returns the
+/// [`CancelSignal`] every operation-waiting phase races against. Must be
+/// called exactly once, as early as possible in `main` -- see this
+/// module's own "Ctrl+C" doc section.
+pub(crate) fn install_ctrl_c_handler() -> CancelSignal {
+    let signal: CancelSignal = Arc::new(Notify::new());
+    let notify = signal.clone();
+    tokio::spawn(async move {
+        loop {
+            // `ctrl_c()` only errors if the OS handler could not be
+            // installed at all -- effectively unreachable once this
+            // process's runtime is up. Stop pumping rather than spin if
+            // it somehow does; nothing productive can come from
+            // retrying a broken registration in a tight loop.
+            if tokio::signal::ctrl_c().await.is_err() {
+                return;
+            }
+            // `notify_one`, not `notify_waiters`: stores a permit if
+            // nothing is currently waiting, so a Ctrl+C landing in the
+            // gap between two operation-waiting phases (the archive
+            // just finished opening; the mutation has not started
+            // waiting yet) is still observed by the very next
+            // `.notified().await` rather than silently lost.
+            notify.notify_one();
+        }
+    });
+    signal
 }
 
-impl CancelTrigger {
-    async fn wait(&self) {
-        match self {
-            CancelTrigger::CtrlC => {
-                // `ctrl_c()` only errors if the OS signal handler could
-                // not be installed at all -- effectively unreachable
-                // once this process's runtime is already up. Treating
-                // that as "a cancellation was requested anyway" is the
-                // safe direction; the alternative (silently never
-                // reacting to Ctrl+C again for the rest of this
-                // invocation) is worse.
-                let _ = tokio::signal::ctrl_c().await;
-            }
-            #[cfg(test)]
-            CancelTrigger::Programmatic(notify) => notify.notified().await,
-        }
+/// This process's optional operation-wait budget (`--timeout SECONDS`,
+/// see `crate::commands::Cli::timeout`). `None` (no flag given)
+/// preserves this CLI's original, fully unbounded wait.
+#[derive(Clone, Copy)]
+pub(crate) struct TimeoutBudget(Option<Duration>);
+
+impl TimeoutBudget {
+    pub(crate) fn from_secs(seconds: Option<u64>) -> Self {
+        Self(seconds.map(Duration::from_secs))
+    }
+
+    /// Production reaches the unbounded case via `from_secs(None)`
+    /// (`--timeout` simply omitted); this named constructor exists for
+    /// this crate's own tests (here and in `crate::commands`), which
+    /// want to say "no budget" without spelling out the `None`
+    /// themselves.
+    #[cfg(test)]
+    pub(crate) fn unbounded() -> Self {
+        Self(None)
+    }
+
+    #[cfg(test)]
+    fn from_duration(duration: Duration) -> Self {
+        Self(Some(duration))
+    }
+
+    fn seconds(&self) -> Option<u64> {
+        self.0.map(|duration| duration.as_secs())
+    }
+
+    /// A fresh deadline computed from *now* -- called once per
+    /// `drive_until_terminal` invocation, so each phase (opening an
+    /// archive, then running a mutation) gets its own full budget
+    /// rather than sharing one deadline across both.
+    fn deadline(&self) -> Option<Instant> {
+        self.0.map(|duration| Instant::now() + duration)
+    }
+}
+
+/// How long [`drive_until_terminal`] waits for an operation to
+/// acknowledge a cancellation (Ctrl+C or a `--timeout` expiry) before
+/// giving up and exiting [`exit_code::INTERNAL_FAILURE`] instead of
+/// [`exit_code::OPERATION_FAILURE`] -- see this module's own "Ctrl+C"
+/// and "`--timeout`" doc sections. Not configurable: this bounds this
+/// CLI's own promise to never wait forever for an acknowledgement,
+/// independent of whatever budget (if any) a caller chose for the
+/// operation itself.
+const CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+async fn sleep_until_deadline(deadline: Option<Instant>) {
+    match deadline {
+        Some(instant) => tokio::time::sleep_until(instant).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -340,44 +464,96 @@ async fn respond(
     }
 }
 
-/// Drives one already-started operation to a terminal state.
+/// Everything [`drive_until_terminal`] (and, through it, [`drive_operation`])
+/// needs to drive one already-started operation -- bundled into one
+/// value so neither function's own parameter list keeps growing one at a
+/// time as this module gains a new global concern (this task added
+/// `cancel`/`budget` alongside the original `app`/`events`/`operation_id`/
+/// `interactive`), the same way `crate::commands::Invocation` bundles the
+/// equivalent concern one layer up.
 ///
 /// `events` must already be subscribed (via [`ArclainApp::subscribe_operations`])
-/// *before* the operation was started, matching every command module's
-/// own established convention (see `crate::commands::open_archive_and_wait`'s
-/// doc comment) -- subscribing afterward could race the operation's own
-/// `Accepted` event.
+/// *before* the operation was started -- subscribing afterward could
+/// race the operation's own `Accepted` event.
+pub(crate) struct OperationWait<'a> {
+    pub(crate) app: &'a ArclainApp,
+    pub(crate) events: &'a mut tokio::sync::broadcast::Receiver<OperationEvent>,
+    pub(crate) operation_id: OperationId,
+    pub(crate) interactive: &'a dyn Interactive,
+    pub(crate) cancel: &'a CancelSignal,
+    pub(crate) budget: TimeoutBudget,
+}
+
+/// The shared core loop both [`drive_operation`] (every mutation
+/// command) and `crate::commands::open_archive_and_wait` (every command
+/// that opens an archive first) are built on: subscribe-once,
+/// sequence-ordered event consumption, Ctrl+C, `--timeout`, and
+/// interactive-challenge handling, all in one place so neither caller
+/// re-implements (or subtly diverges on) any of it.
 ///
-/// `on_event` is called for every event this function observes for
-/// `operation_id` (in sequence order, terminal event included) before
-/// this function renders or acts on it -- the seam a caller uses to pull
-/// out event-specific data this function's own generic `Ok(OperationResult)`
-/// return does not carry (for example, `crate::commands::archive` reads
-/// the new revision out of an `ArchiveModify` operation's `SnapshotChanged`
-/// event this way).
+/// `render` is called for every event this function observes for
+/// `wait.operation_id` (in sequence order, terminal event included)
+/// before this function acts on it -- `drive_operation` uses this for
+/// its own JSON-Lines/human-progress printing (and to let its own caller
+/// observe events, e.g. `crate::commands::archive` reading a
+/// `SnapshotChanged` revision out); `open_archive_and_wait` passes a
+/// no-op closure, since the archive-open phase never streams its own
+/// progress (see this module's own JSON-Lines doc section).
 ///
-/// Returns `Ok(result)` on `Completed`; `Err(code)` for every other
-/// outcome (`Cancelled`, `Failed`, a challenge this process could not
-/// answer, or an internal failure) -- the error path always already
-/// printed its own diagnostic, so the caller only needs to propagate
-/// `code` as this process's exit code.
-pub(crate) async fn drive_operation(
-    app: &ArclainApp,
-    events: &mut tokio::sync::broadcast::Receiver<OperationEvent>,
-    operation_id: OperationId,
-    json: bool,
-    interactive: &dyn Interactive,
-    cancel: &mut CancelTrigger,
-    mut on_event: impl FnMut(&OperationEvent),
-) -> Result<OperationResult, i32> {
-    let mut cancel_requested = false;
+/// `on_completed` maps the operation's terminal `Completed` payload to
+/// this function's own generic success type `T` -- `drive_operation`
+/// treats every `OperationResult` as success; `open_archive_and_wait`
+/// accepts only `ArchiveOpened`, rejecting any other payload as an
+/// internal inconsistency.
+///
+/// Returns `Ok(value)` once `on_completed` is satisfied; `Err(code)` for
+/// every other outcome (`Cancelled`, `Failed`, an unanswerable
+/// challenge, a Ctrl+C/timeout-driven cancellation, or an internal
+/// failure) -- the error path always already printed its own
+/// diagnostic, so the caller only needs to propagate `code`.
+pub(crate) async fn drive_until_terminal<T>(
+    wait: OperationWait<'_>,
+    mut render: impl FnMut(&OperationEvent),
+    mut on_completed: impl FnMut(OperationResult) -> Result<T, i32>,
+) -> Result<T, i32> {
+    let OperationWait {
+        app,
+        events,
+        operation_id,
+        interactive,
+        cancel,
+        budget,
+    } = wait;
     let mut last_sequence: Option<u64> = None;
+    let operation_deadline = budget.deadline();
+    // `None` until a cancellation (Ctrl+C or `--timeout`) is requested;
+    // once set, this loop must observe the operation's own terminal
+    // state by this instant or give up (see `CANCEL_GRACE_PERIOD`'s own
+    // doc comment) rather than waiting forever for an acknowledgement
+    // that might never come.
+    let mut cancel_deadline: Option<Instant> = None;
 
     loop {
         tokio::select! {
-            () = cancel.wait(), if !cancel_requested => {
-                cancel_requested = true;
+            () = cancel.notified(), if cancel_deadline.is_none() => {
+                print_plain_error("interrupted -- cancelling the operation");
                 let _ = app.cancel_operation(operation_id).await;
+                cancel_deadline = Some(Instant::now() + CANCEL_GRACE_PERIOD);
+            }
+            () = sleep_until_deadline(operation_deadline), if cancel_deadline.is_none() && operation_deadline.is_some() => {
+                print_plain_error(&format!(
+                    "operation timed out after {}s -- cancelling",
+                    budget.seconds().unwrap_or_default()
+                ));
+                let _ = app.cancel_operation(operation_id).await;
+                cancel_deadline = Some(Instant::now() + CANCEL_GRACE_PERIOD);
+            }
+            () = sleep_until_deadline(cancel_deadline), if cancel_deadline.is_some() => {
+                print_plain_error(
+                    "the operation did not acknowledge cancellation in time -- it may still be \
+                     running"
+                );
+                return Err(exit_code::INTERNAL_FAILURE);
             }
             received = events.recv() => {
                 let event = match received {
@@ -408,32 +584,24 @@ pub(crate) async fn drive_operation(
                 }
                 last_sequence = Some(event.sequence);
 
-                on_event(&event);
-
-                if json {
-                    if let Ok(line) = serde_json::to_string(&event) {
-                        println!("{line}");
-                    }
-                } else {
-                    render_human_event(&event);
-                }
+                render(&event);
 
                 match event.state {
-                    OperationState::Completed { result } => return Ok(result),
+                    OperationState::Completed { result } => return on_completed(result),
                     OperationState::Cancelled => {
                         // Reused rather than a dedicated exit code: this
                         // CLI's own `exit_code_for` already maps
                         // `ApplicationErrorKind::Cancelled` to
                         // `OPERATION_FAILURE`, and a cancelled operation
-                        // (whether from this process's own Ctrl+C
-                        // handling or, in principle, any other caller)
-                        // is the same "accepted but never reached a
-                        // successful result" bucket from this exit-code
-                        // convention's own perspective -- introducing a
-                        // seventh code for one specific way an operation
-                        // can fail to complete would grow the mapping's
-                        // surface for no discriminating benefit a script
-                        // could act on differently.
+                        // (Ctrl+C, `--timeout`, or in principle any
+                        // other caller) is the same "accepted but never
+                        // reached a successful result" bucket from this
+                        // exit-code convention's own perspective --
+                        // introducing a seventh code for one specific
+                        // way an operation can fail to complete would
+                        // grow the mapping's surface for no
+                        // discriminating benefit a script could act on
+                        // differently.
                         return Err(exit_code::OPERATION_FAILURE);
                     }
                     OperationState::Failed { error } => {
@@ -457,6 +625,39 @@ pub(crate) async fn drive_operation(
     }
 }
 
+/// Drives one already-started *mutation* operation to a terminal state,
+/// via [`drive_until_terminal`] -- see that function's own doc comment
+/// for the shared cancel/timeout/challenge mechanics, and this module's
+/// own top-level doc comment for the exact `--json`/human-mode framing.
+///
+/// `on_event` is called for every event this function observes (in
+/// sequence order, terminal event included) before it prints or acts on
+/// it -- the seam a caller uses to pull out event-specific data this
+/// function's own generic `Ok(OperationResult)` return does not carry
+/// (for example, `crate::commands::archive` reads the new revision out
+/// of an `ArchiveModify` operation's `SnapshotChanged` event this way).
+pub(crate) async fn drive_operation(
+    wait: OperationWait<'_>,
+    json: bool,
+    mut on_event: impl FnMut(&OperationEvent),
+) -> Result<OperationResult, i32> {
+    drive_until_terminal(
+        wait,
+        |event| {
+            on_event(event);
+            if json {
+                if let Ok(line) = serde_json::to_string(event) {
+                    println!("{line}");
+                }
+            } else {
+                render_human_event(event);
+            }
+        },
+        Ok,
+    )
+    .await
+}
+
 /// The production [`Interactive`] every command module drives
 /// [`drive_operation`] with.
 pub(crate) fn std_interactive() -> impl Interactive {
@@ -465,13 +666,13 @@ pub(crate) fn std_interactive() -> impl Interactive {
 
 #[cfg(test)]
 mod tests {
-    //! Ctrl+C, interactive-challenge, and JSON-Lines-framing tests for
-    //! [`drive_operation`], driven **in-process** against a real
-    //! bootstrapped [`ArclainApp`] with a deterministic fake
-    //! [`arclain_app::operations::extract::ExtractRunner`] installed via
-    //! `BootstrapConfig::extract_runner_override` -- the same seam
-    //! `crates/app/tests/extract_operation.rs` uses for its own
-    //! deterministic extraction tests.
+    //! Ctrl+C, `--timeout`, interactive-challenge, and JSON-Lines-framing
+    //! tests for [`drive_operation`]/[`drive_until_terminal`], driven
+    //! **in-process** against a real bootstrapped [`ArclainApp`] with a
+    //! deterministic fake [`arclain_app::operations::extract::ExtractRunner`]
+    //! installed via `BootstrapConfig::extract_runner_override` -- the
+    //! same seam `crates/app/tests/extract_operation.rs` uses for its
+    //! own deterministic extraction tests.
     //!
     //! This is the sanctioned fallback for testing Ctrl+C cancellation
     //! and an interactive password/confirm prompt on this workspace's
@@ -481,23 +682,25 @@ mod tests {
     //! only targets a whole console process group) and to actually be
     //! running attached to a real console, not a pipe-redirected test
     //! harness -- fragile to automate and prone to hanging or silently
-    //! no-op'ing in a CI sandbox with no console at all. Driving
-    //! [`drive_operation`] directly, in-process, with a scripted
-    //! [`CancelTrigger::Programmatic`] and a scripted [`Interactive`]
-    //! fake instead exercises the *exact* production logic (the same
-    //! function `crate::commands::extract::run` calls) deterministically
-    //! and portably. The real, OS-signal-driven behavior (this process's
-    //! own `main` binary, run directly in a real terminal, actually
-    //! stops cleanly when the user physically presses Ctrl+C during a
-    //! large extraction) is exercised by manual verification -- this
-    //! task's own report records that check.
+    //! no-op'ing in a CI sandbox with no console at all (confirmed
+    //! empirically: this task's own manual verification attempts, using
+    //! both `kill -INT` and a proper Win32 `AttachConsole`/
+    //! `GenerateConsoleCtrlEvent` P/Invoke, could not reliably land a
+    //! real signal against a real running extraction in this sandbox --
+    //! see this task's own report). Driving these functions directly, in
+    //! process, with a scripted [`CancelSignal`] and a scripted
+    //! [`Interactive`] fake instead exercises the *exact* production
+    //! logic (the same functions `crate::commands::extract::run` and
+    //! `crate::commands::open_archive_and_wait` call) deterministically
+    //! and portably.
 
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use arclain_app::archive::OpenArchiveRequest;
-    use arclain_app::error::ApplicationError;
+    use arclain_app::error::{ApplicationError, ApplicationErrorKind};
     use arclain_app::event::OperationResult;
     use arclain_app::operations::extract::{
         ExtractPlan, ExtractProgressEvent, ExtractRunner, RunningExtraction,
@@ -516,15 +719,23 @@ mod tests {
 
     /// A deterministic [`ExtractRunner`] fake: reports the tool as
     /// always available and hands back a [`FakeRunning`] handle the test
-    /// drives directly (queueing progress ticks, deciding when -- or
-    /// whether -- it "finishes"), instead of ever spawning a real 7-Zip
-    /// process. Mirrors `crates/app/tests/extract_operation.rs`'s own
-    /// established fake-runner shape.
+    /// drives directly (queueing progress ticks, scripting a specific
+    /// per-attempt outcome, deciding when -- or whether -- it
+    /// "finishes"), instead of ever spawning a real 7-Zip process.
+    /// Mirrors `crates/app/tests/extract_operation.rs`'s own established
+    /// fake-runner shape.
     #[derive(Clone, Default)]
     struct FakeRunner {
         ticks: Arc<Mutex<VecDeque<ExtractProgressEvent>>>,
-        finished: Arc<std::sync::atomic::AtomicBool>,
-        killed: Arc<std::sync::atomic::AtomicBool>,
+        /// Per-spawn-attempt scripted outcomes, consumed front-to-back
+        /// by each successive call to `spawn` -- lets a test script
+        /// "attempt 1 fails as a password error, attempt 2 succeeds"
+        /// (the wrong-password-retry test) precisely. Empty (the
+        /// default) means every spawned attempt instead falls back to
+        /// `finished`/`killed`.
+        scripted_outcomes: Arc<Mutex<VecDeque<Result<(), ApplicationError>>>>,
+        finished: Arc<AtomicBool>,
+        killed: Arc<AtomicBool>,
         /// Set inside `spawn` -- lets a test wait until `run_extract`'s
         /// worker has actually reached "the runner is spawned and being
         /// polled" before it requests cancellation. Cancelling any
@@ -535,7 +746,7 @@ mod tests {
         /// than the one this file's own Ctrl+C test means to pin down
         /// (cancelling a spawn already in flight), so that test
         /// deliberately waits for this flag first rather than racing it.
-        spawned: Arc<std::sync::atomic::AtomicBool>,
+        spawned: Arc<AtomicBool>,
     }
 
     impl FakeRunner {
@@ -547,16 +758,22 @@ mod tests {
         }
 
         fn finish(&self) {
-            self.finished
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.finished.store(true, Ordering::SeqCst);
         }
 
         fn was_killed(&self) -> bool {
-            self.killed.load(std::sync::atomic::Ordering::SeqCst)
+            self.killed.load(Ordering::SeqCst)
         }
 
         fn was_spawned(&self) -> bool {
-            self.spawned.load(std::sync::atomic::Ordering::SeqCst)
+            self.spawned.load(Ordering::SeqCst)
+        }
+
+        /// Queues `outcome` to be reported by the Nth call to `spawn`
+        /// (first call gets the first queued outcome, and so on) --
+        /// see [`Self::scripted_outcomes`]'s own doc comment.
+        fn script_outcome(&self, outcome: Result<(), ApplicationError>) {
+            self.scripted_outcomes.lock().unwrap().push_back(outcome);
         }
     }
 
@@ -569,21 +786,37 @@ mod tests {
             &self,
             _plan: &ExtractPlan,
         ) -> Result<Box<dyn RunningExtraction>, ApplicationError> {
-            self.spawned
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            Ok(Box::new(self.clone()))
+            self.spawned.store(true, Ordering::SeqCst);
+            let scripted_outcome = self.scripted_outcomes.lock().unwrap().pop_front();
+            Ok(Box::new(FakeRunning {
+                ticks: self.ticks.clone(),
+                finished: self.finished.clone(),
+                killed: self.killed.clone(),
+                scripted_outcome,
+            }))
         }
     }
 
-    impl RunningExtraction for FakeRunner {
+    struct FakeRunning {
+        ticks: Arc<Mutex<VecDeque<ExtractProgressEvent>>>,
+        finished: Arc<AtomicBool>,
+        killed: Arc<AtomicBool>,
+        scripted_outcome: Option<Result<(), ApplicationError>>,
+    }
+
+    impl RunningExtraction for FakeRunning {
         fn poll_progress(&mut self) -> Option<ExtractProgressEvent> {
             self.ticks.lock().unwrap().pop_front()
         }
 
         fn poll_outcome(&mut self) -> Option<Result<(), ApplicationError>> {
-            if self.killed.load(std::sync::atomic::Ordering::SeqCst)
-                || self.finished.load(std::sync::atomic::Ordering::SeqCst)
-            {
+            if self.killed.load(Ordering::SeqCst) {
+                return Some(Ok(()));
+            }
+            if let Some(outcome) = &self.scripted_outcome {
+                return Some(outcome.clone());
+            }
+            if self.finished.load(Ordering::SeqCst) {
                 Some(Ok(()))
             } else {
                 None
@@ -591,7 +824,7 @@ mod tests {
         }
 
         fn kill(&mut self) {
-            self.killed.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.killed.store(true, Ordering::SeqCst);
         }
     }
 
@@ -782,18 +1015,20 @@ mod tests {
             }
         });
 
-        let notify = Arc::new(tokio::sync::Notify::new());
-        notify.notify_one();
-        let mut cancel = CancelTrigger::Programmatic(notify);
+        let cancel: CancelSignal = Arc::new(Notify::new());
+        cancel.notify_one();
         let interactive = ScriptedInteractive::non_interactive();
 
         let result = runtime.block_on(drive_operation(
-            &app,
-            &mut events,
-            operation_id,
+            OperationWait {
+                app: &app,
+                events: &mut events,
+                operation_id,
+                interactive: &interactive,
+                cancel: &cancel,
+                budget: TimeoutBudget::unbounded(),
+            },
             false,
-            &interactive,
-            &mut cancel,
             |_event| {},
         ));
 
@@ -824,6 +1059,227 @@ mod tests {
         runtime.block_on(app.shutdown()).ok();
     }
 
+    /// A second Ctrl+C (or, in this test's terms, a second notification
+    /// on the same `CancelSignal`) after the first was already accepted
+    /// must be a documented no-op: `drive_until_terminal`'s own
+    /// `cancel_deadline.is_none()` guard stops re-polling `cancel.notified()`
+    /// once a cancellation is already in flight, so a second press never
+    /// re-triggers `cancel_operation` a second time or re-arms a second
+    /// grace period.
+    #[test]
+    fn a_second_ctrl_c_after_the_first_is_a_no_op() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = build_zip_fixture(temp.path(), &[("a.txt", b"hello")]);
+        let destination = temp.path().join("out");
+        std::fs::create_dir_all(&destination).unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        let app = bootstrap_app_with_fake_runner(&temp, runner.clone());
+        let runtime = foreign_runtime();
+
+        let (operation_id, mut events) =
+            start_whole_archive_extract(&app, &runtime, &archive, &destination);
+        runtime.block_on(async {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !runner.was_spawned() {
+                assert!(std::time::Instant::now() < deadline);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+
+        let cancel: CancelSignal = Arc::new(Notify::new());
+        // Two notifications queued up front. `Notify::notify_one` only
+        // ever stores a single permit (a second call while one is
+        // already pending is itself a no-op at the `Notify` level), so
+        // this alone would not distinguish "double Ctrl+C is ignored"
+        // from "Notify simply cannot queue two" -- the real proof below
+        // is that the operation completes via exactly one
+        // `cancel_operation` call's worth of cancellation, not two.
+        cancel.notify_one();
+        cancel.notify_one();
+        let interactive = ScriptedInteractive::non_interactive();
+
+        let result = runtime.block_on(drive_operation(
+            OperationWait {
+                app: &app,
+                events: &mut events,
+                operation_id,
+                interactive: &interactive,
+                cancel: &cancel,
+                budget: TimeoutBudget::unbounded(),
+            },
+            false,
+            |_event| {},
+        ));
+
+        assert_eq!(result, Err(exit_code::OPERATION_FAILURE));
+        runtime.block_on(async {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !runner.was_killed() {
+                assert!(std::time::Instant::now() < deadline);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+        // A further, third notification arriving after the operation
+        // has already reached its terminal state must not panic or
+        // otherwise misbehave -- there is simply nothing left driving
+        // this operation to observe it.
+        cancel.notify_one();
+
+        runtime.block_on(app.shutdown()).ok();
+    }
+
+    #[test]
+    fn timeout_cancels_a_stalled_operation_and_exits_operation_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = build_zip_fixture(temp.path(), &[("a.txt", b"hello")]);
+        let destination = temp.path().join("out");
+        std::fs::create_dir_all(&destination).unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        // Never finishes on its own -- see `ctrl_c_cancels_the_operation...`'s
+        // identical rationale; the `--timeout` budget, not Ctrl+C, must
+        // be what ends this test.
+        let app = bootstrap_app_with_fake_runner(&temp, runner.clone());
+        let runtime = foreign_runtime();
+
+        let (operation_id, mut events) =
+            start_whole_archive_extract(&app, &runtime, &archive, &destination);
+        runtime.block_on(async {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !runner.was_spawned() {
+                assert!(std::time::Instant::now() < deadline);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+
+        let cancel: CancelSignal = Arc::new(Notify::new()); // never fired -- the timeout alone must trigger cancellation
+        let interactive = ScriptedInteractive::non_interactive();
+        let budget = TimeoutBudget::from_duration(Duration::from_millis(50));
+
+        let result = runtime.block_on(drive_operation(
+            OperationWait {
+                app: &app,
+                events: &mut events,
+                operation_id,
+                interactive: &interactive,
+                cancel: &cancel,
+                budget,
+            },
+            false,
+            |_event| {},
+        ));
+
+        assert_eq!(result, Err(exit_code::OPERATION_FAILURE));
+        runtime.block_on(async {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !runner.was_killed() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "a timeout-driven cancellation must still reach the runner and kill it"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+
+        runtime.block_on(app.shutdown()).ok();
+    }
+
+    #[test]
+    fn without_a_timeout_a_released_operation_completes_normally() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = build_zip_fixture(temp.path(), &[("a.txt", b"hello")]);
+        let destination = temp.path().join("out");
+        std::fs::create_dir_all(&destination).unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        let app = bootstrap_app_with_fake_runner(&temp, runner.clone());
+        let runtime = foreign_runtime();
+
+        let (operation_id, mut events) =
+            start_whole_archive_extract(&app, &runtime, &archive, &destination);
+        runtime.block_on(async {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !runner.was_spawned() {
+                assert!(std::time::Instant::now() < deadline);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+        // Released shortly after being confirmed "in flight" -- with no
+        // budget at all, `drive_operation` must simply wait for this,
+        // however long it takes, rather than timing out on its own.
+        runner.finish();
+
+        let cancel: CancelSignal = Arc::new(Notify::new());
+        let interactive = ScriptedInteractive::non_interactive();
+
+        let result = runtime.block_on(drive_operation(
+            OperationWait {
+                app: &app,
+                events: &mut events,
+                operation_id,
+                interactive: &interactive,
+                cancel: &cancel,
+                budget: TimeoutBudget::unbounded(),
+            },
+            false,
+            |_event| {},
+        ));
+
+        assert!(matches!(result, Ok(OperationResult::None)));
+
+        runtime.block_on(app.shutdown()).ok();
+    }
+
+    /// A wrong password on the first attempt raises exactly one
+    /// `Challenge::Password` (real production logic -- `run_extract`'s
+    /// own retry loop, not a test fake of the retry itself); supplying
+    /// any password in response lets the second, scripted-to-succeed
+    /// attempt complete the operation.
+    #[test]
+    fn a_wrong_password_raises_one_challenge_and_the_retry_completes() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = build_zip_fixture(temp.path(), &[("a.txt", b"hello")]);
+        let destination = temp.path().join("out");
+        std::fs::create_dir_all(&destination).unwrap();
+        let runner = Arc::new(FakeRunner::default());
+        runner.script_outcome(Err(ApplicationError::new(
+            ApplicationErrorKind::PasswordRequired,
+            "wrong password",
+        )));
+        runner.script_outcome(Ok(()));
+        let app = bootstrap_app_with_fake_runner(&temp, runner);
+        let runtime = foreign_runtime();
+
+        let (operation_id, mut events) =
+            start_whole_archive_extract(&app, &runtime, &archive, &destination);
+
+        let cancel: CancelSignal = Arc::new(Notify::new());
+        let interactive = ScriptedInteractive::scripted(vec!["first-guess"], vec![]);
+
+        let result = runtime.block_on(drive_operation(
+            OperationWait {
+                app: &app,
+                events: &mut events,
+                operation_id,
+                interactive: &interactive,
+                cancel: &cancel,
+                budget: TimeoutBudget::unbounded(),
+            },
+            false,
+            |_event| {},
+        ));
+
+        assert!(
+            matches!(result, Ok(OperationResult::None)),
+            "the retry must let the operation complete, got {result:?}"
+        );
+        assert_eq!(
+            interactive.password_prompts.lock().unwrap().len(),
+            1,
+            "exactly one password challenge is raised for one wrong attempt"
+        );
+
+        runtime.block_on(app.shutdown()).ok();
+    }
+
     #[test]
     fn json_mode_emits_one_json_line_per_event_with_no_envelope_and_increasing_sequence() {
         let temp = tempfile::tempdir().unwrap();
@@ -840,17 +1296,20 @@ mod tests {
         let (operation_id, mut events) =
             start_whole_archive_extract(&app, &runtime, &archive, &destination);
 
-        let mut cancel = CancelTrigger::Programmatic(Arc::new(tokio::sync::Notify::new()));
+        let cancel: CancelSignal = Arc::new(Notify::new());
         let interactive = ScriptedInteractive::non_interactive();
         let mut observed_sequences = Vec::new();
 
         let result = runtime.block_on(drive_operation(
-            &app,
-            &mut events,
-            operation_id,
+            OperationWait {
+                app: &app,
+                events: &mut events,
+                operation_id,
+                interactive: &interactive,
+                cancel: &cancel,
+                budget: TimeoutBudget::unbounded(),
+            },
             true, // json
-            &interactive,
-            &mut cancel,
             |event| observed_sequences.push(event.sequence),
         ));
 
@@ -1013,16 +1472,19 @@ mod tests {
             }))
             .unwrap();
 
-        let mut cancel = CancelTrigger::Programmatic(Arc::new(tokio::sync::Notify::new()));
+        let cancel: CancelSignal = Arc::new(Notify::new());
         let interactive = ScriptedInteractive::scripted(vec![], vec![true]);
 
         let result = runtime.block_on(drive_operation(
-            &app,
-            &mut events,
-            operation_id,
+            OperationWait {
+                app: &app,
+                events: &mut events,
+                operation_id,
+                interactive: &interactive,
+                cancel: &cancel,
+                budget: TimeoutBudget::unbounded(),
+            },
             false,
-            &interactive,
-            &mut cancel,
             |_event| {},
         ));
 

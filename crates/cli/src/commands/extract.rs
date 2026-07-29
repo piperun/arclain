@@ -53,9 +53,17 @@ pub struct ExtractArgs {
 /// `EntryId`s (empty means the whole archive), starts extraction, drives
 /// it to a terminal state, then closes the session. Returns the process
 /// exit code.
-pub async fn run(app: &ArclainApp, args: &ExtractArgs, json: bool) -> i32 {
+pub async fn run(app: &ArclainApp, args: &ExtractArgs, ctx: &super::Invocation) -> i32 {
     let interactive = crate::events::std_interactive();
-    let snapshot = match super::open_archive_and_wait(app, &args.archive, &interactive).await {
+    let snapshot = match super::open_archive_and_wait(
+        app,
+        &args.archive,
+        &interactive,
+        &ctx.cancel,
+        ctx.budget,
+    )
+    .await
+    {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
@@ -105,15 +113,17 @@ pub async fn run(app: &ArclainApp, args: &ExtractArgs, json: bool) -> i32 {
         }
     };
 
-    let mut cancel = crate::events::CancelTrigger::CtrlC;
     let mut last_message = super::LastProgressMessage::default();
     let result = crate::events::drive_operation(
-        app,
-        &mut events,
-        operation_id,
-        json,
-        &interactive,
-        &mut cancel,
+        crate::events::OperationWait {
+            app,
+            events: &mut events,
+            operation_id,
+            interactive: &interactive,
+            cancel: &ctx.cancel,
+            budget: ctx.budget,
+        },
+        ctx.json,
         |event| last_message.observe(event),
     )
     .await;
@@ -126,7 +136,7 @@ pub async fn run(app: &ArclainApp, args: &ExtractArgs, json: bool) -> i32 {
     match result {
         Ok(_) => {
             let summary = last_message.into_inner();
-            if json {
+            if ctx.json {
                 print_json_line(&MutationOutcome::completed(summary));
             } else {
                 match &summary {

@@ -32,7 +32,7 @@ use crate::output::{exit_code, exit_code_for, print_error, print_plain_error};
 #[command(
     name = "arclain-cli",
     version,
-    about = "Read-only inspection of Arclain archives and organization profiles"
+    about = "Inspect, extract, convert, organize, and manage Arclain archives, plugins, and settings"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -51,6 +51,30 @@ pub struct Cli {
     /// when omitted.
     #[arg(long, global = true, value_name = "DIR")]
     pub config_dir: Option<std::path::PathBuf>,
+
+    /// Bounds how long this process waits on any single in-flight
+    /// operation -- opening an archive, then (independently, with its own
+    /// fresh budget) a mutation's own progress -- before giving up. On
+    /// expiry, the operation is cancelled; this process then waits a
+    /// further few seconds for that cancellation to actually take effect
+    /// before exiting (exit code 5, or 70 if even that further wait
+    /// expires). Omit for this CLI's original, fully unbounded wait --
+    /// appropriate for a long-running interactive extraction;
+    /// scripted/automated callers should opt in explicitly.
+    #[arg(long, global = true, value_name = "SECONDS")]
+    pub timeout: Option<u64>,
+}
+
+/// Everything every command's own `run`/`dispatch` function needs beyond
+/// `app` and its own parsed arguments -- bundled into one value so a new
+/// global concern (this task added `cancel`/`budget` alongside Task 12's
+/// own `json`) does not keep growing every command function's own
+/// parameter list one at a time.
+#[derive(Clone)]
+pub(crate) struct Invocation {
+    pub(crate) json: bool,
+    pub(crate) cancel: crate::events::CancelSignal,
+    pub(crate) budget: crate::events::TimeoutBudget,
 }
 
 #[derive(Debug, Subcommand)]
@@ -94,18 +118,18 @@ pub enum Command {
 
 /// Runs the parsed `command` against a bootstrapped `app`, returning this
 /// process's exit code.
-pub async fn dispatch(app: &ArclainApp, command: &Command, json: bool) -> i32 {
+pub async fn dispatch(app: &ArclainApp, command: &Command, ctx: &Invocation) -> i32 {
     match command {
-        Command::Inspect(args) => inspect::run(app, args, json).await,
-        Command::List(args) => list::run(app, args, json).await,
-        Command::Profiles { command } => profiles::dispatch(app, command, json).await,
-        Command::Extract(args) => extract::run(app, args, json).await,
-        Command::Convert(args) => convert::run(app, args, json).await,
-        Command::Organize(args) => organize::run(app, args, json).await,
-        Command::Archive { command } => archive::dispatch(app, command, json).await,
-        Command::Pipeline { command } => pipeline::dispatch(app, command, json).await,
-        Command::Plugins { command } => plugins::dispatch(app, command, json).await,
-        Command::Settings { command } => settings::dispatch(app, command, json).await,
+        Command::Inspect(args) => inspect::run(app, args, ctx).await,
+        Command::List(args) => list::run(app, args, ctx).await,
+        Command::Profiles { command } => profiles::dispatch(app, command, ctx.json).await,
+        Command::Extract(args) => extract::run(app, args, ctx).await,
+        Command::Convert(args) => convert::run(app, args, ctx).await,
+        Command::Organize(args) => organize::run(app, args, ctx).await,
+        Command::Archive { command } => archive::dispatch(app, command, ctx).await,
+        Command::Pipeline { command } => pipeline::dispatch(app, command, ctx).await,
+        Command::Plugins { command } => plugins::dispatch(app, command, ctx).await,
+        Command::Settings { command } => settings::dispatch(app, command, ctx.json).await,
     }
 }
 
@@ -128,12 +152,25 @@ pub async fn dispatch(app: &ArclainApp, command: &Command, json: bool) -> i32 {
 /// `exit_code::USER_ACTION_REQUIRED` when `interactive` reports no real
 /// controlling terminal -- see that function's own doc comment.
 ///
+/// `cancel`/`budget` race this operation exactly like
+/// [`crate::events::drive_operation`]'s own mutation-phase loop does --
+/// via the same shared [`crate::events::drive_until_terminal`] -- so a
+/// Ctrl+C or a `--timeout` expiry during this archive-open phase (the
+/// whole point of opening a possibly-large archive before `extract`/
+/// `archive add`/`archive delete` even reach their own mutation) is
+/// cancelled and reported the same way, not left to fall through to the
+/// OS's own default handling. This phase never itself prints per-event
+/// JSON Lines/progress, unlike a mutation's own `drive_operation` call --
+/// see `crate::events`'s own module doc comment for why.
+///
 /// Returns the opened session's snapshot on success, or the process exit
 /// code to use on any failure path (already printed to stderr).
 pub(crate) async fn open_archive_and_wait(
     app: &ArclainApp,
     archive_path: &Path,
     interactive: &dyn crate::events::Interactive,
+    cancel: &crate::events::CancelSignal,
+    budget: crate::events::TimeoutBudget,
 ) -> Result<ArchiveSnapshot, i32> {
     if !archive_path.is_file() {
         print_plain_error(&format!("archive not found: {}", archive_path.display()));
@@ -156,56 +193,25 @@ pub(crate) async fn open_archive_and_wait(
         }
     };
 
-    loop {
-        let event = match events.recv().await {
-            Ok(event) => event,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                // Missed some intermediate events (Accepted/Started/
-                // Progress) -- harmless for this loop, which only acts on
-                // a terminal state or a Challenge. Keep reading.
-                continue;
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                print_plain_error("application event stream closed unexpectedly");
-                return Err(exit_code::INTERNAL_FAILURE);
-            }
-        };
-        if event.operation_id != operation_id {
-            continue;
-        }
-        match event.state {
-            OperationState::Completed {
-                result: OperationResult::ArchiveOpened { snapshot },
-            } => return Ok(snapshot),
-            OperationState::Completed { .. } => {
+    crate::events::drive_until_terminal(
+        crate::events::OperationWait {
+            app,
+            events: &mut events,
+            operation_id,
+            interactive,
+            cancel,
+            budget,
+        },
+        |_event| {},
+        |result| match result {
+            OperationResult::ArchiveOpened { snapshot } => Ok(snapshot),
+            _ => {
                 print_plain_error("unexpected result for an archive-open operation");
-                return Err(exit_code::INTERNAL_FAILURE);
+                Err(exit_code::INTERNAL_FAILURE)
             }
-            OperationState::Challenge { ref challenge } => {
-                // A response was submitted and accepted -- keep waiting
-                // for this same operation's next event. `?` propagates
-                // `handle_challenge`'s own `Err(code)` directly: both
-                // functions share the same `Result<_, i32>` error type.
-                crate::events::handle_challenge(app, operation_id, challenge, interactive).await?;
-            }
-            OperationState::Failed { error } => {
-                let code = exit_code_for(&error.kind);
-                print_error(&error);
-                return Err(code);
-            }
-            OperationState::Cancelled => {
-                print_plain_error("archive open was unexpectedly cancelled");
-                return Err(exit_code::INTERNAL_FAILURE);
-            }
-            OperationState::Accepted
-            | OperationState::Started
-            | OperationState::Progress { .. }
-            | OperationState::SnapshotChanged { .. } => {
-                // Not part of this task's characterization -- keep
-                // waiting for a terminal state or a challenge.
-            }
-        }
-    }
+        },
+    )
+    .await
 }
 
 /// Resolves one archive-relative path string (as a user types it on the
@@ -349,7 +355,27 @@ impl LastProgressMessage {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
+
+    use crate::events::{CancelSignal, TimeoutBudget};
+
     use super::*;
+
+    fn temp_app_paths(temp: &tempfile::TempDir) -> AppPaths {
+        AppPaths {
+            config_dir: temp.path().join("config"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            log_dir: temp.path().join("logs"),
+            plugins_dir: temp.path().join("plugins"),
+        }
+    }
+
+    fn no_cancel() -> CancelSignal {
+        Arc::new(tokio::sync::Notify::new())
+    }
 
     /// A real (if minimal) `ArclainApp` bootstrap is enough to exercise
     /// `open_archive_and_wait`'s local existence check without ever
@@ -362,25 +388,180 @@ mod tests {
     #[tokio::test]
     async fn open_archive_and_wait_rejects_a_nonexistent_source_path() {
         let temp = tempfile::tempdir().unwrap();
-        let paths = arclain_app::AppPaths {
-            config_dir: temp.path().join("config"),
-            data_dir: temp.path().join("data"),
-            cache_dir: temp.path().join("cache"),
-            log_dir: temp.path().join("logs"),
-            plugins_dir: temp.path().join("plugins"),
-        };
-        let app = arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
-            paths_override: Some(paths),
-            ..arclain_app::BootstrapConfig::system_default()
+        let app = ArclainApp::bootstrap(BootstrapConfig {
+            paths_override: Some(temp_app_paths(&temp)),
+            ..BootstrapConfig::system_default()
         })
         .expect("bootstrap must succeed (requires a real 7-Zip executable on PATH)");
 
         let missing = temp.path().join("does-not-exist.zip");
         let interactive = crate::events::std_interactive();
-        let result = open_archive_and_wait(&app, &missing, &interactive).await;
+        let cancel = no_cancel();
+        let result = open_archive_and_wait(
+            &app,
+            &missing,
+            &interactive,
+            &cancel,
+            TimeoutBudget::unbounded(),
+        )
+        .await;
 
         assert_eq!(result.err(), Some(exit_code::UNSUPPORTED_INPUT));
 
+        let _ = app.shutdown().await;
+    }
+
+    /// **Important-1 regression test**: a cancellation arriving *during*
+    /// the archive-open phase (before `drive_operation` -- and, before
+    /// this fix, before anything in this crate had ever polled
+    /// `tokio::signal::ctrl_c()` at all -- ever runs) must still cancel
+    /// the in-flight `start_open_archive` operation and exit
+    /// `OPERATION_FAILURE`, not fall through to whatever the caller
+    /// would otherwise observe.
+    ///
+    /// A real (if synthetic) archive with several thousand entries is
+    /// used deliberately: `EntryIndex::build`'s own indexing work (see
+    /// `arclain_app::archive::session`) is real, non-trivial CPU work
+    /// proportional to entry count, giving the background thread below a
+    /// realistic window to land its cancellation *during* the operation
+    /// rather than racing a coincidentally-instant open. This crate
+    /// cannot fake or otherwise slow down archive opening itself (no
+    /// `archive_backend_override`-equivalent seam is reachable across
+    /// this crate's own dependency boundary -- see
+    /// `crate::events::tests`' own module doc comment on why extraction
+    /// alone can be faked here), so unlike this file's sibling
+    /// `crate::events` tests, this one's timing is real rather than
+    /// barrier-controlled; the entry count and delay below are chosen
+    /// generously and were verified stable across repeated runs.
+    #[test]
+    fn open_archive_and_wait_is_cancelled_by_a_signal_arriving_mid_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("many-entries.zip");
+        {
+            let file = std::fs::File::create(&archive).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            for i in 0..8000 {
+                writer
+                    .start_file(format!("dir{}/file_{i:05}.txt", i % 50), options)
+                    .unwrap();
+                use std::io::Write;
+                writer.write_all(b"x").unwrap();
+            }
+            writer.finish().unwrap();
+        }
+
+        let app = ArclainApp::bootstrap(BootstrapConfig {
+            paths_override: Some(temp_app_paths(&temp)),
+            ..BootstrapConfig::system_default()
+        })
+        .expect("bootstrap must succeed (requires a real 7-Zip executable on PATH)");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let cancel: CancelSignal = Arc::new(tokio::sync::Notify::new());
+        // Fired from a plain OS thread -- deliberately independent of
+        // this test's own runtime, exactly like a real Ctrl+C's OS-level
+        // delivery is independent of whatever this process happens to
+        // be doing when it arrives.
+        let signal = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            signal.notify_one();
+        });
+
+        let interactive = crate::events::std_interactive();
+        let result = runtime.block_on(open_archive_and_wait(
+            &app,
+            &archive,
+            &interactive,
+            &cancel,
+            TimeoutBudget::unbounded(),
+        ));
+
+        assert_eq!(
+            result.err(),
+            Some(exit_code::OPERATION_FAILURE),
+            "a cancellation during the open phase must be honored, not silently ignored"
+        );
+
+        runtime.block_on(app.shutdown()).ok();
+    }
+
+    /// Proves `resolve_entry_id`'s own segment-by-segment descent
+    /// actually walks *multiple* directory levels correctly (`dir` ->
+    /// `dir/sub` -> the file), not just a single-segment lookup -- the
+    /// shallower existing coverage (`tests/mutation_commands.rs`'s own
+    /// `extract_specific_entry_by_path_extracts_only_that_file`) only
+    /// ever names a root-level entry.
+    #[tokio::test]
+    async fn resolve_entry_id_descends_through_multiple_directory_levels() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive_path = temp.path().join("nested.zip");
+        {
+            let file = std::fs::File::create(&archive_path).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            writer.start_file("dir/sub/file.txt", options).unwrap();
+            use std::io::Write;
+            writer.write_all(b"nested content").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let app = ArclainApp::bootstrap(BootstrapConfig {
+            paths_override: Some(temp_app_paths(&temp)),
+            ..BootstrapConfig::system_default()
+        })
+        .expect("bootstrap must succeed (requires a real 7-Zip executable on PATH)");
+        let interactive = crate::events::std_interactive();
+        let cancel = no_cancel();
+        let snapshot = open_archive_and_wait(
+            &app,
+            &archive_path,
+            &interactive,
+            &cancel,
+            TimeoutBudget::unbounded(),
+        )
+        .await
+        .expect("opening the fixture must succeed");
+
+        let resolved = resolve_entry_id(&app, snapshot.session_id, "dir/sub/file.txt")
+            .await
+            .expect("a real, multi-segment path must resolve");
+
+        // Cross-checked against a direct listing of the file's own
+        // parent directory, rather than merely asserting `resolve_entry_id`
+        // returns *some* id without a panic.
+        let listing = app
+            .list_entries(
+                snapshot.session_id,
+                ListEntriesRequest {
+                    directory: ArchivePath::parse("dir/sub".to_string()).unwrap(),
+                    sort_key: EntrySortKey::Name,
+                    sort_direction: SortDirection::Ascending,
+                    name_filter: None,
+                    offset: 0,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("listing the resolved directory must succeed");
+        let expected = listing
+            .entries
+            .iter()
+            .find(|entry| entry.name == "file.txt")
+            .expect("file.txt must be listed under dir/sub")
+            .id;
+        assert_eq!(resolved, expected);
+
+        let missing = resolve_entry_id(&app, snapshot.session_id, "dir/sub/does-not-exist.txt")
+            .await
+            .unwrap_err();
+        assert_eq!(missing.kind, ApplicationErrorKind::NotFound);
+
+        let _ = app.close_archive(snapshot.session_id).await;
         let _ = app.shutdown().await;
     }
 

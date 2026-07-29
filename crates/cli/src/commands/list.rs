@@ -38,7 +38,7 @@ pub struct ListArgs {
 /// Opens `args.archive`, lists one page of `args.archive_path` (or the
 /// archive root), prints it, then closes the session. Returns the
 /// process exit code.
-pub async fn run(app: &ArclainApp, args: &ListArgs, json: bool) -> i32 {
+pub async fn run(app: &ArclainApp, args: &ListArgs, ctx: &super::Invocation) -> i32 {
     // Validated before ever opening the archive: a malformed in-archive
     // path is a purely local input error, cheaper and clearer to reject
     // up front than after an archive-open round trip.
@@ -52,7 +52,15 @@ pub async fn run(app: &ArclainApp, args: &ListArgs, json: bool) -> i32 {
     };
 
     let interactive = crate::events::std_interactive();
-    let snapshot = match super::open_archive_and_wait(app, &args.archive, &interactive).await {
+    let snapshot = match super::open_archive_and_wait(
+        app,
+        &args.archive,
+        &interactive,
+        &ctx.cancel,
+        ctx.budget,
+    )
+    .await
+    {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
@@ -76,7 +84,7 @@ pub async fn run(app: &ArclainApp, args: &ListArgs, json: bool) -> i32 {
         }
     };
 
-    if json {
+    if ctx.json {
         print_json(&page);
     } else {
         print_page_human(&page);

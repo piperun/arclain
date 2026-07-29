@@ -65,12 +65,12 @@ pub struct ActionArgs {
     pub value_json: Option<String>,
 }
 
-pub async fn dispatch(app: &ArclainApp, command: &PluginsCommand, json: bool) -> i32 {
+pub async fn dispatch(app: &ArclainApp, command: &PluginsCommand, ctx: &super::Invocation) -> i32 {
     match command {
-        PluginsCommand::List => run_list(app, json).await,
-        PluginsCommand::Enable(args) => run_set_enabled(app, &args.id, true, json).await,
-        PluginsCommand::Disable(args) => run_set_enabled(app, &args.id, false, json).await,
-        PluginsCommand::Action(args) => run_action(app, args, json).await,
+        PluginsCommand::List => run_list(app, ctx.json).await,
+        PluginsCommand::Enable(args) => run_set_enabled(app, &args.id, true, ctx.json).await,
+        PluginsCommand::Disable(args) => run_set_enabled(app, &args.id, false, ctx.json).await,
+        PluginsCommand::Action(args) => run_action(app, args, ctx).await,
     }
 }
 
@@ -130,7 +130,7 @@ async fn run_set_enabled(app: &ArclainApp, id: &str, enabled: bool, json: bool) 
 /// Opens a `MainPage` session, validates and dispatches one action
 /// against `args.node_id`, waits for `PluginUiUpdated`, then always
 /// closes the session (best-effort) before returning.
-async fn run_action(app: &ArclainApp, args: &ActionArgs, json: bool) -> i32 {
+async fn run_action(app: &ArclainApp, args: &ActionArgs, ctx: &super::Invocation) -> i32 {
     let snapshot = match app
         .open_plugin_session(args.id.clone(), PluginExtensionPointDto::MainPage)
         .await
@@ -175,14 +175,16 @@ async fn run_action(app: &ArclainApp, args: &ActionArgs, json: bool) -> i32 {
     };
 
     let interactive = crate::events::std_interactive();
-    let mut cancel = crate::events::CancelTrigger::CtrlC;
     let result = crate::events::drive_operation(
-        app,
-        &mut events,
-        operation_id,
-        json,
-        &interactive,
-        &mut cancel,
+        crate::events::OperationWait {
+            app,
+            events: &mut events,
+            operation_id,
+            interactive: &interactive,
+            cancel: &ctx.cancel,
+            budget: ctx.budget,
+        },
+        ctx.json,
         |_event| {},
     )
     .await;
@@ -191,7 +193,7 @@ async fn run_action(app: &ArclainApp, args: &ActionArgs, json: bool) -> i32 {
 
     match result {
         Ok(OperationResult::PluginUiUpdated { update }) => {
-            print_plugin_ui_update(&update, json);
+            print_plugin_ui_update(&update, ctx.json);
             exit_code::SUCCESS
         }
         Ok(_) => {

@@ -99,7 +99,20 @@ fn run() -> i32 {
     };
 
     runtime.block_on(async {
-        let code = commands::dispatch(&app, &cli.command, cli.json).await;
+        // Installed first -- before any command's own facade work runs
+        // at all -- so this process can react to Ctrl+C during *every*
+        // phase, including a mutation command's own archive-open phase,
+        // not just once `crate::events::drive_operation`'s own loop
+        // happens to start. See `crate::events`'s own "Ctrl+C" doc
+        // section for exactly why this ordering is load-bearing, not
+        // just tidy.
+        let cancel = events::install_ctrl_c_handler();
+        let ctx = commands::Invocation {
+            json: cli.json,
+            cancel,
+            budget: events::TimeoutBudget::from_secs(cli.timeout),
+        };
+        let code = commands::dispatch(&app, &cli.command, &ctx).await;
         // Best-effort: an already-successful command should not be
         // reported as failed just because shutdown itself hiccups.
         let _ = app.shutdown().await;

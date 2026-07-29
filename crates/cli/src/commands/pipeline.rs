@@ -72,13 +72,13 @@ pub struct RunArgs {
     pub collision: Option<CollisionPolicyArg>,
 }
 
-pub async fn dispatch(app: &ArclainApp, command: &PipelineCommand, json: bool) -> i32 {
+pub async fn dispatch(app: &ArclainApp, command: &PipelineCommand, ctx: &super::Invocation) -> i32 {
     match command {
-        PipelineCommand::Run(args) => run(app, args, json).await,
+        PipelineCommand::Run(args) => run(app, args, ctx).await,
     }
 }
 
-async fn run(app: &ArclainApp, args: &RunArgs, json: bool) -> i32 {
+async fn run(app: &ArclainApp, args: &RunArgs, ctx: &super::Invocation) -> i32 {
     let destination = match resolve_destination(args) {
         Ok(destination) => destination,
         Err(code) => return code,
@@ -109,15 +109,17 @@ async fn run(app: &ArclainApp, args: &RunArgs, json: bool) -> i32 {
     };
 
     let interactive = crate::events::std_interactive();
-    let mut cancel = crate::events::CancelTrigger::CtrlC;
     let mut last_message = super::LastProgressMessage::default();
     let result = crate::events::drive_operation(
-        app,
-        &mut events,
-        operation_id,
-        json,
-        &interactive,
-        &mut cancel,
+        crate::events::OperationWait {
+            app,
+            events: &mut events,
+            operation_id,
+            interactive: &interactive,
+            cancel: &ctx.cancel,
+            budget: ctx.budget,
+        },
+        ctx.json,
         |event| last_message.observe(event),
     )
     .await;
@@ -125,7 +127,7 @@ async fn run(app: &ArclainApp, args: &RunArgs, json: bool) -> i32 {
     match result {
         Ok(_) => {
             let summary = last_message.into_inner();
-            if json {
+            if ctx.json {
                 print_json_line(&MutationOutcome::completed(summary));
             } else {
                 match &summary {
@@ -222,6 +224,14 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CollisionPolicyArg::Fail.to_facade()).unwrap(),
             serde_json::json!("fail")
+        );
+        assert_eq!(
+            serde_json::to_value(CollisionPolicyArg::Skip.to_facade()).unwrap(),
+            serde_json::json!("skip")
+        );
+        assert_eq!(
+            serde_json::to_value(CollisionPolicyArg::Overwrite.to_facade()).unwrap(),
+            serde_json::json!("overwrite")
         );
         assert_eq!(
             serde_json::to_value(CollisionPolicyArg::Smart.to_facade()).unwrap(),
