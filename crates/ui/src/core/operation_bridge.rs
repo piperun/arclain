@@ -628,6 +628,24 @@ async fn handle_open_archive_completed(
     tab.pending_open_operation.set(None);
     dequeue_and_present_next(&tab, operation_id);
 
+    // Re-fetch this session's *current* metadata now that the tab is
+    // stamped, rather than relying solely on `apply_buffered_session_
+    // metadata` above. That drain only recovers a write whose
+    // `SessionEvent` was actually handled (and therefore buffered) before
+    // this point; a write whose event was instead dropped by a lagged
+    // session-event broadcast is still sitting safely in the session
+    // store (`ArchiveContextBridge` commits it before publishing) but
+    // would otherwise never reach this tab at all, since
+    // `reconcile_session_events_after_lag` only re-checks tabs *already*
+    // stamped with a session id -- this tab had none until the line
+    // above. Fetching fresh here closes that gap unconditionally: it is
+    // a harmless no-op re-application on the overwhelmingly common path
+    // (no metadata has landed yet), and the authoritative fix on the rare
+    // one.
+    if let Some(app) = shared.facade.clone() {
+        apply_current_session_metadata(shared.signals(), &app, snapshot.session_id).await;
+    }
+
     if let Err(error) = relist_for_browser_signals(shared, &tab, &snapshot.source_path).await {
         tracing::error!(
             "[operation_bridge] archive opened via the facade but the UI-side re-list failed: {error:#}"
@@ -1442,15 +1460,27 @@ pub async fn reconcile_after_lag(
 // ([`reconcile_session_events_after_lag`]) below.
 // ---------------------------------------------------------------------
 
-/// Applies `metadata` to whichever tab currently holds `session_id` open,
-/// or buffers it in `AppSignals::pending_session_metadata` if no tab is
-/// stamped with that session id yet -- see
-/// [`apply_buffered_session_metadata`]'s doc comment for the race this
-/// buffering exists to close. The write itself already landed in
-/// `arclain_app::plugins::ArchiveContextBridge`'s own session store
+/// Applies `metadata` and `source_path` to whichever tab currently holds
+/// `session_id` open, or buffers `metadata` in `AppSignals::
+/// pending_session_metadata` if no tab is stamped with that session id
+/// yet -- see [`apply_buffered_session_metadata`]'s doc comment for the
+/// race this buffering exists to close. The write itself already landed
+/// in `arclain_app::plugins::ArchiveContextBridge`'s own session store
 /// (this function only reacts to the [`SessionEvent`] announcing it),
 /// entirely independent of whether any tab has been stamped with the
 /// session id yet.
+///
+/// `source_path` is applied alongside `metadata`, not buffered
+/// separately: `SessionEvent::MetadataChanged` also fires after a
+/// plugin-triggered rename (`ArchiveContextBridge::set_archive_path`
+/// mutates `source_path`, which is session-visible state through
+/// `archive_snapshot` exactly like `metadata`), and this event carries no
+/// payload distinguishing "a rename happened" from "metadata changed" --
+/// every event means "go re-fetch the full current snapshot", so both
+/// fields are always applied together. Renaming requires an archive
+/// already open (`rename_archive`'s host function rejects the call
+/// otherwise), so a rename can never reach the "no tab stamped yet"
+/// branch in practice -- only `metadata` needs buffering there.
 ///
 /// No match can mean the tab's session was already closed (nothing left
 /// to update, the write is simply lost) or that `handle_open_archive_
@@ -1461,6 +1491,7 @@ fn buffer_or_apply_session_metadata(
     signals: &crate::core::signals::AppSignals,
     session_id: arclain_app::ids::ArchiveSessionId,
     metadata: Option<serde_json::Value>,
+    source_path: std::path::PathBuf,
 ) {
     let tab = signals
         .tabs
@@ -1476,6 +1507,7 @@ fn buffer_or_apply_session_metadata(
                  {session_id:?} to its stamped tab"
             );
             tab.metadata.set(metadata);
+            tab.archive_path.set(Some(source_path));
         }
         None => {
             let mut pending = signals.pending_session_metadata.lock().unwrap();
@@ -1503,9 +1535,9 @@ fn buffer_or_apply_session_metadata(
 }
 
 /// Re-fetches `session_id`'s current `archive_snapshot` and applies its
-/// metadata via [`buffer_or_apply_session_metadata`]. A `NotFound` result
-/// (the session was already closed by the time this runs) is a harmless
-/// no-op -- there is nothing left to reconcile.
+/// metadata and source path via [`buffer_or_apply_session_metadata`]. A
+/// `NotFound` result (the session was already closed by the time this
+/// runs) is a harmless no-op -- there is nothing left to reconcile.
 async fn apply_current_session_metadata(
     signals: &crate::core::signals::AppSignals,
     app: &ArclainApp,
@@ -1514,7 +1546,7 @@ async fn apply_current_session_metadata(
     let Ok(snapshot) = app.archive_snapshot(session_id).await else {
         return;
     };
-    buffer_or_apply_session_metadata(signals, session_id, snapshot.metadata);
+    buffer_or_apply_session_metadata(signals, session_id, snapshot.metadata, snapshot.source_path);
 }
 
 /// Handles one [`SessionEvent`]. `async` because it re-fetches
@@ -1841,8 +1873,13 @@ mod tests {
 
     // -- buffer_or_apply_session_metadata --------------------------------
 
-    /// A tab already stamped with the session id gets the metadata
-    /// applied directly -- no buffering involved.
+    /// A tab already stamped with the session id gets both the metadata
+    /// and the source path applied directly -- no buffering involved.
+    /// The `source_path` half is the fix for a plugin-triggered rename no
+    /// longer reaching `tab.archive_path` after the bridge swap: this
+    /// event fires for a rename too (see the function's own doc comment),
+    /// and there is no way to tell "rename" and "metadata" events apart,
+    /// so both fields are always applied together.
     #[test]
     fn buffer_or_apply_session_metadata_applies_directly_to_an_already_stamped_tab() {
         let signals = AppSignals::new();
@@ -1854,11 +1891,16 @@ mod tests {
             &signals,
             session_id,
             Some(serde_json::json!({"game": "stamped"})),
+            std::path::PathBuf::from("renamed.zip"),
         );
 
         assert_eq!(
             tab.metadata.get(),
             Some(serde_json::json!({"game": "stamped"}))
+        );
+        assert_eq!(
+            tab.archive_path.get(),
+            Some(std::path::PathBuf::from("renamed.zip"))
         );
         assert!(
             signals
@@ -1875,7 +1917,9 @@ mod tests {
     /// `OnArchiveOpen` handler calling back before `handle_open_archive_
     /// completed` gets around to stamping the originating tab) --
     /// buffered instead of dropped, exactly like the pre-swap bridge's
-    /// own reasoning.
+    /// own reasoning. Only `metadata` is bufferable; `source_path` is
+    /// discarded in this branch on purpose -- a rename cannot reach it in
+    /// practice (see the function's own doc comment).
     #[test]
     fn buffer_or_apply_session_metadata_buffers_when_no_tab_is_stamped_yet() {
         let signals = AppSignals::new();
@@ -1885,6 +1929,7 @@ mod tests {
             &signals,
             session_id,
             Some(serde_json::json!({"game": "buffered"})),
+            std::path::PathBuf::from("irrelevant.zip"),
         );
 
         assert_eq!(
@@ -1910,10 +1955,52 @@ mod tests {
                 &signals,
                 ArchiveSessionId::from_raw(raw_id),
                 Some(serde_json::json!({"n": raw_id})),
+                std::path::PathBuf::from("fixture.zip"),
             );
         }
         assert!(
             signals.pending_session_metadata.lock().unwrap().len() <= MAX_PENDING_SESSION_METADATA
+        );
+    }
+
+    /// Regression test restoring the coverage `AppSignalsBridge::
+    /// set_session_metadata_still_updates_an_already_buffered_entry_once_at_capacity`
+    /// had before the swap: a session id already buffered can still
+    /// update its own entry even once the map is otherwise at its cap --
+    /// only a *brand-new* id is rejected once full (see the function's
+    /// own `contains_key` check).
+    #[test]
+    fn buffer_or_apply_session_metadata_still_updates_an_already_buffered_entry_once_at_capacity() {
+        let signals = AppSignals::new();
+        for raw_id in 0..MAX_PENDING_SESSION_METADATA as u64 {
+            buffer_or_apply_session_metadata(
+                &signals,
+                ArchiveSessionId::from_raw(raw_id),
+                Some(serde_json::json!({"n": raw_id})),
+                std::path::PathBuf::from("fixture.zip"),
+            );
+        }
+        assert_eq!(
+            signals.pending_session_metadata.lock().unwrap().len(),
+            MAX_PENDING_SESSION_METADATA
+        );
+
+        // Re-reporting for a session already buffered (e.g. a plugin
+        // updating its own guess before the tab is stamped) must still go
+        // through even though the map is at capacity -- only brand new
+        // session ids are subject to the cap.
+        buffer_or_apply_session_metadata(
+            &signals,
+            ArchiveSessionId::from_raw(0),
+            Some(serde_json::json!({"n": "updated"})),
+            std::path::PathBuf::from("fixture.zip"),
+        );
+
+        let pending = signals.pending_session_metadata.lock().unwrap();
+        assert_eq!(pending.len(), MAX_PENDING_SESSION_METADATA);
+        assert_eq!(
+            pending.get(&ArchiveSessionId::from_raw(0)),
+            Some(&Some(serde_json::json!({"n": "updated"})))
         );
     }
 

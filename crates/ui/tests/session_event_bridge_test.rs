@@ -390,3 +390,137 @@ fn a_lagged_session_event_consumer_reconciles_via_archive_snapshot() {
         "reconciliation must re-fetch the tab's session directly, not rely on the dropped event"
     );
 }
+
+/// 5. A metadata write for a session whose tab isn't stamped yet, whose
+/// own `SessionEvent` is never explicitly handled at all (a dropped/
+/// lagged event -- indistinguishable, from this test's perspective, from
+/// "the plugin hasn't gotten around to it yet"), still lands the moment
+/// the tab is stamped: `handle_open_archive_completed` (reached here
+/// through `register_operation`) re-fetches the session's current
+/// metadata fresh rather than relying solely on whatever happened to
+/// already be buffered.
+#[test]
+fn a_metadata_write_whose_session_event_is_never_handled_still_lands_once_the_tab_is_stamped() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_always_succeeds_app(&temp);
+    let mut shared = create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.clone();
+
+    let tab = shared.signals().tabs.get().active().clone();
+    let tab_id = tab.id;
+
+    let (operation_id, session_id) = runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: temp.path().join("fixture.zip"),
+                password: None,
+            })
+            .await
+            .expect("start_open_archive must be accepted");
+        let snapshot = wait_for_open_completion(&app, operation_id).await;
+        (operation_id, snapshot.session_id)
+    });
+    // Deliberately not registered/stamped yet.
+    assert_eq!(tab.archive_session_id.get(), None);
+
+    let bridge = app.active_tab_bridge(|_| panic!("fallback must not run: the session exists"));
+    runtime.block_on(async {
+        bridge.set_session_metadata(
+            session_id.into_raw(),
+            Some(serde_json::json!({"early": true})),
+        );
+        // Deliberately does NOT call `handle_session_event` -- simulating
+        // a SessionEvent that was dropped (lagged broadcast) before it
+        // ever got a chance to buffer this write.
+    });
+    assert!(
+        shared
+            .signals()
+            .pending_session_metadata
+            .lock()
+            .unwrap()
+            .get(&session_id)
+            .is_none(),
+        "sanity: nothing buffered this write -- its own event was never processed"
+    );
+
+    runtime.block_on(async {
+        arclain_ui::core::operation_bridge::register_operation(&shared, operation_id, tab_id).await;
+    });
+
+    assert_eq!(tab.archive_session_id.get(), Some(session_id));
+    assert_eq!(
+        tab.metadata.get(),
+        Some(serde_json::json!({"early": true})),
+        "the write must still land once the tab is stamped, even though its own SessionEvent \
+         was never explicitly processed"
+    );
+}
+
+/// I2: a plugin-triggered rename (`set_archive_path`) publishes a
+/// `SessionEvent` just like a metadata write, and the consumer applies
+/// the new path to `tab.archive_path` -- not just `tab.metadata` --
+/// since the event carries no way to distinguish "a rename happened"
+/// from "metadata changed" (see `apply_current_session_metadata`'s own
+/// doc comment). Before this fix, a plugin-triggered rename stopped
+/// updating the UI's displayed archive path entirely after the swap.
+#[test]
+fn a_rename_through_the_installed_bridge_updates_the_tabs_archive_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_always_succeeds_app(&temp);
+    let mut shared = create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.clone();
+
+    let tab = shared.signals().tabs.get().active().clone();
+    let tab_id = tab.id;
+
+    let session_id = runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: temp.path().join("fixture.zip"),
+                password: None,
+            })
+            .await
+            .expect("start_open_archive must be accepted");
+        let snapshot = wait_for_open_completion(&app, operation_id).await;
+        arclain_ui::core::operation_bridge::register_operation(&shared, operation_id, tab_id).await;
+        snapshot.session_id
+    });
+    assert_eq!(tab.archive_session_id.get(), Some(session_id));
+
+    // Mirrors what `crate::core::app_lifecycle::sync_active_archive_
+    // session` does once per frame in production -- needed here since
+    // `set_archive_path` (unlike `set_session_metadata`) always resolves
+    // through the facade's *active* session tracker, not an explicit id.
+    runtime.block_on(async {
+        app.set_active_archive_session(Some(session_id))
+            .await
+            .expect("set_active_archive_session must be accepted");
+    });
+
+    let bridge = app.active_tab_bridge(|_| panic!("fallback must not run: a session is active"));
+    let renamed_path = temp.path().join("renamed.zip");
+    runtime.block_on(async {
+        bridge.set_archive_path(Some(renamed_path.to_string_lossy().into_owned()));
+    });
+
+    assert_eq!(
+        tab.archive_path.get(),
+        Some(temp.path().join("fixture.zip")),
+        "the trait call alone must not touch any UI signal -- only the session store"
+    );
+
+    runtime.block_on(arclain_ui::core::operation_bridge::handle_session_event(
+        shared.signals(),
+        &app,
+        SessionEvent::MetadataChanged { session_id },
+    ));
+
+    assert_eq!(
+        tab.archive_path.get(),
+        Some(renamed_path),
+        "a plugin-triggered rename must still update the tab's displayed archive path"
+    );
+}
