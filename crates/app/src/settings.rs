@@ -217,9 +217,9 @@ pub struct NetworkProbeReport {
 impl NetworkProbeReport {
     /// Whether the probe reached the far end. Every step passing is the
     /// same condition the underlying probe uses to set its own success
-    /// flag -- see `runtime::settings_ops::run_probe_network`, which
-    /// debug-asserts the two agree so a change on either side surfaces in
-    /// tests rather than as a silently misreported verdict.
+    /// flag -- `runtime::settings_ops::probe_report`, which builds this
+    /// report, debug-asserts the two agree, so a change on either side
+    /// surfaces in tests rather than as a silently misreported verdict.
     pub fn succeeded(&self) -> bool {
         !self.steps.is_empty() && self.steps.iter().all(|step| step.passed)
     }

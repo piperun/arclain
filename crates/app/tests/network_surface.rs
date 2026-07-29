@@ -1,17 +1,19 @@
 //! Integration tests for the boundary-zero network surface:
 //! `ArclainApp::plugin_domain_whitelist`, `ArclainApp::
-//! test_gameta_connection`, and the free function
-//! `arclain_app::analyze_url`.
+//! test_gameta_connection`, `ArclainApp::probe_network`, and the free
+//! function `arclain_app::analyze_url`.
 //!
-//! These three exist so a frontend never needs `arclain-network` as a
-//! direct dependency to render a plugin's domain-access section or to
-//! test a gameta server the user just typed into a settings form. The
-//! unit tests in `crates/app/src/plugins.rs` cover the pure mirroring and
-//! filtering in isolation; this file's job is proving the wiring behind
-//! the public API against a real bootstrap -- in particular that
-//! `plugin_domain_whitelist` reads the *live* whitelist this application
-//! composed (not a parallel copy) and that `test_gameta_connection`
-//! writes nothing anywhere.
+//! These exist so a frontend never needs `arclain-network` as a direct
+//! dependency to render a plugin's domain-access section, or to test a
+//! gameta server or a proxy the user just typed into a settings form. The
+//! unit tests in `crates/app/src/plugins.rs` and
+//! `crates/app/src/runtime/settings_ops.rs` cover the pure mirroring,
+//! filtering, and redaction in isolation; this file's job is proving the
+//! wiring behind the public API against a real bootstrap -- in particular
+//! that `plugin_domain_whitelist` reads the *live* whitelist this
+//! application composed (not a parallel copy), that neither probe writes
+//! anything anywhere, and that `probe_network`'s two modes really do take
+//! different paths.
 //!
 //! Every test is a plain (synchronous) `#[test]`, not `#[tokio::test]`,
 //! following this crate's established convention (see
