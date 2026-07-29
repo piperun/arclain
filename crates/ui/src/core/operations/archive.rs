@@ -2,7 +2,6 @@ use crate::core::tabs::{TabId, TabState};
 use crate::shared::components::status_bar;
 use crate::shared::dialogs::MergeDialogState;
 use crate::shared::SharedState;
-use arclain_core::archive::MultiPartArchive;
 use arclain_core::ArchiveBackend;
 use crc32fast::Hasher;
 use std::path::PathBuf;
@@ -141,7 +140,7 @@ pub fn open_archive_via_file_dialog(
     {
         info!("File selected: {}", file.display());
 
-        if let Some(multipart) = MultiPartArchive::detect(&file) {
+        if let Some(multipart) = arclain_app::archive::detect_multipart(&file) {
             if let Some(md) = merge_dialog {
                 md.open(multipart);
                 shared.signals().status_bar.update(|status| {

@@ -9,7 +9,6 @@
 
 use crate::core::arclain_app::ArclainApp;
 use crate::core::file_drop;
-use arclain_core::archive::MultiPartArchive;
 use eframe::egui;
 
 /// Handle file drop events from the OS
@@ -18,7 +17,7 @@ pub fn handle_drop_events(app: &mut ArclainApp, ctx: &egui::Context) {
         // Multi-part archive detection: show the merge dialog instead of
         // opening directly. The drop overlay does not handle multi-part
         // archives, so this branch must stay here.
-        if let Some(multipart) = MultiPartArchive::detect(&path) {
+        if let Some(multipart) = arclain_app::archive::detect_multipart(&path) {
             // merge_dialog is per-tab now (post 2026-05-20 audit B2 follow-up)
             let active_tab = app.shared_state.signals().tabs.get().active().clone();
             let mut merge_dialog = active_tab.merge_dialog.get();

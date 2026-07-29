@@ -1,26 +1,41 @@
 //! Merge Dialog Component
 //!
 //! Dialog for merging multi-part archives into a single archive.
+//!
+//! Reads the application facade's own split-archive vocabulary
+//! (`arclain_app::archive::MultiPartArchiveDto`,
+//! `arclain_app::operations::{MergeOutputFormat, MergeCompressionLevel}`)
+//! rather than `arclain_core`'s. The merge itself is
+//! `ArclainApp::start_merge`, dispatched by
+//! `crate::core::arclain_app::dialog_handler` on
+//! [`MergeDialogResult::StartMerge`] and rendered through the per-tab
+//! progress dialog by `crate::core::operation_bridge`.
 
 use super::helpers::{show_dimmed_modal, ModalParams};
 use crate::shared::theme::AppTheme;
-use arclain_core::archive::MultiPartArchive;
-use arclain_core::services::{CompressionLevel, OutputFormat};
+use arclain_app::archive::MultiPartArchiveDto;
+use arclain_app::operations::{MergeCompressionLevel, MergeOutputFormat};
 use arclain_widgets::{ButtonSize, TextButton, ThemedDropdown};
 use eframe::egui;
 use std::cell::Cell;
-use std::path::PathBuf;
 
-/// State for the merge dialog
+/// State for the merge dialog.
+///
+/// Carries no password field: the facade raises its own
+/// `Challenge::Password` when a set turns out to be encrypted, answered
+/// through the shared per-tab password dialog every other operation
+/// already uses. (The pre-facade state had one, but no widget here ever
+/// wrote to it, so it was always empty and an encrypted set simply
+/// failed.) It carries no output-path field either -- the merge writes
+/// beside the set's first part, and nothing in this dialog ever offered
+/// to choose otherwise.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergeDialogState {
     pub show: bool,
-    pub multipart: Option<MultiPartArchive>,
-    pub output_format: OutputFormat,
-    pub compression_level: CompressionLevel,
-    pub output_path: Option<PathBuf>,
+    pub multipart: Option<MultiPartArchiveDto>,
+    pub output_format: MergeOutputFormat,
+    pub compression_level: MergeCompressionLevel,
     pub delete_originals: bool,
-    pub password: String,
     pub error: Option<String>,
 }
 
@@ -29,11 +44,9 @@ impl Default for MergeDialogState {
         Self {
             show: false,
             multipart: None,
-            output_format: OutputFormat::SevenZip,
-            compression_level: CompressionLevel::Normal,
-            output_path: None,
+            output_format: MergeOutputFormat::SevenZip,
+            compression_level: MergeCompressionLevel::Normal,
             delete_originals: false,
-            password: String::new(),
             error: None,
         }
     }
@@ -41,13 +54,11 @@ impl Default for MergeDialogState {
 
 impl MergeDialogState {
     /// Open the dialog with a detected multi-part archive
-    pub fn open(&mut self, multipart: MultiPartArchive) {
+    pub fn open(&mut self, multipart: MultiPartArchiveDto) {
         self.multipart = Some(multipart);
         self.show = true;
         self.error = None;
-        self.output_path = None;
         self.delete_originals = false;
-        self.password.clear();
     }
 
     /// Close the dialog
@@ -151,7 +162,7 @@ pub fn render_merge_dialog(
                                     .color(theme.colors.on_surface_variant),
                             );
                             ui.label(
-                                egui::RichText::new(format!("{}", multipart.all_parts.len()))
+                                egui::RichText::new(format!("{}", multipart.parts.len()))
                                     .color(theme.colors.on_surface),
                             );
                             ui.end_row();
@@ -185,7 +196,7 @@ pub fn render_merge_dialog(
                             )
                             .with_theme_colors(&theme.colors)
                             .show_ui(ui, |ui| {
-                                for format in OutputFormat::all() {
+                                for format in MergeOutputFormat::all() {
                                     ui.selectable_value(
                                         &mut state.output_format,
                                         *format,
@@ -206,7 +217,7 @@ pub fn render_merge_dialog(
                             )
                             .with_theme_colors(&theme.colors)
                             .show_ui(ui, |ui| {
-                                for level in CompressionLevel::all() {
+                                for level in MergeCompressionLevel::all() {
                                     ui.selectable_value(
                                         &mut state.compression_level,
                                         *level,
@@ -301,4 +312,67 @@ pub fn render_merge_dialog(
     }
 
     final_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn detected(base_name: &str, parts: usize) -> MultiPartArchiveDto {
+        MultiPartArchiveDto {
+            first_part: PathBuf::from(format!("/sets/{base_name}.part1.rar")),
+            base_name: base_name.to_string(),
+            format: arclain_app::archive::MultiPartFormat::RarPart,
+            parts: (1..=parts)
+                .map(|index| PathBuf::from(format!("/sets/{base_name}.part{index}.rar")))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn opening_shows_the_set_and_clears_any_previous_error() {
+        let mut state = MergeDialogState {
+            error: Some("a previous merge failed".to_string()),
+            delete_originals: true,
+            ..Default::default()
+        };
+        state.open(detected("rj123456", 3));
+        assert!(state.show);
+        assert_eq!(
+            state.multipart.as_ref().map(|mp| mp.parts.len()),
+            Some(3),
+            "the dialog reports the parts detection actually found"
+        );
+        assert!(state.error.is_none());
+        assert!(
+            !state.delete_originals,
+            "a fresh open must not inherit the previous run's destructive opt-in"
+        );
+    }
+
+    #[test]
+    fn closing_forgets_the_set() {
+        let mut state = MergeDialogState::default();
+        state.open(detected("rj123456", 2));
+        state.close();
+        assert!(!state.show);
+        assert!(state.multipart.is_none());
+    }
+
+    #[test]
+    fn the_output_preview_follows_the_selected_format() {
+        let mut state = MergeDialogState::default();
+        assert_eq!(state.preview_output_name(), None);
+
+        state.open(detected("rj123456", 2));
+        assert_eq!(
+            state.preview_output_name().as_deref(),
+            Some("rj123456.7z"),
+            "the default format is 7z"
+        );
+
+        state.output_format = MergeOutputFormat::Zip;
+        assert_eq!(state.preview_output_name().as_deref(), Some("rj123456.zip"));
+    }
 }

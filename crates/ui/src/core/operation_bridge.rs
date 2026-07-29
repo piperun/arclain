@@ -11,7 +11,8 @@
 //! [`arclain_app::ids::OperationId`] belongs to, populated by whichever
 //! call site starts the operation (`crate::core::operations::archive::
 //! start_archive_open`, `crate::features::archive_operations::application::
-//! extraction::start_extraction`, `crate::features::archive_operations::
+//! extraction::start_extraction`, `crate::core::operations::merge::
+//! start_merge`, `crate::features::archive_operations::
 //! application::file_opener::open_file_from_archive`); the worker reads it
 //! back for every event and updates that tab's signals.
 //! [`MaterializationActions`] carries the extra, materialize-specific "what
@@ -744,6 +745,15 @@ fn format_duration_short(duration: std::time::Duration) -> String {
     }
 }
 
+/// Drives the per-tab progress dialog from one `OperationState::Progress`
+/// event reporting a percent out of 100.
+///
+/// Named for extraction because that is the only kind it served when it
+/// was written, but `OperationKind::Merge` shares it verbatim: a merge
+/// reports the same percent-out-of-100 shape into the same dialog. The
+/// dialog, its status enum, and the `TabState` signal holding it are all
+/// named for extraction too -- renaming the family is a wider change than
+/// this one belongs to.
 fn handle_extract_progress(
     tab: &crate::core::tabs::TabState,
     percent: u64,
@@ -793,6 +803,15 @@ fn handle_extract_progress(
     tab.extraction_dialog().set(dialog);
 }
 
+/// Closes out whichever operation was driving the per-tab progress
+/// dialog: hides it, releases the tab's `active_extraction_operation`
+/// slot, drains any password challenge that operation left queued, and
+/// reports `message`.
+///
+/// Shared with `OperationKind::Merge` for the same reason
+/// [`handle_extract_progress`] is -- a merge occupies the same slot and
+/// the same dialog, and can leave the same queued challenge behind if it
+/// ends while one is still pending.
 fn handle_extract_terminal(
     shared: &SharedState,
     origins: &OperationOrigins,
@@ -1364,6 +1383,70 @@ async fn handle_event(
                 message,
             );
         }
+        // ============ Task c9: multi-part archive merge (start) ==========
+        // A merge shares extraction's per-tab progress dialog and its
+        // `active_extraction_operation` slot (see
+        // `crate::core::operations::merge::start_merge`), so it routes
+        // through the same two handlers.
+        (
+            OperationKind::Merge,
+            OperationState::Progress {
+                completed_units,
+                message,
+                ..
+            },
+        ) => {
+            if let Some(tab) = shared.signals().tabs.get().get(tab_id).cloned() {
+                handle_extract_progress(&tab, completed_units, message);
+            }
+        }
+        (
+            OperationKind::Merge,
+            OperationState::Completed {
+                result: OperationResult::Merged { output_path },
+            },
+        ) => {
+            let name = output_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            handle_extract_terminal(
+                shared,
+                origins,
+                tab_id,
+                event.operation_id,
+                crate::shared::dialogs::ExtractionStatus::Completed,
+                format!("Merge complete: {name}"),
+            );
+        }
+        (OperationKind::Merge, OperationState::Cancelled) => {
+            // Deliberately not "nothing was written": cancellation is
+            // checkpoint-based, and a merge cancelled after its output
+            // archive was already compressed keeps that archive (see
+            // `arclain_app::operations::merge::run_merge`'s own doc
+            // comment on the window).
+            handle_extract_terminal(
+                shared,
+                origins,
+                tab_id,
+                event.operation_id,
+                crate::shared::dialogs::ExtractionStatus::Cancelled,
+                "Merge cancelled".to_string(),
+            );
+        }
+        (OperationKind::Merge, OperationState::Failed { error }) => {
+            let message = format!("Merge failed: {}", error.summary);
+            handle_extract_terminal(
+                shared,
+                origins,
+                tab_id,
+                event.operation_id,
+                crate::shared::dialogs::ExtractionStatus::Failed,
+                message,
+            );
+        }
+        // ============= Task c9: multi-part archive merge (end) ===========
         (
             OperationKind::OpenArchive,
             OperationState::Completed {
