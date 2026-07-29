@@ -37,17 +37,46 @@ fn split_proxy_authority(address: &str) -> Option<(String, u16)> {
     Some((host.to_string(), port))
 }
 
-/// A one-step failed connection-test result carrying `message`.
+/// The probe's own trace, in the shape the result panel renders.
 ///
-/// The proxy probe reports a single verdict rather than the per-step
-/// trace the page's result panel can display, so every failure -- a bad
-/// address, a missing facade, a refused proxy -- is rendered as one
-/// failed step. See this handler's own note in `SettingsAction::
-/// TestNetwork` for what that costs.
-fn failed_proxy_test(message: impl Into<String>) -> ConnectionTestResult {
+/// Step for step: the panel shows a row per step with its name, verdict,
+/// and detail line, then a "Connected via {ip} ({country})" footer on
+/// success -- and the clipboard export is built from the same values, so
+/// nothing here may summarize or drop a step.
+fn probe_result(report: arclain_app::settings::NetworkProbeReport) -> ConnectionTestResult {
+    let success = report.succeeded();
+    ConnectionTestResult {
+        steps: report
+            .steps
+            .into_iter()
+            .map(|step| TestStepResult {
+                name: step.name,
+                passed: step.passed,
+                message: step.message,
+            })
+            .collect(),
+        success,
+        result_message: success.then(|| {
+            format!(
+                "{} ({})",
+                report.ip.unwrap_or_default(),
+                report.country.unwrap_or_default()
+            )
+        }),
+    }
+}
+
+/// A one-step failed result for a probe that never ran -- no facade, or a
+/// candidate address the page could not even make an authority out of.
+///
+/// `name` is the step the probe *would* have started with, so the panel
+/// reads the same whether the failure came from here or from the probe
+/// itself: `SOCKS5` when testing through a proxy, `HTTP` when testing the
+/// direct path.
+fn failed_probe(name: &str, message: impl Into<String>) -> ConnectionTestResult {
     ConnectionTestResult {
         steps: vec![TestStepResult {
-            name: "SOCKS5".to_string(),
+            name: name.to_string(),
             passed: false,
             message: Some(message.into()),
         }],
@@ -438,39 +467,52 @@ pub fn handle_action(
             tracing::info!("Network settings saved");
         }
         SettingsAction::TestNetwork {
-            // Deliberately unused: the facade probe is always a *proxy*
-            // probe. The page's toggle used to double as a mode switch --
-            // off meant "connect directly and show me my real IP" -- and
-            // there is no application surface for that today, so the
-            // button now always tests the candidate proxy. The field
-            // stays on the action because the page still holds the
-            // toggle; honouring it again needs a facade surface, not a
-            // change here.
-            socks5_enabled: _,
+            socks5_enabled,
             socks5_address,
             socks5_username,
             socks5_password,
         } => {
             use crate::features::settings::domain::types::ConnectionTestStatus;
 
+            // The toggle picks the *mode*: on, the probe goes through the
+            // candidate proxy; off, it goes out directly and reports the
+            // egress the machine actually has. Both are useful answers,
+            // and comparing them is the point of testing with the toggle
+            // off.
+            let step_name = if socks5_enabled { "SOCKS5" } else { "HTTP" };
+
             let Some(facade) = shared.facade.as_ref() else {
                 tracing::error!("[TestNetwork] settings facade is unavailable");
                 network_state
                     .connection_test_status
-                    .set(ConnectionTestStatus::Complete(failed_proxy_test(
+                    .set(ConnectionTestStatus::Complete(failed_probe(
+                        step_name,
                         "application facade is unavailable",
                     )));
                 return;
             };
 
-            let address = socks5_address.unwrap_or_default();
-            let Some((host, port)) = split_proxy_authority(&address) else {
-                network_state
-                    .connection_test_status
-                    .set(ConnectionTestStatus::Complete(failed_proxy_test(
-                        "Enter a proxy address as host:port before testing",
-                    )));
-                return;
+            let proxy = if socks5_enabled {
+                let address = socks5_address.unwrap_or_default();
+                let Some((host, port)) = split_proxy_authority(&address) else {
+                    network_state
+                        .connection_test_status
+                        .set(ConnectionTestStatus::Complete(failed_probe(
+                            step_name,
+                            "Enter a proxy address as host:port before testing",
+                        )));
+                    return;
+                };
+                Some(arclain_app::settings::Socks5Candidate {
+                    host,
+                    port,
+                    username: socks5_username,
+                    password: socks5_password
+                        .filter(|password| !password.is_empty())
+                        .map(arclain_app::challenge::SecretInput::new),
+                })
+            } else {
+                None
             };
 
             network_state
@@ -478,34 +520,21 @@ pub fn handle_action(
                 .set(ConnectionTestStatus::Testing);
             let status_signal = network_state.connection_test_status.clone();
             let facade = facade.clone();
-            let password = socks5_password
-                .filter(|password| !password.is_empty())
-                .map(arclain_app::challenge::SecretInput::new);
 
             // The probe belongs to the facade, the same way the gameta
             // one below does: it owns the proxy client and the runtime the
             // request runs on, and none of these candidate values is
-            // saved anywhere. This handler hands them over and routes the
-            // verdict back into the page's status signal.
+            // saved anywhere. This handler hands them over and renders
+            // the trace that comes back.
             let runtime = shared.services.tokio_runtime.handle().clone();
             runtime.spawn(async move {
-                let status = match facade
-                    .test_socks5_proxy(host, port, socks5_username, password)
-                    .await
-                {
-                    Ok(()) => ConnectionTestResult {
-                        steps: vec![TestStepResult {
-                            name: "SOCKS5".to_string(),
-                            passed: true,
-                            message: None,
-                        }],
-                        success: true,
-                        result_message: None,
-                    },
-                    // `summary` names the step that failed and is already
-                    // credential-free; the diagnostic half (the full step
-                    // list) stays out of the UI.
-                    Err(error) => failed_proxy_test(error.summary),
+                let status = match facade.probe_network(proxy).await {
+                    Ok(report) => probe_result(report),
+                    // Only an unprobeable candidate or a shutting-down
+                    // application lands here -- a probe that ran reports
+                    // its own failed step instead. `summary` is already
+                    // credential-free.
+                    Err(error) => failed_probe(step_name, error.summary),
                 };
                 status_signal.set(ConnectionTestStatus::Complete(status));
             });
@@ -1753,12 +1782,13 @@ mod tests {
     fn dispatch_test_network(
         shared: &SharedState,
         network_state: &mut crate::features::settings::domain::types::NetworkSettingsState,
+        socks5_enabled: bool,
         socks5_address: Option<String>,
         socks5_password: Option<String>,
     ) {
         handle_action(
             SettingsAction::TestNetwork {
-                socks5_enabled: true,
+                socks5_enabled,
                 socks5_address,
                 socks5_username: Some("probe-user".to_string()),
                 socks5_password,
@@ -1795,11 +1825,13 @@ mod tests {
         assert_eq!(split_proxy_authority("proxy.example:99999"), None);
     }
 
-    /// The failure path end to end, plus the guard that the candidate
-    /// password reaches neither the rendered result nor tracing.
+    /// The panel's whole content, end to end: the real per-step trace the
+    /// probe produced, not a synthesized one-line verdict. Plus the guard
+    /// that the candidate password reaches neither the rendered result
+    /// nor tracing.
     #[traced_test]
     #[test]
-    fn test_network_reports_a_refused_proxy_without_leaking_the_password() {
+    fn test_network_renders_the_probes_own_step_trace_without_leaking_the_password() {
         const PASSWORD: &str = "ui-socks5-probe-password-8a4d";
         let fixture = ProxySaveFixture::new();
         // Reserve a port and release it so the TCP step fails fast
@@ -1813,12 +1845,29 @@ mod tests {
         dispatch_test_network(
             &fixture.shared,
             &mut network_state,
+            true,
             Some(address.to_string()),
             Some(PASSWORD.to_string()),
         );
 
         let result = await_network_status(&network_state);
         assert!(!result.success);
+        // The trace, not a summary: DNS resolved, TCP did not, and the
+        // panel can say which is which.
+        assert_eq!(
+            result
+                .steps
+                .iter()
+                .map(|step| (step.name.as_str(), step.passed))
+                .collect::<Vec<_>>(),
+            vec![("DNS", true), ("TCP", false)],
+        );
+        assert!(
+            result.steps[1].message.is_some(),
+            "the failed step must carry its detail line",
+        );
+        assert_eq!(result.result_message, None);
+
         let rendered = format!("{result:?}");
         assert!(
             !rendered.contains(PASSWORD),
@@ -1827,6 +1876,38 @@ mod tests {
         assert!(
             !logs_contain(PASSWORD),
             "the proxy password leaked in tracing"
+        );
+    }
+
+    /// The toggle is a mode switch, not just an on/off: with the proxy
+    /// disabled the page probes the direct path, which never walks a
+    /// proxy's DNS or TCP steps.
+    #[test]
+    fn test_network_with_the_proxy_disabled_probes_the_direct_path() {
+        let fixture = ProxySaveFixture::new();
+        let mut network_state =
+            crate::features::settings::domain::types::NetworkSettingsState::default();
+
+        // A proxy address is present and deliberately ignored: the
+        // disabled toggle, not the empty address, is what selects direct
+        // mode.
+        dispatch_test_network(
+            &fixture.shared,
+            &mut network_state,
+            false,
+            Some("127.0.0.1:1080".to_string()),
+            None,
+        );
+
+        let result = await_network_status(&network_state);
+        let names = result
+            .steps
+            .iter()
+            .map(|step| step.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            !names.contains(&"DNS") && !names.contains(&"TCP") && !names.contains(&"SOCKS5"),
+            "the direct probe walked proxy steps: {names:?}",
         );
     }
 
@@ -1839,11 +1920,12 @@ mod tests {
         let mut network_state =
             crate::features::settings::domain::types::NetworkSettingsState::default();
 
-        dispatch_test_network(&fixture.shared, &mut network_state, None, None);
+        dispatch_test_network(&fixture.shared, &mut network_state, true, None, None);
 
         let result = await_network_status(&network_state);
         assert!(!result.success);
         assert_eq!(result.steps.len(), 1);
+        assert_eq!(result.steps[0].name, "SOCKS5");
         assert!(
             result.steps[0]
                 .message
@@ -1856,7 +1938,9 @@ mod tests {
     }
 
     /// Same contract as the gameta twin: no facade means a reported
-    /// failure, never an indefinite "Testing...".
+    /// failure, never an indefinite "Testing...". The step is named for
+    /// the mode that was selected, so the panel reads the same as a real
+    /// failure would.
     #[test]
     fn test_network_without_a_facade_reports_a_failure_rather_than_hanging() {
         let fixture = ProxySaveFixture::new();
@@ -1868,11 +1952,77 @@ mod tests {
         dispatch_test_network(
             &shared,
             &mut network_state,
+            true,
             Some("127.0.0.1:1080".to_string()),
             None,
         );
+        let proxied = await_network_status(&network_state);
+        assert!(!proxied.success);
+        assert_eq!(proxied.steps[0].name, "SOCKS5");
 
-        let result = await_network_status(&network_state);
-        assert!(!result.success);
+        let mut direct_state =
+            crate::features::settings::domain::types::NetworkSettingsState::default();
+        dispatch_test_network(&shared, &mut direct_state, false, None, None);
+        let direct = await_network_status(&direct_state);
+        assert!(!direct.success);
+        assert_eq!(direct.steps[0].name, "HTTP");
+    }
+
+    /// The report the facade returns is rendered whole: every step in
+    /// order with its detail line, and the egress footer the panel and
+    /// its clipboard export both read.
+    #[test]
+    fn probe_result_renders_every_step_and_the_egress_footer() {
+        let rendered = probe_result(arclain_app::settings::NetworkProbeReport {
+            steps: vec![
+                arclain_app::settings::ProbeStepDto {
+                    name: "DNS".to_string(),
+                    passed: true,
+                    message: Some("Resolved to 203.0.113.7:1080".to_string()),
+                },
+                arclain_app::settings::ProbeStepDto {
+                    name: "SOCKS5".to_string(),
+                    passed: true,
+                    message: None,
+                },
+            ],
+            ip: Some("198.51.100.9".to_string()),
+            country: Some("Nowhere".to_string()),
+        });
+
+        assert!(rendered.success);
+        assert_eq!(
+            rendered
+                .steps
+                .iter()
+                .map(|step| (step.name.as_str(), step.passed, step.message.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("DNS", true, Some("Resolved to 203.0.113.7:1080")),
+                ("SOCKS5", true, None),
+            ],
+        );
+        assert_eq!(
+            rendered.result_message.as_deref(),
+            Some("198.51.100.9 (Nowhere)"),
+        );
+    }
+
+    /// A failed report has no egress to show, so the footer stays absent
+    /// rather than rendering "Connected via  ()".
+    #[test]
+    fn probe_result_omits_the_egress_footer_when_a_step_failed() {
+        let rendered = probe_result(arclain_app::settings::NetworkProbeReport {
+            steps: vec![arclain_app::settings::ProbeStepDto {
+                name: "TCP".to_string(),
+                passed: false,
+                message: Some("connection refused".to_string()),
+            }],
+            ip: None,
+            country: None,
+        });
+
+        assert!(!rendered.success);
+        assert_eq!(rendered.result_message, None);
     }
 }
