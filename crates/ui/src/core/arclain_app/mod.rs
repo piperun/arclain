@@ -53,10 +53,7 @@ pub struct ArclainApp {
 
 impl ArclainApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let app_log_path = arclain_core::utilities::current_app_log_path();
-        let plugin_log_dir = arclain_core::utilities::plugin_log_dir();
-        let log_session =
-            crate::shared::components::logs_page::LogSession::capture(app_log_path, plugin_log_dir);
+        let log_session = crate::shared::components::logs_page::LogSession::capture_default();
         Self::new_with_log_session(cc, log_session)
     }
 

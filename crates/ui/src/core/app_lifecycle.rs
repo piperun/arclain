@@ -281,9 +281,7 @@ pub fn process_extraction_progress(
                     // because the OUTER archive wasn't encrypted, but
                     // listing the inner one trips the password path in
                     // load_archive_into_tab's Err arm).
-                    if arclain_core::features::organization::flatten::is_archive_extension(
-                        &file_path,
-                    ) {
+                    if arclain_app::archive::is_archive_extension(&file_path) {
                         open_nested_archive_in_tab(shared_state, &file_path);
                     } else {
                         open_extracted_file(&file_path, status_message);

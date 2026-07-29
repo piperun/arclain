@@ -1024,7 +1024,7 @@ fn handle_materialize_completed(
                 return;
             }
 
-            if arclain_core::features::organization::flatten::is_archive_extension(&target_path) {
+            if arclain_app::archive::is_archive_extension(&target_path) {
                 // Route through arclain's own archive-open flow instead of
                 // the OS default handler (keeps nested-archive browsing
                 // inside the app, and surfaces the password dialog if the

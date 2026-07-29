@@ -46,6 +46,30 @@ pub struct LogSession {
 }
 
 impl LogSession {
+    /// Captures a session against the application's default log
+    /// locations.
+    ///
+    /// `AppPaths::system_default` is pure path arithmetic — it resolves
+    /// the same directories `ArclainApp::bootstrap` will, without
+    /// creating anything — so this can run *before* the application is
+    /// bootstrapped. That ordering matters: the captured offsets mark
+    /// where the "current session" view starts, so taking them first is
+    /// what makes the application's own startup logging visible there.
+    pub fn capture_default() -> Self {
+        match arclain_app::AppPaths::system_default() {
+            Ok(paths) => Self::capture(paths.current_app_log_file(), paths.plugin_log_dir()),
+            Err(error) => {
+                // Not reachable today (`system_default` falls back to the
+                // working directory when the OS cannot name a home), but
+                // a diagnostics page that cannot find its files should
+                // degrade to showing a read error, never take startup
+                // down with it.
+                tracing::warn!("Could not resolve the application log locations: {error:?}");
+                Self::capture_with_app_offset(PathBuf::new(), 0, PathBuf::new())
+            }
+        }
+    }
+
     pub fn capture(app_log_path: PathBuf, plugin_log_dir: impl AsRef<Path>) -> Self {
         let app_log_offset = file_len(&app_log_path);
         Self::capture_with_app_offset(app_log_path, app_log_offset, plugin_log_dir)
@@ -440,9 +464,7 @@ pub struct LogsPageState {
 
 impl LogsPageState {
     pub fn new() -> Self {
-        let app_log_path = arclain_core::utilities::current_app_log_path();
-        let plugin_log_dir = arclain_core::utilities::plugin_log_dir();
-        Self::with_session(LogSession::capture(app_log_path, plugin_log_dir))
+        Self::with_session(LogSession::capture_default())
     }
 
     pub fn with_session(session: LogSession) -> Self {
