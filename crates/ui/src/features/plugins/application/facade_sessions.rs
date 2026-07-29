@@ -476,11 +476,20 @@ impl PluginSessions {
         // Logged at info, unlike the drops below: this is the line a
         // launch smoke test greps for to confirm a given extension point
         // really rendered through the facade path rather than the legacy
-        // queue. Carries no plugin-authored text -- the region slug and
-        // node count are host-derived.
+        // queue.
+        //
+        // Every field is host-derived. `region` is the extension point's
+        // *kind* rather than `PluginUiDocument::region_id`, which for a
+        // dialog or page embeds the plugin-authored id
+        // (`"dialog:{id}"`); this crate's existing plugin traces are
+        // deliberately guest-value-free, with tests pinning that, and a
+        // reserved-looking id is exactly the kind of string a plugin
+        // should not be able to write into global tracing. `plugin_id`
+        // is safe: it comes from the manifest and `PluginId::parse`
+        // restricts it to `[A-Za-z0-9_-]`.
         tracing::info!(
-            plugin_id = %record_plugin_id(&document),
-            region = %document.region_id,
+            plugin_id = %document.plugin_id,
+            region = extension_point_kind(&document.extension_point),
             session_id = session_id.into_raw(),
             revision = document.revision,
             "[plugin-sessions] opened a plugin UI session through the facade"
@@ -743,11 +752,18 @@ impl PluginSessions {
     }
 }
 
-/// A plugin id is host-supplied (it comes from the plugin's manifest,
-/// validated by `PluginId::parse`), so it is safe to log verbatim --
-/// unlike anything inside the document's nodes, which is guest-authored.
-fn record_plugin_id(document: &PluginUiDocument) -> &str {
-    &document.plugin_id
+/// The extension point's kind as a fixed, host-chosen string -- no
+/// plugin-authored dialog/page id, unlike
+/// `PluginExtensionPointDto::region_slug`. See the trace in
+/// [`PluginSessions::opened`] for why the distinction matters.
+fn extension_point_kind(extension_point: &PluginExtensionPointDto) -> &'static str {
+    match extension_point {
+        PluginExtensionPointDto::MainPage => "main_page",
+        PluginExtensionPointDto::PluginButton => "plugin_button",
+        PluginExtensionPointDto::Panel => "panel",
+        PluginExtensionPointDto::Dialog(_) => "dialog",
+        PluginExtensionPointDto::Page(_) => "page",
+    }
 }
 
 /// The outcome of a successfully applied [`PluginUiUpdate`]: which slot
@@ -1025,6 +1041,27 @@ mod tests {
         assert_eq!(
             PluginNavigation::resolve("btn", None),
             (None, Some("btn".to_string()))
+        );
+    }
+
+    /// The session-open trace must never carry a plugin-authored string.
+    /// A dialog/page id comes straight from a plugin's own `ButtonAction`,
+    /// and `region_slug()` embeds it -- so the trace logs the kind
+    /// instead, matching this crate's existing guest-value redaction
+    /// tests for plugin actions.
+    #[test]
+    fn the_logged_extension_point_kind_never_embeds_a_plugin_authored_id() {
+        let marker = "plugin-dialog-id-must-not-reach-global-tracing";
+        let dialog = PluginExtensionPointDto::Dialog(marker.to_string());
+        assert!(dialog.region_slug().contains(marker));
+        assert_eq!(extension_point_kind(&dialog), "dialog");
+        assert_eq!(
+            extension_point_kind(&PluginExtensionPointDto::Page(marker.to_string())),
+            "page"
+        );
+        assert_eq!(
+            extension_point_kind(&PluginExtensionPointDto::Panel),
+            "panel"
         );
     }
 
