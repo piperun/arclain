@@ -886,37 +886,26 @@ impl ArchiveContextBridge {
     }
 
     /// Blocking (short) read of the active session's snapshot, or `None`
-    /// if no session is active or it no longer exists.
-    /// `crate::archive::ArchiveSessionStore` stores its sessions behind a
-    /// `tokio::sync::RwLock` (an async-native choice made for its own,
-    /// already-async call sites), but every `ActiveTabBridge` method is
-    /// synchronous (called from a WASM host-function context) -- this
-    /// bridges that gap with `tokio::task::block_in_place` +
-    /// `Handle::block_on`, which requires the calling thread to be a
-    /// worker of a **multi-thread** Tokio runtime (`Handle::try_current`
-    /// returns `Err`, and this method returns `None`, from a plain
-    /// `std::thread` with no ambient runtime at all, or from a
-    /// current-thread runtime). `PluginSessionStore`'s own `spawn_blocking`
-    /// calls (panel/button-triggered plugin actions) satisfy this.
-    ///
-    /// `arclain_plugins::PluginManager`'s event-dispatch worker (which
-    /// calls a plugin's `OnArchiveOpen` handler, and so can also reach
-    /// this bridge) does **not**: it runs on a bare `std::thread::spawn`
-    /// thread with no Tokio context entered at all. Verified (by
-    /// [`tests::archive_context_bridge_degrades_gracefully_from_a_bare_thread_with_no_tokio_context`])
-    /// to degrade gracefully rather than panic in that case -- `Handle::
-    /// try_current()` is the very first thing this method calls, and its
-    /// `Err` short-circuits via `?` before `block_in_place` (the actually-
-    /// panic-risking call) is ever reached. In practice this gap is moot
-    /// for `OnArchiveOpen` specifically: `crates/plugins`'s own archive-
-    /// reading host functions (`archive.rs`) check the event context
-    /// first and resolve `archive_path`/`archive_entries` from the event's
-    /// own copied data, never reaching `ActiveTabBridge` at all while an
-    /// event context is installed -- so a plugin's `OnArchiveOpen` handler
-    /// never actually depends on this bridge answering correctly from that
-    /// thread. A future caller reaching this bridge from some other bare
-    /// thread, outside both of these existing safe paths, would still only
-    /// see a degraded `None`/no-op, never a panic.
+    /// if no session is active or it no longer exists. Every
+    /// `ActiveTabBridge` method is synchronous (called from a WASM host-
+    /// function context), and `crate::archive::ArchiveSessionStore::
+    /// get_sync` is genuinely synchronous too -- a `parking_lot::RwLock`
+    /// lookup, not an async one -- so this needs no runtime, no `Handle`,
+    /// and no `block_in_place`/`block_on` dance. It works identically from
+    /// every one of this bridge's actual production callers:
+    /// `PluginSessionStore`'s `spawn_blocking` calls (panel/button-
+    /// triggered plugin actions) and `arclain_plugins::PluginManager`'s
+    /// event-dispatch worker (a bare `std::thread::spawn` thread with no
+    /// Tokio context at all, which calls a plugin's `OnArchiveOpen`
+    /// handler -- and, through it, both of the primary metadata-write
+    /// sinks: `arclain_plugins::manager::dispatch::set_event_session_metadata`
+    /// and the event-context branch of `crate::host_functions::metadata`'s
+    /// `emit_metadata`). An earlier version of this method bridged to the
+    /// store's since-removed `tokio::sync::RwLock` via exactly that
+    /// `Handle`/`block_in_place` dance, which silently no-op'd every write
+    /// from the event-dispatch worker specifically -- see
+    /// [`tests::archive_context_bridge_writes_land_from_a_bare_thread_with_no_tokio_context`]
+    /// for the regression test that now proves the opposite.
     fn with_active_session<T>(
         &self,
         read: impl FnOnce(&crate::archive::ArchiveSession) -> T,
@@ -934,10 +923,7 @@ impl ArchiveContextBridge {
         session_id: ArchiveSessionId,
         read: impl FnOnce(&crate::archive::ArchiveSession) -> T,
     ) -> Option<T> {
-        let handle = tokio::runtime::Handle::try_current().ok()?;
-        let sessions = self.sessions.clone();
-        let session =
-            tokio::task::block_in_place(|| handle.block_on(sessions.get(session_id))).ok()?;
+        let session = self.sessions.get_sync(session_id).ok()?;
         Some(read(&session))
     }
 
@@ -972,6 +958,27 @@ impl ActiveTabBridge for ArchiveContextBridge {
 
     fn archive_entries(&self) -> Vec<String> {
         self.with_active_session(|session| session.all_file_paths())
+            .unwrap_or_default()
+    }
+
+    /// Overridden per `ActiveTabBridge::archive_entry_count`'s own doc
+    /// comment ("without cloning their paths"): `ArchiveSession::
+    /// file_count` is `O(1)`, unlike the trait's default (`self.
+    /// archive_entries().len()`), which would materialize and clone every
+    /// path in the archive just to count them.
+    fn archive_entry_count(&self) -> usize {
+        self.with_active_session(|session| session.file_count())
+            .unwrap_or(0)
+    }
+
+    /// Overridden per `ActiveTabBridge::archive_entries_page`'s own doc
+    /// comment: `ArchiveSession::file_paths_page` clones only the
+    /// requested page, unlike the trait's default (`self.archive_entries()
+    /// .skip(offset).take(limit)`), which would materialize and clone
+    /// every path in the archive on every single page -- `O(n)` per call,
+    /// `O(n^2)` for a full paged walk.
+    fn archive_entries_page(&self, offset: usize, limit: usize) -> Vec<String> {
+        self.with_active_session(|session| session.file_paths_page(offset, limit))
             .unwrap_or_default()
     }
 
@@ -1043,10 +1050,12 @@ impl ArchiveContextAccess {
         context_id: PluginArchiveContextId,
     ) -> Result<Arc<crate::archive::ArchiveSession>, PluginError> {
         let session_id = ArchiveSessionId::from_raw(context_id.into_raw());
-        let handle = tokio::runtime::Handle::try_current()
-            .map_err(|error| PluginError::Unavailable(error.to_string()))?;
-        let sessions = self.sessions.clone();
-        tokio::task::block_in_place(|| handle.block_on(sessions.get(session_id)))
+        // Genuinely synchronous -- see `ArchiveContextBridge::with_session`'s
+        // own doc comment for why this no longer needs a `Handle`/
+        // `block_in_place` dance (and why that dance was a real bug, not
+        // just unnecessary ceremony).
+        self.sessions
+            .get_sync(session_id)
             .map_err(|error| PluginError::NotFound(error.summary))
     }
 }
@@ -1151,6 +1160,22 @@ impl ActiveTabBridge for ProductionActiveTabBridge {
         self.inner.archive_entries()
     }
 
+    /// Forwarded explicitly, not left to the trait default: the default
+    /// would call `self.archive_entries()` above (this composite's own
+    /// override of *that*, which just forwards too) and `.len()` it,
+    /// undoing `ArchiveContextBridge`'s own `O(1)` override one layer up.
+    fn archive_entry_count(&self) -> usize {
+        self.inner.archive_entry_count()
+    }
+
+    /// Forwarded explicitly for the same reason as
+    /// [`Self::archive_entry_count`] -- see `ArchiveContextBridge::
+    /// archive_entries_page`'s own doc comment for the `O(n)`-per-page
+    /// cost this avoids.
+    fn archive_entries_page(&self, offset: usize, limit: usize) -> Vec<String> {
+        self.inner.archive_entries_page(offset, limit)
+    }
+
     fn active_archive_session_id(&self) -> Option<u64> {
         self.inner.active_archive_session_id()
     }
@@ -1161,10 +1186,19 @@ impl ActiveTabBridge for ProductionActiveTabBridge {
     }
 
     fn set_active_tab_metadata(&self, metadata: Option<serde_json::Value>) {
-        if self.inner.active_archive_session_id().is_some() {
-            self.inner.set_active_tab_metadata(metadata);
-        } else {
-            (self.fallback)(metadata);
+        // Resolved exactly once: `active_archive_session_id()` and
+        // `inner.set_active_tab_metadata` each independently re-read the
+        // same underlying `ActiveArchiveSession` state, so checking here
+        // and then calling the latter would be a TOCTOU -- the session
+        // could change (or clear) between the two reads, and either the
+        // fallback or the session write could silently see a different
+        // answer than the one this method decided on. Using the single
+        // resolved id to call `set_session_metadata` directly (rather
+        // than `inner.set_active_tab_metadata`, which would re-resolve)
+        // closes that gap.
+        match self.inner.active_archive_session_id() {
+            Some(session_id) => self.inner.set_session_metadata(session_id, metadata),
+            None => (self.fallback)(metadata),
         }
     }
 
@@ -1394,60 +1428,85 @@ mod tests {
         session.id()
     }
 
-    /// `ArchiveContextBridge`'s own doc comment on `with_session` names an
-    /// open question: it requires the calling thread to be a worker of a
-    /// multi-thread Tokio runtime, and `arclain_plugins::PluginManager`'s
-    /// event-dispatch worker (which calls into a plugin's `OnArchiveOpen`
-    /// handler, which can call back into this bridge via `archive_path`/
-    /// `detect_code_from_archive`-style host functions) runs on a bare
-    /// `std::thread::spawn` thread with no Tokio context at all -- not a
-    /// runtime worker in any sense. This resolves whether that combination
-    /// is merely *degraded* (a graceful `None`, matching "no active
-    /// session") or *unsound* (a panic that would poison the plugin's
-    /// wasmtime store -- see `crates/plugins`' own generic-trap
-    /// classification for why a poisoned store is a big deal).
+    /// Regression test for the actual production requirement: every write
+    /// through this bridge must land from ANY calling thread, not only a
+    /// Tokio multi-thread runtime worker. `arclain_plugins::PluginManager`'s
+    /// event-dispatch worker -- which calls a plugin's `OnArchiveOpen`
+    /// handler, and is where BOTH of the primary metadata-write sinks
+    /// (`arclain_plugins::manager::dispatch::set_event_session_metadata`
+    /// and the event-context branch of `crate::host_functions::metadata`'s
+    /// `emit_metadata`) actually call `set_session_metadata` in production
+    /// -- runs on a bare `std::thread::spawn` thread with no Tokio context
+    /// entered at all.
     ///
-    /// `Handle::try_current()` is the very first thing `with_session`
-    /// calls, and it returns `Err` (not a panic) when no runtime is
-    /// entered on the current thread -- `?` on `.ok()` turns that into an
-    /// early `None` before `block_in_place` (the actually-panicking-if-
-    /// misused call) is ever reached. This test proves that behavior
-    /// holds through the real bridge, from a thread built exactly like
-    /// `PluginManager`'s own event worker (`std::thread::spawn`, no
-    /// runtime entered), not just asserted from reading the source.
-    #[test]
-    fn archive_context_bridge_degrades_gracefully_from_a_bare_thread_with_no_tokio_context() {
+    /// This test replaces one that asserted the *opposite*: that a write
+    /// from exactly this kind of thread silently no-ops. That was the bug,
+    /// not a safety margin -- "safely" dropping the primary flow's every
+    /// metadata write is not a passing behavior. `with_session` no longer
+    /// depends on `Handle::try_current()`/`block_in_place` at all (see its
+    /// own doc comment), so this now genuinely lands the write and
+    /// publishes the `SessionEvent` from any thread.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn archive_context_bridge_writes_land_from_a_bare_thread_with_no_tokio_context() {
         let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let session_id = open_test_session(&sessions, vec![]).await;
+        let mut events = sessions.subscribe_session_events();
         let tracker = ActiveArchiveSession::new();
-        // Session id is irrelevant here -- with no runtime entered at
-        // all, `with_session` never gets far enough to look one up.
-        tracker.set(Some(ArchiveSessionId::from_raw(1)));
+        let bridge = ArchiveContextBridge::new(tracker, sessions.clone());
+
+        // A bare OS thread, exactly like `PluginManager`'s own event
+        // worker (`std::thread::spawn`, no runtime entered) -- not a tokio
+        // task, not routed through `spawn_blocking`.
+        let handle = std::thread::spawn(move || {
+            bridge.set_session_metadata(session_id.into_raw(), Some(serde_json::json!({"a": 1})));
+        });
+        handle.join().expect("worker thread must not panic");
+
+        let session = sessions.get(session_id).await.unwrap();
+        assert_eq!(
+            session.snapshot().metadata,
+            Some(serde_json::json!({"a": 1})),
+            "a write from a bare thread with no Tokio context must still land in the session store"
+        );
+        assert_eq!(
+            events
+                .try_recv()
+                .expect("a SessionEvent must have been published"),
+            crate::event::SessionEvent::MetadataChanged { session_id }
+        );
+    }
+
+    /// Same requirement, for a read: `archive_path`/`archive_entries` must
+    /// resolve the real active session from a bare thread too, not just
+    /// avoid panicking.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn archive_context_bridge_reads_resolve_from_a_bare_thread_with_no_tokio_context() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let session_id = open_test_session(
+            &sessions,
+            vec![arclain_core::ArchiveEntry {
+                path: "readme.txt".to_string(),
+                size: 10,
+                packed_size: 10,
+                modified: None,
+                is_dir: false,
+                encrypted: false,
+                crc32: None,
+            }],
+        )
+        .await;
+        let tracker = ActiveArchiveSession::new();
+        tracker.set(Some(session_id));
         let bridge = ArchiveContextBridge::new(tracker, sessions);
 
-        // A bare OS thread, exactly like `PluginManager::new_with_plugin_
-        // log_dir`'s `std::thread::spawn(move || { Self::event_worker(...)
-        // })` -- deliberately NOT spawned from inside a `tokio::runtime`
-        // context, and not itself entering one.
-        let handle = std::thread::spawn(move || {
-            let path =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bridge.archive_path()));
-            let metadata = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                bridge.set_session_metadata(1, Some(serde_json::json!({"a": 1})));
-            }));
-            (path, metadata)
-        });
-        let (path_result, metadata_result) = handle.join().expect("worker thread must not panic");
+        let handle = std::thread::spawn(move || (bridge.archive_path(), bridge.archive_entries()));
+        let (path, entries) = handle.join().expect("worker thread must not panic");
 
-        assert_eq!(
-            path_result.expect("archive_path must not panic from a bare thread"),
-            None,
-            "with no Tokio context reachable, this degrades to None rather than resolving the \
-             real (active but unreachable) session"
-        );
         assert!(
-            metadata_result.is_ok(),
-            "set_session_metadata must not panic from a bare thread either"
+            path.unwrap().contains("fixture.zip"),
+            "archive_path must resolve the real active session from a bare thread"
         );
+        assert_eq!(entries, vec!["readme.txt".to_string()]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1471,12 +1530,19 @@ mod tests {
 
         assert!(bridge.archive_path().is_none(), "no active session yet");
         assert!(bridge.archive_entries().is_empty());
+        assert_eq!(bridge.archive_entry_count(), 0);
+        assert!(bridge.archive_entries_page(0, 10).is_empty());
         assert_eq!(bridge.active_archive_session_id(), None);
 
         tracker.set(Some(session_id));
 
         assert!(bridge.archive_path().unwrap().contains("fixture.zip"));
         assert_eq!(bridge.archive_entries(), vec!["readme.txt".to_string()]);
+        assert_eq!(bridge.archive_entry_count(), 1);
+        assert_eq!(
+            bridge.archive_entries_page(0, 10),
+            vec!["readme.txt".to_string()]
+        );
         assert_eq!(
             bridge.active_archive_session_id(),
             Some(session_id.into_raw())
@@ -1778,6 +1844,11 @@ mod tests {
 
         assert!(bridge.archive_path().unwrap().contains("fixture.zip"));
         assert_eq!(bridge.archive_entries(), vec!["a.txt".to_string()]);
+        assert_eq!(bridge.archive_entry_count(), 1);
+        assert_eq!(
+            bridge.archive_entries_page(0, 10),
+            vec!["a.txt".to_string()]
+        );
         assert_eq!(
             bridge.active_archive_session_id(),
             Some(session_id.into_raw())

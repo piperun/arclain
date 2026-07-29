@@ -249,6 +249,14 @@ fn basename(path: &str) -> &str {
 #[derive(Debug)]
 pub(crate) struct EntryIndex {
     by_id: HashMap<EntryId, ArchiveEntryDto>,
+    /// Every `File`-kind entry's id, in the same stable, path-sorted
+    /// order `build` already computes (`ordered_files`) -- collected
+    /// alongside that existing pass, not a second scan. Backs
+    /// [`Self::file_count`]/[`Self::file_paths_page`] with a `Vec` slice
+    /// instead of `Self::file_paths`'s HashMap-order full materialization,
+    /// so counting or paging never touches (let alone clones) an entry
+    /// outside the requested page.
+    sorted_file_ids: Vec<EntryId>,
     /// Each directory's children, name-sorted at build time (matching the
     /// pre-facade UI's baseline order: `NavigationState::
     /// filter_entries_with_archive_paths` fed its per-folder entries
@@ -341,6 +349,11 @@ impl EntryIndex {
         let mut children: HashMap<ArchivePath, Vec<EntryId>> = HashMap::new();
         let mut entry_count: u64 = 0;
         let mut total_uncompressed_size: u64 = 0;
+        // Populated in the same order the `ordered_files` loop below
+        // already walks (path-sorted) -- see `sorted_file_ids`'s own doc
+        // comment for why this rides along with that existing pass
+        // instead of a second scan.
+        let mut sorted_file_ids: Vec<EntryId> = Vec::new();
 
         // Every directory's running aggregate, built by a single
         // ancestor-walk pass over the files below instead of a full
@@ -410,6 +423,7 @@ impl EntryIndex {
             };
             by_id.insert(id, dto);
             children.entry(parent).or_default().push(id);
+            sorted_file_ids.push(id);
         }
 
         for (path, raw) in dirs {
@@ -445,6 +459,7 @@ impl EntryIndex {
 
         Self {
             by_id,
+            sorted_file_ids,
             children,
             entry_count,
             total_uncompressed_size,
@@ -477,13 +492,54 @@ impl EntryIndex {
     /// order. What a whole-archive extraction pre-scans for destination
     /// collisions -- there is no `EntryId` selection to resolve in that
     /// case, only "every file this archive would write".
+    ///
+    /// Deliberately **not** what [`Self::file_count`]/
+    /// [`Self::file_paths_page`] are built on: this materializes and
+    /// clones every file path in the index (`O(files)` always), which is
+    /// the correct cost for "give me the complete list" but the wrong one
+    /// for "how many are there" or "give me one page" -- see those
+    /// methods' own doc comments. `#[cfg(test)]` counts calls so a test
+    /// can assert paging/counting never reaches this.
     fn file_paths(&self) -> Vec<String> {
+        #[cfg(test)]
+        FILE_PATHS_CALLS.with(|calls| calls.set(calls.get() + 1));
         self.by_id
             .values()
             .filter(|dto| dto.kind == EntryKind::File)
             .map(|dto| dto.path.as_str().to_string())
             .collect()
     }
+
+    /// Number of `File`-kind entries, without materializing or cloning any
+    /// path -- `sorted_file_ids.len()` is tracked incrementally at build
+    /// time, so this is `O(1)`. Matches [`Self::file_paths`]'s scope
+    /// (files only, not the synthesized directories `entry_count` also
+    /// includes).
+    pub(crate) fn file_count(&self) -> usize {
+        self.sorted_file_ids.len()
+    }
+
+    /// Clones only the requested page of file paths, in the same stable,
+    /// path-sorted order [`Self::file_paths`] does not guarantee --
+    /// `O(limit)` beyond an `O(1)` slice to `offset`, never touching (let
+    /// alone cloning) a path outside the requested page.
+    pub(crate) fn file_paths_page(&self, offset: usize, limit: usize) -> Vec<String> {
+        self.sorted_file_ids
+            .get(offset..)
+            .unwrap_or(&[])
+            .iter()
+            .take(limit)
+            .filter_map(|id| self.by_id.get(id))
+            .map(|dto| dto.path.as_str().to_string())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only instrumentation for [`EntryIndex::file_paths`] -- see
+    /// that method's own doc comment.
+    static FILE_PATHS_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// One folder's running aggregate across every descendant file at any
@@ -946,6 +1002,20 @@ impl ArchiveSession {
     /// resolve in that case, only "every file this archive would write".
     pub(crate) fn all_file_paths(&self) -> Vec<String> {
         self.entry_index.read().file_paths()
+    }
+
+    /// Number of `File`-kind entries in this session's current index,
+    /// without materializing any path -- see
+    /// [`EntryIndex::file_count`]'s own doc comment.
+    pub(crate) fn file_count(&self) -> usize {
+        self.entry_index.read().file_count()
+    }
+
+    /// One page of file paths from this session's current index, without
+    /// materializing the rest -- see [`EntryIndex::file_paths_page`]'s
+    /// own doc comment.
+    pub(crate) fn file_paths_page(&self, offset: usize, limit: usize) -> Vec<String> {
+        self.entry_index.read().file_paths_page(offset, limit)
     }
 }
 
@@ -1540,6 +1610,73 @@ mod tests {
         let mut paths = session.all_file_paths();
         paths.sort();
         assert_eq!(paths, ["a.txt", "dir/b.txt"]);
+    }
+
+    /// Regression test: `file_count`/`file_paths_page` must never fall
+    /// back to `file_paths`'s own full materialization (`ActiveTabBridge::
+    /// archive_entry_count`/`archive_entries_page`'s trait-default
+    /// behavior before `ArchiveContextBridge` overrode them) -- correct
+    /// paging behavior alone (first/last/past-the-end/full-walk) would
+    /// look identical whether or not the implementation wastefully
+    /// materialized everything first, so this also asserts the call count
+    /// on the expensive path stays at zero throughout.
+    #[test]
+    fn file_count_and_file_paths_page_do_not_materialize_the_full_file_list() {
+        const TOTAL: usize = 5_000;
+        let entries: Vec<_> = (0..TOTAL)
+            .map(|i| file(&format!("file_{i:05}.bin"), 1, 1))
+            .collect();
+        let session = session_with(&entries);
+
+        // Reset in case an earlier test running on this same OS thread
+        // already called `file_paths` -- the counter is `thread_local`,
+        // not per-test.
+        FILE_PATHS_CALLS.with(|calls| calls.set(0));
+
+        assert_eq!(session.file_count(), TOTAL);
+
+        let first_page = session.file_paths_page(0, 10);
+        assert_eq!(first_page.len(), 10);
+        assert_eq!(first_page[0], "file_00000.bin");
+        assert_eq!(first_page[9], "file_00009.bin");
+
+        let last_page = session.file_paths_page(TOTAL - 3, 10);
+        assert_eq!(
+            last_page,
+            vec!["file_04997.bin", "file_04998.bin", "file_04999.bin"],
+            "a page whose offset is near the end must return only what's left, not pad or wrap"
+        );
+
+        assert!(
+            session.file_paths_page(TOTAL + 100, 10).is_empty(),
+            "an offset past the end must return an empty page, not panic"
+        );
+
+        // Walk every page and confirm the whole archive is covered
+        // exactly once, with a stable order across calls.
+        let mut seen = std::collections::HashSet::new();
+        let mut offset = 0;
+        loop {
+            let page = session.file_paths_page(offset, 137);
+            if page.is_empty() {
+                break;
+            }
+            for path in &page {
+                assert!(
+                    seen.insert(path.clone()),
+                    "duplicate path across pages: {path}"
+                );
+            }
+            offset += page.len();
+        }
+        assert_eq!(seen.len(), TOTAL);
+
+        assert_eq!(
+            FILE_PATHS_CALLS.with(|calls| calls.get()),
+            0,
+            "file_count/file_paths_page must never fall back to the full-materialization \
+             file_paths"
+        );
     }
 
     #[test]

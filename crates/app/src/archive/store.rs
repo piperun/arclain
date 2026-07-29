@@ -17,8 +17,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use parking_lot::RwLock;
 use tokio::runtime::Handle;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::broadcast;
 
 use crate::archive::ArchiveSession;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
@@ -44,6 +45,21 @@ fn unknown_session_error(session_id: ArchiveSessionId) -> ApplicationError {
 
 /// The store every open [`ArchiveSession`] is tracked through for the
 /// lifetime of its id's validity.
+///
+/// `sessions` is a `parking_lot::RwLock`, not `tokio::sync::RwLock`,
+/// deliberately: every critical section it guards is a quick, in-memory
+/// `HashMap` operation with no `.await` inside it (`open` already runs
+/// the one genuinely slow step -- indexing -- inside `spawn_blocking`
+/// *before* taking this lock; see `open`'s own doc comment), so a plain
+/// synchronous lock costs nothing here and, unlike the async
+/// alternative, needs no ambient Tokio runtime to acquire. That is load-
+/// bearing: `crate::plugins::ArchiveContextBridge` reads and writes
+/// sessions from `arclain_plugins::PluginManager`'s event-dispatch
+/// worker, a bare `std::thread::spawn` thread with no Tokio context
+/// entered at all (see [`Self::get_sync`]'s own doc comment) -- an async
+/// lock would have required a `Handle::block_on`/`block_in_place` dance
+/// that silently no-ops from exactly that thread, which is what shipped
+/// here until it was caught.
 pub(crate) struct ArchiveSessionStore {
     sessions: RwLock<HashMap<ArchiveSessionId, Arc<ArchiveSession>>>,
     /// Per-store, not `crate::operations::registry::next_operation_id`'s
@@ -158,7 +174,7 @@ impl ArchiveSessionStore {
                     .with_recoverability(Recoverability::Fatal)
                     .with_archive_session_id(id)
             })?;
-        self.sessions.write().await.insert(id, session.clone());
+        self.sessions.write().insert(id, session.clone());
         Ok(session)
     }
 
@@ -167,14 +183,31 @@ impl ArchiveSessionStore {
     /// before invoking a synchronous backend call through the session's
     /// own `archive_arc()` -- this method's own read guard is already
     /// released by the time it returns, so it never needs that care
-    /// itself.
+    /// itself. `async` for existing (already-async) callers' convenience
+    /// -- delegates entirely to the genuinely synchronous
+    /// [`Self::get_sync`], which does the actual work.
     pub(crate) async fn get(
+        &self,
+        session_id: ArchiveSessionId,
+    ) -> Result<Arc<ArchiveSession>, ApplicationError> {
+        self.get_sync(session_id)
+    }
+
+    /// Same lookup as [`Self::get`], but genuinely synchronous -- no
+    /// `Handle`, no `.await`, no assumption that the calling thread has
+    /// any Tokio runtime context entered at all. This is what
+    /// `crate::plugins::ArchiveContextBridge` calls directly: every
+    /// `ActiveTabBridge` method is synchronous by contract (a WASM host-
+    /// function context), and its actual production callers include
+    /// `arclain_plugins::PluginManager`'s bare-`std::thread::spawn` event-
+    /// dispatch worker, which has no runtime to `Handle::try_current()`
+    /// into in the first place.
+    pub(crate) fn get_sync(
         &self,
         session_id: ArchiveSessionId,
     ) -> Result<Arc<ArchiveSession>, ApplicationError> {
         self.sessions
             .read()
-            .await
             .get(&session_id)
             .cloned()
             .ok_or_else(|| unknown_session_error(session_id))
@@ -186,7 +219,6 @@ impl ArchiveSessionStore {
     pub(crate) async fn close(&self, session_id: ArchiveSessionId) -> Result<(), ApplicationError> {
         self.sessions
             .write()
-            .await
             .remove(&session_id)
             .map(|_| ())
             .ok_or_else(|| unknown_session_error(session_id))
