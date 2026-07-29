@@ -488,28 +488,6 @@ impl EntryIndex {
         self.by_id.get(&entry_id)
     }
 
-    /// Every `File` entry's archive-relative path, in the same stable,
-    /// path-sorted order [`Self::file_paths_page`] returns. What a
-    /// whole-archive extraction pre-scans for destination collisions --
-    /// there is no `EntryId` selection to resolve in that case, only
-    /// "every file this archive would write".
-    ///
-    /// Walks `sorted_file_ids` rather than `by_id.values()`: iterating a
-    /// `HashMap` yields an arbitrary, run-to-run-varying order, so the
-    /// full list and any page of it would disagree about which path comes
-    /// first, and two runs over an unchanged archive would produce
-    /// differently-ordered lists. Both consumers of this method (a
-    /// collision pre-scan, and the plugin bridge's `archive_entries`) are
-    /// better served by a deterministic order, and `sorted_file_ids` is
-    /// already built during indexing at no extra cost.
-    ///
-    /// Deliberately **not** what [`Self::file_count`]/
-    /// [`Self::file_paths_page`] are built on: this materializes and
-    /// clones every file path in the index (`O(files)` always), which is
-    /// the correct cost for "give me the complete list" but the wrong one
-    /// for "how many are there" or "give me one page" -- see those
-    /// methods' own doc comments. `#[cfg(test)]` counts calls so a test
-    /// can assert paging/counting never reaches this.
     /// Every indexed entry rebuilt into the flat
     /// `arclain_core::ArchiveEntry` shape the organization rule engine
     /// consumes, path-sorted so a caller feeding it to that engine gets
@@ -552,6 +530,28 @@ impl EntryIndex {
         entries
     }
 
+    /// Every `File` entry's archive-relative path, in the same stable,
+    /// path-sorted order [`Self::file_paths_page`] returns. What a
+    /// whole-archive extraction pre-scans for destination collisions --
+    /// there is no `EntryId` selection to resolve in that case, only
+    /// "every file this archive would write".
+    ///
+    /// Walks `sorted_file_ids` rather than `by_id.values()`: iterating a
+    /// `HashMap` yields an arbitrary, run-to-run-varying order, so the
+    /// full list and any page of it would disagree about which path comes
+    /// first, and two runs over an unchanged archive would produce
+    /// differently-ordered lists. Both consumers of this method (a
+    /// collision pre-scan, and the plugin bridge's `archive_entries`) are
+    /// better served by a deterministic order, and `sorted_file_ids` is
+    /// already built during indexing at no extra cost.
+    ///
+    /// Deliberately **not** what [`Self::file_count`]/
+    /// [`Self::file_paths_page`] are built on: this materializes and
+    /// clones every file path in the index (`O(files)` always), which is
+    /// the correct cost for "give me the complete list" but the wrong one
+    /// for "how many are there" or "give me one page" -- see those
+    /// methods' own doc comments. `#[cfg(test)]` counts calls so a test
+    /// can assert paging/counting never reaches this.
     fn file_paths(&self) -> Vec<String> {
         #[cfg(test)]
         FILE_PATHS_CALLS.with(|calls| calls.set(calls.get() + 1));
