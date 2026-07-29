@@ -105,12 +105,17 @@ fn rule_input(name: &str, root_folder: &str, pattern: &str, target: &str) -> Org
 
 /// Reports plugin metadata for `session_id` exactly as a plugin's
 /// `emit_metadata` host call does.
-fn report_plugin_metadata(app: &ArclainApp, session_id: ArchiveSessionId, title: &str) {
+fn report_plugin_metadata(
+    app: &ArclainApp,
+    session_id: ArchiveSessionId,
+    product_id: &str,
+    title: &str,
+) {
     let bridge = app.active_tab_bridge(|_| panic!("fallback must not run: the session exists"));
     bridge.set_session_metadata(
         session_id.into_raw(),
         Some(serde_json::json!({
-            "product_id": "RJ123456",
+            "product_id": product_id,
             "source": "dlsite",
             "title": title,
         })),
@@ -310,7 +315,7 @@ fn metadata_arrival_invalidates_the_plan_and_a_profile_change_does_not() {
     );
 
     // Metadata arrives.
-    report_plugin_metadata(&app, session_id, "Plugin Title");
+    report_plugin_metadata(&app, session_id, "RJ123456", "Plugin Title");
     panel.metadata_changed(None);
     assert!(
         render_once(&mut panel).contains(&OrganizePanelAction::RefreshPreview),
@@ -323,6 +328,153 @@ fn metadata_arrival_invalidates_the_plan_and_a_profile_change_does_not() {
         "[RJ123456] Plugin Title",
         "the recomputed plan must use the metadata the session now holds"
     );
+}
+
+/// Regression: the organizer is one panel bound to one archive session,
+/// but plugin metadata arrives per *tab*. A background tab finishing its
+/// fetch must not push its metadata into a panel organizing a different
+/// archive — that is not a cosmetic mislabel: `panel.metadata` gates
+/// `can_apply()` through `is_dlsite_rule_without_metadata()`, so the
+/// wrong archive's metadata would enable Apply for a DLsite rule that
+/// has none, and it is what the issues export enumerates screenshots
+/// from.
+#[test]
+fn metadata_for_another_session_never_reaches_the_panel() {
+    let (_temp, shared) = create_test_shared_state_with_facade();
+    let app = shared
+        .facade
+        .as_ref()
+        .expect("the fixture has a facade")
+        .clone();
+
+    // A rule that needs DLsite metadata: with none, Apply is blocked
+    // however good the plan is.
+    let mut dlsite_rule = rule_input("DLsite Rule", "[$product_id] $title", "**", "");
+    dlsite_rule.trigger.metadata_source = Some("dlsite".to_string());
+    let rules = save_rule(&shared, dlsite_rule);
+    let rules: Vec<_> = rules
+        .into_iter()
+        .filter(|rule| rule.name == "DLsite Rule")
+        .collect();
+
+    // Two archives, two sessions, two tabs.
+    let panel_archive = build_zip_fixture(
+        _temp.path(),
+        "[RJ123456] Panel.zip",
+        &[("wrapper/Game.exe", b"executable bytes")],
+    );
+    let other_archive = build_zip_fixture(
+        _temp.path(),
+        "[RJ000222] Other.zip",
+        &[("wrapper/Other.exe", b"other bytes")],
+    );
+    let panel_session = open_session(&shared, &panel_archive);
+    let other_session = open_session(&shared, &other_archive);
+
+    let panel_tab = shared.signals().tabs.get().active().clone();
+    panel_tab.archive_path.set(Some(panel_archive));
+    panel_tab.archive_session_id.set(Some(panel_session));
+
+    let other_tab_id = {
+        let mut col = shared.signals().tabs.get();
+        let id = col.open(Some(other_archive));
+        shared.signals().tabs.set(col);
+        id
+    };
+    let other_tab = shared
+        .signals()
+        .tabs
+        .get()
+        .get(other_tab_id)
+        .cloned()
+        .expect("the second tab must exist");
+    other_tab.archive_session_id.set(Some(other_session));
+
+    // The user is now looking at the second tab while the organizer is
+    // still open on the first — the arrangement the old "is this the
+    // active tab?" test got wrong in both directions.
+    {
+        let mut col = shared.signals().tabs.get();
+        col.switch_to(other_tab_id);
+        shared.signals().tabs.set(col);
+    }
+
+    // The panel is organizing the *first* session and has no metadata.
+    let mut org_feature = arclain_ui::features::organization::OrganizationFeature::new(&shared);
+    let mut panel = panel_for(panel_session, "[RJ123456] Panel.zip", rules);
+    refresh_preview(&mut panel, &shared);
+    assert!(panel.preview().is_some(), "the plan must be on screen");
+    assert!(
+        !panel.can_apply(),
+        "a DLsite rule with no metadata blocks Apply"
+    );
+    org_feature.organizer_page = Some(arclain_ui::features::organization::OrganizerPage::new(
+        panel,
+    ));
+
+    // The OTHER tab's plugin fetch lands: the plugin writes it to its own
+    // session, and the session-event consumer stamps the owning tab.
+    report_plugin_metadata(&app, other_session, "RJ000222", "Other Archive Title");
+    other_tab.metadata.set(Some(serde_json::json!({
+        "product_id": "RJ000222",
+        "source": "dlsite",
+        "title": "Other Archive Title",
+    })));
+    arclain_ui::core::app_lifecycle::process_metadata_signal(&shared, &mut org_feature);
+
+    assert_eq!(
+        other_tab
+            .game_metadata
+            .get()
+            .map(|meta| meta.title)
+            .as_deref(),
+        Some("Other Archive Title"),
+        "sanity: the event was processed — it reached its own tab"
+    );
+    let panel = &org_feature
+        .organizer_page
+        .as_ref()
+        .expect("the panel is still open")
+        .panel;
+    assert!(
+        panel.metadata.is_none(),
+        "another session's metadata must not reach this panel"
+    );
+    assert!(
+        !panel.can_apply(),
+        "and must not unblock Apply for a rule that still has no metadata"
+    );
+
+    // The panel's OWN tab's fetch lands.
+    report_plugin_metadata(&app, panel_session, "RJ123456", "Panel Archive Title");
+    panel_tab.metadata.set(Some(serde_json::json!({
+        "product_id": "RJ123456",
+        "source": "dlsite",
+        "title": "Panel Archive Title",
+    })));
+    arclain_ui::core::app_lifecycle::process_metadata_signal(&shared, &mut org_feature);
+
+    let page = org_feature
+        .organizer_page
+        .as_mut()
+        .expect("the panel is still open");
+    assert_eq!(
+        page.panel.metadata.as_ref().map(|meta| meta.title.as_str()),
+        Some("Panel Archive Title"),
+        "its own session's metadata must reach it, even while another tab is active"
+    );
+    assert!(
+        !page.panel.can_apply(),
+        "the plan is stale until it is recomputed from the new metadata"
+    );
+
+    refresh_preview(&mut page.panel, &shared);
+    assert_eq!(
+        page.panel.preview().expect("a plan").root_folder,
+        "[RJ123456] Panel Archive Title",
+        "and the recomputed plan is this session's, not the other tab's"
+    );
+    assert!(page.panel.can_apply(), "Apply unblocks once metadata is in");
 }
 
 /// Renders one frame headlessly and reports what the panel asked for.
