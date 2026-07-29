@@ -1,16 +1,28 @@
 //! The CLI's argument surface (`Cli`/`Command`) and the shared
 //! archive-open-and-wait helper every read command that opens an archive
-//! (`inspect`, `list`) builds on.
+//! (`inspect`, `list`) builds on, plus the entry-path resolution and
+//! path-absolutizing helpers every mutation command shares.
 
+pub mod archive;
+pub mod convert;
+pub mod extract;
 pub mod inspect;
 pub mod list;
+pub mod organize;
+pub mod pipeline;
+pub mod plugins;
 pub mod profiles;
+pub mod settings;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use arclain_app::archive::{ArchiveSnapshot, OpenArchiveRequest};
-use arclain_app::challenge::Challenge;
-use arclain_app::event::{OperationResult, OperationState};
+use arclain_app::archive::{
+    ArchivePath, ArchiveSnapshot, EntrySortKey, ListEntriesRequest, OpenArchiveRequest,
+    SortDirection,
+};
+use arclain_app::error::{ApplicationError, ApplicationErrorKind, Recoverability};
+use arclain_app::event::{OperationEvent, OperationResult, OperationState};
+use arclain_app::ids::{ArchiveSessionId, EntryId};
 use arclain_app::ArclainApp;
 use clap::{Parser, Subcommand};
 
@@ -52,6 +64,32 @@ pub enum Command {
         #[command(subcommand)]
         command: profiles::ProfilesCommand,
     },
+    /// Extract entries (or the whole archive) to a destination directory.
+    Extract(extract::ExtractArgs),
+    /// Convert a batch of archives to a target format.
+    Convert(convert::ConvertArgs),
+    /// Organize a batch of archives under one rule and output profile.
+    Organize(organize::OrganizeArgs),
+    /// Add or delete entries in an open archive.
+    Archive {
+        #[command(subcommand)]
+        command: archive::ArchiveCommand,
+    },
+    /// Run a saved processing pipeline preset over a batch of inputs.
+    Pipeline {
+        #[command(subcommand)]
+        command: pipeline::PipelineCommand,
+    },
+    /// Inspect and control the plugin runtime.
+    Plugins {
+        #[command(subcommand)]
+        command: plugins::PluginsCommand,
+    },
+    /// Inspect and mutate application settings.
+    Settings {
+        #[command(subcommand)]
+        command: settings::SettingsCommand,
+    },
 }
 
 /// Runs the parsed `command` against a bootstrapped `app`, returning this
@@ -61,31 +99,41 @@ pub async fn dispatch(app: &ArclainApp, command: &Command, json: bool) -> i32 {
         Command::Inspect(args) => inspect::run(app, args, json).await,
         Command::List(args) => list::run(app, args, json).await,
         Command::Profiles { command } => profiles::dispatch(app, command, json).await,
+        Command::Extract(args) => extract::run(app, args, json).await,
+        Command::Convert(args) => convert::run(app, args, json).await,
+        Command::Organize(args) => organize::run(app, args, json).await,
+        Command::Archive { command } => archive::dispatch(app, command, json).await,
+        Command::Pipeline { command } => pipeline::dispatch(app, command, json).await,
+        Command::Plugins { command } => plugins::dispatch(app, command, json).await,
+        Command::Settings { command } => settings::dispatch(app, command, json).await,
     }
 }
 
 /// Validates `archive_path` locally, then starts opening it as a facade
 /// operation and waits for a terminal state -- the shared first step
-/// both `inspect` and `list` need before they can serve anything from the
-/// resulting session.
+/// every command that needs an open session (`inspect`/`list`, and every
+/// mutation command that opens an archive first: `extract`, `archive
+/// add`/`delete`) builds on.
 ///
 /// Subscribes to the operation-event stream *before* calling
 /// `start_open_archive`, matching `arclain_app`'s own integration-test
 /// convention (see `crates/app/tests/archive_sessions.rs`): subscribing
 /// after the call could race the operation's own `Accepted` event.
 ///
-/// A challenge of any kind (only `Password` is reachable in practice for
-/// an archive-open operation, but every variant is handled) cannot be
-/// answered by this task's read commands -- interactive input is a later
-/// task's scope -- so it cancels the operation and returns
-/// `exit_code::USER_ACTION_REQUIRED` with a clear stderr message rather
-/// than hanging or silently failing.
+/// A `Challenge::Password` is answered via `interactive` (the only
+/// variant actually reachable for an archive-open operation, but this
+/// function still routes every variant through the same
+/// `crate::events::handle_challenge`, matching that function's own
+/// exhaustive, forward-compatible handling of all five), refused with
+/// `exit_code::USER_ACTION_REQUIRED` when `interactive` reports no real
+/// controlling terminal -- see that function's own doc comment.
 ///
 /// Returns the opened session's snapshot on success, or the process exit
 /// code to use on any failure path (already printed to stderr).
 pub(crate) async fn open_archive_and_wait(
     app: &ArclainApp,
     archive_path: &Path,
+    interactive: &dyn crate::events::Interactive,
 ) -> Result<ArchiveSnapshot, i32> {
     if !archive_path.is_file() {
         print_plain_error(&format!("archive not found: {}", archive_path.display()));
@@ -133,14 +181,12 @@ pub(crate) async fn open_archive_and_wait(
                 print_plain_error("unexpected result for an archive-open operation");
                 return Err(exit_code::INTERNAL_FAILURE);
             }
-            OperationState::Challenge { challenge } => {
-                print_plain_error(&format!(
-                    "{} -- not supported by this command (interactive input is not yet \
-                     implemented)",
-                    describe_challenge(&challenge)
-                ));
-                let _ = app.cancel_operation(operation_id).await;
-                return Err(exit_code::USER_ACTION_REQUIRED);
+            OperationState::Challenge { ref challenge } => {
+                // A response was submitted and accepted -- keep waiting
+                // for this same operation's next event. `?` propagates
+                // `handle_challenge`'s own `Err(code)` directly: both
+                // functions share the same `Result<_, i32>` error type.
+                crate::events::handle_challenge(app, operation_id, challenge, interactive).await?;
             }
             OperationState::Failed { error } => {
                 let code = exit_code_for(&error.kind);
@@ -162,80 +208,148 @@ pub(crate) async fn open_archive_and_wait(
     }
 }
 
-/// A human-readable, one-line description of `challenge`, for the stderr
-/// message `open_archive_and_wait` prints when it cannot answer one.
-fn describe_challenge(challenge: &Challenge) -> String {
-    match challenge {
-        Challenge::Password {
-            archive_name,
-            attempt,
-            ..
-        } => format!("password required for {archive_name} (attempt {attempt})"),
-        Challenge::ConfirmOverwrite { destination, .. } => {
-            format!(
-                "confirmation required to overwrite {}",
-                destination.display()
+/// Resolves one archive-relative path string (as a user types it on the
+/// command line, e.g. `game/data/save.dat`) to the [`EntryId`] naming it
+/// in `session_id`'s *current* index.
+///
+/// There is no facade method that resolves a path directly to an id --
+/// `ArclainApp::list_entries` only ever returns one directory's own
+/// direct children -- so this walks the path one segment at a time from
+/// the root, looking up each segment's matching child before descending
+/// into it. `O(depth)` facade calls per path; acceptable for the small,
+/// human-typed paths a CLI invocation's own argument list can realistically
+/// carry.
+///
+/// Known, documented limitation: if a directory contains more than one
+/// entry with the same `name` (the facade's own index explicitly allows
+/// this for a malformed/adversarial archive -- see `arclain_app`'s own
+/// `EntryIndex` doc comment on "duplicate paths preserved as distinct
+/// entries"), this resolves to whichever one `list_entries` returns
+/// first for that name; there is no syntax in this CLI for addressing a
+/// second, third, ... duplicate at the same path independently. A real
+/// fix needs its own selection syntax (an ordinal suffix, for example)
+/// and is out of this task's scope.
+pub(crate) async fn resolve_entry_id(
+    app: &ArclainApp,
+    session_id: ArchiveSessionId,
+    path: &str,
+) -> Result<EntryId, ApplicationError> {
+    let target = ArchivePath::parse(path.to_string())?;
+    if target == ArchivePath::root() {
+        return Err(cannot_select_root_error());
+    }
+
+    let mut directory = ArchivePath::root();
+    let mut resolved: Option<EntryId> = None;
+    for segment in target.as_str().split('/') {
+        let page = app
+            .list_entries(
+                session_id,
+                ListEntriesRequest {
+                    directory: directory.clone(),
+                    sort_key: EntrySortKey::Name,
+                    sort_direction: SortDirection::Ascending,
+                    name_filter: None,
+                    offset: 0,
+                    limit: u32::MAX,
+                },
             )
+            .await?;
+        let found = page
+            .entries
+            .iter()
+            .find(|entry| entry.name == segment)
+            .ok_or_else(|| unknown_entry_path_error(path))?;
+        resolved = Some(found.id);
+        directory = found.path.clone();
+    }
+    resolved.ok_or_else(|| unknown_entry_path_error(path))
+}
+
+/// Resolves every one of `paths` via [`resolve_entry_id`], in order,
+/// stopping at (and returning) the first one that fails to resolve.
+pub(crate) async fn resolve_entry_ids(
+    app: &ArclainApp,
+    session_id: ArchiveSessionId,
+    paths: &[String],
+) -> Result<Vec<EntryId>, ApplicationError> {
+    let mut ids = Vec::with_capacity(paths.len());
+    for path in paths {
+        ids.push(resolve_entry_id(app, session_id, path).await?);
+    }
+    Ok(ids)
+}
+
+fn cannot_select_root_error() -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::InvalidInput,
+        "the archive root cannot be selected as a single entry",
+    )
+    .with_recoverability(Recoverability::UserAction)
+    .with_field("entry")
+}
+
+fn unknown_entry_path_error(path: &str) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::NotFound,
+        "no such entry exists in this archive",
+    )
+    .with_diagnostic(format!("path: {path}"))
+    .with_recoverability(Recoverability::UserAction)
+    .with_field("entry")
+}
+
+/// Resolves `path` against this process's current working directory if
+/// it is relative, using [`std::path::absolute`] -- purely lexical
+/// (prepends the CWD and normalizes `.`/`..` segments; never requires
+/// `path` to exist, never resolves a symlink). Every destination/source
+/// path this crate's mutation commands accept goes through this: a user
+/// typing a relative path on the command line expects it resolved
+/// against the shell's own CWD, matching every ordinary CLI tool's
+/// convention -- and several facade request types (`ExtractRequest::
+/// destination` in particular) reject a relative path outright as
+/// `InvalidInput`.
+pub(crate) fn absolutize(path: &Path) -> Result<PathBuf, i32> {
+    std::path::absolute(path).map_err(|error| {
+        print_plain_error(&format!(
+            "failed to resolve {} to an absolute path: {error}",
+            path.display()
+        ));
+        exit_code::INTERNAL_FAILURE
+    })
+}
+
+/// Tracks the last `OperationState::Progress` message observed across a
+/// `crate::events::drive_operation` run, via that function's own
+/// `on_event` callback -- shared by every mutation command
+/// (`extract`, `convert`, `organize`, `archive add`/`delete`,
+/// `pipeline run`) that surfaces it as `crate::output::MutationOutcome::summary`.
+/// See that field's own doc comment for why this is captured at all:
+/// `Convert`/`Organize`/`Pipeline` complete with `OperationResult::None`
+/// even when every input failed, so this free-text tally message is the
+/// only signal a caller has beyond a bare `{"status": "completed"}`.
+#[derive(Default)]
+pub(crate) struct LastProgressMessage(Option<String>);
+
+impl LastProgressMessage {
+    pub(crate) fn observe(&mut self, event: &OperationEvent) {
+        if let OperationState::Progress {
+            message: Some(message),
+            ..
+        } = &event.state
+        {
+            self.0 = Some(message.clone());
         }
-        Challenge::ConfirmDestructiveAction { summary, .. } => {
-            format!("confirmation required: {summary}")
-        }
-        Challenge::MissingExternalTool { tool, .. } => {
-            format!("missing external tool: {tool}")
-        }
-        Challenge::RetryPermission { path, .. } => {
-            format!("permission retry required for {}", path.display())
-        }
+    }
+
+    pub(crate) fn into_inner(self) -> Option<String> {
+        self.0
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arclain_app::ids::ChallengeId;
-
-    #[test]
-    fn describe_challenge_password_mentions_password_and_attempt() {
-        let challenge = Challenge::Password {
-            id: ChallengeId::from_raw(1),
-            archive_name: "secret.zip".to_string(),
-            attempt: 2,
-        };
-        let description = describe_challenge(&challenge);
-        assert!(description.contains("password"));
-        assert!(description.contains("secret.zip"));
-        assert!(description.contains('2'));
-    }
-
-    #[test]
-    fn describe_challenge_covers_every_variant_without_panicking() {
-        let challenges = [
-            Challenge::Password {
-                id: ChallengeId::from_raw(1),
-                archive_name: "a.zip".to_string(),
-                attempt: 1,
-            },
-            Challenge::ConfirmOverwrite {
-                id: ChallengeId::from_raw(2),
-                destination: std::path::PathBuf::from("out/file.txt"),
-            },
-            Challenge::ConfirmDestructiveAction {
-                id: ChallengeId::from_raw(3),
-                summary: "delete everything".to_string(),
-            },
-            Challenge::MissingExternalTool {
-                id: ChallengeId::from_raw(4),
-                tool: "7z".to_string(),
-            },
-            Challenge::RetryPermission {
-                id: ChallengeId::from_raw(5),
-                path: std::path::PathBuf::from("locked.txt"),
-            },
-        ];
-        for challenge in &challenges {
-            assert!(!describe_challenge(challenge).is_empty());
-        }
-    }
 
     /// A real (if minimal) `ArclainApp` bootstrap is enough to exercise
     /// `open_archive_and_wait`'s local existence check without ever
@@ -262,10 +376,31 @@ mod tests {
         .expect("bootstrap must succeed (requires a real 7-Zip executable on PATH)");
 
         let missing = temp.path().join("does-not-exist.zip");
-        let result = open_archive_and_wait(&app, &missing).await;
+        let interactive = crate::events::std_interactive();
+        let result = open_archive_and_wait(&app, &missing, &interactive).await;
 
         assert_eq!(result.err(), Some(exit_code::UNSUPPORTED_INPUT));
 
         let _ = app.shutdown().await;
+    }
+
+    #[test]
+    fn absolutize_leaves_an_already_absolute_path_unchanged() {
+        let absolute = if cfg!(windows) {
+            PathBuf::from(r"C:\already\absolute")
+        } else {
+            PathBuf::from("/already/absolute")
+        };
+        assert_eq!(absolutize(&absolute).unwrap(), absolute);
+    }
+
+    #[test]
+    fn absolutize_prefixes_a_relative_path_with_the_current_directory() {
+        let relative = Path::new("relative/child.txt");
+        let resolved = absolutize(relative).unwrap();
+        assert!(resolved.is_absolute());
+        assert!(
+            resolved.ends_with("relative/child.txt") || resolved.ends_with("relative\\child.txt")
+        );
     }
 }

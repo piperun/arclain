@@ -1,6 +1,8 @@
-//! `arclain-cli`: a pure `arclain_app::ArclainApp` client exposing a
-//! read-only surface (`inspect`/`list`/`profiles`) over Arclain's archive
-//! and settings facade.
+//! `arclain-cli`: a pure `arclain_app::ArclainApp` client exposing both a
+//! read-only surface (`inspect`/`list`/`profiles`) and an operational,
+//! mutating surface (`extract`/`convert`/`organize`/`archive`/`pipeline`/
+//! `plugins`/`settings`) over Arclain's archive, processing, plugin, and
+//! settings facade.
 //!
 //! Architecture: this binary depends on `arclain_app` only -- it may
 //! format the DTOs the facade returns, but it never reaches into
@@ -8,7 +10,11 @@
 //! `scripts/frontend_boundary.py`'s `FRONTEND_CRATES`). `crate::commands`
 //! holds the argument surface and per-command logic; `crate::output`
 //! holds the shared JSON envelope, exit-code mapping, and printing
-//! helpers every command uses.
+//! helpers every command uses; `crate::events` holds the operation-event
+//! driving loop every mutation command shares (JSON Lines rendering,
+//! human progress rendering, Ctrl+C, and interactive challenge
+//! handling -- see that module's own doc comment for the exact `--json`
+//! framing and the interactive-password/never-a-CLI-argument contract).
 //!
 //! # Runtime shape
 //!
@@ -24,6 +30,7 @@
 //! sync first, then a small runtime purely for this process's own awaits.
 
 mod commands;
+mod events;
 mod output;
 
 use clap::{CommandFactory, FromArgMatches};

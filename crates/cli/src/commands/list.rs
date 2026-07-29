@@ -51,7 +51,8 @@ pub async fn run(app: &ArclainApp, args: &ListArgs, json: bool) -> i32 {
         }
     };
 
-    let snapshot = match super::open_archive_and_wait(app, &args.archive).await {
+    let interactive = crate::events::std_interactive();
+    let snapshot = match super::open_archive_and_wait(app, &args.archive, &interactive).await {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };

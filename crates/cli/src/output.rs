@@ -32,6 +32,61 @@ impl<T> CliEnvelope<T> {
     }
 }
 
+/// The `--json` payload every mutation command that drives
+/// `crate::events::drive_operation` (`extract`, `convert`, `organize`,
+/// `archive add`/`delete`, `pipeline run`, `plugins action`'s own
+/// `Completed` fallback path) reports on success, alongside their own
+/// facade-defined result where one exists.
+///
+/// `summary` carries the last `OperationState::Progress` message this
+/// command's own event loop observed, when one was reported --
+/// deliberately surfaced rather than silently discarded: `Convert`/
+/// `Organize`/`Pipeline` operations complete with `OperationResult::None`
+/// (no structured per-file success/failure count of their own) **even
+/// when every single input failed** -- `crate::runtime::processing_ops`'s
+/// own doc comment documents this as intentional, matching
+/// `execute_pipeline`'s "keep going, tally the outcome" semantics rather
+/// than turning the whole operation `Failed` for a per-file problem.
+/// That is workable for a GUI showing a live, always-visible progress
+/// list, but a one-shot CLI process has no such fallback: without this
+/// field, a caller (human or script) parsing only `{"status":"completed"}`
+/// would see success even for a run that silently converted zero files.
+/// This is *not* a full fix -- there is still no *structured*
+/// success/failure count to build a reliable non-zero exit code from,
+/// only this free-text tally message -- see this task's own report for
+/// the architectural gap it surfaces.
+///
+/// `new_revision` is `archive add`/`archive delete`'s own counterpart:
+/// `Some` when the mutation actually changed the archive (an
+/// `OperationState::SnapshotChanged` was observed), `None` for a
+/// structurally-empty mutation that completed as a harmless no-op.
+/// Every other command leaves this `None` -- there is no archive
+/// session, and therefore no revision, to report.
+#[derive(Serialize)]
+pub struct MutationOutcome {
+    pub status: &'static str,
+    pub summary: Option<String>,
+    pub new_revision: Option<u64>,
+}
+
+impl MutationOutcome {
+    pub fn completed(summary: Option<String>) -> Self {
+        Self {
+            status: "completed",
+            summary,
+            new_revision: None,
+        }
+    }
+
+    pub fn completed_with_revision(new_revision: Option<u64>) -> Self {
+        Self {
+            status: "completed",
+            summary: None,
+            new_revision,
+        }
+    }
+}
+
 /// This CLI's process exit codes. `SUCCESS`/`INVOCATION_ERROR` intentionally
 /// match clap's own convention (`0` for a normal exit, including `--help`/
 /// `--version`; `2` for a usage error) -- `clap::Parser`'s generated
@@ -104,7 +159,27 @@ pub fn print_plain_error(message: &str) {
 }
 
 /// Serializes `data` into a schema-versioned [`CliEnvelope`] and prints it
-/// as pretty JSON to stdout.
+/// as a single, compact (non-pretty-printed) JSON line to stdout.
+///
+/// Every mutation command that first streams `crate::events::drive_operation`'s
+/// own JSON Lines events uses this, never [`print_json`], for its final
+/// envelope: `events`'s own module doc comment documents that whole
+/// stream (progress events *and* this final line alike) as one JSON
+/// object per line, and a pretty-printed (multi-line) envelope would
+/// break that contract for exactly the one line meant to close it out.
+pub fn print_json_line<T: Serialize>(data: &T) {
+    let envelope = CliEnvelope::new(data);
+    match serde_json::to_string(&envelope) {
+        Ok(text) => println!("{text}"),
+        Err(error) => print_plain_error(&format!("failed to serialize JSON output: {error}")),
+    }
+}
+
+/// Serializes `data` into a schema-versioned [`CliEnvelope`] and prints it
+/// as pretty JSON to stdout. Used by every command that prints exactly
+/// one JSON object with nothing streamed before it (`inspect`, `list`,
+/// `profiles`, `plugins list`, `settings show`) -- see [`print_json_line`]
+/// for the mutation commands' own, JSON-Lines-safe counterpart.
 pub fn print_json<T: Serialize>(data: &T) {
     let envelope = CliEnvelope::new(data);
     match serde_json::to_string_pretty(&envelope) {
