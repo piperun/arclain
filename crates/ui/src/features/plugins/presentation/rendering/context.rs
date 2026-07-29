@@ -18,3 +18,16 @@ pub struct RenderContext<'a, H: UiEventHandler + ?Sized> {
     pub plugin_id: Option<&'a str>,
     pub image_owner: Option<&'a ImageOwner>,
 }
+
+impl<H: UiEventHandler + ?Sized> RenderContext<'_, H> {
+    /// The subset the shared image helpers need -- see
+    /// [`super::image::ImageContext`] for why they take that rather than
+    /// a whole `RenderContext`.
+    pub(super) fn image_context(&self) -> super::image::ImageContext<'_> {
+        super::image::ImageContext {
+            shared_state: self.shared_state,
+            plugin_id: self.plugin_id,
+            image_owner: self.image_owner,
+        }
+    }
+}

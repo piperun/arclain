@@ -1,0 +1,302 @@
+//! Render-emit tests for the facade-backed plugin document renderer.
+//!
+//! Same shape as `render_emit_test.rs`: a headless `egui_kittest`
+//! harness renders real widgets, the test clicks one, and asserts on the
+//! [`DocumentEvent`]s the render returned. These pin the half of the
+//! cutover that unit tests on the session registry cannot reach -- that a
+//! *press* produces the right event -- and in particular that button
+//! navigation never enters the plugin action channel.
+
+use arclain_app::ids::PluginSessionId;
+use arclain_app::plugins::{
+    PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginUiDocument,
+    PluginUiNodeDto, PluginUiNodeKind,
+};
+use arclain_ui::features::plugins::application::PluginNavigation;
+use arclain_ui::features::plugins::presentation::rendering::{
+    render_document, DocumentContext, DocumentEvent,
+};
+use arclain_ui::shared::theme::AppTheme;
+use egui_kittest::kittest::Queryable as _;
+use egui_kittest::Harness;
+
+fn node(id: &str, kind: PluginUiNodeKind) -> PluginUiNodeDto {
+    PluginUiNodeDto {
+        id: id.to_string(),
+        kind,
+        visible: true,
+        enabled: true,
+    }
+}
+
+fn document(children: Vec<PluginUiNodeDto>) -> PluginUiDocument {
+    PluginUiDocument {
+        session_id: PluginSessionId::from_raw(1),
+        plugin_id: "ui-demo".to_string(),
+        region_id: "panel".to_string(),
+        extension_point: PluginExtensionPointDto::Panel,
+        revision: 1,
+        root: node("#root", PluginUiNodeKind::Single { children }),
+    }
+}
+
+fn button(id: &str, label: &str, action: Option<PluginButtonActionDto>) -> PluginUiNodeDto {
+    node(
+        id,
+        PluginUiNodeKind::Button {
+            label: label.to_string(),
+            action,
+        },
+    )
+}
+
+struct Stage {
+    document: PluginUiDocument,
+    theme: AppTheme,
+    events: Vec<DocumentEvent>,
+}
+
+impl Stage {
+    fn new(document: PluginUiDocument) -> Self {
+        Self {
+            document,
+            theme: AppTheme::new(false),
+            events: Vec::new(),
+        }
+    }
+}
+
+fn harness(document: PluginUiDocument) -> Harness<'static, Stage> {
+    Harness::new_ui_state(
+        |ui, stage: &mut Stage| {
+            let ctx = DocumentContext {
+                colors: &stage.theme.colors,
+                shared_state: None,
+                image_owner: None,
+            };
+            let mut events = render_document(ui, &stage.document, ctx);
+            // Latch every event across frames: the click lands on one
+            // frame and the harness runs several.
+            stage.events.append(&mut events);
+        },
+        Stage::new(document),
+    )
+}
+
+#[test]
+fn a_plain_button_press_dispatches_the_nodes_own_id_to_the_plugin() {
+    let mut harness = harness(document(vec![button("go", "Go", None)]));
+    harness.run();
+    harness.get_by_label("Go").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().events,
+        vec![DocumentEvent::Interact {
+            node_id: "go".to_string(),
+            action: PluginActionDto::Activate,
+        }]
+    );
+}
+
+/// A `Custom` button action names a different event id than the node --
+/// the flat renderer honored this too, and plugins rely on it to give one
+/// button a distinct handler id.
+#[test]
+fn a_custom_button_action_dispatches_the_custom_id_not_the_node_id() {
+    let mut harness = harness(document(vec![button(
+        "go",
+        "Go",
+        Some(PluginButtonActionDto::Custom {
+            value: "do_thing".to_string(),
+        }),
+    )]));
+    harness.run();
+    harness.get_by_label("Go").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().events,
+        vec![DocumentEvent::Interact {
+            node_id: "do_thing".to_string(),
+            action: PluginActionDto::Activate,
+        }]
+    );
+}
+
+/// The core of the prefix reconciliation: every declarative navigation
+/// action becomes host navigation, at *every* extension point, and none
+/// of them produce an `Interact` the plugin would receive as a literal
+/// `"__dialog_open:"`-style event id.
+#[test]
+fn every_declarative_button_action_becomes_host_navigation_and_never_a_plugin_event() {
+    let cases = [
+        (
+            PluginButtonActionDto::ShowDialog {
+                id: "settings".to_string(),
+            },
+            PluginNavigation::OpenDialog {
+                dialog_id: "settings".to_string(),
+            },
+        ),
+        (
+            PluginButtonActionDto::CloseDialog,
+            PluginNavigation::CloseDialog,
+        ),
+        (
+            PluginButtonActionDto::OpenPage {
+                id: "detail".to_string(),
+            },
+            PluginNavigation::OpenPage {
+                page_id: "detail".to_string(),
+            },
+        ),
+        (
+            PluginButtonActionDto::ClosePage,
+            PluginNavigation::ClosePage,
+        ),
+    ];
+
+    for (action, expected) in cases {
+        let mut harness = harness(document(vec![button(
+            "nav",
+            "Navigate",
+            Some(action.clone()),
+        )]));
+        harness.run();
+        harness.get_by_label("Navigate").click();
+        harness.run();
+
+        assert_eq!(
+            harness.state().events,
+            vec![DocumentEvent::Navigate(expected)],
+            "{action:?} must resolve to host navigation"
+        );
+        assert!(
+            !harness
+                .state()
+                .events
+                .iter()
+                .any(|event| matches!(event, DocumentEvent::Interact { .. })),
+            "{action:?} must never reach the plugin action channel"
+        );
+    }
+}
+
+/// The application layer rejects an action against a disabled node before
+/// it reaches the guest, so drawing it as pressable would show the user a
+/// control whose presses silently vanish. The flat element type could not
+/// express this at all.
+#[test]
+fn a_disabled_node_is_drawn_but_cannot_be_pressed() {
+    let mut disabled = button("go", "Go", None);
+    disabled.enabled = false;
+    let mut harness = harness(document(vec![disabled]));
+    harness.run();
+    harness.get_by_label("Go").click();
+    harness.run();
+
+    assert!(harness.state().events.is_empty());
+}
+
+#[test]
+fn a_hidden_node_is_not_drawn_at_all() {
+    let mut hidden = button("go", "Go", None);
+    hidden.visible = false;
+    let mut harness = harness(document(vec![
+        hidden,
+        node(
+            "visible_label",
+            PluginUiNodeKind::Label {
+                text: "Still here".to_string(),
+                bold: false,
+                size: None,
+            },
+        ),
+    ]));
+    harness.run();
+
+    assert!(harness.query_by_label("Go").is_none());
+    assert!(harness.query_by_label("Still here").is_some());
+}
+
+/// Groups are real tree nodes after normalization, so their children
+/// render inside them rather than being reconstructed from marker pairs.
+#[test]
+fn group_children_render_inside_the_group() {
+    let mut harness = harness(document(vec![node(
+        "group",
+        PluginUiNodeKind::Group {
+            title: "Options".to_string(),
+            description: Some("Pick one".to_string()),
+            children: vec![button("inner", "Inner", None)],
+        },
+    )]));
+    harness.run();
+    harness.get_by_label("Inner").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().events,
+        vec![DocumentEvent::Interact {
+            node_id: "inner".to_string(),
+            action: PluginActionDto::Activate,
+        }]
+    );
+}
+
+/// A toolbar button is plain data inside a `Toolbar` node rather than a
+/// node of its own, so its id names nothing in the tree -- the
+/// application layer dispatches an unknown node id normally.
+#[test]
+fn a_toolbar_button_press_dispatches_its_own_id() {
+    let mut harness = harness(document(vec![node(
+        "bar",
+        PluginUiNodeKind::Toolbar {
+            buttons: vec![arclain_app::plugins::PluginToolbarButtonDto {
+                id: "refresh".to_string(),
+                label: "Refresh".to_string(),
+                icon: None,
+                primary: true,
+                spacer_before: false,
+            }],
+        },
+    )]));
+    harness.run();
+    harness.get_by_label("Refresh").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().events,
+        vec![DocumentEvent::Interact {
+            node_id: "refresh".to_string(),
+            action: PluginActionDto::Activate,
+        }]
+    );
+}
+
+/// Two same-labelled buttons under distinct node ids must both be
+/// individually addressable. Before node-scoped egui ids, widget ids were
+/// whatever ambient scope the call site happened to open plus the
+/// plugin's own element id, so a document rendered twice (a panel and a
+/// dialog for one plugin) collided.
+#[test]
+fn sibling_nodes_with_identical_labels_stay_individually_addressable() {
+    let mut harness = harness(document(vec![
+        button("first", "Same", None),
+        button("second", "Same", None),
+    ]));
+    harness.run();
+    let buttons = harness.get_all_by_label("Same").collect::<Vec<_>>();
+    assert_eq!(buttons.len(), 2);
+    buttons[1].click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().events,
+        vec![DocumentEvent::Interact {
+            node_id: "second".to_string(),
+            action: PluginActionDto::Activate,
+        }]
+    );
+}

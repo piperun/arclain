@@ -19,6 +19,9 @@ mod display;
 mod form;
 
 pub use containers::{render_section_header, render_settings_group, render_tabs, render_toolbar};
+/// Shared with `super::document`'s own list-item rendering so both
+/// renderers resolve thumbnails through one cache/fetch/decode path.
+pub(super) use display::render_list_item_thumbnail;
 pub use display::{
     render_key_value_list, render_label, render_list_item, render_loading, render_metadata_grid,
     render_tag_chips, render_warning,

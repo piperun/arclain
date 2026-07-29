@@ -3,7 +3,7 @@
 //! event for selection, but the cell values themselves aren't editable.
 
 use super::super::context::{RenderContext, UiEventHandler};
-use super::super::image::{maybe_trigger_fetch, render_texture, resolve_texture};
+use super::super::image::{maybe_trigger_fetch, render_texture, resolve_texture, ImageContext};
 use crate::shared::components::settings_form::SectionHeader;
 use crate::shared::image_assets::ImageAssetState;
 use arclain_plugins::types::WarningIcon;
@@ -130,11 +130,12 @@ pub fn render_list_item(
         egui::Frame::NONE.inner_margin(8.0).corner_radius(4.0)
     };
 
+    let images = ctx.image_context();
     let response = frame
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(key) = image_key {
-                    render_list_item_thumbnail(ui, ctx, key, image_url);
+                    render_list_item_thumbnail(ui, images, colors, key, image_url);
                 }
                 render_list_item_text(ui, colors, title, subtitle);
                 render_list_item_meta(ui, colors, badge, warning_icon);
@@ -156,14 +157,14 @@ pub fn render_list_item(
 /// * cache miss → draw a spinner and trigger a fetch the first time, or
 ///   after `IMAGE_FETCH_RETRY_INTERVAL_SECS` have passed since the last
 ///   attempt.
-fn render_list_item_thumbnail(
+pub(in super::super) fn render_list_item_thumbnail(
     ui: &mut egui::Ui,
-    ctx: &mut RenderContext<'_, impl UiEventHandler + ?Sized>,
+    images: ImageContext<'_>,
+    colors: &arclain_theme::ThemeColors,
     key: &str,
     image_url: &Option<String>,
 ) {
-    let colors = ctx.colors;
-    let (state, texture) = resolve_texture(ui, ctx, key);
+    let (state, texture) = resolve_texture(ui, images, key);
     if let Some(texture) = texture {
         render_texture(ui, &texture, Some(48.0));
         return;
@@ -174,7 +175,7 @@ fn render_list_item_thumbnail(
             .color(colors.on_surface_variant),
     );
     if matches!(state, ImageAssetState::Failed(_)) {
-        maybe_trigger_fetch(ui, ctx, key, image_url.as_deref());
+        maybe_trigger_fetch(ui, images, key, image_url.as_deref());
     }
 }
 
