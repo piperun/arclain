@@ -356,8 +356,24 @@ fn reopening_the_same_page_uses_a_new_initialization_generation() {
     drop(manager_guard);
 }
 
+/// `PluginManager::enable_plugin`/`disable_plugin` are no longer reachable
+/// through this queue at all -- the plugin detail view now calls
+/// `ArclainApp::set_plugin_enabled` directly (see that method's own doc
+/// comment for why: it also persists the toggle, which this queue's old
+/// `SetEnabled` request never did). What these two tests actually proved
+/// -- the ordered queue's single worker thread executes distinct
+/// requests strictly in submission order, and repeating the same
+/// (plugin, event) pair back-to-back (an "ABA" pattern) never
+/// reorders or drops the middle request -- is still true of every
+/// mutating request kind still routed through the same `OrderedJobQueue`
+/// (`PageInit`/`Install`/`UiEvent`/`ReactiveUiEvent`; see `RequestKey`'s
+/// own doc comment for which requests coalesce and which never do).
+/// Reproduced here with `UiEvent` instead: each request's `RequestKey`
+/// embeds its own `RequestId`, so -- exactly like the removed
+/// `SetEnabled` key did -- back-to-back `UiEvent` requests can never
+/// coalesce onto each other, only ever queue and execute in order.
 #[test]
-fn opposite_enable_mutations_finish_in_request_order() {
+fn ordered_queue_requests_complete_in_strict_submission_order() {
     let plugins_dir = tempfile::tempdir().expect("create plugin test directory");
     let wasm_path = plugins_dir.path().join("ui-demo.wasm");
     std::fs::write(
@@ -378,79 +394,38 @@ fn opposite_enable_mutations_finish_in_request_order() {
     let jobs = PluginUiJobs::new(Some(manager.clone()), runtime);
     let manager_guard = manager.lock();
 
-    jobs.request(PluginUiRequest::SetEnabled {
-        plugin_id: "ui-demo".to_string(),
-        enabled: false,
-    });
-    jobs.request(PluginUiRequest::SetEnabled {
-        plugin_id: "ui-demo".to_string(),
-        enabled: true,
-    });
+    // A/B/A: repeating the identical (plugin_id, event_id, origin_tab)
+    // pair back-to-back must still queue three distinct jobs, not
+    // coalesce the second "false" onto the first.
+    let submitted: Vec<_> = ["false", "true", "false"]
+        .into_iter()
+        .map(|value| {
+            jobs.request(PluginUiRequest::UiEvent {
+                plugin_id: "ui-demo".to_string(),
+                event_id: "demo_check".to_string(),
+                value: Some(value.to_string()),
+                origin_tab: TabId(1),
+            })
+        })
+        .collect();
     drop(manager_guard);
 
     let deadline = Instant::now() + Duration::from_secs(2);
-    let mut completed = 0;
-    while completed < 2 {
-        completed += jobs
-            .drain()
-            .into_iter()
-            .filter(|result| matches!(result, PluginUiResult::MutationFinished { .. }))
-            .count();
-        assert!(Instant::now() < deadline, "mutations did not finish");
+    let mut completed_order = Vec::new();
+    while completed_order.len() < submitted.len() {
+        for result in jobs.drain() {
+            if let PluginUiResult::UiEventFinished { request_id, .. } = result {
+                completed_order.push(request_id);
+            }
+        }
+        assert!(Instant::now() < deadline, "UI events did not finish");
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    assert!(
-        manager.lock().is_plugin_enabled("ui-demo"),
-        "the later enable request must deterministically win"
-    );
-}
-
-#[test]
-fn repeated_enable_mutations_preserve_aba_request_order() {
-    let plugins_dir = tempfile::tempdir().expect("create plugin test directory");
-    let wasm_path = plugins_dir.path().join("ui-demo.wasm");
-    std::fs::write(
-        &wasm_path,
-        include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/ui-demo/ui-demo.wasm"
-        )),
-    )
-    .expect("write plugin fixture");
-    let mut plugin_manager = PluginManager::new(plugins_dir.path().join("plugins"), HashMap::new())
-        .expect("create plugin manager");
-    plugin_manager
-        .install_plugin(&wasm_path)
-        .expect("install plugin fixture");
-    let manager = Arc::new(Mutex::new(plugin_manager));
-    let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
-    let jobs = PluginUiJobs::new(Some(manager.clone()), runtime);
-    let manager_guard = manager.lock();
-
-    for enabled in [false, true, false] {
-        jobs.request(PluginUiRequest::SetEnabled {
-            plugin_id: "ui-demo".to_string(),
-            enabled,
-        });
-    }
-    drop(manager_guard);
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut completed = 0;
-    while completed < 3 {
-        completed += jobs
-            .drain()
-            .into_iter()
-            .filter(|result| matches!(result, PluginUiResult::MutationFinished { .. }))
-            .count();
-        assert!(Instant::now() < deadline, "ABA mutations did not finish");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
-    assert!(
-        !manager.lock().is_plugin_enabled("ui-demo"),
-        "the final A request must run after B instead of coalescing with the first A"
+    assert_eq!(
+        completed_order, submitted,
+        "the ordered queue's single worker must complete distinct requests in exactly the \
+         order they were submitted, never reordering or dropping a repeated (plugin, event) pair"
     );
 }
 

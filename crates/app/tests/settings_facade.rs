@@ -175,6 +175,7 @@ fn keep_security_patch() -> SecuritySettingsPatch {
 
 fn no_op_patch(expected_revision: u64) -> SettingsPatch {
     SettingsPatch {
+        general: None,
         expected_revision,
         archive: None,
         network: None,
@@ -373,6 +374,7 @@ fn update_settings_does_not_revert_columns_written_directly_via_config_service()
         .block_on(app.settings())
         .expect("settings must succeed");
     let patch = SettingsPatch {
+        general: None,
         expected_revision: current.revision,
         archive: Some(ArchiveSettingsPatch {
             cache_directory: PatchValue::Set(PathBuf::from("/cache/whatever")),
@@ -490,6 +492,7 @@ fn revision_increments_on_success_and_a_stale_revision_is_a_conflict() {
 
     // Re-using the now-stale `expected_revision: 0` must be rejected...
     let stale_patch = SettingsPatch {
+        general: None,
         expected_revision: 0,
         archive: Some(ArchiveSettingsPatch {
             cache_directory: PatchValue::Set(PathBuf::from("/cache/two")),
@@ -515,6 +518,7 @@ fn revision_increments_on_success_and_a_stale_revision_is_a_conflict() {
 
     // The correct (current) revision succeeds.
     let retry_patch = SettingsPatch {
+        general: None,
         expected_revision: 1,
         archive: Some(ArchiveSettingsPatch {
             cache_directory: PatchValue::Set(PathBuf::from("/cache/two")),
@@ -540,6 +544,7 @@ fn invalid_clear_on_a_scalar_field_rejects_the_whole_patch_before_any_write() {
     let app = bootstrap_app(&temp);
 
     let patch = SettingsPatch {
+        general: None,
         expected_revision: 0,
         archive: Some(ArchiveSettingsPatch {
             // Invalid: `backend_mode` has no empty state.
@@ -580,6 +585,7 @@ fn a_forced_write_failure_leaves_settings_completely_unchanged() {
     install_failing_user_config_trigger(&app);
 
     let patch = SettingsPatch {
+        general: None,
         expected_revision: 0,
         archive: Some(ArchiveSettingsPatch {
             cache_directory: PatchValue::Set(PathBuf::from("/never/persisted")),
@@ -635,6 +641,7 @@ fn repoint_vault_paths_failure_leaves_settings_unchanged_in_memory() {
 
     let missing_key_file = temp.path().join("does-not-exist.key");
     let patch = SettingsPatch {
+        general: None,
         expected_revision: 0,
         archive: None,
         network: None,
@@ -708,6 +715,7 @@ fn persist_encrypted_crc_policy_failure_leaves_settings_unchanged_in_memory() {
     install_failing_app_config_trigger(&app);
 
     let patch = SettingsPatch {
+        general: None,
         expected_revision: 0,
         archive: None,
         network: None,
@@ -804,6 +812,7 @@ fn update_settings_applies_live_proxy_routing_to_the_shared_http_client() {
     );
 
     let patch = SettingsPatch {
+        general: None,
         expected_revision: 0,
         archive: None,
         network: Some(NetworkSettingsPatch {
@@ -826,6 +835,7 @@ fn update_settings_applies_live_proxy_routing_to_the_shared_http_client() {
     // Disabling again must clear it, mirroring the pre-facade handler's
     // own `save_network_disable_clears_runtime_plugin_proxy_map` guarantee.
     let disable_patch = SettingsPatch {
+        general: None,
         expected_revision: 1,
         archive: None,
         network: Some(NetworkSettingsPatch {
@@ -847,6 +857,7 @@ fn invalid_enabled_proxy_address_is_rejected_before_any_write() {
     let app = bootstrap_app(&temp);
 
     let patch = SettingsPatch {
+        general: None,
         expected_revision: 0,
         archive: None,
         network: Some(NetworkSettingsPatch {
@@ -899,6 +910,7 @@ fn update_settings_preserves_an_existing_password_across_an_identity_only_change
     const PASSWORD: &str = "preserved-across-identity-change-7d2f";
 
     let enable_patch = SettingsPatch {
+        general: None,
         expected_revision: 0,
         archive: None,
         network: Some(NetworkSettingsPatch {
@@ -922,6 +934,7 @@ fn update_settings_preserves_an_existing_password_across_an_identity_only_change
         .block_on(app.settings())
         .expect("settings must succeed");
     let readdress_patch = SettingsPatch {
+        general: None,
         expected_revision: current.revision,
         archive: None,
         network: Some(NetworkSettingsPatch {
@@ -968,6 +981,7 @@ fn update_settings_changes_directories_and_network_fields_together() {
     let app = bootstrap_app(&temp);
 
     let patch = SettingsPatch {
+        general: None,
         expected_revision: 0,
         archive: Some(ArchiveSettingsPatch {
             temp_directory: PatchValue::Set(PathBuf::from("/tmp/arclain-work")),
@@ -1025,6 +1039,7 @@ fn clear_on_the_plugin_proxy_map_resets_it_to_empty() {
     let mut map = std::collections::BTreeMap::new();
     map.insert("dlsite".to_string(), false);
     let set_patch = SettingsPatch {
+        general: None,
         expected_revision: 0,
         archive: None,
         network: Some(NetworkSettingsPatch {
@@ -1042,6 +1057,7 @@ fn clear_on_the_plugin_proxy_map_resets_it_to_empty() {
     );
 
     let clear_patch = SettingsPatch {
+        general: None,
         expected_revision: snapshot.revision,
         archive: None,
         network: Some(NetworkSettingsPatch {
@@ -1077,6 +1093,7 @@ fn update_settings_applies_a_plugin_proxy_map_only_change_to_the_shared_http_cli
     // Enable SOCKS5 first (an identity-touching call) so the default
     // per-plugin routing map is non-empty.
     let enable_patch = SettingsPatch {
+        general: None,
         expected_revision: 0,
         archive: None,
         network: Some(NetworkSettingsPatch {
@@ -1099,6 +1116,7 @@ fn update_settings_applies_a_plugin_proxy_map_only_change_to_the_shared_http_cli
     let mut map = std::collections::BTreeMap::new();
     map.insert("dlsite".to_string(), false);
     let map_only_patch = SettingsPatch {
+        general: None,
         expected_revision: after_enable.revision,
         archive: None,
         network: Some(NetworkSettingsPatch {
@@ -1191,6 +1209,7 @@ fn set_socks5_password_re_applies_live_routing_with_the_new_credential_immediate
         .expect("settings must succeed");
     runtime
         .block_on(app.update_settings(SettingsPatch {
+            general: None,
             expected_revision: current.revision,
             archive: None,
             network: Some(NetworkSettingsPatch {
@@ -1455,6 +1474,7 @@ fn secret_writing_methods_fail_cleanly_and_leak_nothing_when_the_vault_never_ope
     assert!(!format!("{error:?}").contains(SECRET));
 
     let network_patch = SettingsPatch {
+        general: None,
         expected_revision: snapshot.revision,
         archive: None,
         network: Some(NetworkSettingsPatch {
@@ -1709,6 +1729,7 @@ fn settings_and_password_rules_survive_shutdown_and_a_fresh_bootstrap() {
 
         runtime.block_on(async {
             app.update_settings(SettingsPatch {
+                general: None,
                 expected_revision: 0,
                 archive: Some(ArchiveSettingsPatch {
                     temp_directory: PatchValue::Set(PathBuf::from("/persisted/temp")),
@@ -1779,8 +1800,8 @@ fn settings_and_password_rules_survive_shutdown_and_a_fresh_bootstrap() {
 #[test]
 fn constructs_every_public_settings_dto() {
     use arclain_app::settings::{
-        ArchiveSettingsDto, NetworkSettingsDto, OrganizationProfileSummary, PasswordRuleSummary,
-        SecuritySettingsDto, SessionArchiveEntry, SettingsSnapshot,
+        ArchiveSettingsDto, GeneralSettingsDto, NetworkSettingsDto, OrganizationProfileSummary,
+        PasswordRuleSummary, SecuritySettingsDto, SessionArchiveEntry, SettingsSnapshot,
     };
 
     let archive = ArchiveSettingsDto {
@@ -1808,11 +1829,18 @@ fn constructs_every_public_settings_dto() {
         encrypted_crc_policy: "on_access".to_string(),
         vault_available: false,
     };
+    let general = GeneralSettingsDto {
+        hotkey_bindings: None,
+        open_nested_in_new_tab: false,
+        drop_behavior: "new_tab".to_string(),
+        restore_tabs_on_launch: true,
+    };
     let snapshot = SettingsSnapshot {
         revision: 0,
         archive,
         network,
         security,
+        general,
     };
     assert_eq!(snapshot.revision, 0);
 

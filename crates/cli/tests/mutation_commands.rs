@@ -1093,27 +1093,17 @@ fn plugins_enable_and_disable_each_succeed_against_a_real_installed_plugin() {
     assert!(stdout_text(&enable_output).contains("enabled"));
 }
 
-/// **Architectural characterization, not a CLI bug**: `ArclainApp::
-/// set_plugin_enabled` forwards to `arclain_plugins::PluginManager::
-/// enable_plugin`/`disable_plugin`, which is documented in that crate as
-/// "interior mutability safe" over a plain in-memory `RwLock<HashMap<...>>`
-/// -- there is no persistence layer underneath it at all. That is a
-/// reasonable design for a long-lived host (the egui frontend bootstraps
-/// one `PluginManager` for its whole session, so a toggle persists in
-/// memory for as long as that session runs), but a CLI invocation is a
-/// brand-new process with a brand-new `PluginManager` every single time:
-/// `plugins disable ID` really does succeed, and really does take effect
-/// for the remainder of *that* process -- but the instant it exits, the
-/// toggle is gone with it, since nothing wrote it anywhere durable.
-///
-/// This test pins that reality directly (disable in one process, list in
-/// a separate one, the plugin is back to enabled) so a future change that
-/// *does* add persistence gets a failing test forcing this doc comment
-/// -- and the equivalent one on `crate::commands::plugins::PluginsCommand::
-/// Disable` -- to be revisited, rather than the change silently landing
-/// unnoticed either way.
+/// `ArclainApp::set_plugin_enabled` persists a full snapshot of every
+/// plugin's enabled state to `UserConfig::enabled_plugins` (see
+/// `arclain_app::runtime::settings_ops::run_set_plugin_enabled`'s own doc
+/// comment), and `runtime::bootstrap::run` reconciles a freshly-discovered
+/// `PluginManager`'s default-enabled plugins against it on every
+/// bootstrap. A CLI invocation is a brand-new process with a brand-new
+/// `PluginManager` every single time, but both invocations here share the
+/// same `--config-dir`, so the disable a separate, later process reads
+/// back is exactly the one this test just persisted.
 #[test]
-fn plugins_disable_has_no_effect_observable_from_a_separate_invocation() {
+fn plugins_disable_persists_and_is_observed_by_a_separate_invocation() {
     let env = Env::new();
     env.install_plugin_fixture("ui-demo");
 
@@ -1134,9 +1124,8 @@ fn plugins_disable_has_no_effect_observable_from_a_separate_invocation() {
         .find(|p| p["id"] == "ui-demo")
         .unwrap();
     assert_eq!(
-        ui_demo["enabled"], true,
-        "a separate CLI invocation's own fresh PluginManager has no way to observe the \
-         previous process's in-memory-only disable"
+        ui_demo["enabled"], false,
+        "a separate CLI invocation must observe the previous process's persisted disable"
     );
 }
 

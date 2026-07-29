@@ -75,6 +75,7 @@ pub fn handle_action(
                 &shared.services.tokio_runtime,
                 |expected_revision| arclain_app::settings::SettingsPatch {
                     expected_revision,
+                    general: None,
                     archive: Some(arclain_app::settings::ArchiveSettingsPatch {
                         backend_mode: arclain_app::settings::PatchValue::Keep,
                         cache_directory: arclain_app::settings::PatchValue::Keep,
@@ -98,18 +99,34 @@ pub fn handle_action(
             }
         }
         SettingsAction::SaveKeyboardMouse { bindings } => {
+            let Some(facade) = shared.facade.as_ref() else {
+                tracing::error!("Cannot save hotkey bindings: settings facade is unavailable");
+                return;
+            };
+            let hotkey_bindings_json = serde_json::to_string(&bindings).ok();
             let mut state = shared.app_state.lock();
-            // Update user config - bindings is HashMap, storing as JSON string
-            state.user_config.hotkey_bindings = serde_json::to_string(&bindings).ok();
-            state.signals.user_config.set(state.user_config.clone());
-
-            // Save to DB via ConfigService
-            if let Some(ref config_svc) = shared.services.config_service {
-                if let Err(e) = config_svc.save_user_config(&state.user_config) {
-                    tracing::error!("Failed to save hotkey bindings: {}", e);
-                } else {
-                    tracing::info!("Hotkey bindings saved successfully");
-                }
+            let patch_result = state.submit_settings_patch(
+                facade,
+                &shared.services.tokio_runtime,
+                |expected_revision| arclain_app::settings::SettingsPatch {
+                    expected_revision,
+                    archive: None,
+                    network: None,
+                    security: None,
+                    general: Some(arclain_app::settings::GeneralSettingsPatch {
+                        hotkey_bindings: match hotkey_bindings_json {
+                            Some(value) => arclain_app::settings::PatchValue::Set(value),
+                            None => arclain_app::settings::PatchValue::Clear,
+                        },
+                        open_nested_in_new_tab: arclain_app::settings::PatchValue::Keep,
+                        drop_behavior: arclain_app::settings::PatchValue::Keep,
+                        restore_tabs_on_launch: arclain_app::settings::PatchValue::Keep,
+                    }),
+                },
+            );
+            match patch_result {
+                Ok(_) => tracing::info!("Hotkey bindings saved successfully"),
+                Err(e) => tracing::error!("Failed to save hotkey bindings: {}", e),
             }
 
             // Signal app to reload hotkeys
@@ -254,17 +271,36 @@ pub fn handle_action(
             drop_behavior,
             restore_tabs_on_launch,
         } => {
+            let Some(facade) = shared.facade.as_ref() else {
+                tracing::error!("Cannot save general settings: settings facade is unavailable");
+                return;
+            };
             let mut state = shared.app_state.lock();
-            state.user_config.open_nested_in_new_tab = open_nested_in_new_tab;
-            state.user_config.drop_behavior = Some(drop_behavior.as_str().to_string());
-            state.user_config.restore_tabs_on_launch = restore_tabs_on_launch;
-            state.signals.user_config.set(state.user_config.clone());
-            if let Some(ref config_svc) = shared.services.config_service {
-                if let Err(e) = config_svc.save_user_config(&state.user_config) {
-                    tracing::error!("Failed to save general settings: {}", e);
-                } else {
-                    tracing::info!("General settings saved");
-                }
+            let patch_result = state.submit_settings_patch(
+                facade,
+                &shared.services.tokio_runtime,
+                |expected_revision| arclain_app::settings::SettingsPatch {
+                    expected_revision,
+                    archive: None,
+                    network: None,
+                    security: None,
+                    general: Some(arclain_app::settings::GeneralSettingsPatch {
+                        hotkey_bindings: arclain_app::settings::PatchValue::Keep,
+                        open_nested_in_new_tab: arclain_app::settings::PatchValue::Set(
+                            open_nested_in_new_tab,
+                        ),
+                        drop_behavior: arclain_app::settings::PatchValue::Set(
+                            drop_behavior.as_str().to_string(),
+                        ),
+                        restore_tabs_on_launch: arclain_app::settings::PatchValue::Set(
+                            restore_tabs_on_launch,
+                        ),
+                    }),
+                },
+            );
+            match patch_result {
+                Ok(_) => tracing::info!("General settings saved"),
+                Err(e) => tracing::error!("Failed to save general settings: {}", e),
             }
         }
         SettingsAction::SaveNetwork {
@@ -296,6 +332,7 @@ pub fn handle_action(
                 &shared.services.tokio_runtime,
                 |expected_revision| arclain_app::settings::SettingsPatch {
                     expected_revision,
+                    general: None,
                     archive: None,
                     network: Some(arclain_app::settings::NetworkSettingsPatch {
                         socks5_enabled: arclain_app::settings::PatchValue::Set(socks5_enabled),
@@ -445,6 +482,7 @@ pub fn handle_action(
                 &shared.services.tokio_runtime,
                 |expected_revision| arclain_app::settings::SettingsPatch {
                     expected_revision,
+                    general: None,
                     archive: None,
                     network: Some(arclain_app::settings::NetworkSettingsPatch {
                         socks5_enabled: arclain_app::settings::PatchValue::Keep,
@@ -672,6 +710,7 @@ mod tests {
                 facade
                     .update_settings(arclain_app::settings::SettingsPatch {
                         expected_revision: current.revision,
+                        general: None,
                         archive: None,
                         network: Some(arclain_app::settings::NetworkSettingsPatch {
                             socks5_enabled: arclain_app::settings::PatchValue::Set(true),
@@ -1113,6 +1152,7 @@ mod tests {
             facade
                 .update_settings(arclain_app::settings::SettingsPatch {
                     expected_revision: current.revision,
+                    general: None,
                     archive: None,
                     network: Some(arclain_app::settings::NetworkSettingsPatch {
                         socks5_enabled: arclain_app::settings::PatchValue::Keep,

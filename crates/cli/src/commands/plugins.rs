@@ -17,21 +17,17 @@ use crate::output::{
 pub enum PluginsCommand {
     /// List every plugin the application's plugin runtime knows about.
     List,
-    /// Enable a plugin. **Architectural note**: this toggle lives only in
-    /// the in-memory `PluginManager` of *this* process -- `ArclainApp::
-    /// set_plugin_enabled` forwards to `arclain_plugins::PluginManager::
-    /// enable_plugin`, which is a plain `RwLock<HashMap<...>>` write with
-    /// no disk persistence underneath it at all. Since every CLI
-    /// invocation bootstraps a brand-new process (and therefore a
-    /// brand-new `PluginManager`), running this command has no effect
-    /// observable from any later invocation -- see
-    /// `crate::commands::plugins`'s own test
-    /// `plugins_disable_has_no_effect_observable_from_a_separate_invocation`,
-    /// which pins this as a characterized, real limitation rather than a
-    /// CLI bug.
+    /// Enable a plugin, durably: `ArclainApp::set_plugin_enabled` applies
+    /// the toggle to the live `PluginManager` and persists a full
+    /// snapshot of every plugin's enabled state to `UserConfig::
+    /// enabled_plugins`, which the next bootstrap (a later CLI
+    /// invocation, or the egui frontend) reconciles against on startup
+    /// -- see `arclain_app::runtime::settings_ops::run_set_plugin_enabled`
+    /// and `runtime::bootstrap::run`'s own doc comments, and this crate's
+    /// own test `plugins_disable_persists_and_is_observed_by_a_separate_invocation`.
     Enable(PluginIdArgs),
     /// Disable a plugin. See [`PluginsCommand::Enable`]'s own doc
-    /// comment -- the same in-memory-only limitation applies here.
+    /// comment -- the same durable persistence applies here.
     Disable(PluginIdArgs),
     /// Dispatch one interaction against a node of a plugin's main page.
     Action(ActionArgs),

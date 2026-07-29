@@ -53,6 +53,7 @@ pub struct SettingsSnapshot {
     pub archive: ArchiveSettingsDto,
     pub network: NetworkSettingsDto,
     pub security: SecuritySettingsDto,
+    pub general: GeneralSettingsDto,
 }
 
 /// One field's patch instruction. `Keep` and an omitted/absent field are
@@ -185,12 +186,54 @@ pub struct SecuritySettingsPatch {
     pub encrypted_crc_policy: PatchValue<String>,
 }
 
+/// The general/interface preferences that used to be five of `crates/ui`'s
+/// direct `ConfigService::save_user_config` writers (see `GeneralSettingsPatch`'s
+/// own doc comment): hotkey bindings, and the drop/nested-archive/session-
+/// restore preferences the "General" settings page shows. Deliberately
+/// distinct from [`ArchiveSettingsDto`] (archive backend/directory
+/// overrides) and [`NetworkSettingsDto`] (proxy/server) -- these fields
+/// share no validation or persistence concern with either, only the same
+/// `user_config` row.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct GeneralSettingsDto {
+    /// Hotkey bindings, pre-serialized to the same JSON string
+    /// `arclain_core::UserConfig::hotkey_bindings` stores -- this facade
+    /// does not parse or validate individual bindings (the egui
+    /// keyboard/mouse settings page owns that shape), only persists
+    /// whatever blob it is handed.
+    pub hotkey_bindings: Option<String>,
+    pub open_nested_in_new_tab: bool,
+    /// Stored as the same string token `arclain_core::config::settings::
+    /// DropBehavior::as_str`/`from_str` use ("new_tab" | "replace" |
+    /// "ask_each_time") -- this facade re-exports neither the enum nor a
+    /// validating conversion; an unrecognized token round-trips as-is and
+    /// is interpreted as "new_tab" by any reader using `DropBehavior::
+    /// from_str`, matching that function's own fallback.
+    pub drop_behavior: String,
+    pub restore_tabs_on_launch: bool,
+}
+
+/// See [`GeneralSettingsDto`]'s own doc comment. Every field's `Clear` is
+/// rejected as `InvalidInput` except `hotkey_bindings`, matching
+/// [`PatchValue`]'s general rule: `hotkey_bindings` is the one
+/// `Option<T>`-shaped field here (an unset binding map is meaningful --
+/// "use every action's built-in default"), while the other three are
+/// plain scalars with no "unset" state of their own.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct GeneralSettingsPatch {
+    pub hotkey_bindings: PatchValue<String>,
+    pub open_nested_in_new_tab: PatchValue<bool>,
+    pub drop_behavior: PatchValue<String>,
+    pub restore_tabs_on_launch: PatchValue<bool>,
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct SettingsPatch {
     pub expected_revision: u64,
     pub archive: Option<ArchiveSettingsPatch>,
     pub network: Option<NetworkSettingsPatch>,
     pub security: Option<SecuritySettingsPatch>,
+    pub general: Option<GeneralSettingsPatch>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -395,6 +438,18 @@ pub(crate) fn network_dto(
         gameta_server_enabled: user_config.gameta_server_enabled,
         gameta_server_url: user_config.gameta_server_url.clone(),
         gameta_api_key_configured,
+    }
+}
+
+pub(crate) fn general_dto(user_config: &UserConfig) -> GeneralSettingsDto {
+    GeneralSettingsDto {
+        hotkey_bindings: user_config.hotkey_bindings.clone(),
+        open_nested_in_new_tab: user_config.open_nested_in_new_tab,
+        drop_behavior: user_config
+            .drop_behavior
+            .clone()
+            .unwrap_or_else(|| "new_tab".to_string()),
+        restore_tabs_on_launch: user_config.restore_tabs_on_launch,
     }
 }
 
@@ -625,6 +680,38 @@ pub(crate) fn network_patch_touches_socks5_identity(patch: &NetworkSettingsPatch
     !matches!(patch.socks5_enabled, PatchValue::Keep)
         || !matches!(patch.socks5_address, PatchValue::Keep)
         || !matches!(patch.socks5_username, PatchValue::Keep)
+}
+
+/// Applies [`GeneralSettingsPatch`] to a working copy of `user_config`.
+/// Pure, like every other `apply_*_patch` in this module. `hotkey_bindings`
+/// is the only field that accepts `Clear` -- see [`GeneralSettingsPatch`]'s
+/// own doc comment.
+pub(crate) fn apply_general_patch(
+    user_config: &mut UserConfig,
+    patch: GeneralSettingsPatch,
+) -> Result<(), ApplicationError> {
+    apply_optional(&mut user_config.hotkey_bindings, patch.hotkey_bindings);
+    apply_required(
+        &mut user_config.open_nested_in_new_tab,
+        patch.open_nested_in_new_tab,
+        "general.open_nested_in_new_tab",
+    )?;
+    let mut drop_behavior = user_config
+        .drop_behavior
+        .clone()
+        .unwrap_or_else(|| "new_tab".to_string());
+    apply_required(
+        &mut drop_behavior,
+        patch.drop_behavior,
+        "general.drop_behavior",
+    )?;
+    user_config.drop_behavior = Some(drop_behavior);
+    apply_required(
+        &mut user_config.restore_tabs_on_launch,
+        patch.restore_tabs_on_launch,
+        "general.restore_tabs_on_launch",
+    )?;
+    Ok(())
 }
 
 /// Whether `patch` touches the per-plugin proxy opt-in/opt-out map.
@@ -918,6 +1005,109 @@ mod tests {
             "Keep must leave the existing override untouched"
         );
         assert_eq!(paths.key_file, Some(PathBuf::from("/new/master.key")));
+    }
+
+    #[test]
+    fn general_dto_reflects_first_run_defaults() {
+        let dto = general_dto(&default_user_config());
+        assert_eq!(dto.hotkey_bindings, None);
+        assert!(!dto.open_nested_in_new_tab);
+        assert_eq!(dto.drop_behavior, "new_tab");
+        assert!(dto.restore_tabs_on_launch);
+    }
+
+    #[test]
+    fn general_patch_set_updates_every_field() {
+        let mut user_config = default_user_config();
+        let patch = GeneralSettingsPatch {
+            hotkey_bindings: PatchValue::Set("{\"open\":\"Ctrl+O\"}".to_string()),
+            open_nested_in_new_tab: PatchValue::Set(true),
+            drop_behavior: PatchValue::Set("replace".to_string()),
+            restore_tabs_on_launch: PatchValue::Set(false),
+        };
+
+        apply_general_patch(&mut user_config, patch).unwrap();
+
+        assert_eq!(
+            user_config.hotkey_bindings.as_deref(),
+            Some("{\"open\":\"Ctrl+O\"}")
+        );
+        assert!(user_config.open_nested_in_new_tab);
+        assert_eq!(user_config.drop_behavior.as_deref(), Some("replace"));
+        assert!(!user_config.restore_tabs_on_launch);
+    }
+
+    #[test]
+    fn general_patch_keep_leaves_every_field_untouched() {
+        let mut user_config = default_user_config();
+        user_config.hotkey_bindings = Some("{\"open\":\"Ctrl+O\"}".to_string());
+        user_config.open_nested_in_new_tab = true;
+        user_config.drop_behavior = Some("replace".to_string());
+        user_config.restore_tabs_on_launch = false;
+        let before = user_config.clone();
+
+        apply_general_patch(
+            &mut user_config,
+            GeneralSettingsPatch {
+                hotkey_bindings: PatchValue::Keep,
+                open_nested_in_new_tab: PatchValue::Keep,
+                drop_behavior: PatchValue::Keep,
+                restore_tabs_on_launch: PatchValue::Keep,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(user_config.hotkey_bindings, before.hotkey_bindings);
+        assert_eq!(
+            user_config.open_nested_in_new_tab,
+            before.open_nested_in_new_tab
+        );
+        assert_eq!(user_config.drop_behavior, before.drop_behavior);
+        assert_eq!(
+            user_config.restore_tabs_on_launch,
+            before.restore_tabs_on_launch
+        );
+    }
+
+    #[test]
+    fn general_patch_clear_resets_hotkey_bindings_to_none() {
+        let mut user_config = default_user_config();
+        user_config.hotkey_bindings = Some("{\"open\":\"Ctrl+O\"}".to_string());
+
+        apply_general_patch(
+            &mut user_config,
+            GeneralSettingsPatch {
+                hotkey_bindings: PatchValue::Clear,
+                open_nested_in_new_tab: PatchValue::Keep,
+                drop_behavior: PatchValue::Keep,
+                restore_tabs_on_launch: PatchValue::Keep,
+            },
+        )
+        .unwrap();
+
+        assert!(user_config.hotkey_bindings.is_none());
+    }
+
+    #[test]
+    fn general_patch_clear_is_rejected_for_scalar_fields_without_an_empty_state() {
+        let mut user_config = default_user_config();
+
+        let error = apply_general_patch(
+            &mut user_config,
+            GeneralSettingsPatch {
+                hotkey_bindings: PatchValue::Keep,
+                open_nested_in_new_tab: PatchValue::Clear,
+                drop_behavior: PatchValue::Keep,
+                restore_tabs_on_launch: PatchValue::Keep,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(
+            error.field.as_deref(),
+            Some("general.open_nested_in_new_tab")
+        );
     }
 
     #[test]

@@ -68,10 +68,6 @@ pub enum PluginUiRequest {
     },
     ChromeSnapshot,
     NetworkLog,
-    SetEnabled {
-        plugin_id: String,
-        enabled: bool,
-    },
     Install {
         wasm_path: PathBuf,
     },
@@ -115,10 +111,6 @@ pub enum PluginUiFailureContext {
     },
     ChromeSnapshot,
     NetworkLog,
-    SetEnabled {
-        plugin_id: String,
-        enabled: bool,
-    },
     Install {
         wasm_path: PathBuf,
     },
@@ -181,7 +173,6 @@ enum RequestKey {
     Snapshot(Option<String>),
     ChromeSnapshot,
     NetworkLog,
-    SetEnabled(RequestId, String, bool),
     Install(RequestId, PathBuf),
     UiEvent(RequestId, String, String, TabId),
     ReactiveUiEvent(String, String, TabId),
@@ -206,9 +197,6 @@ impl PluginUiRequest {
             }
             Self::ChromeSnapshot => RequestKey::ChromeSnapshot,
             Self::NetworkLog => RequestKey::NetworkLog,
-            Self::SetEnabled { plugin_id, enabled } => {
-                RequestKey::SetEnabled(request_id, plugin_id.clone(), *enabled)
-            }
             Self::Install { wasm_path } => RequestKey::Install(request_id, wasm_path.clone()),
             Self::UiEvent {
                 plugin_id,
@@ -244,10 +232,6 @@ impl RequestKey {
             },
             Self::ChromeSnapshot => PluginUiFailureContext::ChromeSnapshot,
             Self::NetworkLog => PluginUiFailureContext::NetworkLog,
-            Self::SetEnabled(_, plugin_id, enabled) => PluginUiFailureContext::SetEnabled {
-                plugin_id: plugin_id.clone(),
-                enabled: *enabled,
-            },
             Self::Install(_, wasm_path) => PluginUiFailureContext::Install {
                 wasm_path: wasm_path.clone(),
             },
@@ -280,7 +264,6 @@ impl PluginUiFailureContext {
             Self::Snapshot { .. } => "plugin snapshot",
             Self::ChromeSnapshot => "chrome snapshot",
             Self::NetworkLog => "network log",
-            Self::SetEnabled { .. } => "set enabled",
             Self::Install { .. } => "install",
             Self::UiEvent { .. } => "UI event",
         }
@@ -389,9 +372,6 @@ fn rejected_failure_contexts_match(queued: &PluginUiResult, incoming: &PluginUiR
             PluginUiFailureContext::NetworkLog,
             PluginUiFailureContext::NetworkLog
         ) | (
-            PluginUiFailureContext::SetEnabled { .. },
-            PluginUiFailureContext::SetEnabled { .. }
-        ) | (
             PluginUiFailureContext::Install { .. },
             PluginUiFailureContext::Install { .. }
         ) | (
@@ -486,7 +466,6 @@ impl OrderedJobQueue {
 
 #[derive(Clone, Debug)]
 pub(crate) enum PluginUiMutation {
-    SetEnabled { plugin_id: String, enabled: bool },
     Install,
 }
 
@@ -560,14 +539,6 @@ fn invalid_request_context(request: &PluginUiRequest) -> Option<PluginUiFailureC
                 plugin_id: safe_failure_field(plugin_id, MAX_UI_PLUGIN_ID_BYTES),
                 target: safe_failure_target(target),
                 origin_tab: *origin_tab,
-            })
-        }
-        PluginUiRequest::SetEnabled { plugin_id, enabled }
-            if !field_within(plugin_id, MAX_UI_PLUGIN_ID_BYTES) =>
-        {
-            Some(PluginUiFailureContext::SetEnabled {
-                plugin_id: safe_failure_field(plugin_id, MAX_UI_PLUGIN_ID_BYTES),
-                enabled: *enabled,
             })
         }
         PluginUiRequest::Install { wasm_path }
@@ -832,7 +803,6 @@ impl PluginUiJobs {
         if matches!(
             &job.request,
             PluginUiRequest::PageInit { .. }
-                | PluginUiRequest::SetEnabled { .. }
                 | PluginUiRequest::Install { .. }
                 | PluginUiRequest::UiEvent { .. }
                 | PluginUiRequest::ReactiveUiEvent { .. }
@@ -1066,18 +1036,6 @@ impl PluginUiJobs {
             (RequestKey::NetworkLog, PluginUiResult::NetworkLogLoaded { entries, .. }) => {
                 cache.network_log = Some((Instant::now(), Arc::new(entries.clone())));
                 cache.network_log_failure = None;
-            }
-            (
-                RequestKey::SetEnabled(_, plugin_id, enabled),
-                PluginUiResult::MutationFinished { request_id, .. },
-            ) => {
-                cache.completed_mutations.insert(
-                    *request_id,
-                    PluginUiMutation::SetEnabled {
-                        plugin_id: plugin_id.clone(),
-                        enabled: *enabled,
-                    },
-                );
             }
             (RequestKey::Install(_, _), PluginUiResult::MutationFinished { request_id, .. }) => {
                 cache
@@ -1381,20 +1339,6 @@ fn execute(
                 request_id,
                 entries,
             }
-        }
-        PluginUiRequest::SetEnabled { plugin_id, enabled } => {
-            let result = manager
-                .ok_or_else(|| "plugin manager unavailable".to_string())
-                .and_then(|manager| {
-                    let manager = manager.lock();
-                    let result = if enabled {
-                        manager.enable_plugin(&plugin_id)
-                    } else {
-                        manager.disable_plugin(&plugin_id)
-                    };
-                    result.map_err(|error| error.to_string())
-                });
-            PluginUiResult::MutationFinished { request_id, result }
         }
         PluginUiRequest::Install { wasm_path } => {
             let result = manager

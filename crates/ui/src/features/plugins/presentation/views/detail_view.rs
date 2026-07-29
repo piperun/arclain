@@ -16,7 +16,6 @@ use arclain_widgets::toggle_switch::ToggleSwitch;
 use arclain_widgets::Chips;
 use eframe::egui;
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 fn plugin_proxy_toggle_value(user_config: &UserConfig, plugin_id: &str) -> bool {
@@ -26,19 +25,21 @@ fn plugin_proxy_toggle_value(user_config: &UserConfig, plugin_id: &str) -> bool 
         .unwrap_or(false)
 }
 
-fn persist_plugin_proxy_setting(
-    user_config: &mut UserConfig,
+/// The raw (sparse, override-only) per-plugin proxy map with `plugin_id`'s
+/// entry set to `enabled` -- the shape `NetworkSettingsPatch::
+/// plugin_proxy_enabled` persists (a full `Set` replaces the whole map, so
+/// this must carry forward every *other* plugin's existing override, not
+/// just this one). Pure: builds the patch's payload; persisting it and
+/// applying live routing is the facade's `update_settings`'s job (see
+/// `render`'s Proxy Settings toggle handler).
+fn plugin_proxy_override_map(
+    user_config: &UserConfig,
     plugin_id: &str,
     enabled: bool,
-    persist: impl FnOnce(&UserConfig) -> anyhow::Result<()>,
-) -> anyhow::Result<HashMap<String, bool>> {
-    let mut candidate = user_config.clone();
-    candidate.set_plugin_proxy_enabled(plugin_id, enabled);
-    persist(&candidate)?;
-
-    let proxy_map = effective_plugin_proxy_map(&candidate);
-    *user_config = candidate;
-    Ok(proxy_map)
+) -> std::collections::BTreeMap<String, bool> {
+    let mut settings = user_config.get_plugin_proxy_settings();
+    settings.insert(plugin_id.to_string(), enabled);
+    settings.into_iter().collect()
 }
 
 /// Render the plugin detail view
@@ -84,13 +85,6 @@ pub fn render(
         Vec::new()
     };
 
-    // Capture config_service for use in closures
-    let config_service: Option<Arc<arclain_core::ConfigService>> = if let Some(s) = shared {
-        s.services.config_service.clone()
-    } else {
-        None
-    };
-
     Form::new().show(ui, theme, |ui| {
         // Global Settings
         crate::shared::components::settings_form::SectionHeader::new("Global Settings")
@@ -108,13 +102,42 @@ pub fn render(
                     ))
                     .changed()
                 {
-                    if let Some(shared) = shared {
-                        shared.plugin_ui_jobs.request(
-                            crate::features::plugins::application::PluginUiRequest::SetEnabled {
-                                plugin_id: plugin_info.id.clone(),
-                                enabled,
-                            },
+                    let Some(shared) = shared else {
+                        return;
+                    };
+                    let Some(facade) = shared.facade.as_ref() else {
+                        tracing::error!(
+                            "Failed to save plugin enabled state: application facade is unavailable"
                         );
+                        shared.toaster.lock().error(
+                            "Plugin enabled state was not saved: application facade is unavailable",
+                        );
+                        return;
+                    };
+                    let result = shared
+                        .services
+                        .tokio_runtime
+                        .block_on(facade.set_plugin_enabled(plugin_info.id.clone(), enabled));
+                    match result {
+                        Ok(()) => {
+                            // The document tree a MainPage/PluginButton/Panel
+                            // session already fetched may depend on this
+                            // plugin's enabled state (e.g. a disabled
+                            // plugin's toolbar button should disappear) --
+                            // drop every cached snapshot/layout so the next
+                            // frame re-fetches instead of showing stale data.
+                            shared.plugin_ui_jobs.invalidate_plugin_snapshots();
+                            shared.plugin_ui_jobs.invalidate_chrome_snapshot();
+                            shared.plugin_ui_jobs.invalidate_all_layouts();
+                            needs_refresh = true;
+                        }
+                        Err(error) => {
+                            tracing::error!("Failed to save plugin enabled state: {error:?}");
+                            shared.toaster.lock().error(format!(
+                                "Plugin enabled state was not saved: {}",
+                                error.summary
+                            ));
+                        }
                     }
                 }
             })
@@ -127,48 +150,57 @@ pub fn render(
         };
         let mut proxy_toggle_val = proxy_enabled;
 
-        // Extract http client from services for use in closure
-        let http_client = shared.map(|s| s.services.async_http_client.clone());
-
         crate::shared::components::settings_form::SettingsRow::new("Network Proxy")
             .description("Route this plugin's traffic through the configured SOCKS5 proxy.")
             .action(|ui| {
                 if ui.add(ToggleSwitch::new(&mut proxy_toggle_val)).changed() {
-                    let Some(config_service) = config_service.as_ref() else {
+                    let Some(shared) = shared else {
+                        return;
+                    };
+                    let Some(facade) = shared.facade.as_ref() else {
                         tracing::error!(
-                            "Failed to save plugin proxy setting: ConfigService is unavailable"
+                            "Failed to save plugin proxy setting: application facade is unavailable"
                         );
-                        if let Some(shared) = shared {
-                            shared.toaster.lock().error(
-                                "Plugin proxy setting was not saved: configuration storage is unavailable",
-                            );
-                        }
+                        shared.toaster.lock().error(
+                            "Plugin proxy setting was not saved: application facade is unavailable",
+                        );
                         return;
                     };
 
                     let mut app = app_state.lock();
-                    match persist_plugin_proxy_setting(
-                        &mut app.user_config,
-                        &plugin_info.id,
-                        proxy_toggle_val,
-                        |candidate| config_service.save_user_config(candidate),
-                    ) {
-                        Ok(proxy_map) => {
-                            app.signals.user_config.set(app.user_config.clone());
-                            drop(app);
-                            if let Some(client) = &http_client {
-                                client.apply_plugin_proxy_map(proxy_map);
-                            }
-                            needs_refresh = true;
-                        }
+                    let plugin_proxy_enabled =
+                        plugin_proxy_override_map(&app.user_config, &plugin_info.id, proxy_toggle_val);
+                    let patch_result = app.submit_settings_patch(
+                        facade,
+                        &shared.services.tokio_runtime,
+                        |expected_revision| arclain_app::settings::SettingsPatch {
+                            expected_revision,
+                            archive: None,
+                            general: None,
+                            security: None,
+                            network: Some(arclain_app::settings::NetworkSettingsPatch {
+                                socks5_enabled: arclain_app::settings::PatchValue::Keep,
+                                socks5_address: arclain_app::settings::PatchValue::Keep,
+                                socks5_username: arclain_app::settings::PatchValue::Keep,
+                                plugin_proxy_enabled: arclain_app::settings::PatchValue::Set(
+                                    plugin_proxy_enabled.clone(),
+                                ),
+                                gameta_server_enabled: arclain_app::settings::PatchValue::Keep,
+                                gameta_server_url: arclain_app::settings::PatchValue::Keep,
+                            }),
+                        },
+                    );
+                    match patch_result {
+                        // Live routing (`async_http_client.apply_plugin_proxy_map`)
+                        // is already applied by `update_settings` itself
+                        // (see `run_update_settings`'s `touches_plugin_proxy_map`
+                        // branch) -- no separate call needed here.
+                        Ok(_) => needs_refresh = true,
                         Err(error) => {
-                            drop(app);
                             tracing::error!("Failed to save plugin proxy setting: {error}");
-                            if let Some(shared) = shared {
-                                shared.toaster.lock().error(
-                                    "Plugin proxy setting was not saved: configuration persistence failed",
-                                );
-                            }
+                            shared.toaster.lock().error(
+                                "Plugin proxy setting was not saved: configuration persistence failed",
+                            );
                         }
                     }
                 }
@@ -498,34 +530,32 @@ mod tests {
     }
 
     #[test]
-    fn plugin_proxy_update_preserves_effective_defaults_and_overrides() {
+    fn plugin_proxy_override_map_preserves_other_explicit_overrides() {
         let mut config = UserConfig::new();
         config.socks5_enabled = true;
         config.set_plugin_proxy_enabled("dlsite-api", false);
 
-        let map = persist_plugin_proxy_setting(&mut config, "custom", true, |_| Ok(()))
-            .expect("persist plugin proxy setting");
+        let map = plugin_proxy_override_map(&config, "custom", true);
 
         assert_eq!(map.get("custom"), Some(&true));
-        assert_eq!(map.get("dlsite"), Some(&true));
         assert_eq!(map.get("dlsite-api"), Some(&false));
-        assert_eq!(map.get("dlsite-html"), Some(&true));
+        // Never-overridden plugins are not baked in here -- the raw stored
+        // map carries only explicit overrides; `dlsite`/`dlsite-html`'s
+        // inherited defaults resolve at read time via
+        // `effective_plugin_proxy_map`, not at write time.
+        assert_eq!(map.get("dlsite"), None);
+        assert_eq!(map.get("dlsite-html"), None);
     }
 
     #[test]
-    fn plugin_proxy_update_failure_keeps_persisted_candidate_out_of_memory() {
+    fn plugin_proxy_override_map_updates_an_existing_override_in_place() {
         let mut config = UserConfig::new();
-        config.socks5_enabled = true;
         config.set_plugin_proxy_enabled("existing", true);
 
-        let result = persist_plugin_proxy_setting(&mut config, "custom", true, |_| {
-            anyhow::bail!("simulated persistence failure")
-        });
+        let map = plugin_proxy_override_map(&config, "existing", false);
 
-        assert!(result.is_err());
-        let settings = config.get_plugin_proxy_settings();
-        assert_eq!(settings.get("existing"), Some(&true));
-        assert!(!settings.contains_key("custom"));
+        assert_eq!(map.get("existing"), Some(&false));
+        assert_eq!(map.len(), 1);
     }
 
     /// Regression test for P4 from `docs/AUDIT_2026-05-03.md`.

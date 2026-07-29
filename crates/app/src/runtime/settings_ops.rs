@@ -113,6 +113,7 @@ pub(super) async fn run_settings(
             gameta_api_key_configured,
         ),
         security: settings::security_dto(&mutable),
+        general: settings::general_dto(&mutable.user_config),
     })
 }
 
@@ -192,19 +193,17 @@ pub(super) async fn run_update_settings(
         .ok_or_else(settings_unavailable_error)?;
 
     // Re-read the *current on-disk* `user_config` row rather than
-    // trusting this instance's cached `mutable.user_config` copy. Five
-    // still-unmigrated UI call sites (hotkeys, toolbar order, general
-    // prefs, plugin settings) write `user_config` columns directly
-    // through `ConfigService`, bypassing this facade entirely -- that
-    // migration is tracked separately. `UserConfig` is one row with 22+
-    // columns; patching a stale cached copy and writing the whole row
-    // back would silently revert every column those direct writers
-    // touched since this instance last saw them. Re-reading here closes
-    // that gap: the window left over (a direct write racing strictly
-    // between this read and this call's own write below, with no shared
-    // lock protecting it) is a documented, narrow, pre-existing
-    // limitation of those five call sites not yet going through
-    // `settings_write_lock` at all -- not something a read-then-write
+    // trusting this instance's cached `mutable.user_config` copy.
+    // `UserConfig` is one row with 22+ columns; patching a stale cached
+    // copy and writing the whole row back would silently revert every
+    // column a concurrent writer touched since this instance last saw
+    // them. Every egui-side writer now goes through this facade (either
+    // this patch, or `set_plugin_enabled`/`set_plugin_settings`'s own
+    // dedicated small writes -- see their doc comments for why those stay
+    // separate from this generic patch), so the only remaining window is
+    // a genuinely concurrent call racing strictly between this read and
+    // this call's own write below, with no shared lock protecting it
+    // across process boundaries -- not something a read-then-write
     // ordering on this side can fully close by itself.
     let mut proposed_user_config = {
         let read_config_service = config_service.clone();
@@ -274,6 +273,9 @@ pub(super) async fn run_update_settings(
     }
     if let Some(network_patch) = patch.network {
         settings::apply_network_patch(&mut proposed_user_config, network_patch)?;
+    }
+    if let Some(general_patch) = patch.general {
+        settings::apply_general_patch(&mut proposed_user_config, general_patch)?;
     }
     if let Some(ref security_patch) = patch.security {
         settings::apply_security_value_patch(&mut proposed_crc_policy, security_patch)?;
@@ -403,6 +405,7 @@ pub(super) async fn run_update_settings(
             gameta_api_key_configured,
         ),
         security: settings::security_dto(&mutable),
+        general: settings::general_dto(&mutable.user_config),
     })
 }
 
@@ -674,6 +677,133 @@ pub(super) async fn run_delete_password_rule(
         .iter()
         .map(settings::summarize_pass_rule)
         .collect())
+}
+
+/// Enables or disables `plugin_id` on the live `PluginManager` and
+/// persists the result so it survives a restart -- unlike
+/// `arclain_plugins::PluginManager::enable_plugin`/`disable_plugin` on
+/// their own (a plain in-memory `RwLock` write with nothing durable
+/// underneath), this closes the loop bootstrap needs (see
+/// `runtime::bootstrap::run`'s own "persisted enabled-plugin
+/// reconciliation" step) to bring a disabled plugin back down on the
+/// next launch.
+///
+/// Validates and applies the live toggle *first* -- an unknown
+/// `plugin_id` fails with `NotFound` before anything is persisted.
+///
+/// Persists a full snapshot of every plugin's *actual* current `enabled`
+/// state (`PluginSessionStore::plugins`, filtered), not an accumulated
+/// add/remove diff against whatever `enabled_plugins` already held. An
+/// accumulated diff cannot be reconstructed correctly at the next
+/// bootstrap: a plugin nothing has ever toggled is absent from the diff
+/// either way, indistinguishable from "the user explicitly disabled it".
+/// A full snapshot has no such ambiguity -- absent means disabled, always
+/// -- so bootstrap's reconciliation step can trust it completely.
+pub(super) async fn run_set_plugin_enabled(
+    inner: &Arc<AppRuntime>,
+    plugin_id: String,
+    enabled: bool,
+) -> Result<(), ApplicationError> {
+    let _write_guard = inner.settings_write_lock.lock().await;
+    let manager = crate::plugins::require_manager(inner.plugin_manager())?;
+
+    crate::plugins::PluginSessionStore::set_plugin_enabled(&manager, &plugin_id, enabled)?;
+
+    let enabled_ids: Vec<String> = crate::plugins::PluginSessionStore::plugins(&manager)
+        .into_iter()
+        .filter(|summary| summary.enabled)
+        .map(|summary| summary.id)
+        .collect();
+
+    let config_service = inner
+        .core_services()
+        .config_service
+        .clone()
+        .ok_or_else(settings_unavailable_error)?;
+    let handle = inner
+        .tokio_handle()
+        .ok_or_else(shutdown_mid_request_error)?;
+
+    // Re-read the current on-disk row fresh, matching `run_update_settings`'s
+    // own "C1" rationale -- this call carries no patch of its own, only
+    // the plugin-enabled snapshot, so every other column must survive
+    // untouched.
+    let read_config_service = config_service.clone();
+    let mut candidate = handle
+        .spawn_blocking(move || {
+            read_config_service
+                .get_user_config()
+                .map_err(|error| backend_error("reading current settings", error))
+        })
+        .await
+        .map_err(internal_join_error)??;
+    candidate.set_enabled_plugins(&enabled_ids);
+
+    let persisted = candidate.clone();
+    handle
+        .spawn_blocking(move || {
+            config_service
+                .save_user_config(&persisted)
+                .map_err(|error| persistence_error("saving plugin enabled state", error))
+        })
+        .await
+        .map_err(internal_join_error)??;
+
+    let mut mutable = inner.session.mutable.write();
+    mutable.user_config = candidate;
+    mutable.revision += 1;
+    Ok(())
+}
+
+/// Persists `settings` as `plugin_id`'s own key/value settings bag
+/// (`UserConfig::plugin_settings`), reported back to the plugin at its
+/// next `get-ui-layout`/`on-ui-event` call via `PluginManager::new`'s own
+/// `plugin_settings` seed at bootstrap. Does not validate that
+/// `plugin_id` names a currently-loaded plugin -- a plugin's own
+/// `on-ui-event` response is this call's only production caller (see
+/// `crate::plugins::PluginSessionStore::dispatch_action`), and by the
+/// time that response exists, the plugin obviously already ran
+/// successfully.
+pub(super) async fn run_set_plugin_settings(
+    inner: &Arc<AppRuntime>,
+    plugin_id: String,
+    settings: std::collections::HashMap<String, String>,
+) -> Result<(), ApplicationError> {
+    let _write_guard = inner.settings_write_lock.lock().await;
+    let config_service = inner
+        .core_services()
+        .config_service
+        .clone()
+        .ok_or_else(settings_unavailable_error)?;
+    let handle = inner
+        .tokio_handle()
+        .ok_or_else(shutdown_mid_request_error)?;
+
+    let read_config_service = config_service.clone();
+    let mut candidate = handle
+        .spawn_blocking(move || {
+            read_config_service
+                .get_user_config()
+                .map_err(|error| backend_error("reading current settings", error))
+        })
+        .await
+        .map_err(internal_join_error)??;
+    candidate.set_plugin_settings(&plugin_id, settings);
+
+    let persisted = candidate.clone();
+    handle
+        .spawn_blocking(move || {
+            config_service
+                .save_user_config(&persisted)
+                .map_err(|error| persistence_error("saving plugin settings", error))
+        })
+        .await
+        .map_err(internal_join_error)??;
+
+    let mut mutable = inner.session.mutable.write();
+    mutable.user_config = candidate;
+    mutable.revision += 1;
+    Ok(())
 }
 
 // ============================================================================

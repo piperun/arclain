@@ -148,6 +148,7 @@ async fn run_set_archive_field(
         archive: Some(patch),
         network: None,
         security: None,
+        general: None,
     };
 
     match app.update_settings(request).await {

@@ -1138,16 +1138,31 @@ impl ArclainApp {
         .await
     }
 
-    /// Enables or disables one plugin. `NotFound` for an unknown
-    /// `plugin_id`.
+    /// Enables or disables one plugin, durably: applies the toggle to the
+    /// live `PluginManager` and persists the result so it survives a
+    /// restart (see `runtime::settings_ops::run_set_plugin_enabled`'s own
+    /// doc comment). `NotFound` for an unknown `plugin_id`.
     pub async fn set_plugin_enabled(
         &self,
         plugin_id: String,
         enabled: bool,
     ) -> Result<(), ApplicationError> {
-        self.dispatch(move |inner| {
-            let manager = crate::plugins::require_manager(inner.plugin_manager())?;
-            crate::plugins::PluginSessionStore::set_plugin_enabled(&manager, &plugin_id, enabled)
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_set_plugin_enabled(&inner, plugin_id, enabled).await
+        })
+        .await?
+    }
+
+    /// Persists `settings` as `plugin_id`'s own key/value settings bag
+    /// (see `runtime::settings_ops::run_set_plugin_settings`'s own doc
+    /// comment).
+    pub async fn set_plugin_settings(
+        &self,
+        plugin_id: String,
+        settings: std::collections::HashMap<String, String>,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_set_plugin_settings(&inner, plugin_id, settings).await
         })
         .await?
     }

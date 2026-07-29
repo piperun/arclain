@@ -110,31 +110,16 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
                     .apply_snapshot(request_id, snapshot);
             }
             PluginUiResult::MutationFinished { request_id, result } => {
-                let mutation = shared.plugin_ui_jobs.take_mutation(request_id);
+                // `SetEnabled` no longer runs through this queue -- the
+                // plugin detail view calls `ArclainApp::set_plugin_enabled`
+                // directly (durable: it persists `enabled_plugins` itself).
+                // `Install` is this queue's one remaining mutation kind;
+                // `take_mutation` is still called unconditionally so its
+                // entry in `completed_mutations` never leaks for a request
+                // this branch does not otherwise inspect.
+                let _ = shared.plugin_ui_jobs.take_mutation(request_id);
                 match result {
                     Ok(()) => {
-                        if let Some(ui_jobs::PluginUiMutation::SetEnabled { plugin_id, enabled }) =
-                            mutation
-                        {
-                            let mut app = shared.app_state.lock();
-                            let mut enabled_plugins = app.user_config.get_enabled_plugins();
-                            if enabled {
-                                if !enabled_plugins.contains(&plugin_id) {
-                                    enabled_plugins.push(plugin_id);
-                                }
-                            } else {
-                                enabled_plugins.retain(|id| id != &plugin_id);
-                            }
-                            app.user_config.set_enabled_plugins(&enabled_plugins);
-                            if let Some(service) = &shared.services.config_service {
-                                if let Err(error) = service.save_user_config(&app.user_config) {
-                                    tracing::error!(
-                                        "Failed to persist plugin enabled state: {error}"
-                                    );
-                                }
-                            }
-                            shared.signals().user_config.set(app.user_config.clone());
-                        }
                         plugins.list_state.invalidate_snapshot();
                         plugins.settings_list_state.invalidate_snapshot();
                         shared.plugin_ui_jobs.invalidate_plugin_snapshots();
@@ -205,15 +190,32 @@ fn persist_plugin_settings(
     plugin_id: &str,
     settings: std::collections::HashMap<String, String>,
 ) {
-    let mut app = shared.app_state.lock();
-    app.user_config.set_plugin_settings(plugin_id, settings);
-    if let Some(service) = &shared.services.config_service {
-        if let Err(error) = service.save_user_config(&app.user_config) {
-            tracing::error!("Failed to save plugin settings: {error}");
-            shared.toaster.lock().error(error.to_string());
+    let Some(facade) = shared.facade.as_ref() else {
+        tracing::error!("Failed to save plugin settings: application facade is unavailable");
+        shared
+            .toaster
+            .lock()
+            .error("Plugin settings were not saved: application facade is unavailable");
+        return;
+    };
+    let result = shared
+        .services
+        .tokio_runtime
+        .block_on(facade.set_plugin_settings(plugin_id.to_string(), settings));
+    match result {
+        Ok(()) => {
+            let mut app = shared.app_state.lock();
+            if let Err(error) = app.refresh_settings_from_facade(facade) {
+                tracing::error!(
+                    "Failed to refresh settings mirror after plugin settings save: {error}"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::error!("Failed to save plugin settings: {error:?}");
+            shared.toaster.lock().error(error.summary);
         }
     }
-    shared.signals().user_config.set(app.user_config.clone());
 }
 
 fn process_actions_for_origin(

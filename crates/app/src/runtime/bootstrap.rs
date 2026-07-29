@@ -397,6 +397,30 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
     if let Ok(mut manager) = PluginManager::new(paths.plugins_dir.clone(), plugin_settings) {
         manager.init().ok();
 
+        // Reconcile every newly-discovered plugin's default-enabled state
+        // (`register_prepared_plugin` always starts a plugin enabled)
+        // against whatever `ArclainApp::set_plugin_enabled` last
+        // persisted -- see `runtime::settings_ops::run_set_plugin_enabled`'s
+        // own doc comment for why that write is always a full snapshot
+        // of every plugin's actual enabled state, never an accumulated
+        // diff: `None` (the column has never been written -- a fresh
+        // install, or one where no plugin has ever been explicitly
+        // toggled) leaves every plugin at its natural default, but once
+        // `Some(_)` exists it is trusted completely, so a plugin absent
+        // from it is disabled here, including one added to the plugins
+        // directory after the last save (a newly-appeared plugin default-
+        // disabled behind an explicit persisted allowlist is the safer
+        // failure mode for anything that can reach the network/archive
+        // data, not a bug).
+        if user_config.enabled_plugins.is_some() {
+            let persisted_enabled = user_config.get_enabled_plugins();
+            for item in manager.list_plugins() {
+                if !persisted_enabled.contains(&item.id) {
+                    let _ = manager.disable_plugin(&item.id);
+                }
+            }
+        }
+
         if let Some(library_service) = core_services.library_service.clone() {
             manager.set_library_service(library_service);
         }

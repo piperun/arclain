@@ -75,6 +75,7 @@ impl AppState {
             expected_revision,
             archive: None,
             network: None,
+            general: None,
             security: Some(SecuritySettingsPatch {
                 secrets_database_path: optional_path_patch(secrets_db_path),
                 key_file_path: optional_path_patch(key_file_path),
