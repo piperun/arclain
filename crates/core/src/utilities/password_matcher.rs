@@ -125,8 +125,8 @@ pub fn derive_pattern_for(filename: &str) -> String {
 /// changed, `None` if nothing matched — so the caller can skip the DB
 /// write entirely when there's nothing to do.
 ///
-/// A rule is upgraded **only** when it bears the exact auto-saved
-/// fingerprint that `save_password_rule_from_archive` produced:
+/// A rule is upgraded **only** when it bears both halves of the
+/// fingerprint auto-saving left behind before the heuristic existed:
 ///
 /// - name is `"Auto-saved: <filename>"`, **and**
 /// - pattern equals `regex::escape(<filename>)` (i.e. still literal).

@@ -96,6 +96,16 @@ impl AppState {
     /// snapshot. Split out of [`Self::refresh_settings_from_facade`] so
     /// startup can populate them once without also re-taking a legacy
     /// composition it already holds.
+    ///
+    /// **A failure here must not be swallowed at startup.** Until this
+    /// lands, the mirrors hold `Default` DTOs, and those are not a
+    /// neutral "unknown" -- `GeneralSettingsDto::default()` reports
+    /// `restore_tabs_on_launch: false`, which
+    /// `app_lifecycle::save_tabs_on_exit_to` acts on by *deleting*
+    /// `session.json`. A caller that logs this error and carries on
+    /// therefore destroys the user's saved session. `AppState::new`
+    /// propagates it for exactly that reason; pinned by
+    /// `a_failed_settings_read_leaves_the_destructive_placeholder_in_place`.
     pub fn refresh_settings_signals(
         &self,
         facade: &arclain_app::ArclainApp,
@@ -144,5 +154,104 @@ impl AppState {
         })?;
         self.refresh_settings_from_facade(facade, runtime)?;
         Ok(snapshot)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::{app_state_from_facade, bootstrap_test_facade};
+
+    /// The guard on the startup data-loss path.
+    ///
+    /// A failed settings read leaves the mirrors holding placeholder
+    /// DTOs, and the placeholder is *destructive*: its
+    /// `restore_tabs_on_launch` is `false`, which
+    /// `app_lifecycle::save_tabs_on_exit_to` acts on by deleting
+    /// `session.json` (pinned by that module's own
+    /// `save_tabs_on_exit_to_clears_a_stale_session_json_when_restore_is_disabled`).
+    /// So the error must actually be an error -- a caller that logs it
+    /// and continues destroys the user's saved session, which is why
+    /// `AppState::new` propagates it with `?` rather than a `warn!`.
+    ///
+    /// A shut-down facade is the failure: `settings()` returns a real
+    /// shutdown error, no mock or injected seam involved.
+    #[test]
+    fn a_failed_settings_read_leaves_the_destructive_placeholder_in_place() {
+        let temp = tempfile::tempdir().expect("create test directory");
+        let facade = bootstrap_test_facade(&temp);
+        let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
+        // Built before the shutdown below, which also closes
+        // `take_legacy_composition`.
+        let state = app_state_from_facade(&facade);
+
+        // The placeholder these mirrors start on is the dangerous value:
+        // if this ever stops being `false`, the hazard this test guards
+        // has changed shape and the test needs revisiting.
+        assert!(
+            !state.signals.general_settings.read().restore_tabs_on_launch,
+            "the un-filled placeholder must still be the value save_tabs_on_exit_to treats as \
+             \"delete the saved session\" -- that is what makes swallowing this error destructive"
+        );
+
+        runtime
+            .block_on(facade.shutdown())
+            .expect("shut the facade down");
+
+        let result = state.refresh_settings_signals(&facade, &runtime);
+
+        assert!(
+            result.is_err(),
+            "a settings read that cannot be served must report an error, not quietly leave the \
+             mirrors on placeholder values a caller would then act on"
+        );
+        assert!(
+            !state.signals.general_settings.read().restore_tabs_on_launch,
+            "a failed read must leave the placeholder untouched -- proving the caller really is \
+             the only thing standing between the failure and the deletion"
+        );
+        assert_eq!(
+            state
+                .signals
+                .archive_settings
+                .read()
+                .default_collision_policy,
+            "smart",
+            "no mirror may be half-written by a failed read"
+        );
+        assert!(!state.signals.security_settings.read().vault_available);
+        assert!(state
+            .signals
+            .network_settings
+            .read()
+            .socks5_address
+            .is_none());
+    }
+
+    /// The same read against a healthy facade fills every mirror, so the
+    /// test above is observing a real failure rather than a fixture that
+    /// could never have succeeded.
+    #[test]
+    fn a_successful_settings_read_fills_every_mirror() {
+        let temp = tempfile::tempdir().expect("create test directory");
+        let facade = bootstrap_test_facade(&temp);
+        let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
+        let state = app_state_from_facade(&facade);
+
+        state
+            .refresh_settings_signals(&facade, &runtime)
+            .expect("a healthy facade must serve its own settings");
+
+        assert!(
+            state.signals.general_settings.read().restore_tabs_on_launch,
+            "the seeded profile has restore enabled, so a filled mirror must not read as the \
+             placeholder"
+        );
+        assert!(state.signals.security_settings.read().vault_available);
+        assert!(state
+            .signals
+            .security_settings
+            .read()
+            .default_secrets_database_path
+            .is_some());
     }
 }

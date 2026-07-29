@@ -707,11 +707,9 @@ pub fn handle_action(
 mod tests {
     use super::*;
     use crate::core::services::Services;
-    use crate::core::signals::AppSignals;
-    use crate::core::state::AppState;
     use crate::features::settings::domain::types::{ConnectionTestStatus, ServerConnectionStatus};
     use crate::shared::theme::AppTheme;
-    use crate::test_support::bootstrap_test_facade;
+    use crate::test_support::{app_state_from_facade, bootstrap_test_facade};
     use arclain_core::services::ConfigService;
     use arclain_core::UserConfig;
     use arclain_widgets::Toaster;
@@ -890,21 +888,8 @@ mod tests {
             content_cache: legacy.content_cache,
             resource_manager: legacy.resource_manager,
         });
-        let signals = AppSignals::new();
-        signals
-            .plugin_visibility
-            .set(legacy.user_config.plugin_visibility.clone());
-        let app_state = AppState {
-            user_config: legacy.user_config,
-            pass_rules: legacy.pass_rules,
-            backend_selector: legacy.backend_selector,
-            fallback_backend: legacy.fallback_backend,
-            last_entries: vec![],
-            encrypted_crc_policy: legacy.encrypted_crc_policy,
-            db_paths: legacy.db_paths,
-            dbs: legacy.dbs,
-            signals: signals.clone(),
-        };
+        let app_state = app_state_from_facade(&facade);
+        let signals = app_state.signals.clone();
         app_state
             .refresh_settings_signals(&facade, &services.tokio_runtime)
             .expect("seed the settings signals for the fixture");

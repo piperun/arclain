@@ -156,34 +156,7 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::core::signals::AppSignals;
-
-    use crate::test_support::bootstrap_test_facade;
-
-    /// Builds an `AppState` mirror from a real facade's current
-    /// composition -- the same unpacking `AppState::new`/
-    /// `ProxySaveFixture` both do.
-    fn app_state_from_facade(facade: &ArclainApp) -> AppState {
-        let legacy = facade
-            .take_legacy_composition()
-            .expect("take legacy composition for the test fixture");
-        let signals = AppSignals::new();
-        signals
-            .plugin_visibility
-            .set(legacy.user_config.plugin_visibility.clone());
-        AppState {
-            user_config: legacy.user_config,
-            pass_rules: legacy.pass_rules,
-            backend_selector: legacy.backend_selector,
-            fallback_backend: legacy.fallback_backend,
-            last_entries: vec![],
-            encrypted_crc_policy: legacy.encrypted_crc_policy,
-            db_paths: legacy.db_paths,
-            dbs: legacy.dbs,
-            signals,
-        }
-    }
+    use crate::test_support::{app_state_from_facade, bootstrap_test_facade};
 
     /// The "NB2" fix: a *failed* `move_vault` still closes the shared
     /// vault handle on its way in (`run_move_vault` calls

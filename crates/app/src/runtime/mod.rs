@@ -1033,10 +1033,24 @@ impl ArclainApp {
     // equally delimited block, kept separate for the same reason.
 
     /// A full, point-in-time view of every non-secret application
-    /// setting. Always succeeds, even if the encrypted vault never
-    /// opened (`security.vault_available` reports that; the archive/
-    /// network settings reflect whatever `arclain_core::UserConfig` this
-    /// instance loaded regardless).
+    /// setting.
+    ///
+    /// A vault that never opened is **not** a failure: it is reported as
+    /// `security.vault_available: false`, the two secret-`configured`
+    /// flags read `false`, and the archive/network/general settings
+    /// reflect whatever `arclain_core::UserConfig` this instance loaded
+    /// regardless.
+    ///
+    /// It does fail in two cases, and callers must treat both as real:
+    /// after [`Self::shutdown`], and when a vault that *did* open then
+    /// errors on the two secret-presence reads this assembles the
+    /// snapshot from. Both mean the application can no longer report
+    /// its own configuration — so a caller must not substitute
+    /// placeholder settings and carry on. `crates/ui`'s startup depends
+    /// on exactly that: acting on the placeholder its settings mirrors
+    /// hold before their first read would delete the user's saved tab
+    /// session (see `AppState::refresh_settings_signals`'s own note),
+    /// so it propagates this error rather than logging it.
     pub async fn settings(&self) -> Result<crate::settings::SettingsSnapshot, ApplicationError> {
         self.dispatch_async(|inner| async move { settings_ops::run_settings(&inner).await })
             .await?
