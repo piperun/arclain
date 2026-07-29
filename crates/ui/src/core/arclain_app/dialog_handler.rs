@@ -736,8 +736,14 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
 
     // Render lightbox if open (now per-tab — read from active tab)
     let active_tab_for_lightbox = app.shared_state.signals().tabs.get().active().clone();
-    let lightbox_owner = ImageOwner::Lightbox(active_tab_for_lightbox.id);
     let mut lightbox_state = active_tab_for_lightbox.lightbox_state.get();
+    // The owner carries whichever plugin opened this lightbox, so the
+    // image store applies the same cross-plugin key check here as for any
+    // other plugin-scoped surface -- see `ImageOwner::Lightbox`.
+    let lightbox_owner = ImageOwner::Lightbox {
+        tab: active_tab_for_lightbox.id,
+        plugin_id: lightbox_state.source_plugin.clone(),
+    };
     if lightbox_state.show {
         let result = dialogs::render_lightbox(
             ctx,

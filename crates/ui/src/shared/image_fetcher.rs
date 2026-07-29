@@ -40,13 +40,18 @@ use eframe::egui;
 /// and is also the host's own statement of which plugin's namespace the
 /// bytes may be written into -- see [`ImageAssetStore::store_fetched`].
 /// `None` uses the host's default request path.
+/// Returns whether a fetch was actually dispatched. Callers are
+/// fire-and-forget and ignore it; it exists so the two refusal paths
+/// below (a key naming another plugin's namespace, and nothing able to
+/// store the result) are observable from a test rather than being
+/// silent early returns that a regression could delete unnoticed.
 pub fn trigger_image_fetch(
     shared: &SharedState,
     plugin_id: Option<String>,
     url: String,
     key: String,
     ctx: egui::Context,
-) {
+) -> bool {
     // The write choke point for cross-plugin key forgery, mirroring
     // `ImageAssetStore::request`'s read-side check. Every URL-fallback
     // fetch in this frontend goes through here (flat renderer, document
@@ -59,10 +64,13 @@ pub fn trigger_image_fetch(
             plugin_id = plugin_id.as_deref().unwrap_or("<none>"),
             "refused an image fetch for a key naming a different plugin's cache namespace"
         );
-        return;
+        return false;
+    }
+    if !shared.image_assets.can_store(&key) {
+        return false;
     }
     let client = &shared.services.async_http_client;
-    if shared.image_assets.can_store(&key) {
+    {
         let client = client.clone();
         let image_assets = shared.image_assets.clone();
         // Use runtime handle
@@ -124,7 +132,18 @@ pub fn trigger_image_fetch(
                                 )
                                 .await
                             {
-                                tracing::warn!("Failed to cache image {}: {}", key, e);
+                                // The key's tail is plugin-authored, so
+                                // only its host-derived owner is logged --
+                                // matching the guards above, which were
+                                // written specifically to keep guest text
+                                // out of global tracing.
+                                tracing::warn!(
+                                    owner = crate::shared::image_assets::host_owned_image_key_owner(
+                                        &key
+                                    )
+                                    .unwrap_or("<host>"),
+                                    "Failed to cache a fetched image: {e}"
+                                );
                             }
                         } else {
                             tracing::warn!(
@@ -146,4 +165,5 @@ pub fn trigger_image_fetch(
             }
         });
     }
+    true
 }

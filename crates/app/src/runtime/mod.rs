@@ -1218,6 +1218,46 @@ impl ArclainApp {
         plugin_id: String,
         extension_point: crate::plugins::PluginExtensionPointDto,
     ) -> Result<crate::plugins::PluginSessionSnapshot, ApplicationError> {
+        self.open_plugin_session_inner(plugin_id, extension_point, None)
+            .await
+    }
+
+    /// [`Self::open_plugin_session`], with the caller naming the archive
+    /// session this plugin session belongs to instead of letting it be
+    /// inferred.
+    ///
+    /// A frontend that scopes a plugin surface to an archive (an archive
+    /// browser's panel) already knows which one, and knows it *before*
+    /// this application has necessarily been told which archive is active
+    /// -- that report is asynchronous. Inferring the pin from the
+    /// application's own active-session state therefore races the report,
+    /// and losing that race pins the session to the previously-active
+    /// archive, or to none. Naming it removes the inference.
+    ///
+    /// `None` is not "use the active session": it means the caller's
+    /// surface genuinely has no archive origin, and a background fetch it
+    /// later requests falls back to whatever is active at completion.
+    /// Callers that want the inferred behavior use
+    /// [`Self::open_plugin_session`].
+    pub async fn open_plugin_session_for_archive(
+        &self,
+        plugin_id: String,
+        extension_point: crate::plugins::PluginExtensionPointDto,
+        archive_session_id: Option<ArchiveSessionId>,
+    ) -> Result<crate::plugins::PluginSessionSnapshot, ApplicationError> {
+        self.open_plugin_session_inner(plugin_id, extension_point, Some(archive_session_id))
+            .await
+    }
+
+    /// `pinned` is `Some(choice)` when the caller named the origin (even
+    /// `Some(None)`, meaning "explicitly no archive"), and `None` when it
+    /// wants this application's own active session used instead.
+    async fn open_plugin_session_inner(
+        &self,
+        plugin_id: String,
+        extension_point: crate::plugins::PluginExtensionPointDto,
+        pinned: Option<Option<ArchiveSessionId>>,
+    ) -> Result<crate::plugins::PluginSessionSnapshot, ApplicationError> {
         self.dispatch_async(move |inner| async move {
             let manager = crate::plugins::require_manager(inner.plugin_manager())?;
             let Some(handle) = inner.tokio_handle() else {
@@ -1228,7 +1268,8 @@ impl ArclainApp {
             // comment for why a background fetch this session later
             // requests must land there rather than on whichever session
             // happens to be active when the fetch finishes.
-            let pinned_archive_session = inner.active_archive_session().get();
+            let pinned_archive_session =
+                pinned.unwrap_or_else(|| inner.active_archive_session().get());
             inner
                 .plugin_sessions()
                 .open(
@@ -1241,6 +1282,18 @@ impl ArclainApp {
                 .await
         })
         .await?
+    }
+
+    /// The archive session a plugin session's background metadata writes
+    /// are pinned to, as named (or inferred) when it opened -- see
+    /// [`Self::open_plugin_session_for_archive`]. `NotFound` for an
+    /// unknown or already-closed session id.
+    pub async fn plugin_session_archive_origin(
+        &self,
+        session_id: crate::ids::PluginSessionId,
+    ) -> Result<Option<ArchiveSessionId>, ApplicationError> {
+        self.dispatch(move |inner| inner.plugin_sessions().pinned_archive_session(session_id))
+            .await?
     }
 
     /// Immediate, in-memory query of the last document revision

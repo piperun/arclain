@@ -17,16 +17,25 @@ pub struct LightboxState {
     pub current_index: usize,
     /// Optional title (e.g., product name)
     pub title: Option<String>,
-    /// Plugin ID that opened the lightbox (for event callbacks)
+    /// The plugin whose action opened this lightbox, when one did.
+    ///
+    /// Load-bearing, not informational: it becomes
+    /// [`ImageOwner::Lightbox`]'s owning plugin, which is what lets
+    /// `ImageAssetStore::request` refuse a key naming a *different*
+    /// plugin's cache namespace here as it does for every other
+    /// plugin-scoped surface. `None` for a host-opened lightbox, which
+    /// carries no plugin-authored keys.
     pub source_plugin: Option<String>,
 }
 
 impl LightboxState {
-    /// Open the lightbox with the given images
+    /// Open the lightbox with the given images, on behalf of
+    /// `source_plugin` (see that field).
     pub fn open(
         images: Vec<(String, Option<String>)>,
         start_index: usize,
         title: Option<String>,
+        source_plugin: Option<String>,
     ) -> Self {
         let clamped_index = start_index.min(images.len().saturating_sub(1));
         Self {
@@ -34,7 +43,7 @@ impl LightboxState {
             images,
             current_index: clamped_index,
             title,
-            source_plugin: None,
+            source_plugin,
         }
     }
 
@@ -327,7 +336,7 @@ mod tests {
             ("key2".to_string(), None),
             ("key3".to_string(), None),
         ];
-        let mut state = LightboxState::open(images, 0, None);
+        let mut state = LightboxState::open(images, 0, None, None);
 
         assert_eq!(state.current_index, 0);
         assert!(state.show);
@@ -357,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_lightbox_empty_images() {
-        let state = LightboxState::open(vec![], 0, None);
+        let state = LightboxState::open(vec![], 0, None, None);
         assert_eq!(state.current_index, 0);
         assert!(state.current_image().is_none());
     }
@@ -366,7 +375,7 @@ mod tests {
     fn test_lightbox_start_index_clamping() {
         let images = vec![("key1".to_string(), None), ("key2".to_string(), None)];
         // Start index beyond length should be clamped
-        let state = LightboxState::open(images, 10, None);
+        let state = LightboxState::open(images, 10, None, None);
         assert_eq!(state.current_index, 1); // Clamped to last valid index
     }
 }

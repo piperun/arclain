@@ -92,10 +92,23 @@ pub fn dispatch_action(
 ///
 /// A named function rather than inline so the condition it exists for --
 /// "already terminal by the time we look" -- can be exercised
-/// deterministically. Driving it through [`dispatch_action`] cannot:
-/// that function *starts* the operation, so whether it has finished a few
-/// microseconds later is genuinely a race, and a test asserting either
-/// outcome flakes (measured: 1 failure in 3 runs).
+/// deterministically, which asserting through [`dispatch_action`] cannot
+/// be: that function starts the operation, so whether it has finished a
+/// few microseconds later is genuinely a race (measured at 1 failure in 3
+/// runs), and with no broadcast subscriber attached a test that loses the
+/// race waits forever rather than merely being slow. The re-read is in
+/// fact *usually* the loser -- it is one dispatch round trip, while the
+/// action worker additionally takes a per-plugin lock and makes a WASM
+/// call -- which is exactly why it is a recovery path and not the primary
+/// one.
+///
+/// So this function's behavior is pinned by driving it with an
+/// already-terminal operation, and its single call site above is not
+/// independently pinned. Two ways to close that were tried and rejected:
+/// a log-based witness (`tracing_test` scopes captured events to the
+/// test's own thread, and this runs on a spawned task -- verified with a
+/// throwaway probe), and a counter on the registry (test-only state on a
+/// production type, to pin one line).
 pub async fn reconcile_started_action(
     shared: &SharedState,
     facade: &arclain_app::ArclainApp,
@@ -104,6 +117,14 @@ pub async fn reconcile_started_action(
     let Ok(snapshot) = facade.operation(operation_id).await else {
         return;
     };
+    // Recorded unconditionally, before the outcome is known: whether this
+    // re-read *recovers* anything depends on whether the operation
+    // happened to finish first, so the useful diagnostic is that the
+    // recovery attempt ran at all. Host-derived fields only.
+    tracing::debug!(
+        operation_id = operation_id.into_raw(),
+        "[plugin-sessions] re-read a started action's own snapshot"
+    );
     crate::core::operation_bridge::handle_plugin_action_event(
         shared,
         OperationEvent {
@@ -237,8 +258,12 @@ pub fn apply_intent(
                 .into_iter()
                 .map(|image| (image.cache_key, image.url))
                 .collect();
-            tab.lightbox_state
-                .set(LightboxState::open(images, start_index as usize, title));
+            tab.lightbox_state.set(LightboxState::open(
+                images,
+                start_index as usize,
+                title,
+                Some(slot.plugin_id().to_string()),
+            ));
         }
         PluginHostIntentDto::SetPageDisplayName { name } => {
             page_display_name(shared, origin_tab).set(Some(name));

@@ -39,7 +39,14 @@ pub enum ImageOwner {
     PluginSettings {
         plugin_id: String,
     },
-    Lightbox(TabId),
+    Lightbox {
+        tab: TabId,
+        /// The plugin whose action opened this lightbox, if any. Carried
+        /// so a lightbox is ownership-checked like every other
+        /// plugin-scoped surface rather than being the one hole in
+        /// [`image_key_is_addressable_by`]'s coverage.
+        plugin_id: Option<String>,
+    },
 }
 
 impl ImageOwner {
@@ -94,7 +101,7 @@ impl ImageOwner {
             | Self::PluginDialog { plugin_id, .. }
             | Self::PluginPanel { plugin_id, .. }
             | Self::PluginSettings { plugin_id } => Some(plugin_id),
-            Self::Lightbox(_) => None,
+            Self::Lightbox { plugin_id, .. } => plugin_id.as_deref(),
         }
     }
 }
@@ -128,10 +135,9 @@ pub fn host_owned_image_key_owner(key: &str) -> Option<&str> {
 /// host-stamped key may only be used by the plugin it names. Unstamped
 /// keys are host-namespace and unrestricted, exactly as before.
 ///
-/// `acting_plugin_id` is `None` for host surfaces with no single owning
-/// plugin -- currently only the lightbox, which is populated from a
-/// plugin *intent* the facade already stamped, so its keys are correct by
-/// construction and there is nothing here to compare them against.
+/// `acting_plugin_id` is `None` only for a surface with no owning plugin
+/// at all -- a host-opened lightbox, which carries no plugin-authored
+/// keys, so there is nothing to compare against.
 pub fn image_key_is_addressable_by(key: &str, acting_plugin_id: Option<&str>) -> bool {
     match (host_owned_image_key_owner(key), acting_plugin_id) {
         (None, _) => true,
@@ -261,9 +267,11 @@ impl ImageBytes for FacadeImageBytes {
     /// token for a cache namespace: any caller holding a
     /// `plugin-image:victim:k` string could write into `victim`'s
     /// namespace and have `victim` later render those bytes as its own.
-    /// The frontend-side guard against such a key existing at all lives in
-    /// the renderers (see `rendering::image::KeyProvenance`); this is the
-    /// facade-side half, so neither alone has to be perfect.
+    /// The frontend-side half of this guard is the two choke points every
+    /// image path funnels through -- [`ImageAssetStore::request`] for
+    /// reads and `crate::shared::image_fetcher::trigger_image_fetch` for
+    /// fetches. This is the facade-side half, so neither alone has to be
+    /// perfect.
     fn put(
         &self,
         plugin_id: Option<&str>,
@@ -804,7 +812,22 @@ mod key_ownership_tests {
     #[test]
     fn a_surface_with_no_owning_plugin_is_not_restricted() {
         assert!(image_key_is_addressable_by("plugin-image:anyone:k", None));
-        assert_eq!(ImageOwner::Lightbox(TabId(1)).plugin_id(), None);
+        assert_eq!(
+            ImageOwner::Lightbox {
+                tab: TabId(1),
+                plugin_id: None
+            }
+            .plugin_id(),
+            None
+        );
+        assert_eq!(
+            ImageOwner::Lightbox {
+                tab: TabId(1),
+                plugin_id: Some("demo".to_string())
+            }
+            .plugin_id(),
+            Some("demo")
+        );
         assert_eq!(
             ImageOwner::plugin_settings("demo").plugin_id(),
             Some("demo")

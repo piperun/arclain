@@ -262,14 +262,12 @@ fn process_bounded_action(
                 start_index
             );
             if let Some(signal) = ctx.lightbox_signal {
-                // The lightbox renders under `ImageOwner::Lightbox`, which
-                // names no plugin, so the store's own read guard cannot
-                // check these keys for it. This is the ingress where the
-                // acting plugin *is* known, so a key naming a different
-                // plugin's cache namespace is dropped here instead --
-                // unlike the facade path, whose lightbox intents the host
-                // stamped itself and which is therefore correct by
-                // construction.
+                // Filtered at the ingress as well as checked at the store:
+                // the store refuses a forged key when the lightbox renders
+                // it (the owner now carries `source_plugin`), but dropping
+                // it here means the lightbox never even lists an entry the
+                // plugin was not entitled to reference -- so the index the
+                // user navigates matches what they can actually see.
                 let images: Vec<_> = images
                     .into_iter()
                     .filter(|(cache_key, _)| {
@@ -279,7 +277,8 @@ fn process_bounded_action(
                         )
                     })
                     .collect();
-                let state = LightboxState::open(images, start_index, title);
+                let state =
+                    LightboxState::open(images, start_index, title, Some(plugin_id.to_string()));
                 signal.set(state);
             } else {
                 tracing::warn!("Lightbox requested but signal not available");

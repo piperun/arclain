@@ -264,6 +264,22 @@ impl PluginSlot {
         }
     }
 
+    /// The archive session this slot is scoped to, for the variants that
+    /// are archive-scoped. `None` for every other kind, and for a panel
+    /// drawn with no archive open -- in both cases there is no origin to
+    /// pin a background fetch to, and the facade falls back accordingly.
+    pub fn archive_session(&self) -> Option<ArchiveSessionId> {
+        match self {
+            Self::Panel {
+                archive_session, ..
+            } => *archive_session,
+            Self::MainPage { .. }
+            | Self::PluginButton { .. }
+            | Self::Dialog { .. }
+            | Self::Page { .. } => None,
+        }
+    }
+
     /// Which tab this slot belongs to, for the tab-scoped variants. Used
     /// to close every slot a closing tab owned; `None` means the slot
     /// outlives any individual tab (see this type's own doc comment).
@@ -502,8 +518,30 @@ impl PluginSessions {
         let app = facade.clone();
         let plugin_id = slot.plugin_id().to_string();
         let extension_point = slot.extension_point();
+        // The archive session the facade pins this plugin session's
+        // background metadata writes to comes from the *slot key*, not
+        // from the facade's ambient active-session state.
+        //
+        // Reading it ambiently was a race with no happens-before edge:
+        // `sync_active_archive_session` fire-and-forget-spawns the facade
+        // sync at the top of a frame and the panel opens its session later
+        // in the same frame, both on the same runtime. When the open won,
+        // the slot pinned whatever the facade held *before* -- `None` on a
+        // tab's first archive, or another tab's live session when
+        // activating an already-loaded tab, which is the misroute pinning
+        // exists to prevent. And it did not self-heal: the mis-pinned
+        // slot's key is still correct, so nothing re-opens it.
+        //
+        // The slot already knows the right answer (`archive_session` is
+        // part of its identity), so passing it removes the ambient read
+        // and the window with it. Pin and key now agree by construction
+        // rather than by timing.
+        let archive_session = slot.archive_session();
         runtime.spawn(async move {
-            match app.open_plugin_session(plugin_id, extension_point).await {
+            match app
+                .open_plugin_session_for_archive(plugin_id, extension_point, archive_session)
+                .await
+            {
                 Ok(snapshot) => sessions.opened(&slot, snapshot.session_id, snapshot.document),
                 Err(error) => sessions.set_failed(&slot, error.summary),
             }

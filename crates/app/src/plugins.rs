@@ -719,6 +719,23 @@ impl PluginSessionStore {
             .ok_or_else(|| unknown_plugin_session(session_id))
     }
 
+    /// The archive session this plugin session's background metadata
+    /// writes are pinned to -- see [`Self::open`].
+    ///
+    /// Exposed so a caller can verify the origin it named was actually
+    /// recorded. Nothing in the rendering path needs it: the pin is only
+    /// ever read internally, by `dispatch_action`.
+    pub(crate) fn pinned_archive_session(
+        &self,
+        session_id: PluginSessionId,
+    ) -> Result<Option<ArchiveSessionId>, ApplicationError> {
+        self.sessions
+            .read()
+            .get(&session_id)
+            .map(|record| record.pinned_archive_session)
+            .ok_or_else(|| unknown_plugin_session(session_id))
+    }
+
     pub(crate) fn close(&self, session_id: PluginSessionId) -> Result<(), ApplicationError> {
         self.sessions
             .write()

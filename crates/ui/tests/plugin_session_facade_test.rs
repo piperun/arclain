@@ -35,7 +35,7 @@ use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 use arclain_ui::core::tabs::TabId;
 use arclain_ui::features::plugins::application::{PluginSessions, PluginSlot, SlotView};
 use arclain_ui::features::plugins::presentation::document_dispatch;
-use arclain_ui::shared::image_assets::ImageAssetStore;
+use arclain_ui::shared::image_assets::{ImageAssetState, ImageAssetStore, ImageOwner};
 use eframe::egui;
 
 /// Copies a workspace plugin fixture into the folder layout the plugin
@@ -505,8 +505,9 @@ fn the_image_store_writes_plugin_keys_where_it_reads_them_from_inside_a_runtime_
 /// The key encodes its own owner, so on its own it is a bearer token for
 /// a namespace. `write_plugin_image` therefore takes the host's separate
 /// statement of which plugin is acting and refuses a mismatch -- the
-/// facade-side half of the guard whose frontend-side half is
-/// `KeyProvenance`.
+/// facade-side half of the guard, whose frontend-side half is the choke
+/// points in `ImageAssetStore::request` and
+/// `image_fetcher::trigger_image_fetch`.
 #[test]
 fn a_plugin_cannot_write_into_another_plugins_image_namespace() {
     let temp = tempfile::tempdir().unwrap();
@@ -784,5 +785,237 @@ fn probing_an_extension_point_leaves_no_slot_behind() {
         };
         assert!(!offers_dialog);
         assert!(sessions.is_empty());
+    });
+}
+
+// ============================================================================
+// Cross-plugin key enforcement, at the choke points themselves.
+//
+// `image_key_is_addressable_by` is unit-tested as a predicate, but the
+// predicate is not the protection -- the three call sites are. The read
+// guard in particular is the *sole* barrier for cross-plugin reads:
+// `read_plugin_image` takes only a key, so the facade structurally cannot
+// check who is asking. These tests fail if any of the three guards is
+// removed.
+// ============================================================================
+
+/// Read half: a surface belonging to one plugin cannot read a key naming
+/// another plugin's cache namespace.
+#[test]
+fn the_image_store_refuses_a_read_for_another_plugins_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let runtime = runtime();
+    let store = ImageAssetStore::with_plugin_images(None, app.clone(), runtime.clone());
+    let victim_key = "plugin-image:ui-demo:cover";
+    let ctx = egui::Context::default();
+
+    let refused = store.request(
+        ImageOwner::plugin_panel("attacker", "properties", TabId(1)),
+        victim_key,
+        ctx.clone(),
+    );
+    assert!(
+        matches!(refused, ImageAssetState::Failed(_)),
+        "a key naming another plugin must be refused at the store, got {refused:?}"
+    );
+
+    // The owning plugin's own surface is unaffected -- the guard must
+    // reject forgery, not plugin images in general.
+    let allowed = store.request(
+        ImageOwner::plugin_panel("ui-demo", "properties", TabId(1)),
+        victim_key,
+        ctx,
+    );
+    assert!(
+        matches!(allowed, ImageAssetState::Loading),
+        "the owning plugin must still be able to load its own key, got {allowed:?}"
+    );
+}
+
+/// A lightbox opened by a plugin is ownership-checked like any other
+/// plugin-scoped surface, now that its owner carries the acting plugin.
+#[test]
+fn the_image_store_refuses_a_lightbox_read_for_another_plugins_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let runtime = runtime();
+    let store = ImageAssetStore::with_plugin_images(None, app.clone(), runtime.clone());
+
+    let refused = store.request(
+        ImageOwner::Lightbox {
+            tab: TabId(1),
+            plugin_id: Some("attacker".to_string()),
+        },
+        "plugin-image:ui-demo:cover",
+        egui::Context::default(),
+    );
+
+    assert!(
+        matches!(refused, ImageAssetState::Failed(_)),
+        "a plugin-opened lightbox must not read another plugin's key, got {refused:?}"
+    );
+}
+
+/// Write half: a fetch for a key naming another plugin is refused before
+/// any request is issued -- long before the bytes could be written into
+/// that plugin's namespace.
+#[test]
+fn triggering_an_image_fetch_refuses_another_plugins_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let mut shared = common::create_test_shared_state();
+    let runtime = shared.services.tokio_runtime.clone();
+    shared.facade = Some(app.clone());
+    // The production image source, so `can_store` answers as it does in a
+    // real app rather than short-circuiting this test for the wrong reason.
+    shared.image_assets = ImageAssetStore::with_plugin_images(None, app, runtime);
+    let ctx = egui::Context::default();
+
+    assert!(
+        !arclain_ui::shared::image_fetcher::trigger_image_fetch(
+            &shared,
+            Some("attacker".to_string()),
+            "https://example.invalid/c.png".to_string(),
+            "plugin-image:ui-demo:cover".to_string(),
+            ctx.clone(),
+        ),
+        "a fetch for another plugin's key must be refused before any request is issued"
+    );
+
+    assert!(
+        arclain_ui::shared::image_fetcher::trigger_image_fetch(
+            &shared,
+            Some("ui-demo".to_string()),
+            "https://example.invalid/c.png".to_string(),
+            "plugin-image:ui-demo:cover".to_string(),
+            ctx,
+        ),
+        "the owning plugin's own key must still dispatch"
+    );
+}
+
+/// The lightbox ingress filter: a plugin's `OpenLightbox` cannot list an
+/// image it does not own, so the index the user navigates matches what
+/// they can actually see.
+#[test]
+fn the_lightbox_ingress_drops_images_the_acting_plugin_does_not_own() {
+    use arclain_plugins::types::PluginAction;
+    use arclain_ui::features::plugins::domain::state::PluginDialogState;
+    use arclain_ui::features::plugins::presentation::controllers::plugin_controller::{
+        process_action, ActionContext,
+    };
+    use arclain_ui::shared::dialogs::LightboxState;
+
+    let lightbox = arclain_app::Signal::new(LightboxState::default());
+    let mut dialog = PluginDialogState::default();
+    let mut toaster = arclain_widgets::Toaster::new();
+    let context = ActionContext {
+        lightbox_signal: Some(&lightbox),
+        page_display_name_signal: None,
+        metadata_signal: None,
+        shared_state: None,
+        origin_tab: None,
+    };
+
+    process_action(
+        PluginAction::OpenLightbox {
+            images: vec![
+                ("plugin-image:victim:secret".to_string(), None),
+                ("own-unstamped-key".to_string(), None),
+            ],
+            start_index: 0,
+            title: None,
+        },
+        "attacker",
+        &mut dialog,
+        &mut toaster,
+        None,
+        &context,
+    );
+
+    let state = lightbox.get();
+    assert_eq!(
+        state
+            .images
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["own-unstamped-key"],
+        "an image naming another plugin's namespace must not be listed at all"
+    );
+    assert_eq!(
+        state.source_plugin.as_deref(),
+        Some("attacker"),
+        "the lightbox must record who opened it, so the store can check its reads too"
+    );
+}
+
+/// The pin a panel's plugin session carries comes from the *slot key*, not
+/// from the application's ambient active-session state.
+///
+/// Those could disagree: the frontend reports the active archive
+/// asynchronously, so a panel opened in the same frame as an archive
+/// activation could open before the report landed and pin the previously
+/// active archive -- or none. That did not self-heal, because the
+/// mis-pinned slot's key was already correct and nothing re-opened it.
+///
+/// Reproduced here by never reporting an active session at all (the
+/// facade's own view stays `None` throughout, which is the losing side of
+/// that race in its most extreme form) and asserting the session is still
+/// pinned to the archive the slot names.
+#[test]
+fn a_panel_pins_the_archive_its_slot_names_not_the_ambient_active_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let runtime = runtime();
+    let sessions = PluginSessions::new();
+    let archive = ArchiveSessionId::from_raw(9);
+    let slot = PluginSlot::Panel {
+        plugin_id: "ui-demo".to_string(),
+        tab: TabId(1),
+        archive_session: Some(archive),
+    };
+
+    runtime.block_on(async {
+        // Deliberately never call `set_active_archive_session`: the
+        // application still believes nothing is active.
+        view_until_resolved(&sessions, &app, runtime.handle(), &slot).await;
+        let session_id = sessions.session_id(&slot).expect("the panel opened");
+
+        assert_eq!(
+            app.plugin_session_archive_origin(session_id).await.unwrap(),
+            Some(archive),
+            "the pin must come from the slot key, not from ambient state that had not caught up"
+        );
+    });
+}
+
+/// A slot with no archive origin still pins nothing, so its fetches fall
+/// back as documented -- the key is the source of truth in both
+/// directions, not just when it names something.
+#[test]
+fn a_window_scoped_slot_pins_no_archive_even_when_one_is_active() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let runtime = runtime();
+    let sessions = PluginSessions::new();
+    let slot = PluginSlot::PluginButton {
+        plugin_id: "ui-demo".to_string(),
+    };
+
+    runtime.block_on(async {
+        app.set_active_archive_session(Some(ArchiveSessionId::from_raw(3)))
+            .await
+            .expect("reporting an active session must succeed");
+
+        view_until_resolved(&sessions, &app, runtime.handle(), &slot).await;
+        let session_id = sessions.session_id(&slot).expect("the slot opened");
+
+        assert_eq!(
+            app.plugin_session_archive_origin(session_id).await.unwrap(),
+            None,
+            "a slot that names no archive must pin none, regardless of what is active"
+        );
     });
 }

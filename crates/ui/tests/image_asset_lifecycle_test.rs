@@ -296,7 +296,10 @@ fn texture_survives_until_every_owner_releases_it() {
         .put("shared", &png_1x1(), CacheType::Screenshot, None, None)
         .expect("seed image cache");
     let page = ImageOwner::plugin_page("plugin", "page", TabId(1));
-    let lightbox = ImageOwner::Lightbox(TabId(7));
+    let lightbox = ImageOwner::Lightbox {
+        tab: TabId(7),
+        plugin_id: None,
+    };
     let ctx = eframe::egui::Context::default();
 
     fixture.store.request(page.clone(), "shared", ctx.clone());
