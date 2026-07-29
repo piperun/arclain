@@ -129,6 +129,16 @@ pub fn render(
                             shared.plugin_ui_jobs.invalidate_plugin_snapshots();
                             shared.plugin_ui_jobs.invalidate_chrome_snapshot();
                             shared.plugin_ui_jobs.invalidate_all_layouts();
+                            // Bumps the shared epoch `plugins_page::render`
+                            // checks for *both* of `PluginsFeature`'s
+                            // independent list states (this detail view
+                            // only has the one -- see that field's own doc
+                            // comment for why an epoch, not a direct
+                            // cross-state call, is what reaches the other).
+                            shared
+                                .signals()
+                                .plugin_list_epoch
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             needs_refresh = true;
                         }
                         Err(error) => {

@@ -524,6 +524,21 @@ pub fn restore_tabs_on_launch(shared_state: &SharedState) {
 /// skipped rather than guessed at: reopening nothing is always safer
 /// than reopening the wrong archive into the wrong tab.
 ///
+/// This positional match additionally depends on `restored` (already
+/// loaded by the caller via `TabsCollection::from_snapshot` by the time
+/// it reaches this function) preserving `tabs.json`'s on-disk order.
+/// `from_snapshot`'s own defensive pinned-first partition
+/// (`tabs_collection.rs`) is a stable partition, so it is a no-op
+/// whenever the snapshot already satisfies the pinned-first storage
+/// invariant it exists to enforce -- true for every snapshot this
+/// version of the application writes. If a *malformed* snapshot (hand-
+/// edited, or written by a pre-pin build with unpinned tabs ahead of
+/// pinned ones) ever needed that partition to actually reorder anything,
+/// every position from the first reordered tab onward would then
+/// silently fail this function's own path check above and be dropped --
+/// not misassigned to the wrong tab (the check still catches that), but
+/// quietly not restored at all, with only a warning log to notice it by.
+///
 /// Falls back to trusting every one of `restored`'s own embedded
 /// `archive_path` values directly if `session.json` is missing or
 /// unreadable -- an upgrade from a version that never wrote it, or a

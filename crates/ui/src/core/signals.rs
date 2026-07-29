@@ -14,7 +14,7 @@ use arclain_core::utilities::PassRule;
 use arclain_core::UiItem;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Connection status for the gameta server.
@@ -236,6 +236,21 @@ pub struct AppSignals {
     /// active), so the first frame with an archive already open in the
     /// active tab correctly triggers exactly one sync call, not zero.
     pub active_archive_session_synced: Arc<Mutex<Option<arclain_app::ids::ArchiveSessionId>>>,
+
+    /// Bumped every time a plugin's enabled state changes (the plugin
+    /// detail view's toggle, on success). `PluginsFeature` holds two
+    /// independent `PluginsListState`s -- the standalone Plugins page and
+    /// the Plugins settings page -- so they can keep independent
+    /// selection/scroll/install-progress state; a toggle made through one
+    /// is invisible to the other's own `snapshot_status` gate.
+    /// `plugins_page::render` compares this epoch against each state's
+    /// own `PluginsListState::plugin_list_epoch_seen` on every render and
+    /// invalidates that state's snapshot on a mismatch -- an epoch
+    /// counter rather than a one-shot flag, so whichever page renders
+    /// *second* after a toggle still notices it (a plain shared bool that
+    /// the first page's render consumed and cleared would leave the
+    /// second page's own check with nothing left to see).
+    pub plugin_list_epoch: Arc<AtomicU64>,
 }
 
 /// Proxy that lets callers keep the old `signals.extraction_dialog
@@ -378,6 +393,7 @@ impl AppSignals {
             egui_ctx: Arc::new(OnceLock::new()),
             pending_session_metadata: Arc::new(Mutex::new(HashMap::new())),
             active_archive_session_synced: Arc::new(Mutex::new(None)),
+            plugin_list_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 

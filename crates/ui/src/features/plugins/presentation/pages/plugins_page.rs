@@ -26,6 +26,24 @@ pub fn render(
     let action = None;
     let selected_before_render = state.selected_plugin.clone();
 
+    // `PluginsFeature` holds two independent `PluginsListState`s (the
+    // standalone Plugins page and the Plugins settings page), each
+    // reaching this same coordinator with only its own state in scope --
+    // a toggle applied through one is otherwise invisible to the other's
+    // own `snapshot_status` gate. Every render of *either* page passes
+    // through here, so comparing against the shared epoch on every call
+    // (not just the one where a toggle happened) is what lets the
+    // *other* page notice on its own next render -- see `AppSignals::
+    // plugin_list_epoch`'s own doc comment for why this is an epoch
+    // rather than a one-shot flag.
+    if let Some(shared) = shared {
+        let current_epoch = shared
+            .signals()
+            .plugin_list_epoch
+            .load(std::sync::atomic::Ordering::Relaxed);
+        sync_plugin_list_epoch(state, current_epoch);
+    }
+
     if state.selected_plugin.is_some() {
         // Detail View
         let needs_refresh = crate::features::plugins::presentation::views::detail_view::render(
@@ -58,6 +76,19 @@ pub fn render(
     }
 
     action
+}
+
+/// Invalidates `state`'s snapshot if `current_epoch` (`AppSignals::
+/// plugin_list_epoch`, read fresh by every call to [`render`]) has moved
+/// past the value `state` last synced against, recording the new value
+/// either way. Extracted from `render` so the cross-`PluginsListState`
+/// invalidation this exists for (see `AppSignals::plugin_list_epoch`'s own
+/// doc comment) can be unit-tested directly without an `egui::Ui`.
+fn sync_plugin_list_epoch(state: &mut PluginsListState, current_epoch: u64) {
+    if state.plugin_list_epoch_seen != current_epoch {
+        state.plugin_list_epoch_seen = current_epoch;
+        state.invalidate_snapshot();
+    }
 }
 
 /// Generate header configuration for the Plugins page
@@ -130,4 +161,63 @@ pub fn get_header_config<'a>(
                 ui.checkbox(show_disabled, "Show Disabled");
             });
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::plugins::domain::types::SnapshotStatus;
+
+    fn ready_state() -> PluginsListState {
+        let mut state = PluginsListState::default();
+        state.snapshot_status = SnapshotStatus::Ready;
+        state
+    }
+
+    #[test]
+    fn sync_plugin_list_epoch_is_a_no_op_when_already_current() {
+        let mut state = ready_state();
+        state.plugin_list_epoch_seen = 3;
+
+        sync_plugin_list_epoch(&mut state, 3);
+
+        assert_eq!(state.snapshot_status, SnapshotStatus::Ready);
+        assert_eq!(state.plugin_list_epoch_seen, 3);
+    }
+
+    #[test]
+    fn sync_plugin_list_epoch_invalidates_a_stale_state_and_records_the_new_epoch() {
+        let mut state = ready_state();
+        state.plugin_list_epoch_seen = 1;
+
+        sync_plugin_list_epoch(&mut state, 2);
+
+        assert_eq!(
+            state.snapshot_status,
+            SnapshotStatus::Idle,
+            "a state that missed a toggle made through its sibling PluginsListState \
+             must re-fetch rather than keep showing the stale enabled flag"
+        );
+        assert_eq!(state.plugin_list_epoch_seen, 2);
+    }
+
+    /// The scenario the fix exists for: `PluginsFeature`'s two independent
+    /// states (standalone Plugins page, Plugins settings page) both start
+    /// in sync; a toggle bumps the shared epoch once; each state's own
+    /// *next* render call independently notices and invalidates -- neither
+    /// consumes the signal in a way that hides it from the other.
+    #[test]
+    fn sync_plugin_list_epoch_reaches_both_sibling_states_after_one_bump() {
+        let mut list_state = ready_state();
+        let mut settings_list_state = ready_state();
+        list_state.plugin_list_epoch_seen = 5;
+        settings_list_state.plugin_list_epoch_seen = 5;
+
+        let bumped_epoch = 6;
+        sync_plugin_list_epoch(&mut list_state, bumped_epoch);
+        sync_plugin_list_epoch(&mut settings_list_state, bumped_epoch);
+
+        assert_eq!(list_state.snapshot_status, SnapshotStatus::Idle);
+        assert_eq!(settings_list_state.snapshot_status, SnapshotStatus::Idle);
+    }
 }

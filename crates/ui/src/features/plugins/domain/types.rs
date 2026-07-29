@@ -114,6 +114,16 @@ pub struct PluginsListState {
     pub cached_main_layout: Option<(String, Arc<PluginLayout>)>,
     pub snapshot_status: SnapshotStatus,
     pub snapshot_request_id: Option<RequestId>,
+    /// The last value of `AppSignals::plugin_list_epoch` this state
+    /// synced its snapshot against. `plugins_page::render` compares this
+    /// to the current shared epoch on every render and invalidates the
+    /// snapshot on a mismatch -- see that comparison's own doc comment
+    /// for why a shared epoch, not a direct cross-state invalidation,
+    /// is what keeps `PluginsFeature`'s two independent `PluginsListState`
+    /// instances (the standalone Plugins page and the Plugins settings
+    /// page) from showing a stale `enabled` flag for each other's most
+    /// recent toggle.
+    pub plugin_list_epoch_seen: u64,
 }
 
 impl PluginsListState {
