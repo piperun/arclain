@@ -10,7 +10,7 @@
 //! repeated queries (pagination, re-sorting) never re-touch the backend.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -551,7 +551,18 @@ impl FolderTotals {
 #[derive(Debug)]
 pub(crate) struct ArchiveSession {
     id: ArchiveSessionId,
-    source_path: PathBuf,
+    /// The archive's on-disk path. A plain `RwLock`, not a bare `PathBuf`:
+    /// [`Self::set_source_path`] lets `ArchiveContextBridge::set_archive_path`
+    /// (the `rename_archive` host function's write sink) update it in
+    /// place, matching the pre-facade UI bridge's own "plain unconditional
+    /// set, no revision bump, no re-list" behavior for the same call.
+    source_path: RwLock<PathBuf>,
+    /// Metadata a plugin has reported for this session via
+    /// `ArchiveContextBridge::set_session_metadata`/`set_active_tab_metadata`
+    /// (the `emit_metadata` host function's write sink). `None` until a
+    /// plugin actually reports something; also what [`Self::snapshot`]
+    /// reports as `ArchiveSnapshot::metadata`.
+    metadata: RwLock<Option<serde_json::Value>>,
     archive_type: String,
     archive: Arc<Mutex<arclain_core::Archive>>,
     revision: AtomicU64,
@@ -628,7 +639,8 @@ impl ArchiveSession {
         let entry_index = EntryIndex::build(entries, &mut id_assigner);
         Self {
             id,
-            source_path,
+            source_path: RwLock::new(source_path),
+            metadata: RwLock::new(None),
             archive_type,
             archive: Arc::new(Mutex::new(archive)),
             revision: AtomicU64::new(1),
@@ -641,6 +653,31 @@ impl ArchiveSession {
 
     pub(crate) fn id(&self) -> ArchiveSessionId {
         self.id
+    }
+
+    /// Overwrites this session's on-disk path in place -- the
+    /// `rename_archive` host function's write sink, via
+    /// `ArchiveContextBridge::set_archive_path`. A plain, unconditional
+    /// write: no revision bump, no re-list, matching the pre-facade UI
+    /// bridge's own identical behavior for the same call.
+    ///
+    /// `#[allow(dead_code)]`: exercised by `crate::plugins`'s own unit
+    /// tests (`ArchiveContextBridge` is implemented and tested standalone),
+    /// but that bridge is not yet `PluginManager`'s installed one in
+    /// production -- see `crate::plugins`'s own module doc comment for
+    /// why, and what closes the gap.
+    #[allow(dead_code)]
+    pub(crate) fn set_source_path(&self, path: PathBuf) {
+        *self.source_path.write() = path;
+    }
+
+    /// Overwrites this session's plugin-reported metadata -- the
+    /// `emit_metadata` host function's write sink, via
+    /// `ArchiveContextBridge::set_session_metadata`/`set_active_tab_metadata`.
+    /// `#[allow(dead_code)]` for the same reason as [`Self::set_source_path`].
+    #[allow(dead_code)]
+    pub(crate) fn set_metadata(&self, metadata: Option<serde_json::Value>) {
+        *self.metadata.write() = metadata;
     }
 
     /// Not called by anything this task adds: a future mutation-aware
@@ -737,12 +774,14 @@ impl ArchiveSession {
         self.entry_index.read().get(entry_id).cloned()
     }
 
-    /// The archive's original source path, alongside the backend handle
+    /// The archive's current source path, alongside the backend handle
     /// [`Self::archive_arc`] returns. Read by the extraction operation
     /// (`crate::operations::extract`) to resolve what to hand the CLI
-    /// runner.
-    pub(crate) fn source_path(&self) -> &Path {
-        &self.source_path
+    /// runner. Returns an owned clone rather than `&Path`: the path lives
+    /// behind a lock (see [`Self::set_source_path`]), so nothing can
+    /// return a reference into it that outlives the read guard.
+    pub(crate) fn source_path(&self) -> PathBuf {
+        self.source_path.read().clone()
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -768,16 +807,15 @@ impl ArchiveSession {
         ArchiveSnapshot {
             session_id: self.id,
             revision: self.revision(),
-            source_path: self.source_path.clone(),
+            source_path: self.source_path.read().clone(),
             archive_type: self.archive_type.clone(),
             entry_count: index.entry_count(),
             total_uncompressed_size: index.total_uncompressed_size(),
             // Neither `arclain_core::archive::ArchiveInfo` nor any backend
-            // in this workspace reports an archive comment or free-form
-            // metadata today; always `None` until a future task adds a
-            // real source for either.
+            // in this workspace reports an archive comment today; always
+            // `None` until a future task adds a real source for it.
             comment: None,
-            metadata: None,
+            metadata: self.metadata.read().clone(),
         }
     }
 
@@ -914,6 +952,7 @@ impl ArchiveSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn file(path: &str, size: u64, packed: u64) -> arclain_core::ArchiveEntry {
         arclain_core::ArchiveEntry {

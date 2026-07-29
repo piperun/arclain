@@ -46,14 +46,39 @@
 //!   dispatched through this module's `dispatch_action` would be
 //!   affected, and nothing calls that path in production yet (egui's
 //!   renderer has not been cut over -- see this task's report).
-//! - `PluginManager`'s installed `ActiveTabBridge` remains whichever one
-//!   `crates/ui` installs today (`AppSignalsBridge`). This module's own
-//!   [`ArchiveContextBridge`] is implemented and tested standalone, and
-//!   `ArclainApp::set_active_archive_session` is real, tested, and (per
-//!   this task) called from egui's tab-activation path -- but swapping
-//!   which bridge instance `PluginManager` actually dispatches through
-//!   is a separate, independently-verifiable behavior change this task
-//!   does not make. See the report for the full rationale.
+//! - `arclain_plugins::types::PluginArchiveAccess` (the `PluginArchiveContextId`
+//!   -keyed trait [`ArchiveContextAccess`] implements) has no installation
+//!   point anywhere in `arclain_plugins` today -- no `PluginManager`/
+//!   `HostFunctions`/`PluginInstance` setter exists to receive an
+//!   implementation of it, and no host function constructs a
+//!   `PluginArchiveContextId` or calls `list_entries`/`read_entry`/
+//!   `write_metadata` at all (every archive-facing host function
+//!   resolves through `ActiveTabBridge` instead). Wiring it for real
+//!   would mean adding that plumbing to `arclain_plugins` itself -- a
+//!   new WIT-adjacent surface, not a bridge swap -- and is out of scope
+//!   here; [`ArchiveContextAccess`] stays implemented and unit-tested
+//!   standalone, `#[allow(dead_code)]`, exactly as before.
+//! - [`ArchiveContextBridge`]'s `set_session_metadata`/`set_active_tab_metadata`/
+//!   `set_archive_path` are no longer stubs -- they write through a real,
+//!   settable [`crate::archive::ArchiveSession`] metadata slot and
+//!   source-path override, closing the gap `ActiveTabBridge::
+//!   set_active_tab_metadata`'s own doc comment calls out ("a no-op is
+//!   an acceptable implementation only if this bridge truly has no
+//!   notion of the active tab at all"). `PluginManager`'s *installed*
+//!   bridge remains `crates/ui`'s `AppSignalsBridge`, still: a plugin's
+//!   metadata write now lands correctly in `ArchiveSession::metadata`
+//!   (readable via `archive_snapshot`), but nothing yet pushes a changed
+//!   session's metadata back out to a frontend the way `AppSignalsBridge`
+//!   pushes it directly into egui's own tab signal -- the operation-event
+//!   stream (`OperationState`) has no "this session's metadata changed"
+//!   variant, only operation lifecycle ones, so a frontend polling
+//!   `archive_snapshot` for it would be the only option today. Swapping
+//!   the installed bridge without first closing that gap would silently
+//!   stop plugin-reported metadata (e.g. a cover/scene-info panel) from
+//!   ever reaching egui's properties panel again -- a real, user-visible
+//!   regression this task does not ship. Adding that push notification is
+//!   a genuine facade feature, not a bridge swap, and is named here as
+//!   the concrete remaining step.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -835,13 +860,12 @@ impl ActiveArchiveSession {
         *self.0.write() = session_id;
     }
 
-    /// Read by [`ArchiveContextBridge`], which -- see its own doc
-    /// comment -- is not yet the bridge installed on `PluginManager` in
-    /// production, so this has no *non-test* caller yet either.
-    /// `#[allow(dead_code)]` for the same reason `crate::operations::
-    /// registry::OperationRegistry` carries the same attribute: tested
-    /// directly by this module's own unit tests, wired up by a
-    /// still-pending follow-up.
+    /// Read by [`ArchiveContextBridge`], which -- see that type's own doc
+    /// comment -- is implemented and tested standalone but not yet the
+    /// bridge installed on `PluginManager` in production, so this has no
+    /// *non-test* caller yet either. `#[allow(dead_code)]` for the same
+    /// reason `crate::operations::registry::OperationRegistry` carries
+    /// the same attribute.
     #[allow(dead_code)]
     pub(crate) fn get(&self) -> Option<ArchiveSessionId> {
         *self.0.read()
@@ -851,8 +875,9 @@ impl ActiveArchiveSession {
 /// This crate's own `arclain_plugins::ActiveTabBridge` implementation,
 /// backed by [`ActiveArchiveSession`] and `crate::archive::ArchiveSessionStore`
 /// instead of a UI signal tree. See the module doc comment for this
-/// adapter's current wiring status (implemented and tested standalone;
-/// not yet the bridge installed on `PluginManager` in production) --
+/// adapter's current wiring status: fully implemented (including real
+/// metadata/rename writes, not stubs) and tested standalone, but not yet
+/// the bridge installed on `PluginManager` in production --
 /// `#[allow(dead_code)]` below for the same reason as
 /// `ActiveArchiveSession::get`.
 #[allow(dead_code)]
@@ -884,19 +909,27 @@ impl ArchiveContextBridge {
     /// worker of a **multi-thread** Tokio runtime (`Handle::try_current`
     /// returns `Err`, and this method returns `None`, from a plain
     /// `std::thread` with no ambient runtime at all, or from a
-    /// current-thread runtime). Every caller in this codebase that would
-    /// actually reach a WASM call through this bridge does so via
-    /// `PluginSessionStore`'s own `spawn_blocking` calls on this
-    /// application's multi-thread runtime, which satisfies this
-    /// requirement -- but it is a real constraint on any *other* future
-    /// caller, which is one more reason this adapter is not yet the
-    /// bridge installed on `PluginManager` in production (see the module
-    /// doc comment).
+    /// current-thread runtime). Every caller that reaches a WASM call
+    /// through this bridge does so via `PluginSessionStore`'s own
+    /// `spawn_blocking` calls on this application's multi-thread runtime,
+    /// which satisfies this requirement.
     fn with_active_session<T>(
         &self,
         read: impl FnOnce(&crate::archive::ArchiveSession) -> T,
     ) -> Option<T> {
         let session_id = self.active_session.get()?;
+        self.with_session(session_id, read)
+    }
+
+    /// Same bridging as [`Self::with_active_session`], but resolving an
+    /// explicit `session_id` rather than "whichever is active" -- used by
+    /// `set_session_metadata`, which must write to the tab that
+    /// originated an event even if the user has since switched tabs.
+    fn with_session<T>(
+        &self,
+        session_id: ArchiveSessionId,
+        read: impl FnOnce(&crate::archive::ArchiveSession) -> T,
+    ) -> Option<T> {
         let handle = tokio::runtime::Handle::try_current().ok()?;
         let sessions = self.sessions.clone();
         let session =
@@ -911,11 +944,11 @@ impl ActiveTabBridge for ArchiveContextBridge {
     }
 
     fn current_password(&self) -> Option<String> {
-        // No production caller reads this today (see this task's
-        // report); `ArchiveSession` does not expose the archive's
-        // password directly, so this deliberately stays `None` rather
-        // than reaching into `arclain_core::Archive` internals for a
-        // method nothing calls.
+        // No production caller reads this: every `host_functions` call
+        // site resolves password-dependent behavior some other way
+        // (`ArchiveSession` does not expose the archive's password
+        // directly), so this stays `None` rather than reaching into
+        // `arclain_core::Archive` internals for a method nothing calls.
         None
     }
 
@@ -928,26 +961,24 @@ impl ActiveTabBridge for ArchiveContextBridge {
         self.active_session.get().map(ArchiveSessionId::into_raw)
     }
 
-    fn set_session_metadata(&self, _archive_session_id: u64, _metadata: Option<serde_json::Value>) {
-        // `ArchiveSession` has no metadata field to write into today
-        // (`ArchiveSnapshot::metadata` is always `None` -- see
-        // `ArchiveSession::snapshot`'s own doc comment); this adapter is
-        // not installed on `PluginManager` in production yet (see the
-        // module doc comment), so there is nothing for this to wire to
-        // in this pass.
+    fn set_session_metadata(&self, archive_session_id: u64, metadata: Option<serde_json::Value>) {
+        let session_id = ArchiveSessionId::from_raw(archive_session_id);
+        // No match (`None`) can mean the tab's session was already
+        // closed, or this is a stale/fabricated id -- dropping the write
+        // silently is correct, matching `ActiveTabBridge::
+        // set_session_metadata`'s own doc comment.
+        self.with_session(session_id, |session| session.set_metadata(metadata));
     }
 
-    fn set_active_tab_metadata(&self, _metadata: Option<serde_json::Value>) {
-        // Same limitation as `set_session_metadata` just above: nothing
-        // in this crate's own archive-session model has a metadata slot
-        // to write into yet, and this adapter is not installed in
-        // production (see the module doc comment).
+    fn set_active_tab_metadata(&self, metadata: Option<serde_json::Value>) {
+        self.with_active_session(|session| session.set_metadata(metadata));
     }
 
-    fn set_archive_path(&self, _path: Option<String>) {
-        // `ArchiveSession::source_path` has no setter -- renaming an
-        // active archive through this bridge is out of scope for this
-        // task (this bridge is not installed in production yet).
+    fn set_archive_path(&self, path: Option<String>) {
+        let Some(path) = path else {
+            return;
+        };
+        self.with_active_session(|session| session.set_source_path(std::path::PathBuf::from(path)));
     }
 }
 
@@ -1282,6 +1313,92 @@ mod tests {
             bridge.active_archive_session_id(),
             Some(session_id.into_raw())
         );
+    }
+
+    /// Regression test for the fix making `set_active_tab_metadata` a real
+    /// write instead of the no-op it was before this task -- see
+    /// `ActiveTabBridge::set_active_tab_metadata`'s own doc comment
+    /// mandating exactly this for "every production implementation".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn archive_context_bridge_set_active_tab_metadata_writes_the_active_session() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let session_id = open_test_session(&sessions, vec![]).await;
+        let tracker = ActiveArchiveSession::new();
+        tracker.set(Some(session_id));
+        let bridge = ArchiveContextBridge::new(tracker, sessions.clone());
+
+        bridge.set_active_tab_metadata(Some(serde_json::json!({"title": "demo"})));
+
+        let session = sessions.get(session_id).await.unwrap();
+        assert_eq!(
+            session.snapshot().metadata,
+            Some(serde_json::json!({"title": "demo"}))
+        );
+    }
+
+    /// `set_session_metadata` resolves by the given session id, not by
+    /// whichever session happens to be active right now -- proving the
+    /// distinction `with_session`/`with_active_session` exist to draw.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn archive_context_bridge_set_session_metadata_targets_the_given_session_not_the_active_one(
+    ) {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let target_session_id = open_test_session(&sessions, vec![]).await;
+        let other_session_id = open_test_session(&sessions, vec![]).await;
+        let tracker = ActiveArchiveSession::new();
+        tracker.set(Some(other_session_id));
+        let bridge = ArchiveContextBridge::new(tracker, sessions.clone());
+
+        bridge.set_session_metadata(
+            target_session_id.into_raw(),
+            Some(serde_json::json!({"title": "targeted"})),
+        );
+
+        let target = sessions.get(target_session_id).await.unwrap();
+        let other = sessions.get(other_session_id).await.unwrap();
+        assert_eq!(
+            target.snapshot().metadata,
+            Some(serde_json::json!({"title": "targeted"}))
+        );
+        assert_eq!(
+            other.snapshot().metadata,
+            None,
+            "the active-but-not-targeted session must be untouched"
+        );
+    }
+
+    /// A stale or fabricated session id must never panic -- matches
+    /// `ActiveTabBridge::set_session_metadata`'s own doc comment: "the
+    /// write is simply lost".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn archive_context_bridge_set_session_metadata_on_an_unknown_session_is_a_silent_no_op() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let tracker = ActiveArchiveSession::new();
+        let bridge = ArchiveContextBridge::new(tracker, sessions);
+
+        bridge.set_session_metadata(999_999, Some(serde_json::json!({"ignored": true})));
+    }
+
+    /// Regression test for the fix making `set_archive_path` a real write
+    /// instead of the no-op it was before this task -- the `rename_archive`
+    /// host function's only write sink.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn archive_context_bridge_set_archive_path_renames_the_active_session() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let session_id = open_test_session(&sessions, vec![]).await;
+        let tracker = ActiveArchiveSession::new();
+        tracker.set(Some(session_id));
+        let bridge = ArchiveContextBridge::new(tracker, sessions.clone());
+
+        bridge.set_archive_path(Some("renamed.zip".to_string()));
+
+        assert!(bridge.archive_path().unwrap().contains("renamed.zip"));
+        let session = sessions.get(session_id).await.unwrap();
+        assert!(session
+            .snapshot()
+            .source_path
+            .to_string_lossy()
+            .contains("renamed.zip"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
