@@ -184,9 +184,18 @@ fn stem_from(input: &Path, metadata: Option<&GameMetadata>) -> OsString {
     // through to the next one; the last is the input's own stem, which
     // `Path::file_stem` already guarantees is a component.
     if let Some(meta) = metadata {
-        let sanitized = crate::utilities::title_filter::sanitize_title(meta.title.trim());
-        if let Some(safe) = crate::utilities::title_filter::plain_file_component(&sanitized) {
-            return OsString::from(safe);
+        // The emptiness check comes first and is not optional:
+        // `sanitize_title` substitutes the literal `"untitled"` for a
+        // string that sanitizes to nothing, and that sentinel *is* a
+        // usable file name -- so sanitizing a blank title would name
+        // every such output `untitled` instead of falling through, and
+        // two of them in one directory would collide.
+        let title = meta.title.trim();
+        if !title.is_empty() {
+            let sanitized = crate::utilities::title_filter::sanitize_title(title);
+            if let Some(safe) = crate::utilities::title_filter::plain_file_component(&sanitized) {
+                return OsString::from(safe);
+            }
         }
     }
 
@@ -434,5 +443,61 @@ mod tests {
         let input = PathBuf::from("/src/mod.rar");
         let output = PipelineOutput::NewFolder(PathBuf::from("/dst"));
         assert_eq!(output.resolve(&input, "7z"), PathBuf::from("/dst/mod.7z"));
+    }
+
+    fn metadata_titled(title: &str) -> GameMetadata {
+        GameMetadata::from_json(&format!(
+            r#"{{"product_id":"RJ123456","source":"dlsite","title":{}}}"#,
+            serde_json::to_string(title).unwrap()
+        ))
+        .expect("the fixture metadata must parse")
+    }
+
+    #[test]
+    fn a_title_names_the_output() {
+        let input = PathBuf::from("/src/[RJ123456] Original.rar");
+        let output = PipelineOutput::NewFolder(PathBuf::from("/dst"));
+        assert_eq!(
+            output.resolve_with_metadata(
+                &input,
+                "zip",
+                Some(&metadata_titled("Placeholder Title"))
+            ),
+            PathBuf::from("/dst/Placeholder Title.zip")
+        );
+    }
+
+    /// This method's own contract: an empty title falls back, exactly as
+    /// no metadata at all does. It must never reach `sanitize_title`'s
+    /// `"untitled"` substitution — that sentinel is a usable file name,
+    /// so it would be *returned*, naming every title-less output the
+    /// same thing and colliding the moment two of them share a
+    /// directory.
+    #[test]
+    fn an_empty_title_falls_back_instead_of_being_named_untitled() {
+        let input = PathBuf::from("/src/[RJ123456] Original.rar");
+        let output = PipelineOutput::NewFolder(PathBuf::from("/dst"));
+
+        // Blank, whitespace-only, and absent-from-the-JSON all reach the
+        // same `title: ""`.
+        let absent = GameMetadata::from_json(r#"{"product_id":"RJ123456","source":"dlsite"}"#)
+            .expect("a title-less blob must parse");
+        let null =
+            GameMetadata::from_json(r#"{"product_id":"RJ123456","source":"dlsite","title":null}"#)
+                .expect("a null title must parse");
+        for metadata in [metadata_titled(""), metadata_titled("   "), absent, null] {
+            assert_eq!(
+                output.resolve_with_metadata(&input, "zip", Some(&metadata)),
+                PathBuf::from("/dst/RJ123456.zip"),
+                "an empty title must fall through to the detected product code"
+            );
+        }
+
+        // With no code to detect either, the input's own stem.
+        let no_code = PathBuf::from("/src/Original.rar");
+        assert_eq!(
+            output.resolve_with_metadata(&no_code, "zip", Some(&metadata_titled(""))),
+            PathBuf::from("/dst/Original.zip")
+        );
     }
 }

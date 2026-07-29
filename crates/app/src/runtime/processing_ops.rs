@@ -699,10 +699,20 @@ fn stem_from(input: &Path, metadata: Option<&GameMetadata>) -> std::ffi::OsStrin
     // next candidate when it is not. The last, the input's own stem, is
     // a component by construction.
     if let Some(meta) = metadata {
-        let sanitized = arclain_core::utilities::title_filter::sanitize_title(meta.title.trim());
-        if let Some(safe) = arclain_core::utilities::title_filter::plain_file_component(&sanitized)
-        {
-            return std::ffi::OsString::from(safe);
+        // Blank titles fall through rather than being sanitized: an
+        // empty title sanitizes to the literal `"untitled"` sentinel,
+        // which is a perfectly usable name and would therefore be
+        // *returned* -- naming every metadata-without-a-title output
+        // `untitled`, and colliding on the second one (see
+        // `crates/core`'s copy of this derivation for the same guard).
+        let title = meta.title.trim();
+        if !title.is_empty() {
+            let sanitized = arclain_core::utilities::title_filter::sanitize_title(title);
+            if let Some(safe) =
+                arclain_core::utilities::title_filter::plain_file_component(&sanitized)
+            {
+                return std::ffi::OsString::from(safe);
+            }
         }
     }
     if let Some(name) = input.file_name().and_then(|n| n.to_str()) {

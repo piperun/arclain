@@ -2932,18 +2932,28 @@ fn no_hostile_plugin_title_writes_outside_the_organize_destination() {
     let guarded = outside.join("do-not-touch.zip");
     std::fs::write(&guarded, b"a file an escape would overwrite").unwrap();
 
-    for (index, hostile_title) in [
-        "../outside/do-not-touch",
-        "..\\outside\\do-not-touch",
-        "../../..",
-        "..",
-        "C:\\Windows\\System32\\evil",
-        "\\\\server\\share\\evil",
-        "name:stream",
-        "NUL",
-        "   ",
-        "trailing.",
-        "nul\u{0}byte",
+    // Each title is paired with the name it must produce, which also
+    // records *which* layer acted on it. `Some(name)`: the title
+    // filter's default character set neutralized it into that plain
+    // name. `None`: nothing usable survived, so the derivation fell
+    // through to the source stem. Asserting the name (rather than only
+    // that the file landed inside the destination) is what catches a
+    // derivation that quietly collapses many titles onto one name.
+    for (index, (hostile_title, neutralized_name)) in [
+        ("../outside/do-not-touch", Some(".._outside_do-not-touch")),
+        ("..\\outside\\do-not-touch", Some(".._outside_do-not-touch")),
+        ("../../..", None),
+        ("..", None),
+        (
+            "C:\\Windows\\System32\\evil",
+            Some("C__Windows_System32_evil"),
+        ),
+        ("\\\\server\\share\\evil", Some("__server_share_evil")),
+        ("name:stream", Some("name_stream")),
+        ("NUL", None),
+        ("   ", None),
+        ("trailing.", None),
+        ("nul\u{0}byte", Some("nul_byte")),
     ]
     .into_iter()
     .enumerate()
@@ -2962,24 +2972,14 @@ fn no_hostile_plugin_title_writes_outside_the_organize_destination() {
             hostile_title,
         );
 
+        let expected_stem = match neutralized_name {
+            Some(name) => name.to_string(),
+            None => format!("hostile-{index}"),
+        };
         assert_eq!(
-            produced.len(),
-            1,
-            "title {hostile_title:?} must produce exactly one output, got {produced:?}"
-        );
-        let output = &produced[0];
-        assert_eq!(
-            output.parent(),
-            Some(destination.as_path()),
-            "title {hostile_title:?} must write inside its destination"
-        );
-        let name = output
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("the output must have a plain name");
-        assert!(
-            !name.contains('/') && !name.contains('\\') && !name.contains(':'),
-            "title {hostile_title:?} produced a name that is not a plain component: {name:?}"
+            produced,
+            vec![destination.join(format!("{expected_stem}.zip"))],
+            "title {hostile_title:?} must produce exactly this name, in its own destination"
         );
     }
 
@@ -2993,6 +2993,78 @@ fn no_hostile_plugin_title_writes_outside_the_organize_destination() {
         1,
         "and none may create one there either"
     );
+}
+
+/// The regression the round-1 hardening introduced: a metadata blob with
+/// no usable title must not collapse onto one shared output name.
+///
+/// `sanitize_title` substitutes the literal `"untitled"` for a title
+/// that sanitizes to nothing, and that sentinel is a perfectly usable
+/// file name — so sanitizing a blank title *returns* it instead of
+/// falling through, and the second archive organized that way overwrites
+/// the first on a destination with no transaction behind it.
+///
+/// Two archives, both reporting a blank title, into one destination:
+/// two files, each named from its own source.
+#[test]
+fn two_archives_with_no_metadata_title_do_not_collapse_onto_one_output() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+    let destination = temp.path().join("out-blank");
+
+    for name in ["[RJ000001] First.zip", "[RJ000002] Second.zip"] {
+        let input = temp.path().join(name);
+        std::fs::write(&input, b"placeholder content for hashing").unwrap();
+        organize_with_reported_title(
+            &runtime,
+            &app,
+            &input,
+            &destination,
+            rule_id,
+            profile_id,
+            "",
+        );
+    }
+
+    let mut produced: Vec<String> = std::fs::read_dir(&destination)
+        .expect("the destination must exist")
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    produced.sort();
+    assert_eq!(
+        produced,
+        vec!["RJ000001.zip".to_string(), "RJ000002.zip".to_string()],
+        "each archive must keep its own output name, taken from its detected code"
+    );
+}
+
+/// The same fallback with nothing to detect either: a blank title and a
+/// name carrying no product code land on the source stem.
+#[test]
+fn a_blank_metadata_title_falls_back_to_the_source_stem() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+
+    let input = temp.path().join("no-code-at-all.zip");
+    std::fs::write(&input, b"placeholder content for hashing").unwrap();
+    let destination = temp.path().join("out-stem");
+
+    let produced = organize_with_reported_title(
+        &runtime,
+        &app,
+        &input,
+        &destination,
+        rule_id,
+        profile_id,
+        "   ",
+    );
+
+    assert_eq!(produced, vec![destination.join("no-code-at-all.zip")]);
 }
 
 /// The product-code arm is checked the same way. A code is regex-derived
