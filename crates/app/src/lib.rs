@@ -38,6 +38,15 @@
 //! `ArclainApp::plugin_domain_whitelist`) and the pure [`analyze_url`]
 //! re-exported below.
 //!
+//! [`layout`] owns the application's own chrome-layout surface: the
+//! arrangeable toolbar/context-menu/tools-dialog/info-panel items
+//! ([`layout::UiItemDto`], via `ArclainApp::{list_ui_items,
+//! save_ui_items}`) and the display options stored beside them
+//! ([`layout::UiDisplayOptionsDto`], via `ArclainApp::{ui_display_options,
+//! save_ui_display_options}`). Its DTOs mirror what `arclain_core`
+//! re-exports from the storage layer, so a frontend draws its chrome from
+//! this crate's vocabulary rather than the database's.
+//!
 //! [`organization`] owns the organization feature's own surface:
 //! archive-profile and organization-rule CRUD, the output formats a
 //! profile may name ([`organization::archive_format_options`]), plus the
@@ -53,6 +62,7 @@ pub mod challenge;
 pub mod error;
 pub mod event;
 pub mod ids;
+pub mod layout;
 pub mod materialization;
 pub mod operations;
 pub mod organization;

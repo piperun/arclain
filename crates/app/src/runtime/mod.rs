@@ -24,6 +24,7 @@
 
 mod archive_ops;
 mod bootstrap;
+mod layout_ops;
 mod organization_ops;
 mod paths;
 mod processing_ops;
@@ -1443,6 +1444,107 @@ impl ArclainApp {
     }
 
     // ============= Task c5: organization rules/profiles (end) ============
+
+    // ============= chrome layout and display options (start) =============
+    // Kept in its own clearly-delimited section for the same reason as the
+    // sections around it: concurrent worktrees also edit this file. Every
+    // method here is a thin dispatch wrapper; the logic lives in
+    // `crate::layout` (pure DTOs/validation) and `runtime::layout_ops`
+    // (the `AppRuntime`-touching execution layer) -- see both modules'
+    // own doc comments.
+
+    /// Every arrangeable item of one chrome region, in the order it is
+    /// stored (`sort_order` ascending) -- what a toolbar, context menu,
+    /// tools dialog or info panel renders, and what a layout editor
+    /// edits.
+    ///
+    /// Empty (not an error) when no configuration database is open,
+    /// matching [`Self::organization_rules`]'s treatment of the same
+    /// situation. Hidden items are included: `visible` is a property of
+    /// an item, and an editor needs the hidden ones to offer them back.
+    pub async fn list_ui_items(
+        &self,
+        region: crate::layout::UiRegionDto,
+    ) -> Result<Vec<crate::layout::UiItemDto>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            layout_ops::run_list_ui_items(&inner, region).await
+        })
+        .await?
+    }
+
+    /// Writes `items` into `region`.
+    ///
+    /// **Upsert, never replace.** Every submitted item is stored (creating
+    /// or updating its row); every *other* row in the region is left
+    /// exactly as it was. An item is hidden by saving it with
+    /// `visible: false`, not by omitting it -- omitting it means "I have
+    /// nothing to say about this one". That is what lets a frontend save a
+    /// filtered subset of a region without destroying the rows it chose
+    /// not to show (the info-panel editor does exactly that with one
+    /// host-managed section).
+    ///
+    /// **Last write wins.** There is no revision to submit and no
+    /// conflict to resolve: unlike [`Self::update_settings`], this mirrors
+    /// the plain per-row upsert the layout has always been stored with, so
+    /// two callers saving one region concurrently end with whichever
+    /// finished last. Each individual call is still serialized end to end
+    /// against every other configuration mutation, so a save is never
+    /// interleaved with another one.
+    ///
+    /// `InvalidInput` when an item names a different `region` than the one
+    /// being written, when an `id` is empty, when two items share an `id`,
+    /// or when the batch or one of its text fields exceeds the bounds
+    /// documented on [`crate::layout::MAX_UI_ITEMS_PER_REGION`] and
+    /// [`crate::layout::MAX_UI_ITEM_TEXT_BYTES`]. Nothing is written when
+    /// any item is refused -- validation runs over the whole batch first.
+    /// An empty batch is accepted and writes nothing.
+    pub async fn save_ui_items(
+        &self,
+        region: crate::layout::UiRegionDto,
+        items: Vec<crate::layout::UiItemDto>,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            layout_ops::run_save_ui_items(&inner, region, items).await
+        })
+        .await?
+    }
+
+    /// The chrome display options: which view the browser opens on,
+    /// whether each side panel starts open and how wide, and whether
+    /// header buttons carry text labels.
+    ///
+    /// An option that has never been set reads as its default, so a fresh
+    /// profile answers the same as a seeded one. `Unsupported` when no
+    /// configuration database is open -- deliberately an error rather than
+    /// defaults, because defaults would be indistinguishable from
+    /// preferences the user actually chose (see
+    /// `runtime::layout_ops::run_ui_display_options`).
+    pub async fn ui_display_options(
+        &self,
+    ) -> Result<crate::layout::UiDisplayOptionsDto, ApplicationError> {
+        self.dispatch_async(|inner| async move { layout_ops::run_ui_display_options(&inner).await })
+            .await?
+    }
+
+    /// Writes every display option at once. Last write wins, for the same
+    /// reason [`Self::save_ui_items`] does.
+    ///
+    /// `InvalidInput` for a panel width that is not a finite,
+    /// non-negative number of pixels within
+    /// [`crate::layout::MAX_UI_PANEL_WIDTH_PX`]; nothing is written in
+    /// that case. Every other field is a bool or a closed enum, so no
+    /// other value can be wrong.
+    pub async fn save_ui_display_options(
+        &self,
+        options: crate::layout::UiDisplayOptionsDto,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            layout_ops::run_save_ui_display_options(&inner, options).await
+        })
+        .await?
+    }
+
+    // ============== chrome layout and display options (end) ==============
 
     // ==================== Task 11: plugin sessions (start) ====================
     // Kept in its own clearly-delimited section for the same reason as the
