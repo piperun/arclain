@@ -3,16 +3,24 @@
 //! Calculates discrepancies between original archive and organized output.
 
 use crate::shared::components::preview_tree;
-use arclain_core::features::organization::metrics::IntegrityReport;
+use arclain_app::organization::OrganizeIntegrityDto;
 
 // Helper functions removed as logic is now in core
 
 /// Export a report of all discrepancies (files filtered out, missing screenshots, etc.)
+///
+/// **Boundary note:** `metadata` is the one `arclain_core` type left in
+/// the organize panel. The report enumerates the *identifiers* of the
+/// screenshots a plan did not schedule, and no facade method exposes
+/// those yet -- the metadata read model is a later task's surface to
+/// design, so this one read stays where it is rather than being guessed
+/// at here. Every number in the report comes from the facade's own
+/// integrity DTO.
 pub fn export_issues_report(
-    report: &IntegrityReport,
+    report: &OrganizeIntegrityDto,
     _original_tree: &[preview_tree::PreviewTreeNode],
     _organized_tree: &[preview_tree::PreviewTreeNode],
-    metadata: &Option<arclain_core::features::organization::GameMetadata>,
+    metadata: Option<&arclain_core::features::organization::GameMetadata>,
 ) {
     use std::io::Write;
 

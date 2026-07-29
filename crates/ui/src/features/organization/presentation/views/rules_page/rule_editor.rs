@@ -4,7 +4,9 @@
 
 use crate::shared::components::{Form, TemplateVariable, VariableGroup, VariablePicker};
 use crate::shared::theme::AppTheme;
-use arclain_core::features::organization::OrganizationRule;
+use arclain_app::organization::{
+    OrganizationRuleActionsDto, OrganizationRuleInput, OrganizationRuleTriggerDto,
+};
 use arclain_widgets::{TextInput, ToggleSwitch};
 use eframe::egui;
 
@@ -13,9 +15,13 @@ const FIELD_WIDTH: f32 = 320.0;
 
 /// State for the rule editor
 pub struct RuleEditorState {
-    /// The rule being edited (clone for editing)
-    pub rule: OrganizationRule,
-    /// Original rule ID (0 for new rule)
+    /// The rule being edited, in the exact shape a save submits
+    /// (`ArclainApp::upsert_organization_rule`) -- the editor mutates
+    /// the request it will send rather than a separate model it would
+    /// then have to convert.
+    pub rule: OrganizationRuleInput,
+    /// Original rule ID (0 for new rule), matching the id
+    /// `SettingsPage::EditRule` routes on.
     pub original_id: i64,
     /// Variable picker dialog state
     pub variable_picker: VariablePicker,
@@ -35,8 +41,12 @@ pub enum RuleField {
 }
 
 impl RuleEditorState {
-    pub fn new(rule: OrganizationRule) -> Self {
-        let original_id = rule.id;
+    pub fn new(rule: OrganizationRuleInput) -> Self {
+        let original_id = rule
+            .id
+            .as_deref()
+            .and_then(|id| id.parse::<i64>().ok())
+            .unwrap_or(0);
         Self {
             rule,
             original_id,
@@ -47,8 +57,18 @@ impl RuleEditorState {
         }
     }
 
+    /// A blank rule: `id: None` so a save creates one, and disabled
+    /// until the author turns it on -- the state the pre-facade editor
+    /// started from.
     pub fn new_rule() -> Self {
-        Self::new(OrganizationRule::default())
+        Self::new(OrganizationRuleInput {
+            id: None,
+            name: String::new(),
+            priority: 0,
+            enabled: false,
+            trigger: OrganizationRuleTriggerDto::default(),
+            actions: OrganizationRuleActionsDto::default(),
+        })
     }
 
     /// Add plugin-provided variables
@@ -124,14 +144,14 @@ fn render_rule_form(ui: &mut egui::Ui, theme: &AppTheme, state: &mut RuleEditorS
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         if ui
-            .add(ToggleSwitch::new(&mut state.rule.is_enabled).with_theme_colors(&theme.colors))
+            .add(ToggleSwitch::new(&mut state.rule.enabled).with_theme_colors(&theme.colors))
             .changed()
         {
             state.is_dirty = true;
         }
         ui.add_space(8.0);
         ui.label(
-            egui::RichText::new(if state.rule.is_enabled {
+            egui::RichText::new(if state.rule.enabled {
                 "Active"
             } else {
                 "Inactive"

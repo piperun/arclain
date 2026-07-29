@@ -239,10 +239,15 @@ pub fn process_metadata_signal(
         // tab — only push metadata into it when the consumed tab IS
         // the active one; otherwise we'd overwrite the organizer
         // with whichever tab consumed last (rarely the right one).
+        //
+        // The panel does not plan from this value: the application read
+        // the same metadata off the session when it wrote it there, and
+        // recomputes the plan itself. What arrives here is what the
+        // panel *displays* (the fetched-title badge, the issues
+        // export), plus the signal that its plan is now stale.
         if tab.id == active_id {
             if let Some(page) = &mut organization_feature.organizer_page {
-                page.panel.session.metadata = Some(meta);
-                page.panel.update_preview();
+                page.panel.metadata_changed(Some(meta));
                 tracing::info!("Updated Organization Panel with new metadata");
             }
         }

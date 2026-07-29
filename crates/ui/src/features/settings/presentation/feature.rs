@@ -296,17 +296,15 @@ impl SettingsFeature {
                 // Handle SaveEditedRule immediately (before content rendering consumes rules_page)
                 if let Some(SettingsAction::SaveEditedRule) = &header_action {
                     if let Some(rp) = rules_page.as_mut() {
-                        if let Some(org_service) = shared.services.organization_service.as_ref() {
-                            match rp.save_editor_rule(org_service) {
-                                Ok(()) => {
-                                    rp.mark_saved_and_clear();
-                                    content_nav_target = Some(crate::core::AppPage::Settings(
-                                        SettingsPage::OrganizationRules,
-                                    ));
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to save rule: {}", e);
-                                }
+                        match rp.save_editor_rule(shared) {
+                            Ok(()) => {
+                                rp.mark_saved_and_clear();
+                                content_nav_target = Some(crate::core::AppPage::Settings(
+                                    SettingsPage::OrganizationRules,
+                                ));
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to save rule: {}", e);
                             }
                         }
                     }

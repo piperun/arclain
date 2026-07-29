@@ -13,10 +13,11 @@
 mod rule_editor;
 
 use crate::core::SettingsPage;
+use crate::features::organization::application::facade;
 use crate::shared::components::item_table::{ItemTable, TableColumn};
 use crate::shared::components::Form;
-use arclain_core::features::organization::OrganizationRule;
-use arclain_core::OrganizationService;
+use crate::shared::SharedState;
+use arclain_app::organization::{OrganizationRuleInput, OrganizationRuleSummary};
 use arclain_widgets::{ButtonSize, TextButton};
 pub use rule_editor::{RuleEditorAction, RuleEditorState};
 
@@ -49,7 +50,7 @@ pub struct RuleEditorOutput {
 }
 
 pub struct RulesPage {
-    rules: Option<Vec<OrganizationRule>>,
+    rules: Option<Vec<OrganizationRuleSummary>>,
     error: Option<String>,
     /// State for the rule editor (when editing a rule via dedicated page)
     editor_state: Option<RuleEditorState>,
@@ -82,9 +83,21 @@ impl RulesPage {
     }
 
     /// Currently surfaced editor-load error (set by `LoadRule` when
-    /// the requested rule is missing or the service errors out).
+    /// the requested rule is missing or the application errors out).
     pub fn editor_load_error(&self) -> Option<&str> {
         self.editor_load_error.as_deref()
+    }
+
+    /// The cached rule list. `None` until the dispatcher has run
+    /// `LoadRules` at least once, matching `ProfilesPage::profiles`.
+    pub fn rules(&self) -> Option<&[OrganizationRuleSummary]> {
+        self.rules.as_deref()
+    }
+
+    /// The rule the editor is currently editing, as the save will
+    /// submit it. `None` when no rule is open in the editor.
+    pub fn editor_rule_mut(&mut self) -> Option<&mut OrganizationRuleInput> {
+        self.editor_state.as_mut().map(|state| &mut state.rule)
     }
 
     pub fn render(
@@ -172,7 +185,7 @@ impl RulesPage {
                     .show(ui, theme, &columns, rules, |rule, idx, row, actions| {
                         // Status column
                         row.col(|ui| {
-                            if rule.is_enabled {
+                            if rule.enabled {
                                 ui.label(
                                     egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE)
                                         .color(theme.colors.primary),
@@ -187,7 +200,7 @@ impl RulesPage {
 
                         // Name column
                         row.col(|ui| {
-                            ui.label(egui::RichText::new(&rule.name).color(if rule.is_enabled {
+                            ui.label(egui::RichText::new(&rule.name).color(if rule.enabled {
                                 theme.colors.on_surface
                             } else {
                                 theme.colors.on_surface_variant
@@ -234,17 +247,22 @@ impl RulesPage {
                         });
                     })
             } else {
-                let empty_rules: Vec<OrganizationRule> = Vec::new();
+                let empty_rules: Vec<OrganizationRuleSummary> = Vec::new();
                 ItemTable::new().show(ui, theme, &[], &empty_rules, |_, _, _, _| {})
             };
 
-            // Handle deferred edit click → emit Navigate action.
+            // Handle deferred edit click → emit Navigate action. The
+            // route carries the numeric row id `SettingsPage::EditRule`
+            // is built on; a summary whose id is not one (which the
+            // facade never produces) simply has no edit route.
             if emitted.is_none() {
                 if let Some(edit_idx) = actions.get_edit() {
                     if let Some(rules) = &self.rules {
-                        if let Some(rule) = rules.get(*edit_idx) {
-                            emitted =
-                                Some(RulesPageAction::Navigate(SettingsPage::EditRule(rule.id)));
+                        if let Some(id) = rules
+                            .get(*edit_idx)
+                            .and_then(|rule| rule.id.parse::<i64>().ok())
+                        {
+                            emitted = Some(RulesPageAction::Navigate(SettingsPage::EditRule(id)));
                         }
                     }
                 }
@@ -324,16 +342,17 @@ impl RulesPage {
 
     /// Save the current rule being edited. Called from outside render
     /// (the settings header save button), so this remains a direct
-    /// service call rather than going through the action enum.
-    pub fn save_editor_rule(&mut self, service: &OrganizationService) -> Result<(), String> {
+    /// call rather than going through the action enum.
+    pub fn save_editor_rule(&mut self, shared: &SharedState) -> Result<(), String> {
         let state = self
             .editor_state
             .as_mut()
             .ok_or_else(|| "No rule being edited".to_string())?;
+        let (app, runtime) = facade::handles(shared).ok_or_else(facade::unavailable)?;
 
-        service
-            .save_domain_rule(&state.rule)
-            .map_err(|e| format!("Failed to save: {}", e))?;
+        runtime
+            .block_on(app.upsert_organization_rule(state.rule.clone()))
+            .map_err(|error| facade::describe("Failed to save", &error))?;
 
         state.is_dirty = false;
         Ok(())
@@ -346,16 +365,16 @@ impl RulesPage {
     }
 }
 
-/// Dispatch a `RulesPageAction` against the OrganizationService and
+/// Dispatch a `RulesPageAction` against the application facade and
 /// update the page's cached state. Called by the parent view after
 /// `render` or `render_edit_rule` returns a data action.
 ///
-/// All side effects on the service live here, so the render functions
-/// stay pure intent-emitters.
+/// All side effects live here, so the render functions stay pure
+/// intent-emitters.
 pub fn handle_rules_page_action(
     page: &mut RulesPage,
     action: RulesPageAction,
-    service: &OrganizationService,
+    shared: &SharedState,
     plugins: Option<&[crate::features::plugins::domain::types::PluginInfo]>,
 ) {
     match action {
@@ -368,27 +387,50 @@ pub fn handle_rules_page_action(
                 "RulesPageAction::Navigate should be handled by the caller, not the data dispatcher"
             );
         }
-        RulesPageAction::LoadRules => match service.list_domain_rules() {
-            Ok(rules) => {
-                page.rules = Some(rules);
-                page.error = None;
+        RulesPageAction::LoadRules => {
+            let Some((app, runtime)) = facade::handles(shared) else {
+                page.error = Some(facade::unavailable());
+                return;
+            };
+            match runtime.block_on(app.organization_rules()) {
+                Ok(rules) => {
+                    page.rules = Some(rules);
+                    page.error = None;
+                }
+                Err(error) => {
+                    page.error = Some(facade::describe("Failed to load rules", &error));
+                }
             }
-            Err(e) => {
-                page.error = Some(format!("Failed to load rules: {}", e));
-            }
-        },
+        }
         RulesPageAction::LoadRule { rule_id } => {
+            // A brand new rule needs nothing loaded, so it does not need
+            // the application at all.
             let mut editor_state = if rule_id == 0 {
                 RuleEditorState::new_rule()
             } else {
-                match service.get_domain_rule(rule_id) {
-                    Ok(Some(rule)) => RuleEditorState::new(rule),
-                    Ok(None) => {
-                        page.editor_load_error = Some("Rule not found".to_string());
-                        return;
-                    }
-                    Err(e) => {
-                        page.editor_load_error = Some(format!("Error loading rule: {}", e));
+                let Some((app, runtime)) = facade::handles(shared) else {
+                    page.editor_load_error = Some(facade::unavailable());
+                    return;
+                };
+                // The facade exposes no single-rule read: there are a
+                // handful of rules and the list is the same query, so
+                // this picks the one it wants out of it rather than
+                // asking for a lookup endpoint that would exist for one
+                // caller.
+                match runtime.block_on(app.organization_rules()) {
+                    Ok(rules) => match rules
+                        .iter()
+                        .find(|rule| rule.id.parse::<i64>().ok() == Some(rule_id))
+                    {
+                        Some(rule) => RuleEditorState::new(to_input(rule)),
+                        None => {
+                            page.editor_load_error = Some("Rule not found".to_string());
+                            return;
+                        }
+                    },
+                    Err(error) => {
+                        page.editor_load_error =
+                            Some(facade::describe("Error loading rule", &error));
                         return;
                     }
                 }
@@ -402,6 +444,21 @@ pub fn handle_rules_page_action(
             page.editor_state = Some(editor_state);
             page.editor_load_error = None;
         }
+    }
+}
+
+/// A saved rule as the editor's in-progress edit of it: every field
+/// round-trips, so saving an untouched rule stores exactly what was
+/// loaded (the summary and the input mirror each other field for
+/// field).
+fn to_input(rule: &OrganizationRuleSummary) -> OrganizationRuleInput {
+    OrganizationRuleInput {
+        id: Some(rule.id.clone()),
+        name: rule.name.clone(),
+        priority: rule.priority,
+        enabled: rule.enabled,
+        trigger: rule.trigger.clone(),
+        actions: rule.actions.clone(),
     }
 }
 

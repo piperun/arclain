@@ -7,8 +7,6 @@ use super::drag_drop;
 
 pub use super::file_opener::open_file_from_archive;
 
-pub use super::organization::run_organization_plan;
-
 pub struct ArchiveOperations {
     state: ArchiveOperationsState,
     shared: SharedState,

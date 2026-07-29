@@ -1,11 +1,12 @@
 use super::OrganizePanelAction;
-use arclain_core::features::organization::session::OrganizationSession;
+use arclain_app::organization::OrganizationRuleSummary;
 use arclain_widgets::ThemedDropdown;
 use eframe::egui;
 
 pub fn render_rule_selector(
     ui: &mut egui::Ui,
-    session: &OrganizationSession,
+    archive_name: &str,
+    rules: &[OrganizationRuleSummary],
     selected_rule_index: &mut usize,
 ) -> (Option<OrganizePanelAction>, bool) {
     let mut action = None;
@@ -15,20 +16,25 @@ pub fn render_rule_selector(
         ui.label(egui::RichText::new(egui_phosphor::regular::FUNNEL).size(14.0));
         arclain_widgets::Text::new("Rule:").strong().show(ui);
 
-        let current_rule = session
-            .rules
+        let current_rule = rules
             .get(*selected_rule_index)
             .map(|r| r.name.clone())
             .unwrap_or_else(|| "None".to_string());
 
-        let has_dlsite_code = arclain_core::utilities::has_dlsite_code(&session.archive_name);
+        // Boundary note: detecting a DLsite product code in a file name
+        // is the metadata feature's own vocabulary -- the same detector
+        // the application uses to resolve library metadata -- not the
+        // organization surface's, so it stays on its current path until
+        // the metadata read model is designed. Everything else this
+        // selector shows is facade data.
+        let has_dlsite_code = arclain_core::utilities::has_dlsite_code(archive_name);
 
         ThemedDropdown::new("rule_selector", &current_rule)
             .width(200.0)
             .show_ui(ui, |ui| {
                 let mut categories: std::collections::BTreeMap<String, Vec<usize>> =
                     std::collections::BTreeMap::new();
-                for (i, rule) in session.rules.iter().enumerate() {
+                for (i, rule) in rules.iter().enumerate() {
                     let cat = rule
                         .trigger
                         .metadata_source
@@ -46,7 +52,7 @@ pub fn render_rule_selector(
                     );
 
                     for i in indices {
-                        let rule = &session.rules[i];
+                        let rule = &rules[i];
                         let is_dlsite_rule = rule
                             .trigger
                             .metadata_source

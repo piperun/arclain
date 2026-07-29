@@ -11,7 +11,10 @@
 //! unlock the meaty round-trip tests for save/delete/etc.
 
 mod common;
-use common::{create_test_shared_state, create_test_shared_state_with_dbs};
+use common::{
+    create_test_shared_state, create_test_shared_state_with_dbs,
+    create_test_shared_state_with_facade,
+};
 
 // ============================================================================
 // ProfilesPage dispatcher (handle_profiles_action)
@@ -19,72 +22,76 @@ use common::{create_test_shared_state, create_test_shared_state_with_dbs};
 
 mod profiles_page {
     use super::*;
-    use arclain_core::features::organization::{ArchiveFormat, ArchiveProfile};
+    use arclain_app::organization::OrganizationProfileInput;
     use arclain_ui::features::organization::presentation::views::profiles_page::{
         handle_profiles_action, ProfilesAction, ProfilesPage,
     };
 
-    fn sample_profile() -> ArchiveProfile {
-        ArchiveProfile {
-            id: 0,
-            name: "test".into(),
+    fn sample_profile(name: &str) -> OrganizationProfileInput {
+        OrganizationProfileInput {
+            id: None,
+            name: name.into(),
             description: None,
-            format: ArchiveFormat::SevenZ,
+            output_format: "7z".into(),
             compression_level: 5,
             compression_method: Some("LZMA2".into()),
             solid_archive: true,
             encrypt_headers: false,
             is_default: false,
-            is_system: false,
         }
     }
 
     #[test]
-    fn load_profiles_with_no_db_sets_error() {
+    fn load_profiles_without_a_facade_sets_error() {
         let shared = create_test_shared_state();
         let mut page = ProfilesPage::new();
 
         handle_profiles_action(&mut page, ProfilesAction::LoadProfiles, &shared);
 
-        assert_eq!(
-            page.error(),
-            Some("Database not available"),
-            "LoadProfiles with no DB should surface the missing-DB error"
+        assert!(
+            page.error().is_some(),
+            "LoadProfiles with no application must surface an error rather than an empty page"
         );
+        assert!(page.profiles().is_none());
     }
 
     #[test]
-    fn save_profile_with_no_db_sets_error() {
+    fn save_profile_without_a_facade_sets_error() {
         let shared = create_test_shared_state();
         let mut page = ProfilesPage::new();
 
         handle_profiles_action(
             &mut page,
-            ProfilesAction::SaveProfile(sample_profile()),
+            ProfilesAction::SaveProfile(sample_profile("test")),
             &shared,
         );
 
-        assert_eq!(page.error(), Some("Database not available"));
+        assert!(page.error().is_some());
     }
 
+    /// A rejected write shows why and leaves the page's list alone --
+    /// the application validates before it persists, so nothing changed.
     #[test]
-    fn delete_profile_with_no_db_sets_error() {
-        let shared = create_test_shared_state();
+    fn a_rejected_profile_surfaces_the_reason() {
+        let (_temp, shared) = create_test_shared_state_with_facade();
         let mut page = ProfilesPage::new();
+        handle_profiles_action(&mut page, ProfilesAction::LoadProfiles, &shared);
+        let before = page.profiles().expect("profiles must load").len();
 
-        handle_profiles_action(&mut page, ProfilesAction::DeleteProfile(42), &shared);
+        let mut invalid = sample_profile("Unsupported");
+        invalid.output_format = "rar".into();
+        handle_profiles_action(&mut page, ProfilesAction::SaveProfile(invalid), &shared);
 
-        assert_eq!(page.error(), Some("Database not available"));
-    }
-
-    #[test]
-    fn set_default_profile_with_no_db_sets_error() {
-        let shared = create_test_shared_state();
-        let mut page = ProfilesPage::new();
-
-        handle_profiles_action(&mut page, ProfilesAction::SetDefaultProfile(42), &shared);
-
-        assert_eq!(page.error(), Some("Database not available"));
+        let error = page.error().expect("an unsupported format must be refused");
+        assert!(
+            error.contains("output format"),
+            "the reason must name the field: {error}"
+        );
+        assert_eq!(
+            page.profiles().unwrap().len(),
+            before,
+            "a refused save must not change the list"
+        );
     }
 }
 
@@ -93,33 +100,23 @@ mod profiles_page {
 // ============================================================================
 
 mod rules_page {
-    use arclain_core::OrganizationService;
-    use arclain_db::DieselPool;
+    use super::*;
     use arclain_ui::core::navigation::SettingsPage;
     use arclain_ui::features::organization::presentation::views::rules_page::{
         handle_rules_page_action, RulesPage, RulesPageAction,
     };
 
-    /// Empty in-memory pool: the schema isn't applied, so any real
-    /// query returns Err. Suitable for testing dispatcher error
-    /// branches that don't actually need the data.
-    fn empty_in_memory_service() -> OrganizationService {
-        let pool = DieselPool::from_url(":memory:").expect("in-memory pool");
-        OrganizationService::new(pool)
-    }
-
     #[test]
-    fn load_rule_with_id_zero_creates_new_editor_state_without_service() {
+    fn load_rule_with_id_zero_creates_new_editor_state_without_a_facade() {
+        let shared = create_test_shared_state();
         let mut page = RulesPage::new();
-        let service = empty_in_memory_service();
 
-        // rule_id == 0 is the "new rule" sentinel; the dispatcher
-        // creates a fresh RuleEditorState without touching the service,
-        // so even an empty-schema pool is fine here.
+        // rule_id == 0 is the "new rule" sentinel: there is nothing to
+        // load, so the dispatcher never reaches for the application.
         handle_rules_page_action(
             &mut page,
             RulesPageAction::LoadRule { rule_id: 0 },
-            &service,
+            &shared,
             None,
         );
 
@@ -127,51 +124,146 @@ mod rules_page {
             page.editor_load_error().is_none(),
             "rule_id=0 must not hit the error path"
         );
-        // RulesPage doesn't expose editor_state directly; we infer
-        // success from is_editor_dirty being defined (false on fresh)
-        // and the absence of an error.
         assert!(
             !page.is_editor_dirty(),
             "fresh editor state should be clean"
         );
+        assert!(page.editor_rule_mut().is_some(), "an editor must be open");
     }
 
     #[test]
-    fn load_rules_against_empty_schema_sets_error() {
+    fn load_rules_without_a_facade_sets_error() {
+        let shared = create_test_shared_state();
         let mut page = RulesPage::new();
-        let service = empty_in_memory_service();
 
-        handle_rules_page_action(&mut page, RulesPageAction::LoadRules, &service, None);
+        handle_rules_page_action(&mut page, RulesPageAction::LoadRules, &shared, None);
 
         assert!(
             page.error().is_some(),
-            "list_domain_rules against empty schema must error and surface it"
+            "loading with no application must surface an error"
         );
     }
 
     #[test]
-    fn load_rule_against_empty_schema_sets_editor_load_error() {
+    fn load_rule_without_a_facade_sets_editor_load_error() {
+        let shared = create_test_shared_state();
         let mut page = RulesPage::new();
-        let service = empty_in_memory_service();
 
         handle_rules_page_action(
             &mut page,
             RulesPageAction::LoadRule { rule_id: 7 },
-            &service,
+            &shared,
             None,
         );
 
-        assert!(
-            page.editor_load_error().is_some(),
-            "get_domain_rule against empty schema should surface editor_load_error"
+        assert!(page.editor_load_error().is_some());
+    }
+
+    /// Create through the editor, list it, load it back into the editor:
+    /// the page's whole rule cycle against a real application.
+    #[test]
+    fn rule_editing_round_trips_through_the_facade() {
+        let (_temp, shared) = create_test_shared_state_with_facade();
+        let mut page = RulesPage::new();
+
+        handle_rules_page_action(
+            &mut page,
+            RulesPageAction::LoadRule { rule_id: 0 },
+            &shared,
+            None,
         );
+        {
+            let rule = page.editor_rule_mut().expect("a new rule must be open");
+            rule.name = "Round Trip".to_string();
+            rule.enabled = true;
+            rule.priority = 42;
+            rule.trigger.filename_pattern = Some(r"^RJ\d+".to_string());
+            rule.actions.root_folder = Some("[$product_id] $title".to_string());
+        }
+        page.save_editor_rule(&shared)
+            .expect("the save must succeed");
+        page.mark_saved_and_clear();
+
+        handle_rules_page_action(&mut page, RulesPageAction::LoadRules, &shared, None);
+        assert_eq!(page.error(), None);
+        let saved = page
+            .rules()
+            .expect("rules must be loaded")
+            .iter()
+            .find(|rule| rule.name == "Round Trip")
+            .expect("the saved rule must be listed")
+            .clone();
+        assert!(saved.enabled);
+        assert_eq!(saved.priority, 42);
+
+        let saved_id: i64 = saved.id.parse().expect("ids are decimal integers");
+        handle_rules_page_action(
+            &mut page,
+            RulesPageAction::LoadRule { rule_id: saved_id },
+            &shared,
+            None,
+        );
+        assert_eq!(page.editor_load_error(), None);
+        let reloaded = page.editor_rule_mut().expect("the rule must load").clone();
+        assert_eq!(reloaded.id.as_deref(), Some(saved.id.as_str()));
+        assert_eq!(reloaded.name, "Round Trip");
+        assert_eq!(
+            reloaded.actions.root_folder.as_deref(),
+            Some("[$product_id] $title"),
+            "every edited field must survive the round trip"
+        );
+    }
+
+    /// An unsavable rule reports why, and the editor keeps the draft so
+    /// the author can fix it rather than retyping it.
+    #[test]
+    fn a_rejected_rule_reports_why_and_keeps_the_draft() {
+        let (_temp, shared) = create_test_shared_state_with_facade();
+        let mut page = RulesPage::new();
+
+        handle_rules_page_action(
+            &mut page,
+            RulesPageAction::LoadRule { rule_id: 0 },
+            &shared,
+            None,
+        );
+        page.editor_rule_mut()
+            .expect("a new rule must be open")
+            .name = "   ".to_string();
+
+        let error = page
+            .save_editor_rule(&shared)
+            .expect_err("a blank name must be refused");
+        assert!(
+            error.contains("name"),
+            "the reason must name the field: {error}"
+        );
+        assert!(
+            page.editor_rule_mut().is_some(),
+            "the draft must survive a refused save"
+        );
+    }
+
+    #[test]
+    fn loading_a_rule_that_does_not_exist_sets_editor_load_error() {
+        let (_temp, shared) = create_test_shared_state_with_facade();
+        let mut page = RulesPage::new();
+
+        handle_rules_page_action(
+            &mut page,
+            RulesPageAction::LoadRule { rule_id: 999_999 },
+            &shared,
+            None,
+        );
+
+        assert_eq!(page.editor_load_error(), Some("Rule not found"));
     }
 
     #[test]
     #[should_panic(expected = "Navigate should be handled by the caller")]
     fn navigate_action_panics_in_debug() {
+        let shared = create_test_shared_state();
         let mut page = RulesPage::new();
-        let service = empty_in_memory_service();
 
         // Navigate is supposed to be handled at the call site (translated
         // to SettingsAction::NavigateTo) and never reach the dispatcher.
@@ -179,7 +271,7 @@ mod rules_page {
         handle_rules_page_action(
             &mut page,
             RulesPageAction::Navigate(SettingsPage::OrganizationRules),
-            &service,
+            &shared,
             None,
         );
     }
@@ -424,30 +516,28 @@ mod interface_settings {
 
 mod profiles_page_happy {
     use super::*;
-    use arclain_core::features::organization::{ArchiveFormat, ArchiveProfile};
+    use arclain_app::organization::{OrganizationProfileInput, OrganizationProfileSummary};
     use arclain_ui::features::organization::presentation::views::profiles_page::{
         handle_profiles_action, ProfilesAction, ProfilesPage,
     };
 
-    fn profile_named(name: &str) -> ArchiveProfile {
-        ArchiveProfile {
-            id: 0,
+    fn profile_named(name: &str) -> OrganizationProfileInput {
+        OrganizationProfileInput {
+            id: None,
             name: name.into(),
             description: None,
-            format: ArchiveFormat::SevenZ,
+            output_format: "7z".into(),
             compression_level: 5,
             compression_method: Some("LZMA2".into()),
             solid_archive: true,
             encrypt_headers: false,
             is_default: false,
-            is_system: false,
         }
     }
 
-    /// ConfigDb seeds 3 system profiles ("Maximum Compression (7z)",
-    /// "Fast Compression (7z)", "Zip Compatible") on first init.
+    /// The config database seeds its own system profiles on first init.
     /// Tests that count user-created profiles must filter `!is_system`.
-    fn user_names(profiles: &[ArchiveProfile]) -> Vec<String> {
+    fn user_names(profiles: &[OrganizationProfileSummary]) -> Vec<String> {
         profiles
             .iter()
             .filter(|p| !p.is_system)
@@ -455,9 +545,19 @@ mod profiles_page_happy {
             .collect()
     }
 
+    fn id_of(page: &ProfilesPage, name: &str) -> String {
+        page.profiles()
+            .expect("profiles must be loaded")
+            .iter()
+            .find(|profile| profile.name == name)
+            .unwrap_or_else(|| panic!("profile {name:?} must be listed"))
+            .id
+            .clone()
+    }
+
     #[test]
-    fn load_against_fresh_db_returns_seeded_system_profiles_only() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+    fn load_against_a_fresh_application_returns_the_seeded_system_profiles_only() {
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut page = ProfilesPage::new();
 
         handle_profiles_action(&mut page, ProfilesAction::LoadProfiles, &shared);
@@ -471,14 +571,14 @@ mod profiles_page_happy {
         );
         assert!(
             !profiles.is_empty(),
-            "fresh-init DB ships with system-defaults seeded"
+            "a fresh application ships with system defaults seeded"
         );
         assert_eq!(page.error(), None);
     }
 
     #[test]
     fn save_then_load_returns_the_profile() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut page = ProfilesPage::new();
 
         handle_profiles_action(
@@ -487,8 +587,8 @@ mod profiles_page_happy {
             &shared,
         );
 
-        // Save's dispatcher branch re-fetches the list, so `page.profiles`
-        // already reflects the new row without a separate LoadProfiles call.
+        // Every mutation answers with the post-write list, so the page
+        // already reflects the new row without a separate LoadProfiles.
         let profiles = page.profiles().expect("save should re-populate cache");
         assert_eq!(user_names(profiles), vec!["alpha".to_string()]);
         assert_eq!(page.error(), None);
@@ -496,7 +596,7 @@ mod profiles_page_happy {
 
     #[test]
     fn delete_removes_only_the_targeted_profile() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut page = ProfilesPage::new();
 
         handle_profiles_action(
@@ -509,13 +609,7 @@ mod profiles_page_happy {
             ProfilesAction::SaveProfile(profile_named("beta")),
             &shared,
         );
-        let id_alpha = page
-            .profiles()
-            .unwrap()
-            .iter()
-            .find(|p| p.name == "alpha")
-            .unwrap()
-            .id;
+        let id_alpha = id_of(&page, "alpha");
 
         handle_profiles_action(&mut page, ProfilesAction::DeleteProfile(id_alpha), &shared);
 
@@ -525,7 +619,7 @@ mod profiles_page_happy {
 
     #[test]
     fn set_default_marks_only_one_profile_default() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut page = ProfilesPage::new();
 
         handle_profiles_action(
@@ -538,13 +632,7 @@ mod profiles_page_happy {
             ProfilesAction::SaveProfile(profile_named("beta")),
             &shared,
         );
-        let id_beta = page
-            .profiles()
-            .unwrap()
-            .iter()
-            .find(|p| p.name == "beta")
-            .unwrap()
-            .id;
+        let id_beta = id_of(&page, "beta");
 
         handle_profiles_action(
             &mut page,
@@ -563,7 +651,6 @@ mod profiles_page_happy {
 }
 
 mod rules_page_happy {
-    use arclain_core::features::organization::{OrganizationRule, RuleTrigger};
     use arclain_ui::features::organization::presentation::views::rules_page::{
         handle_rules_page_action, RulesPage, RulesPageAction,
     };
@@ -571,96 +658,48 @@ mod rules_page_happy {
     use super::*;
 
     #[test]
-    fn load_rules_against_empty_db_populates_empty_vec() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
-        let service = shared
-            .services
-            .organization_service
-            .as_ref()
-            .unwrap()
-            .clone();
+    fn load_rules_against_a_fresh_application_populates_the_cache() {
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut page = RulesPage::new();
 
-        handle_rules_page_action(&mut page, RulesPageAction::LoadRules, &service, None);
+        handle_rules_page_action(&mut page, RulesPageAction::LoadRules, &shared, None);
 
         assert_eq!(page.error(), None);
-        // page.rules is not pub; we infer success from the absence of an
-        // error and from a follow-up LoadRule(0) creating fresh state.
+        assert!(
+            page.rules().is_some(),
+            "a successful load must populate the cache, even when empty"
+        );
     }
 
     #[test]
-    fn load_rule_with_id_zero_succeeds_against_real_db() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
-        let service = shared
-            .services
-            .organization_service
-            .as_ref()
-            .unwrap()
-            .clone();
+    fn a_rule_saved_through_the_editor_is_picked_up_by_the_list() {
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut page = RulesPage::new();
 
         handle_rules_page_action(
             &mut page,
             RulesPageAction::LoadRule { rule_id: 0 },
-            &service,
+            &shared,
             None,
         );
+        {
+            let rule = page.editor_rule_mut().expect("a new rule must be open");
+            rule.name = "Staged Rule".to_string();
+            rule.enabled = true;
+        }
+        page.save_editor_rule(&shared)
+            .expect("the save must succeed");
+        page.mark_saved_and_clear();
 
-        assert_eq!(page.editor_load_error(), None);
-        assert!(!page.is_editor_dirty());
-    }
-
-    #[test]
-    fn save_rule_then_load_returns_it() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
-        let service = shared
-            .services
-            .organization_service
-            .as_ref()
-            .unwrap()
-            .clone();
-
-        // Insert a rule directly via the service (the dispatcher save
-        // path goes through RulesPage::save_editor_rule which isn't
-        // an action — it's called from the settings header save
-        // button). Use the service to stage the fixture, then dispatch
-        // LoadRules to verify the dispatcher picks it up.
-        let rule = OrganizationRule {
-            id: 0,
-            name: "demo-rule".into(),
-            priority: 100,
-            is_enabled: true,
-            trigger: RuleTrigger::default(),
-            actions: Default::default(),
-            ..Default::default()
-        };
-        service.save_domain_rule(&rule).expect("seed rule");
-
-        let mut page = RulesPage::new();
-        handle_rules_page_action(&mut page, RulesPageAction::LoadRules, &service, None);
+        handle_rules_page_action(&mut page, RulesPageAction::LoadRules, &shared, None);
 
         assert_eq!(page.error(), None);
-        // We can't read page.rules directly (private), but a
-        // subsequent LoadRule with the seeded id should now succeed
-        // without setting editor_load_error.
-        let seeded_id = service
-            .list_domain_rules()
-            .expect("list rules")
-            .into_iter()
-            .find(|r| r.name == "demo-rule")
-            .expect("seeded rule present")
-            .id;
-
-        handle_rules_page_action(
-            &mut page,
-            RulesPageAction::LoadRule { rule_id: seeded_id },
-            &service,
-            None,
-        );
-        assert_eq!(
-            page.editor_load_error(),
-            None,
-            "LoadRule with a real id must succeed"
+        assert!(
+            page.rules()
+                .expect("rules must be loaded")
+                .iter()
+                .any(|rule| rule.name == "Staged Rule"),
+            "the dispatcher must pick up a rule saved through the editor"
         );
     }
 }
@@ -670,9 +709,39 @@ mod process_page_happy {
     use arclain_ui::features::process::view::{handle_process_action, ProcessAction};
     use arclain_ui::features::process::ProcessPageState;
 
+    /// With no application to ask, the cache is still populated (with
+    /// nothing) rather than left `None` -- otherwise the page would emit
+    /// a load intent on every single frame.
     #[test]
-    fn load_organization_rules_with_real_service_caches_empty_vec_against_empty_db() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+    fn load_organization_rules_without_a_facade_caches_an_empty_list() {
+        let shared = create_test_shared_state();
+        let mut state = ProcessPageState::default();
+
+        handle_process_action(&mut state, ProcessAction::LoadOrganizationRules, &shared);
+
+        assert_eq!(state.cached_org_rules.as_deref(), Some(&[][..]));
+    }
+
+    /// The Organize step's rule picker is populated from the
+    /// application's own rule list.
+    #[test]
+    fn load_organization_rules_caches_what_the_application_reports() {
+        let (_tmp, shared) = create_test_shared_state_with_facade();
+        let app = shared.facade.as_ref().expect("the fixture has a facade");
+        shared
+            .services
+            .tokio_runtime
+            .block_on(app.upsert_organization_rule(
+                arclain_app::organization::OrganizationRuleInput {
+                    id: None,
+                    name: "Pipeline Rule".to_string(),
+                    priority: 10,
+                    enabled: true,
+                    trigger: Default::default(),
+                    actions: Default::default(),
+                },
+            ))
+            .expect("seeding a rule must succeed");
         let mut state = ProcessPageState::default();
 
         handle_process_action(&mut state, ProcessAction::LoadOrganizationRules, &shared);
@@ -681,10 +750,7 @@ mod process_page_happy {
             .cached_org_rules
             .as_ref()
             .expect("cache should be populated");
-        assert!(
-            cache.is_empty(),
-            "fresh DB has no rules; cache should be Some(empty)"
-        );
+        assert!(cache.iter().any(|rule| rule.name == "Pipeline Rule"));
     }
 
     #[test]

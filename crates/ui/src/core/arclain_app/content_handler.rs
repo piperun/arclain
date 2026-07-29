@@ -65,46 +65,36 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
             }
             AppPage::Organize => {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    // Get OrganizationService from Services container
-                    if let Some(org_service) =
-                        app.shared_state.services.organization_service.as_ref()
+                    if let Some(action) = app
+                        .organization_feature
+                        .rules_page
+                        .render(ui, &app.shared_state.theme)
                     {
-                        if let Some(action) = app
-                            .organization_feature
-                            .rules_page
-                            .render(ui, &app.shared_state.theme)
-                        {
-                            use crate::features::organization::presentation::views::RulesPageAction;
-                            match action {
-                                RulesPageAction::Navigate(_page) => {
-                                    // Top-level Organize view doesn't drive
-                                    // SettingsPage navigation directly — the
-                                    // Edit-rule flow lives under Settings, not
-                                    // this top-level page. Ignore Navigate
-                                    // intents here.
-                                }
-                                other => {
-                                    let plugins = app
-                                        .shared_state
-                                        .plugin_ui_jobs
-                                        .plugin_snapshot(
-                                            app.shared_state
-                                                .signals()
-                                                .plugin_visibility
-                                                .get(),
-                                        )
-                                        .and_then(Result::ok);
-                                    crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
-                                        &mut app.organization_feature.rules_page,
-                                        other,
-                                        org_service,
-                                        plugins.as_deref().map(Vec::as_slice),
-                                    );
-                                }
+                        use crate::features::organization::presentation::views::RulesPageAction;
+                        match action {
+                            RulesPageAction::Navigate(_page) => {
+                                // Top-level Organize view doesn't drive
+                                // SettingsPage navigation directly — the
+                                // Edit-rule flow lives under Settings, not
+                                // this top-level page. Ignore Navigate
+                                // intents here.
+                            }
+                            other => {
+                                let plugins = app
+                                    .shared_state
+                                    .plugin_ui_jobs
+                                    .plugin_snapshot(
+                                        app.shared_state.signals().plugin_visibility.get(),
+                                    )
+                                    .and_then(Result::ok);
+                                crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
+                                    &mut app.organization_feature.rules_page,
+                                    other,
+                                    &app.shared_state,
+                                    plugins.as_deref().map(Vec::as_slice),
+                                );
                             }
                         }
-                    } else {
-                        ui.label("Organization service not available.");
                     }
                 });
             }

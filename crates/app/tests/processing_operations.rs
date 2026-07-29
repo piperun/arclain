@@ -2655,8 +2655,10 @@ fn a_session_with_no_plugin_metadata_never_falls_back_to_the_library() {
     assert!(
         applied_output.exists(),
         "expected a code-stemmed output, found: {:?}",
-        std::fs::read_dir(&destination)
-            .map(|entries| entries.flatten().map(|entry| entry.path()).collect::<Vec<_>>())
+        std::fs::read_dir(&destination).map(|entries| entries
+            .flatten()
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>())
     );
     assert!(
         std::fs::read_to_string(&applied_output)

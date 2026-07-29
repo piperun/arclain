@@ -824,6 +824,33 @@ fn handle_extract_terminal(
     });
 }
 
+/// Finishes an organize: forgets the origin and, for anything other
+/// than plain success, says what happened. A successful run has already
+/// reported its own tally through the `Progress` message immediately
+/// preceding `Completed`, so overwriting that with a generic "done"
+/// would replace the informative message with a vaguer one.
+///
+/// Organize can raise its own `Challenge::Password` (an encrypted
+/// archive whose session had none), so a terminal state must also drain
+/// whatever challenge that left queued -- exactly as extraction does.
+fn handle_organize_terminal(
+    shared: &SharedState,
+    origins: &OperationOrigins,
+    tab_id: TabId,
+    operation_id: OperationId,
+    message: Option<String>,
+) {
+    origins.forget(operation_id);
+    if let Some(tab) = shared.signals().tabs.get().get(tab_id).cloned() {
+        dequeue_and_present_next(&tab, operation_id);
+    }
+    if let Some(message) = message {
+        shared.signals().status_bar.update(|s| {
+            s.message = message;
+        });
+    }
+}
+
 /// Re-lists `path` directly through the backend selector to refresh
 /// `tab`'s flat `entries`/`browser_entries` signals after a successful
 /// archive mutation (`OperationKind::ArchiveModify` reaching
@@ -1419,6 +1446,37 @@ async fn handle_event(
                 Some(error),
             )
         }
+        // Organize reports itself in words, not percentages: its worker
+        // emits one message per input describing what it did with that
+        // archive, and a final tally. Those land in the status bar as
+        // they arrive -- the operation is a single opaque
+        // extract-organize-repack per input with no progress callback to
+        // drive a bar with (see `arclain_app`'s own note on that), so a
+        // percentage here could only be invented.
+        (OperationKind::Organize, OperationState::Progress { message, .. }) => {
+            if let Some(message) = message {
+                shared.signals().status_bar.update(|s| {
+                    s.message = message;
+                });
+            }
+        }
+        (OperationKind::Organize, OperationState::Completed { .. }) => {
+            handle_organize_terminal(shared, origins, tab_id, event_operation_id, None)
+        }
+        (OperationKind::Organize, OperationState::Cancelled) => handle_organize_terminal(
+            shared,
+            origins,
+            tab_id,
+            event_operation_id,
+            Some("Organization cancelled".to_string()),
+        ),
+        (OperationKind::Organize, OperationState::Failed { error }) => handle_organize_terminal(
+            shared,
+            origins,
+            tab_id,
+            event_operation_id,
+            Some(format!("Organization failed: {}", error.summary)),
+        ),
         _ => {
             if event_is_terminal {
                 origins.forget(event_operation_id);

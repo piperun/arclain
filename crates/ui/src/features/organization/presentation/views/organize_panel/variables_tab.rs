@@ -5,7 +5,7 @@ use eframe::egui::{self, RichText};
 
 impl OrganizePanel {
     pub(super) fn render_variables_tab(&self, ui: &mut egui::Ui, theme: &AppTheme) {
-        if let Some(plan) = &self.session.preview_plan {
+        if let Some(plan) = self.preview() {
             ui.vertical(|ui| {
                 ui.add_space(8.0);
 
@@ -56,35 +56,32 @@ impl OrganizePanel {
                                     .spacing([20.0, 12.0])
                                     .striped(true)
                                     .show(ui, |ui| {
-                                        // Sort keys for consistent display
-                                        let mut keys: Vec<_> =
-                                            plan.resolved_variables.keys().collect();
-                                        keys.sort();
+                                        // Already sorted by name where
+                                        // the plan is computed, so two
+                                        // previews of one plan render
+                                        // identically.
+                                        for variable in &plan.resolved_variables {
+                                            ui.label(
+                                                RichText::new(format!("${}", variable.name))
+                                                    .monospace()
+                                                    .size(12.0)
+                                                    .strong()
+                                                    .color(
+                                                        ui.style()
+                                                            .visuals
+                                                            .text_color()
+                                                            .gamma_multiply(0.8),
+                                                    ),
+                                            );
 
-                                        for key in keys {
-                                            if let Some(value) = plan.resolved_variables.get(key) {
-                                                ui.label(
-                                                    RichText::new(format!("${}", key))
-                                                        .monospace()
-                                                        .size(12.0)
-                                                        .strong()
-                                                        .color(
-                                                            ui.style()
-                                                                .visuals
-                                                                .text_color()
-                                                                .gamma_multiply(0.8),
-                                                        ),
-                                                );
-
-                                                // Wrap long values
-                                                ui.label(
-                                                    RichText::new(value)
-                                                        .monospace()
-                                                        .size(12.0)
-                                                        .color(theme.colors.info),
-                                                );
-                                                ui.end_row();
-                                            }
+                                            // Wrap long values
+                                            ui.label(
+                                                RichText::new(&variable.value)
+                                                    .monospace()
+                                                    .size(12.0)
+                                                    .color(theme.colors.info),
+                                            );
+                                            ui.end_row();
                                         }
                                     });
                             });

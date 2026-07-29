@@ -7,6 +7,7 @@ use crate::features::archive_browser::application::{
 };
 use crate::features::archive_browser::domain::Action;
 use crate::features::archive_operations::ArchiveOperationsState;
+use crate::features::organization::application::facade as organization_facade;
 use crate::features::organization::OrganizationFeature;
 use crate::shared::SharedState;
 use eframe::egui;
@@ -120,6 +121,12 @@ impl BrowserController {
         crate::features::archive_operations::open_file_from_archive(shared, &archive_path);
     }
 
+    /// Opens the organize panel for the active tab's archive.
+    ///
+    /// The panel is bound to that tab's archive *session*, not to its
+    /// path: everything it then shows (the plan, the archive's own file
+    /// list) and the organize it eventually runs all name that session,
+    /// so they cannot describe different archives.
     fn handle_organize(
         &self,
         shared: &SharedState,
@@ -127,38 +134,60 @@ impl BrowserController {
         page_navigator: &mut PageNavigator,
     ) {
         let org_tab = shared.signals().tabs.get().active().clone();
-        if let Some(archive) = org_tab.archive_path.get() {
-            let archive_name = archive
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
+        let (Some(archive), Some(session_id)) =
+            (org_tab.archive_path.get(), org_tab.archive_session_id.get())
+        else {
+            return;
+        };
+        let Some((app, runtime)) = organization_facade::handles(shared) else {
+            return;
+        };
+        let archive_name = archive
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
-            let rules = self.load_org_rules(shared);
-            let profiles = self.load_profiles(shared);
-            let entries = org_tab.entries.get().as_ref().clone();
-            let metadata = org_tab.game_metadata.get();
+        let rules = self.load_org_rules(shared, app, runtime);
+        let profiles = runtime
+            .block_on(app.organization_profiles())
+            .unwrap_or_else(|error| {
+                tracing::warn!("could not load archive profiles: {}", error.summary);
+                Vec::new()
+            });
+        let matching_rule_ids = runtime
+            .block_on(app.matching_organization_rule_ids(session_id))
+            .unwrap_or_else(|error| {
+                tracing::warn!("could not resolve matching rules: {}", error.summary);
+                Vec::new()
+            });
+        let metadata = org_tab.game_metadata.get();
 
-            organization_feature.organizer_page =
-                Some(crate::features::organization::OrganizerPage::new(
-                    crate::features::organization::OrganizePanel::new(
-                        archive_name.clone(),
-                        entries,
-                        rules,
-                        profiles,
-                        metadata,
-                    ),
-                ));
+        organization_feature.organizer_page =
+            Some(crate::features::organization::OrganizerPage::new(
+                crate::features::organization::OrganizePanel::new(
+                    session_id,
+                    archive_name.clone(),
+                    rules,
+                    profiles,
+                    metadata,
+                    &matching_rule_ids,
+                ),
+            ));
 
-            page_navigator.navigate_to(crate::core::AppPage::OrganizeArchive(archive_name));
-        }
+        page_navigator.navigate_to(crate::core::AppPage::OrganizeArchive(archive_name));
     }
 
+    /// The rules the panel offers: every saved rule, minus the ones that
+    /// need a metadata plugin this installation does not have enabled
+    /// (offering a DLsite rule with the DLsite plugin off would offer a
+    /// rule that can never resolve its own variables).
     fn load_org_rules(
         &self,
         shared: &SharedState,
-    ) -> Vec<arclain_core::features::organization::OrganizationRule> {
-        let mut rules = Vec::new();
+        app: &arclain_app::ArclainApp,
+        runtime: &tokio::runtime::Runtime,
+    ) -> Vec<arclain_app::organization::OrganizationRuleSummary> {
         let dlsite_enabled = shared
             .plugin_ui_jobs
             .plugin_snapshot(shared.signals().plugin_visibility.get())
@@ -172,48 +201,27 @@ impl BrowserController {
             })
             .unwrap_or(false);
 
-        let state = shared.app_state.lock();
-        if let Some(dbs) = &state.dbs {
-            let pool = &dbs.config_pool;
-            if let Ok(loaded) = arclain_core::config::database::list_org_rules(pool) {
-                rules = loaded
-                    .into_iter()
-                    .filter(|r| {
-                        if r.trigger
-                            .metadata_source
-                            .as_deref()
-                            .map(|s| s.eq_ignore_ascii_case("dlsite"))
-                            .unwrap_or(false)
-                        {
-                            dlsite_enabled
-                        } else {
-                            true
-                        }
-                    })
-                    .collect();
-            }
-        }
-        rules
-    }
-
-    fn load_profiles(
-        &self,
-        shared: &SharedState,
-    ) -> Vec<arclain_core::features::organization::ArchiveProfile> {
-        let state = shared.app_state.lock();
-        if let Some(dbs) = &state.dbs {
-            let pool = &dbs.config_pool;
-            if let Ok(mut conn) = pool.get() {
-                if let Ok(db_profiles) = arclain_core::list_profiles(&mut conn) {
-                    return db_profiles
-                        .iter()
-                        .map(arclain_core::features::organization::ArchiveProfile::from_db)
-                        .collect();
+        runtime
+            .block_on(app.organization_rules())
+            .unwrap_or_else(|error| {
+                tracing::warn!("could not load organization rules: {}", error.summary);
+                Vec::new()
+            })
+            .into_iter()
+            .filter(|rule| {
+                if rule
+                    .trigger
+                    .metadata_source
+                    .as_deref()
+                    .map(|source| source.eq_ignore_ascii_case("dlsite"))
+                    .unwrap_or(false)
+                {
+                    dlsite_enabled
+                } else {
+                    true
                 }
-            }
-        }
-        // Return default profile if database not available
-        vec![arclain_core::features::organization::ArchiveProfile::default()]
+            })
+            .collect()
     }
 
     fn handle_metadata(&self, shared: &SharedState, json: String) {

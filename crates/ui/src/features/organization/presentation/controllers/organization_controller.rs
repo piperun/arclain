@@ -4,6 +4,7 @@
 //! and provides the handler context for processing them.
 
 use crate::core::navigation::PageNavigator;
+use crate::features::organization::application::facade;
 use crate::features::organization::OrganizationFeature;
 use crate::shared::components::StatusBarInfo;
 use crate::shared::SharedState;
@@ -24,42 +25,8 @@ impl<'a> ActionContext<'a> {
     pub fn handle(&mut self, action: &OrganizationAction) -> bool {
         match action {
             OrganizationAction::Apply => {
-                // Apply organization plan
                 if let Some(page) = &self.organization_feature.organizer_page {
-                    if let Some(plan) = &page.panel.session.preview_plan {
-                        // We need to clone shared state for the async operation
-                        let shared_state = self.shared.clone();
-
-                        let archive_path =
-                            self.shared.signals().tabs.get().active().archive_path.get();
-
-                        if let Some(path) = archive_path {
-                            // Get selected profile from organizer page UI state
-                            let profile = page
-                                .panel
-                                .ui_state
-                                .profiles
-                                .get(page.panel.ui_state.selected_profile_index)
-                                .cloned();
-
-                            // Build destination path by changing extension based on profile
-                            let dest_ext = profile
-                                .as_ref()
-                                .map(|p| p.format.extension())
-                                .unwrap_or("7z");
-                            let dest_path = path.with_extension(dest_ext);
-
-                            // Run asynchronously via ArchiveOperations
-                            crate::features::archive_operations::run_organization_plan(
-                                shared_state,
-                                plan.clone(),
-                                path,
-                                dest_path,
-                                profile,
-                            );
-                            self.status_info.message = "Organization started...".to_string();
-                        }
-                    }
+                    self.status_info.message = start_organize(self.shared, &page.panel);
                 }
 
                 // Close organizer page and navigate back
@@ -77,5 +44,68 @@ impl<'a> ActionContext<'a> {
             }
             OrganizationAction::None => false,
         }
+    }
+}
+
+/// Runs the plan the panel is showing, as a registered, cancellable,
+/// event-streamed operation.
+///
+/// The request names the panel's own archive session rather than a
+/// path, which is what makes this *the previewed plan*: the application
+/// then organizes that session's archive from that session's metadata,
+/// the same two things the preview on screen was computed from. Nothing
+/// here rebuilds a plan of its own.
+///
+/// Returns the status-bar message describing what happened.
+fn start_organize(
+    shared: &SharedState,
+    panel: &crate::features::organization::OrganizePanel,
+) -> String {
+    let Some((app, runtime)) = facade::handles(shared) else {
+        return facade::unavailable();
+    };
+    let (Some(rule_id), Some(profile_id)) = (panel.selected_rule_id(), panel.selected_profile_id())
+    else {
+        return "Organization needs both a rule and a profile.".to_string();
+    };
+
+    // The organized archive is written beside the one it was built from,
+    // as the pre-facade quick action did. Its *name* is the
+    // application's own convention (the resolved metadata title, else a
+    // detected product code, else the source stem) rather than the
+    // source file's name with a new extension.
+    let tab = shared.signals().tabs.get().active().clone();
+    let Some(destination) = tab
+        .archive_path
+        .get()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+    else {
+        return "Organization needs an open archive.".to_string();
+    };
+
+    let request = arclain_app::operations::organize::OrganizeRequest {
+        // Empty by contract: the session names the archive, so this
+        // cannot organize anything other than what was previewed.
+        inputs: Vec::new(),
+        destination,
+        profile_id,
+        rule_id,
+        dry_run: false,
+        archive_session_id: Some(panel.session_id),
+    };
+
+    match runtime.block_on(app.start_organize(request)) {
+        Ok(operation_id) => {
+            // Registering the origin tab is what routes this operation's
+            // own password challenge to that tab's dialog, and its
+            // progress to the status bar (see `core::operation_bridge`).
+            runtime.block_on(crate::core::operation_bridge::register_operation(
+                shared,
+                operation_id,
+                tab.id,
+            ));
+            "Organization started...".to_string()
+        }
+        Err(error) => facade::describe("Organization did not start", &error),
     }
 }

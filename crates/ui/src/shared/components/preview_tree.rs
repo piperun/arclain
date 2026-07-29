@@ -3,7 +3,6 @@
 //! A reusable component for rendering hierarchical file/folder structures
 //! in the organize preview panel. Supports both original and organized views.
 
-use arclain_core::features::organization::engine::PendingDownload;
 use eframe::egui::{self, RichText, Ui};
 use std::collections::HashMap;
 
@@ -292,12 +291,19 @@ fn render_node(
     }
 }
 
-/// Build tree from OrganizationPlan moves
+/// Build tree from a planned organize: `moves` as `(source,
+/// destination)` pairs, `generated_files` and `downloads` as
+/// destination paths, and `resolved_variables` as `(name, value)`
+/// pairs.
+///
+/// Paths only, so this stays a pure rendering helper over whatever the
+/// application reports a plan to be rather than over a particular plan
+/// type.
 pub fn build_organized_tree(
     moves: &[(String, String)],
-    generated_files: &[(String, String)],
-    downloads: &[PendingDownload],
-    resolved_variables: &HashMap<String, String>,
+    generated_files: &[String],
+    downloads: &[String],
+    resolved_variables: &[(String, String)],
 ) -> Vec<PreviewTreeNode> {
     let mut paths: Vec<(String, bool, bool)> = Vec::new();
 
@@ -316,13 +322,13 @@ pub fn build_organized_tree(
     }
 
     // Add generated files
-    for (path, _) in generated_files {
+    for path in generated_files {
         paths.push((resolve_path(path), true, false));
     }
 
     // Add downloads
-    for download in downloads {
-        paths.push((resolve_path(&download.dest_path), false, true));
+    for destination in downloads {
+        paths.push((resolve_path(destination), false, true));
     }
 
     build_tree_from_paths(&paths)

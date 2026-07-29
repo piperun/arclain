@@ -7,7 +7,7 @@ use egui_extras::{Size, StripBuilder};
 
 impl OrganizePanel {
     pub(super) fn render_preview_tab(&mut self, ui: &mut egui::Ui, theme: &AppTheme) {
-        if let Some(plan) = &self.session.preview_plan.clone() {
+        if let Some(plan) = self.preview().cloned() {
             egui::Frame::NONE
                 .fill(theme.colors.surface_variant)
                 .inner_margin(10.0)
@@ -59,7 +59,7 @@ impl OrganizePanel {
             // Variables moved to separate tab
 
             // STATS BAR with INTEGRITY VERIFICATION
-            let report = self.session.calculate_report();
+            let report = &plan.integrity;
 
             ui.horizontal(|ui| {
                 // Original stats
@@ -90,7 +90,16 @@ impl OrganizePanel {
                     .weak(),
                 );
 
-                // Discrepancy warning
+                // Discrepancy warning.
+                //
+                // `file_discrepancy` is carried through from the
+                // application verbatim, including the fact that the
+                // computation behind it can never produce a positive
+                // value -- so the "filtered out" branch below is
+                // currently unreachable and a shortfall renders as a
+                // green "N added". Both are pinned by the pending fix to
+                // that computation: correcting the sign here alone would
+                // fork the bug rather than close it.
                 if report.file_discrepancy != 0 {
                     ui.separator();
                     let discrepancy_text = if report.file_discrepancy > 0 {
@@ -176,11 +185,11 @@ impl OrganizePanel {
                         )
                         .clicked()
                     {
-                        Self::export_issues_report(
-                            &report,
+                        super::integrity::export_issues_report(
+                            report,
                             &self.ui_state.original_tree,
                             &self.ui_state.organized_tree,
-                            &self.session.metadata,
+                            self.metadata.as_ref(),
                         );
                     }
                 }
@@ -247,8 +256,7 @@ impl OrganizePanel {
                                 ui.vertical(|ui| {
                                     ui.set_height(available.y - 40.0);
 
-                                    let original_title =
-                                        format!("Original: {}", self.session.archive_name);
+                                    let original_title = format!("Original: {}", self.archive_name);
                                     ui.add(
                                         egui::Label::new(
                                             arclain_widgets::Text::new(&original_title)

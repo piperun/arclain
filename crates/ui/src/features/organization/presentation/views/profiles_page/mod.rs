@@ -10,17 +10,47 @@
 
 mod add_profile_dialog;
 
+use crate::features::organization::application::facade;
 use crate::shared::components::item_table::{ItemTable, TableColumn};
 use crate::shared::components::Form;
 use crate::shared::SharedState;
 use add_profile_dialog::AddProfileDialog;
-use arclain_core::features::organization::ArchiveProfile;
+use arclain_app::organization::{
+    archive_format_options, ArchiveFormatOptionDto, OrganizationProfileInput,
+    OrganizationProfileSummary,
+};
 use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 use std::cell::Cell;
 
+/// How an output-format token is labelled wherever a profile is shown.
+/// Falls back to the token itself for a stored format the application no
+/// longer offers -- rendering the raw value is more honest than hiding
+/// a row's real format behind a guess.
+pub fn format_label(token: &str) -> String {
+    format_option(token)
+        .map(|option| option.display_name)
+        .unwrap_or_else(|| token.to_string())
+}
+
+/// The extension an output packed with `token` gets, with the same
+/// fallback [`format_label`] makes.
+pub fn format_extension(token: &str) -> String {
+    format_option(token)
+        .map(|option| option.extension)
+        .unwrap_or_else(|| token.to_string())
+}
+
+/// The offered format matching `token`, if the application still offers
+/// it.
+fn format_option(token: &str) -> Option<ArchiveFormatOptionDto> {
+    archive_format_options()
+        .into_iter()
+        .find(|option| option.token.eq_ignore_ascii_case(token))
+}
+
 /// Intents emitted by `ProfilesPage::render`. The dispatcher
-/// (`handle_profiles_action`) owns all DB work; render is pure
+/// (`handle_profiles_action`) owns all persistence; render is pure
 /// intent-emission.
 #[derive(Debug, Clone)]
 pub enum ProfilesAction {
@@ -29,15 +59,15 @@ pub enum ProfilesAction {
     LoadProfiles,
     /// Persist a new or edited profile. The dispatcher upserts and
     /// re-fetches the list.
-    SaveProfile(ArchiveProfile),
-    /// Delete the profile with the given DB id.
-    DeleteProfile(i64),
-    /// Mark the profile with the given DB id as default.
-    SetDefaultProfile(i64),
+    SaveProfile(OrganizationProfileInput),
+    /// Delete the profile with the given id.
+    DeleteProfile(String),
+    /// Mark the profile with the given id as default.
+    SetDefaultProfile(String),
 }
 
 pub struct ProfilesPage {
-    profiles: Option<Vec<ArchiveProfile>>,
+    profiles: Option<Vec<OrganizationProfileSummary>>,
     dialog: AddProfileDialog,
     error: Option<String>,
 }
@@ -66,7 +96,7 @@ impl ProfilesPage {
 
     /// Borrow the cached profiles list. `None` until the dispatcher
     /// has run `LoadProfiles` at least once.
-    pub fn profiles(&self) -> Option<&[ArchiveProfile]> {
+    pub fn profiles(&self) -> Option<&[OrganizationProfileSummary]> {
         self.profiles.as_deref()
     }
 
@@ -172,7 +202,7 @@ impl ProfilesPage {
                             // Format column
                             row.col(|ui| {
                                 ui.label(
-                                    egui::RichText::new(profile.format.display_name())
+                                    egui::RichText::new(format_label(&profile.output_format))
                                         .family(egui::FontFamily::Monospace)
                                         .color(theme.colors.on_surface_variant),
                                 );
@@ -238,7 +268,7 @@ impl ProfilesPage {
                             });
                         })
                 } else {
-                    let empty_profiles: Vec<ArchiveProfile> = Vec::new();
+                    let empty_profiles: Vec<OrganizationProfileSummary> = Vec::new();
                     ItemTable::new().show(ui, theme, &[], &empty_profiles, |_, _, _, _| {})
                 };
 
@@ -247,7 +277,7 @@ impl ProfilesPage {
                 if let Some(edit_idx) = actions.get_edit() {
                     if let Some(profiles) = &self.profiles {
                         if let Some(profile) = profiles.get(*edit_idx) {
-                            self.dialog.edit(profile.clone());
+                            self.dialog.edit(profile);
                         }
                     }
                 }
@@ -257,7 +287,7 @@ impl ProfilesPage {
                     if let Some(profiles) = &self.profiles {
                         if let Some(profile) = profiles.get(*delete_idx) {
                             if !profile.is_system {
-                                emitted = Some(ProfilesAction::DeleteProfile(profile.id));
+                                emitted = Some(ProfilesAction::DeleteProfile(profile.id.clone()));
                             }
                         }
                     }
@@ -269,7 +299,7 @@ impl ProfilesPage {
             if let Some(idx) = set_default_idx.get() {
                 if let Some(profiles) = &self.profiles {
                     if let Some(profile) = profiles.get(idx) {
-                        emitted = Some(ProfilesAction::SetDefaultProfile(profile.id));
+                        emitted = Some(ProfilesAction::SetDefaultProfile(profile.id.clone()));
                     }
                 }
             }
@@ -289,64 +319,52 @@ impl ProfilesPage {
     }
 }
 
-/// Dispatch a `ProfilesAction` against the DB and update the page's
-/// cached state. Called by the parent view (`settings_content.rs`)
-/// after `render` returns an action. All side effects on the DB live
-/// here, so `ProfilesPage::render` itself stays a pure intent-emitter.
+/// Dispatch a `ProfilesAction` against the application facade and
+/// update the page's cached state. Called by the parent view
+/// (`settings_content.rs`) after `render` returns an action. All side
+/// effects live here, so `ProfilesPage::render` itself stays a pure
+/// intent-emitter.
 ///
-/// Every mutation re-fetches the full profile list, so the page is
-/// up-to-date on the next frame.
+/// Every mutating facade call answers with the full post-write list, so
+/// a mutation and the refresh that follows it are one round trip and
+/// the page cannot render a list that a concurrent write has already
+/// invalidated.
 pub fn handle_profiles_action(
     page: &mut ProfilesPage,
     action: ProfilesAction,
     shared: &SharedState,
 ) {
-    let state = shared.app_state.lock();
-    let Some(dbs) = &state.dbs else {
-        page.error = Some("Database not available".to_string());
+    let Some((app, runtime)) = facade::handles(shared) else {
+        page.error = Some(facade::unavailable());
         return;
     };
-    let mut conn = match dbs.config_pool.get() {
-        Ok(c) => c,
-        Err(e) => {
-            page.error = Some(format!("Database connection error: {}", e));
-            return;
-        }
+
+    let (context, result) = match action {
+        ProfilesAction::LoadProfiles => (
+            "Failed to load profiles",
+            runtime.block_on(app.organization_profiles()),
+        ),
+        ProfilesAction::SaveProfile(profile) => (
+            "Failed to save profile",
+            runtime.block_on(app.upsert_organization_profile(profile)),
+        ),
+        ProfilesAction::DeleteProfile(id) => (
+            "Failed to delete profile",
+            runtime.block_on(app.delete_organization_profile(id)),
+        ),
+        ProfilesAction::SetDefaultProfile(id) => (
+            "Failed to set default",
+            runtime.block_on(app.set_default_organization_profile(id)),
+        ),
     };
 
-    // Run the mutation (if any), then always re-list so the page
-    // shows current data on the next frame.
-    let mutation_result: Result<(), String> = match action {
-        ProfilesAction::LoadProfiles => Ok(()),
-        ProfilesAction::SaveProfile(profile) => {
-            arclain_core::save_profile(&mut conn, &profile.to_db())
-                .map(|_| ())
-                .map_err(|e| format!("Failed to save profile: {}", e))
-        }
-        ProfilesAction::DeleteProfile(id) => arclain_core::delete_profile(&mut conn, id as i32)
-            .map(|_| ())
-            .map_err(|e| format!("Failed to delete profile: {}", e)),
-        ProfilesAction::SetDefaultProfile(id) => {
-            arclain_core::set_default_profile(&mut conn, id as i32)
-                .map(|_| ())
-                .map_err(|e| format!("Failed to set default: {}", e))
-        }
-    };
-
-    if let Err(e) = mutation_result {
-        page.error = Some(e);
-        return;
-    }
-
-    // Refresh the cache. A failure here surfaces in the error banner;
-    // a successful load also clears any prior error.
-    match arclain_core::list_profiles(&mut conn) {
-        Ok(db_profiles) => {
-            page.profiles = Some(db_profiles.iter().map(ArchiveProfile::from_db).collect());
+    match result {
+        Ok(profiles) => {
+            page.profiles = Some(profiles);
             page.error = None;
         }
-        Err(e) => {
-            page.error = Some(format!("Failed to load profiles: {}", e));
+        Err(error) => {
+            page.error = Some(facade::describe(context, &error));
         }
     }
 }

@@ -10,8 +10,8 @@ use super::state::ProcessPageState;
 use super::step_widgets;
 use crate::shared::SharedState;
 use arclain_core::{
-    CompressionLevel, ConvertFormat, OrganizationRule, OutputArtifact, OutputCollisionPolicy,
-    PipelineInput, PipelineOutput, PipelineStep,
+    CompressionLevel, ConvertFormat, OutputArtifact, OutputCollisionPolicy, PipelineInput,
+    PipelineOutput, PipelineStep,
 };
 use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, Text, TextButton, ThemedDropdown};
 use eframe::egui;
@@ -203,7 +203,7 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
     // cache is populated by the LoadOrganizationRules dispatch (auto-
     // fired from `render` when the cache is empty). Empty slice until
     // the dispatcher runs.
-    let rules: Vec<OrganizationRule> = state
+    let rules: Vec<arclain_app::organization::OrganizationRuleSummary> = state
         .cached_org_rules
         .as_deref()
         .map(|v| v.to_vec())
@@ -543,10 +543,15 @@ pub fn handle_process_action(
         }
         ProcessAction::LoadOrganizationRules => {
             let rules = shared
-                .services
-                .organization_service
+                .facade
                 .as_ref()
-                .and_then(|svc| svc.list_domain_rules().ok())
+                .and_then(|app| {
+                    shared
+                        .services
+                        .tokio_runtime
+                        .block_on(app.organization_rules())
+                        .ok()
+                })
                 .unwrap_or_default();
             state.cached_org_rules = Some(rules);
         }

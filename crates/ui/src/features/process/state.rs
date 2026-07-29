@@ -1,6 +1,7 @@
 //! Process page state — current pipeline, preview cache, run status, presets.
 
-use arclain_core::{GameMetadata, OrganizationRule, Pipeline, PipelinePreview, SavedPreset};
+use arclain_app::organization::OrganizationRuleSummary;
+use arclain_core::{GameMetadata, Pipeline, PipelinePreview, SavedPreset};
 
 #[derive(Default)]
 pub struct ProcessPageState {
@@ -28,7 +29,7 @@ pub struct ProcessPageState {
     /// the first render to populate this. Cached for the session — if
     /// the user adds rules in Settings, they'll see them on next launch
     /// (or a future explicit refresh).
-    pub cached_org_rules: Option<Vec<OrganizationRule>>,
+    pub cached_org_rules: Option<Vec<OrganizationRuleSummary>>,
 }
 
 impl ProcessPageState {

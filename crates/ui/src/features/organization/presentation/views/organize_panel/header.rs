@@ -1,12 +1,14 @@
 use super::OrganizePanelAction;
 use crate::shared::theme::AppTheme;
-use arclain_core::features::organization::session::OrganizationSession;
 use arclain_theme::spacing;
 use eframe::egui;
 
+/// `metadata_title` is the title this session's plugin metadata
+/// reported, if any -- `None` renders the no-metadata layout.
 pub fn render_header(
     ui: &mut egui::Ui,
-    session: &OrganizationSession,
+    archive_name: &str,
+    metadata_title: Option<&str>,
     can_apply: bool,
     theme: &AppTheme,
 ) -> Option<OrganizePanelAction> {
@@ -28,14 +30,14 @@ pub fn render_header(
                         .size(18.0)
                         .strong()
                         .show(ui);
-                    arclain_widgets::Text::new(&session.archive_name)
+                    arclain_widgets::Text::new(archive_name)
                         .size(12.0)
                         .muted()
                         .show(ui);
                 });
 
                 // Metadata badge - smaller with explicit label
-                if let Some(meta) = &session.metadata {
+                if let Some(title) = metadata_title {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Apply button (enabled/disabled based on metadata)
                         let apply_btn = egui::Button::new(
@@ -74,10 +76,7 @@ pub fn render_header(
                                         ui.label(
                                             egui::RichText::new(format!(
                                                 "Fetched: {}",
-                                                super::OrganizePanel::truncate_path(
-                                                    &meta.title,
-                                                    30
-                                                )
+                                                super::OrganizePanel::truncate_path(title, 30)
                                             ))
                                             .color(theme.colors.success)
                                             .size(10.0),

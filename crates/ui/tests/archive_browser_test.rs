@@ -395,32 +395,115 @@ fn test_metadata_action() {
     assert_eq!(meta.product_id, "RJ1");
 }
 
+/// Organizing opens the panel for the active tab's archive *session*:
+/// the panel is bound to it, so everything it previews and the organize
+/// it eventually runs describe the same archive.
 #[test]
 fn test_organize_action() {
-    let mut ctx = TestContext::new();
-    let signals = ctx.shared.app_state.lock().signals.clone();
+    let (temp, shared) = common::create_test_shared_state_with_facade();
+    let app = shared
+        .facade
+        .as_ref()
+        .expect("the fixture has a facade")
+        .clone();
 
-    signals
-        .tabs
-        .get()
-        .active()
-        .archive_path
-        .set(Some(PathBuf::from("test.zip")));
+    // A real archive, opened the way the browser opens one.
+    let archive = temp.path().join("test.zip");
+    {
+        let file = std::fs::File::create(&archive).expect("create zip fixture");
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("a.txt", zip::write::SimpleFileOptions::default())
+            .expect("start zip entry");
+        std::io::Write::write_all(&mut writer, b"one").expect("write zip entry");
+        writer.finish().expect("finish zip fixture");
+    }
+    let session_id = shared.services.tokio_runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                source_path: archive.clone(),
+                password: None,
+            })
+            .await
+            .expect("start_open_archive must be accepted");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match app.operation(operation_id).await.unwrap().state {
+                arclain_app::event::OperationState::Completed {
+                    result: arclain_app::event::OperationResult::ArchiveOpened { snapshot },
+                } => return snapshot.session_id,
+                arclain_app::event::OperationState::Failed { error } => {
+                    panic!("opening the fixture failed: {error:?}")
+                }
+                _ => {
+                    assert!(Instant::now() < deadline, "open timed out");
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        }
+    });
 
-    ctx.handle_action(Action::Organize);
+    let tab = shared.signals().tabs.get().active().clone();
+    tab.archive_path.set(Some(archive));
+    tab.archive_session_id.set(Some(session_id));
+
+    let mut org_feature = arclain_ui::features::organization::OrganizationFeature::new(&shared);
+    let mut navigator = arclain_ui::core::navigation::PageNavigator::new();
+    let mut ops_state = ArchiveOperationsState::default();
+    BrowserController::new().handle_action(
+        Action::Organize,
+        &shared,
+        &mut ops_state,
+        &mut org_feature,
+        &mut navigator,
+        &egui::Context::default(),
+    );
 
     // Verify navigation
-    if let arclain_ui::core::AppPage::OrganizeArchive(name) = &ctx.navigator.current_page {
+    if let arclain_ui::core::AppPage::OrganizeArchive(name) = &navigator.current_page {
         assert_eq!(name, "test.zip");
     } else {
         panic!(
             "Expected OrganizeArchive page, got {:?}",
-            ctx.navigator.current_page
+            navigator.current_page
         );
     }
 
-    // Verify feature state
-    assert!(ctx.org_feature.organizer_page.is_some());
+    // Verify feature state: the panel is bound to the tab's session.
+    let panel = &org_feature
+        .organizer_page
+        .as_ref()
+        .expect("the organizer page must open")
+        .panel;
+    assert_eq!(panel.session_id, session_id);
+    assert_eq!(panel.archive_name, "test.zip");
+    assert!(
+        !panel.profiles.is_empty(),
+        "the panel offers the application's own archive profiles"
+    );
+}
+
+/// Without an open session there is nothing to organize *against*, so
+/// the panel does not open at all rather than opening bound to nothing.
+#[test]
+fn organize_without_an_open_session_does_not_open_the_panel() {
+    let (_temp, shared) = common::create_test_shared_state_with_facade();
+    let tab = shared.signals().tabs.get().active().clone();
+    tab.archive_path.set(Some(PathBuf::from("test.zip")));
+
+    let mut org_feature = arclain_ui::features::organization::OrganizationFeature::new(&shared);
+    let mut navigator = arclain_ui::core::navigation::PageNavigator::new();
+    let mut ops_state = ArchiveOperationsState::default();
+    BrowserController::new().handle_action(
+        Action::Organize,
+        &shared,
+        &mut ops_state,
+        &mut org_feature,
+        &mut navigator,
+        &egui::Context::default(),
+    );
+
+    assert!(org_feature.organizer_page.is_none());
 }
 
 // --- UI Integration Tests ---

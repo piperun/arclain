@@ -109,7 +109,7 @@ pub fn render_convert_config(
 pub fn render_organize_config(
     ui: &mut egui::Ui,
     step: &mut PipelineStep,
-    rules: &[arclain_core::OrganizationRule],
+    rules: &[arclain_app::organization::OrganizationRuleSummary],
 ) -> bool {
     let mut changed = false;
     if let PipelineStep::Organize { rule_id } = step {

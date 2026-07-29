@@ -94,6 +94,42 @@ pub fn create_test_shared_state() -> SharedState {
     }
 }
 
+/// Bootstraps a real `ArclainApp` against an isolated temp directory
+/// and attaches it to a minimal `SharedState` — what a dispatcher test
+/// needs once the surface it exercises reads through the application
+/// facade rather than a service handle.
+///
+/// The returned `TempDir` MUST stay alive for the duration of the test:
+/// dropping it deletes the databases the facade has open.
+///
+/// A third copy of the same six-line bootstrap: `core::state::vault_ops`
+/// and the settings controller each keep their own, but both are
+/// `#[cfg(test)]`-private to the library and unreachable from an
+/// integration test, which compiles as its own crate against the public
+/// API only.
+pub fn create_test_shared_state_with_facade() -> (TempDir, SharedState) {
+    let temp = tempfile::tempdir().expect("create tempdir for the test facade");
+    let app = arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
+        paths_override: Some(arclain_app::AppPaths {
+            config_dir: temp.path().join("config"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            log_dir: temp.path().join("logs"),
+            plugins_dir: temp.path().join("plugins"),
+        }),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .expect("bootstrap the test facade");
+
+    let mut shared = create_test_shared_state();
+    shared.facade = Some(app);
+    (temp, shared)
+}
+
 /// Richer test context for archive-browser / navigation / organization
 /// integration tests. Bundles the `SharedState` with a navigator, an
 /// org feature, and an `egui::Context`.

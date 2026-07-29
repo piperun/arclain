@@ -2,7 +2,10 @@
 //!
 //! Dropdown for selecting archive profile when organizing.
 
-use arclain_core::features::organization::ArchiveProfile;
+use crate::features::organization::presentation::views::profiles_page::{
+    format_extension, format_label,
+};
+use arclain_app::organization::OrganizationProfileSummary;
 use arclain_widgets::ThemedDropdown;
 use eframe::egui;
 
@@ -10,7 +13,7 @@ use eframe::egui;
 /// Returns true if the selection changed.
 pub fn render_profile_selector(
     ui: &mut egui::Ui,
-    profiles: &[ArchiveProfile],
+    profiles: &[OrganizationProfileSummary],
     selected_profile_index: &mut usize,
 ) -> bool {
     let mut changed = false;
@@ -31,7 +34,7 @@ pub fn render_profile_selector(
                     let label = format!(
                         "{} ({}, level {})",
                         profile.name,
-                        profile.format.display_name(),
+                        format_label(&profile.output_format),
                         profile.compression_level
                     );
 
@@ -51,7 +54,7 @@ pub fn render_profile_selector(
         // Show format badge
         if let Some(profile) = profiles.get(*selected_profile_index) {
             ui.label(
-                egui::RichText::new(format!(".{}", profile.format.extension()))
+                egui::RichText::new(format!(".{}", format_extension(&profile.output_format)))
                     .size(11.0)
                     .family(egui::FontFamily::Monospace)
                     .color(ui.visuals().text_color().gamma_multiply(0.6)),

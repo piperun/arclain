@@ -190,31 +190,25 @@ pub fn render_settings_content(
         SettingsPage::OrganizationRules => {
             if let Some(rp) = rules_page {
                 if let Some(shared_state) = shared {
-                    if let Some(org_service) = shared_state.services.organization_service.as_ref() {
-                        if let Some(action) = rp.render(ui, theme) {
-                            use crate::features::organization::presentation::views::RulesPageAction;
-                            match action {
-                                RulesPageAction::Navigate(page) => {
-                                    return Some(SettingsAction::NavigateTo(page));
-                                }
-                                other => {
-                                    let plugins = shared_state
-                                        .plugin_ui_jobs
-                                        .plugin_snapshot(
-                                            shared_state.signals().plugin_visibility.get(),
-                                        )
-                                        .and_then(Result::ok);
-                                    crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
-                                        rp,
-                                        other,
-                                        org_service,
-                                        plugins.as_deref().map(Vec::as_slice),
-                                    );
-                                }
+                    if let Some(action) = rp.render(ui, theme) {
+                        use crate::features::organization::presentation::views::RulesPageAction;
+                        match action {
+                            RulesPageAction::Navigate(page) => {
+                                return Some(SettingsAction::NavigateTo(page));
+                            }
+                            other => {
+                                let plugins = shared_state
+                                    .plugin_ui_jobs
+                                    .plugin_snapshot(shared_state.signals().plugin_visibility.get())
+                                    .and_then(Result::ok);
+                                crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
+                                    rp,
+                                    other,
+                                    shared_state,
+                                    plugins.as_deref().map(Vec::as_slice),
+                                );
                             }
                         }
-                    } else {
-                        ui.label("Organization service not available.");
                     }
                 } else {
                     ui.label("SharedState not available.");
@@ -293,31 +287,29 @@ pub fn render_settings_content(
         SettingsPage::EditRule(rule_id) => {
             if let Some(rp) = rules_page {
                 if let Some(shared_state) = shared {
-                    if let Some(org_service) = shared_state.services.organization_service.as_ref() {
-                        let output = rp.render_edit_rule(ui, theme, *rule_id);
-                        if let Some(data_action) = output.data_action {
-                            let plugins = shared_state
-                                .plugin_ui_jobs
-                                .plugin_snapshot(shared_state.signals().plugin_visibility.get())
-                                .and_then(Result::ok);
-                            crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
-                                rp,
-                                data_action,
-                                org_service,
-                                plugins.as_deref().map(Vec::as_slice),
-                            );
-                        }
-                        if let Some(editor_action) = output.editor_action {
-                            use crate::features::organization::presentation::views::RuleEditorAction;
-                            match editor_action {
-                                RuleEditorAction::Saved | RuleEditorAction::Cancelled => {
-                                    // Navigate back to organization rules list
-                                    return Some(SettingsAction::NavigateTo(
-                                        SettingsPage::OrganizationRules,
-                                    ));
-                                }
-                                RuleEditorAction::None => {}
+                    let output = rp.render_edit_rule(ui, theme, *rule_id);
+                    if let Some(data_action) = output.data_action {
+                        let plugins = shared_state
+                            .plugin_ui_jobs
+                            .plugin_snapshot(shared_state.signals().plugin_visibility.get())
+                            .and_then(Result::ok);
+                        crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
+                            rp,
+                            data_action,
+                            shared_state,
+                            plugins.as_deref().map(Vec::as_slice),
+                        );
+                    }
+                    if let Some(editor_action) = output.editor_action {
+                        use crate::features::organization::presentation::views::RuleEditorAction;
+                        match editor_action {
+                            RuleEditorAction::Saved | RuleEditorAction::Cancelled => {
+                                // Navigate back to organization rules list
+                                return Some(SettingsAction::NavigateTo(
+                                    SettingsPage::OrganizationRules,
+                                ));
                             }
+                            RuleEditorAction::None => {}
                         }
                     }
                 }
