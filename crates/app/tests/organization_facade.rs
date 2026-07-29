@@ -1199,3 +1199,139 @@ fn the_profile_summary_is_reachable_from_both_module_paths() {
     };
     takes_organization(profile);
 }
+
+// ============================================================================
+// Which rules apply to one archive.
+// ============================================================================
+
+/// What an organize panel preselects from: a trigger that names a file
+/// the archive does not contain does not match it, an unconstrained one
+/// matches everything, and the answer is core's own trigger matcher --
+/// not a list a frontend re-derives by inspecting `trigger` itself.
+#[test]
+fn matching_rule_ids_report_only_the_rules_whose_trigger_applies() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let archive = build_zip_fixture(
+        temp.path(),
+        "[RJ123456] Placeholder.zip",
+        &[("wrapper/Game.exe", b"executable bytes")],
+    );
+
+    runtime.block_on(async {
+        // Matches everything (a wholly-default trigger).
+        let anything = base_rule_input("Anything");
+        app.upsert_organization_rule(anything)
+            .await
+            .expect("creating a rule must succeed");
+
+        // Matches this archive's name.
+        let mut by_name = base_rule_input("By Name");
+        by_name.trigger.filename_pattern = Some(r"^\[RJ\d+\]".to_string());
+        app.upsert_organization_rule(by_name)
+            .await
+            .expect("creating a rule must succeed");
+
+        // Names a file this archive does not contain.
+        let mut by_missing_file = base_rule_input("By Missing File");
+        by_missing_file.trigger.has_file = Some("installer.msi".to_string());
+        let rules = app
+            .upsert_organization_rule(by_missing_file)
+            .await
+            .expect("creating a rule must succeed");
+
+        let session_id = open_session(&app, &archive).await;
+        let matching = app
+            .matching_organization_rule_ids(session_id)
+            .await
+            .expect("an open session must report its matching rules");
+
+        let id_of = |name: &str| find_rule(&rules, name).expect("rule must exist").id.clone();
+        assert!(matching.contains(&id_of("Anything")));
+        assert!(matching.contains(&id_of("By Name")));
+        assert!(
+            !matching.contains(&id_of("By Missing File")),
+            "a trigger naming an absent file must not match"
+        );
+
+        // Same order the rule list itself uses, so a panel picking "the
+        // first matching rule" picks the first one it displays.
+        let listed: Vec<String> = app
+            .organization_rules()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|rule| rule.id)
+            .filter(|id| matching.contains(id))
+            .collect();
+        assert_eq!(matching, listed);
+    });
+}
+
+/// A trigger that requires metadata from a source the session has not
+/// reported does not match -- and starts matching once a plugin reports
+/// it, which is exactly why a panel re-runs this when metadata arrives.
+#[test]
+fn a_metadata_source_trigger_matches_only_once_that_metadata_arrives() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let archive = build_zip_fixture(
+        temp.path(),
+        "[RJ123456] Placeholder.zip",
+        &[("wrapper/Game.exe", b"executable bytes")],
+    );
+
+    runtime.block_on(async {
+        let mut dlsite_only = base_rule_input("DLsite Only");
+        dlsite_only.trigger.metadata_source = Some("dlsite".to_string());
+        let rules = app
+            .upsert_organization_rule(dlsite_only)
+            .await
+            .expect("creating a rule must succeed");
+        let rule_id = find_rule(&rules, "DLsite Only")
+            .expect("the new rule must be listed")
+            .id
+            .clone();
+
+        let session_id = open_session(&app, &archive).await;
+        assert!(
+            !app.matching_organization_rule_ids(session_id)
+                .await
+                .unwrap()
+                .contains(&rule_id),
+            "a rule requiring metadata cannot match a session that has none"
+        );
+
+        let bridge = app.active_tab_bridge(|_| panic!("fallback must not run: the session exists"));
+        bridge.set_session_metadata(
+            session_id.into_raw(),
+            Some(serde_json::json!({
+                "product_id": "RJ123456",
+                "source": "dlsite",
+                "title": "Placeholder Title",
+            })),
+        );
+
+        assert!(
+            app.matching_organization_rule_ids(session_id)
+                .await
+                .unwrap()
+                .contains(&rule_id),
+            "the same rule must start matching once the session reports dlsite metadata"
+        );
+    });
+}
+
+#[test]
+fn matching_rule_ids_reject_an_unknown_session_id() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    let error = runtime
+        .block_on(app.matching_organization_rule_ids(ArchiveSessionId::from_raw(999_999)))
+        .unwrap_err();
+    assert_eq!(error.kind, ApplicationErrorKind::NotFound);
+}

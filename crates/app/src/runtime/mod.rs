@@ -1390,6 +1390,31 @@ impl ArclainApp {
         .await?
     }
 
+    /// Which saved rules actually apply to the archive open in
+    /// `session_id`: the ids of those whose trigger matches it, in the
+    /// order [`Self::organization_rules`] lists them.
+    ///
+    /// What an organize panel preselects from -- it lists every rule
+    /// (a user may organize by a rule that would not have fired on its
+    /// own) but starts on one that would. Evaluated by `arclain_core`'s
+    /// own trigger matcher over the same session entries and metadata
+    /// [`Self::preview_organize_plan`] plans from, so the rule a panel
+    /// lands on and the plan it then shows agree about the archive.
+    ///
+    /// Empty (not an error) when no rule matches, or when no
+    /// organization service is configured -- the same treatment
+    /// [`Self::organization_rules`] gives a missing service.
+    /// `NotFound` for an unknown session id.
+    pub async fn matching_organization_rule_ids(
+        &self,
+        session_id: ArchiveSessionId,
+    ) -> Result<Vec<String>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            organization_ops::run_matching_organization_rule_ids(&inner, session_id).await
+        })
+        .await?
+    }
+
     /// Every file path the archive open in `session_id` holds, in stable
     /// path-sorted order -- what an organize panel's "Original" side is
     /// built from, so the two trees it shows side by side describe the

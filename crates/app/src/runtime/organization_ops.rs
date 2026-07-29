@@ -433,6 +433,54 @@ async fn profile_exists(
         .any(|profile| profile.id == id))
 }
 
+/// The ids of the rules whose trigger matches one open archive.
+///
+/// Evaluated by `arclain_core`'s own `RuleEngine::matches_trigger`, over
+/// the same session entries and metadata
+/// [`run_preview_organize_plan`] plans from -- so "the rule a panel
+/// preselects" and "the plan that rule produces" are answered from one
+/// consistent view of the archive, and the matching rules themselves
+/// stay core's definition rather than a frontend's re-derivation of it.
+pub(super) async fn run_matching_organization_rule_ids(
+    inner: &Arc<AppRuntime>,
+    session_id: ArchiveSessionId,
+) -> Result<Vec<String>, ApplicationError> {
+    let session = inner.archive_sessions().get(session_id).await?;
+    let Some(service) = inner.core_services().organization_service.clone() else {
+        return Ok(Vec::new());
+    };
+    let rules = list_core_rules(inner, service).await?;
+
+    // CPU-bound over the whole entry list (one pass per rule), so it
+    // runs on the blocking pool -- and is awaited here, matching
+    // `run_preview_organize_plan`'s own treatment of the same work.
+    handle_for(inner)?
+        .spawn_blocking(move || {
+            let (_revision, entries) = session.organization_entries();
+            let archive_name = session
+                .source_path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let metadata = organization::session_metadata_for_planning(session.metadata());
+            rules
+                .iter()
+                .filter(|rule| {
+                    RuleEngine::matches_trigger(
+                        &rule.trigger,
+                        &archive_name,
+                        &entries,
+                        metadata.as_ref(),
+                    )
+                })
+                .map(|rule| rule.id.to_string())
+                .collect()
+        })
+        .await
+        .map_err(internal_join_error)
+}
+
 // ============================================================================
 // Preview.
 // ============================================================================
