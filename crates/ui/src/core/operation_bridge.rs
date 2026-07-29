@@ -1470,7 +1470,13 @@ fn buffer_or_apply_session_metadata(
         .find(|tab| tab.archive_session_id.get() == Some(session_id))
         .cloned();
     match tab {
-        Some(tab) => tab.metadata.set(metadata),
+        Some(tab) => {
+            tracing::debug!(
+                "[operation_bridge] applied a SessionEvent::MetadataChanged for session \
+                 {session_id:?} to its stamped tab"
+            );
+            tab.metadata.set(metadata);
+        }
         None => {
             let mut pending = signals.pending_session_metadata.lock().unwrap();
             // Bounded: see `MAX_PENDING_SESSION_METADATA`'s own doc
@@ -1487,6 +1493,10 @@ fn buffer_or_apply_session_metadata(
                 );
                 return;
             }
+            tracing::debug!(
+                "[operation_bridge] buffered a SessionEvent::MetadataChanged for session \
+                 {session_id:?} -- no tab is stamped with it yet"
+            );
             pending.insert(session_id, metadata);
         }
     }
