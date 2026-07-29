@@ -8,6 +8,14 @@ use crate::features::plugins::domain::types::PluginsListState;
 use crate::features::settings::domain::types::{
     ArchivesSettingsState, SecuritySettingsState, ServerSettingsState, SettingsAction,
 };
+// The last direct network-crate reference in this file, and the only one
+// left on a non-test path outside `shared/image_fetcher.rs`. It exists
+// solely for `SettingsAction::TestNetwork`, which builds a candidate
+// SOCKS5 config and probes it -- the proxy counterpart of
+// `TestServer`'s gameta probe, which now runs behind
+// `ArclainApp::test_gameta_connection`. There is no equivalent
+// application surface for the proxy probe yet; adding one retires this
+// import and the type mapping in that handler together.
 use arclain_network::features::proxy::ProxyConfig;
 
 use crate::shared::SharedState;
@@ -18,13 +26,6 @@ pub fn extract_navigation(action: &SettingsAction) -> Option<SettingsPage> {
         SettingsAction::NavigateTo(page) => Some(page.clone()),
         _ => None,
     }
-}
-
-fn log_saved_proxy_configuration(config: &ProxyConfig) {
-    tracing::info!(
-        "[SaveNetwork] Network settings saved successfully: {}",
-        config.log_summary()
-    );
 }
 
 /// Handle a settings action, mutating the appropriate state.
@@ -401,15 +402,14 @@ pub fn handle_action(
             // Live routing (`shared.services.async_http_client`, the
             // same `Arc` `update_settings` already applied it to -- see
             // `runtime::settings_ops::apply_live_proxy_routing`) is
-            // already in effect by this point; only the log line is
-            // this handler's own remaining job.
-            let config = ProxyConfig {
-                enabled: snapshot.network.socks5_enabled,
-                address: snapshot.network.socks5_address.unwrap_or_default(),
-                username: snapshot.network.socks5_username,
-                password: None,
-            };
-            log_saved_proxy_configuration(&config);
+            // already in effect by this point, and `update_settings`
+            // validated and persisted the proxy identity itself -- so
+            // recording that the save happened is all this handler has
+            // left to do. It used to also rebuild a proxy config from the
+            // returned snapshot purely to log a summary of it, which said
+            // nothing the facade had not already decided (and logged, via
+            // `apply_proxy_to_client`) on the way to returning that very
+            // snapshot.
             tracing::info!("Network settings saved");
         }
         SettingsAction::TestNetwork {
@@ -531,30 +531,40 @@ pub fn handle_action(
         SettingsAction::TestServer { url, api_key } => {
             use crate::features::settings::domain::types::ServerConnectionStatus;
 
+            let Some(facade) = shared.facade.as_ref() else {
+                tracing::error!("[TestServer] settings facade is unavailable");
+                server_state
+                    .connection_status
+                    .set(ServerConnectionStatus::Failed(
+                        "application facade is unavailable".to_string(),
+                    ));
+                return;
+            };
+
             server_state
                 .connection_status
                 .set(ServerConnectionStatus::Testing);
             let status_signal = server_state.connection_status.clone();
+            let facade = facade.clone();
 
-            // GametaClient is blocking — run on a dedicated thread to avoid
-            // blocking the egui render loop.
-            std::thread::spawn(move || {
-                use arclain_network::features::gameta_client::{GametaClient, ServerConfig};
-
-                let client = GametaClient::new(ServerConfig {
-                    url: url.clone(),
-                    api_key: api_key.clone(),
-                });
-
-                match client.health() {
-                    Ok(resp) => {
-                        let msg = format!("gameta server v{} is reachable", resp.version);
-                        status_signal.set(ServerConnectionStatus::Connected(msg));
+            // The probe belongs to the facade: it owns the blocking gameta
+            // client and the pool that client runs on, so this handler
+            // only hands over the form's candidate values (neither of
+            // which it saves) and routes the answer back into the page's
+            // status signal -- the same shape `TestNetwork` above uses.
+            let runtime = shared.services.tokio_runtime.handle().clone();
+            runtime.spawn(async move {
+                let status = match facade.test_gameta_connection(url, api_key).await {
+                    Ok(()) => {
+                        ServerConnectionStatus::Connected("gameta server is reachable".to_string())
                     }
-                    Err(e) => {
-                        status_signal.set(ServerConnectionStatus::Failed(e));
-                    }
-                }
+                    // `summary` is the short, already-redaction-safe half
+                    // of the error (the API key never reaches it, and any
+                    // userinfo in the URL is stripped) -- the diagnostic
+                    // half stays out of the UI.
+                    Err(error) => ServerConnectionStatus::Failed(error.summary),
+                };
+                status_signal.set(status);
             });
         }
         SettingsAction::NavigateTo(_) => {
@@ -572,11 +582,11 @@ mod tests {
     use crate::core::services::Services;
     use crate::core::signals::AppSignals;
     use crate::core::state::AppState;
+    use crate::features::settings::domain::types::ServerConnectionStatus;
     use crate::shared::theme::AppTheme;
     use arclain_app::ArclainApp;
     use arclain_core::services::ConfigService;
     use arclain_core::UserConfig;
-    use arclain_network::features::proxy::ProxyConfig;
     use arclain_widgets::Toaster;
     use parking_lot::Mutex;
     use std::io::{Read, Write};
@@ -955,29 +965,6 @@ mod tests {
             );
         }
         assert!(observable_state.contains("<invalid address>"));
-    }
-
-    #[traced_test]
-    #[test]
-    fn saved_proxy_diagnostic_redacts_invalid_address_and_direct_credentials() {
-        const ADDRESS_USER: &str = "ui-address-user-secret-0a7d";
-        const ADDRESS_PASSWORD: &str = "ui-address-password-secret-4b2e";
-        const DIRECT_USER: &str = "ui-direct-user-secret-8c1f";
-        const DIRECT_PASSWORD: &str = "ui-direct-password-secret-6d3a";
-        let config = ProxyConfig {
-            enabled: true,
-            address: format!("{ADDRESS_USER}:{ADDRESS_PASSWORD}@proxy.example:1080"),
-            username: Some(DIRECT_USER.to_string()),
-            password: Some(DIRECT_PASSWORD.to_string()),
-        };
-
-        log_saved_proxy_configuration(&config);
-
-        for secret in [ADDRESS_USER, ADDRESS_PASSWORD, DIRECT_USER, DIRECT_PASSWORD] {
-            assert!(!logs_contain(secret), "proxy secret leaked in tracing");
-        }
-        assert!(logs_contain("<invalid address>"));
-        assert!(logs_contain("authenticated"));
     }
 
     #[traced_test]
@@ -1493,5 +1480,196 @@ mod tests {
             reached_proxy.load(Ordering::SeqCst),
             "proxy sentinel stopped before the request lifecycle finished"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // TestServer: the gameta health check, now served by the facade.
+    // ---------------------------------------------------------------
+
+    /// A single-request HTTP stub answering `GET /api/v1/health` the way
+    /// a live gameta server would, then closing the connection. The probe
+    /// itself now runs inside the facade, so this only has to be a real
+    /// server on a real port.
+    fn serve_one_health_check(listener: TcpListener) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let Ok((mut socket, _)) = listener.accept() else {
+                return;
+            };
+            let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 512];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match socket.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&chunk[..read]),
+                }
+            }
+            const BODY: &str = r#"{"status":"ok","version":"9.9.9"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
+                BODY.len(),
+            );
+            let _ = socket.write_all(response.as_bytes());
+            let _ = socket.flush();
+        })
+    }
+
+    /// Blocks until the connection test leaves `Testing`. The handler
+    /// dispatches the probe onto the runtime and returns immediately --
+    /// that non-blocking shape is itself part of what these tests pin
+    /// down, so the result has to be waited for rather than read inline.
+    fn await_server_status(state: &ServerSettingsState) -> ServerConnectionStatus {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let status = state.connection_status.read().clone();
+            if !matches!(status, ServerConnectionStatus::Testing) {
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the gameta connection test never produced a result"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn dispatch_test_server(
+        fixture: &ProxySaveFixture,
+        server_state: &mut ServerSettingsState,
+        url: String,
+        api_key: Option<String>,
+    ) {
+        handle_action(
+            SettingsAction::TestServer { url, api_key },
+            &mut SecuritySettingsState::default(),
+            &mut ArchivesSettingsState::default(),
+            None,
+            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
+            server_state,
+            &fixture.shared,
+        );
+    }
+
+    #[test]
+    fn test_server_reports_a_reachable_gameta_server() {
+        let fixture = ProxySaveFixture::new();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind the health stub");
+        let url = format!("http://{}", listener.local_addr().expect("stub address"));
+        let stub = serve_one_health_check(listener);
+        let mut server_state = ServerSettingsState::default();
+
+        dispatch_test_server(
+            &fixture,
+            &mut server_state,
+            url,
+            Some("probe-key".to_string()),
+        );
+
+        match await_server_status(&server_state) {
+            ServerConnectionStatus::Connected(message) => {
+                assert!(message.contains("reachable"), "{message}");
+            }
+            other => panic!("expected Connected, got {other:?}"),
+        }
+        stub.join().expect("health stub thread panicked");
+    }
+
+    /// The probe is a probe: nothing the user typed into the form may be
+    /// persisted by testing it.
+    #[test]
+    fn test_server_does_not_persist_the_candidate_settings() {
+        let fixture = ProxySaveFixture::new();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind the health stub");
+        let url = format!("http://{}", listener.local_addr().expect("stub address"));
+        let stub = serve_one_health_check(listener);
+        let mut server_state = ServerSettingsState::default();
+        let facade = fixture
+            .shared
+            .facade
+            .as_ref()
+            .expect("fixture must have a real facade")
+            .clone();
+        let runtime = fixture.shared.services.tokio_runtime.clone();
+        let before = runtime
+            .block_on(facade.settings())
+            .expect("read settings before the probe");
+
+        dispatch_test_server(
+            &fixture,
+            &mut server_state,
+            url.clone(),
+            Some("probe-key".to_string()),
+        );
+        let status = await_server_status(&server_state);
+        stub.join().expect("health stub thread panicked");
+        assert!(matches!(status, ServerConnectionStatus::Connected(_)));
+
+        let after = runtime
+            .block_on(facade.settings())
+            .expect("read settings after the probe");
+        assert_eq!(before.revision, after.revision);
+        assert_eq!(
+            after.network.gameta_server_url,
+            before.network.gameta_server_url
+        );
+        assert!(
+            !after.network.gameta_api_key_configured,
+            "testing a connection stored the candidate API key"
+        );
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_server_reports_an_unreachable_server_without_leaking_the_api_key() {
+        const API_KEY: &str = "ui-gameta-probe-key-9d2a";
+        let fixture = ProxySaveFixture::new();
+        // Reserve a port and release it, so the connection is refused
+        // rather than hanging until the client's own probe timeout.
+        let closed = TcpListener::bind("127.0.0.1:0").expect("reserve a closed port");
+        let url = format!("http://{}", closed.local_addr().expect("closed address"));
+        drop(closed);
+        let mut server_state = ServerSettingsState::default();
+
+        dispatch_test_server(&fixture, &mut server_state, url, Some(API_KEY.to_string()));
+
+        let status = await_server_status(&server_state);
+        let ServerConnectionStatus::Failed(message) = &status else {
+            panic!("expected Failed, got {status:?}");
+        };
+        assert!(
+            !message.contains(API_KEY),
+            "API key reached the UI: {message}"
+        );
+        assert!(!logs_contain(API_KEY), "API key leaked in tracing");
+    }
+
+    /// Without a facade there is nothing to probe with. The page must say
+    /// so rather than sit on `Testing` forever waiting for a result that
+    /// can never arrive.
+    #[test]
+    fn test_server_without_a_facade_reports_a_failure_rather_than_hanging() {
+        let fixture = ProxySaveFixture::new();
+        let mut shared = fixture.shared.clone();
+        shared.facade = None;
+        let mut server_state = ServerSettingsState::default();
+
+        handle_action(
+            SettingsAction::TestServer {
+                url: "http://gameta.invalid".to_string(),
+                api_key: None,
+            },
+            &mut SecuritySettingsState::default(),
+            &mut ArchivesSettingsState::default(),
+            None,
+            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
+            &mut server_state,
+            &shared,
+        );
+
+        assert!(matches!(
+            server_state.connection_status.read().clone(),
+            ServerConnectionStatus::Failed(_)
+        ));
     }
 }

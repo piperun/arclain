@@ -73,17 +73,7 @@ pub fn render(
         }
     };
 
-    // Fetch whitelist entries for this plugin
-    let whitelist_entries = if let Some(shared) = shared {
-        let whitelist = shared.services.domain_whitelist.read();
-        whitelist
-            .get_all_entries()
-            .into_iter()
-            .filter(|e| e.plugin_id == selected_id)
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    let whitelist_entries = fetch_whitelist_entries(shared, &selected_id);
 
     Form::new().show(ui, theme, |ui| {
         // Global Settings
@@ -299,10 +289,63 @@ pub fn render(
     needs_refresh
 }
 
+/// Every domain the selected plugin has requested, as the facade reports
+/// them. Read fresh each frame rather than cached: a plugin can request a
+/// new domain at any time from a background fetch, so a cache would leave
+/// that request invisible until something else happened to invalidate it.
+///
+/// A failed read shows an empty domain list and says why in the log,
+/// rather than taking the whole detail view down with it. The only
+/// reachable failure is the application shutting down underneath a
+/// still-rendering frame, so the log line cannot repeat for long.
+fn fetch_whitelist_entries(
+    shared: Option<&SharedState>,
+    plugin_id: &str,
+) -> Vec<arclain_app::plugins::DomainWhitelistEntryDto> {
+    let Some(shared) = shared else {
+        return Vec::new();
+    };
+    let Some(facade) = shared.facade.as_ref() else {
+        return Vec::new();
+    };
+    match shared
+        .services
+        .tokio_runtime
+        .block_on(facade.plugin_domain_whitelist(plugin_id.to_string()))
+    {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(
+                "Failed to read the domain whitelist for plugin '{plugin_id}': {}",
+                error.summary
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// The security warnings to show under a whitelisted `domain`, already
+/// rendered to display text.
+///
+/// A whitelist entry stores a bare domain, so the analysis is run against
+/// the `https://` URL the plugin would actually request. A domain that
+/// cannot be analyzed at all shows no warnings rather than an error: the
+/// row's job is to flag domains that look dangerous, and "unparseable"
+/// is not a security finding to put in front of the user.
+fn domain_security_warnings(domain: &str) -> Vec<String> {
+    let Ok(info) = arclain_app::analyze_url(&format!("https://{domain}")) else {
+        return Vec::new();
+    };
+    info.warnings
+        .iter()
+        .map(|warning| warning.description())
+        .collect()
+}
+
 fn render_domain_row(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    entry: &arclain_network::features::whitelist::WhitelistEntry,
+    entry: &arclain_app::plugins::DomainWhitelistEntryDto,
     shared: Option<&SharedState>,
 ) -> bool {
     let mut changed = false;
@@ -337,19 +380,17 @@ fn render_domain_row(
             );
 
             // Security Analysis
-            let url_for_check = format!("https://{}", domain);
-            if let Ok(info) = arclain_network::features::security::analyze_url(&url_for_check) {
-                if !info.warnings.is_empty() {
-                    ui.horizontal_wrapped(|ui| {
-                        for warning in info.warnings {
-                            ui.label(
-                                egui::RichText::new(format!("⚠ {}", warning.description()))
-                                    .small()
-                                    .color(theme.colors.error),
-                            );
-                        }
-                    });
-                }
+            let warnings = domain_security_warnings(domain);
+            if !warnings.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for warning in warnings {
+                        ui.label(
+                            egui::RichText::new(format!("⚠ {warning}"))
+                                .small()
+                                .color(theme.colors.error),
+                        );
+                    }
+                });
             }
         });
 
@@ -599,6 +640,44 @@ mod tests {
             state.cached_main_layout.is_none(),
             "Cache held plugin_a's layout while plugin_b is selected; should have dropped",
         );
+    }
+
+    /// The domain rows are analyzed through the application facade. The
+    /// text the user reads is the facade's mirror of the analysis' own
+    /// wording, and must stay identical to it -- this pins the exact
+    /// sentence for the case the plugin detail view exists to warn about.
+    #[test]
+    fn domain_security_warnings_flag_an_abused_top_level_domain() {
+        let warnings = domain_security_warnings("secure-login.google.com.evil.tk");
+
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning == "Unusual top-level domain: .tk"),
+            "expected the abused-TLD wording, got {warnings:?}",
+        );
+    }
+
+    #[test]
+    fn domain_security_warnings_are_empty_for_an_ordinary_domain() {
+        assert!(domain_security_warnings("dlsite.com").is_empty());
+    }
+
+    /// A domain that cannot be turned into a URL at all yields no
+    /// warnings rather than propagating an error into the row -- the same
+    /// thing the pre-facade code's `if let Ok(..)` did.
+    #[test]
+    fn domain_security_warnings_are_empty_for_an_unanalyzable_domain() {
+        assert!(domain_security_warnings("").is_empty());
+        assert!(domain_security_warnings("not a domain").is_empty());
+    }
+
+    /// The detail view renders in contexts that carry no shared state at
+    /// all (and, in test fixtures, no facade); it must show "no domains
+    /// requested" there rather than panicking on a missing facade.
+    #[test]
+    fn whitelist_entries_without_shared_state_are_empty() {
+        assert!(fetch_whitelist_entries(None, "any-plugin").is_empty());
     }
 
     /// Same selected plugin → keep the cache.
