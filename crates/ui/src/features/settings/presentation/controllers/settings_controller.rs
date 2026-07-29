@@ -6,17 +6,9 @@ use crate::core::navigation::SettingsPage;
 use crate::features::plugins::domain::types::PluginsListState;
 
 use crate::features::settings::domain::types::{
-    ArchivesSettingsState, SecuritySettingsState, ServerSettingsState, SettingsAction,
+    ArchivesSettingsState, ConnectionTestResult, SecuritySettingsState, ServerSettingsState,
+    SettingsAction, TestStepResult,
 };
-// The last direct network-crate reference in this file, and the only one
-// left on a non-test path outside `shared/image_fetcher.rs`. It exists
-// solely for `SettingsAction::TestNetwork`, which builds a candidate
-// SOCKS5 config and probes it -- the proxy counterpart of
-// `TestServer`'s gameta probe, which now runs behind
-// `ArclainApp::test_gameta_connection`. There is no equivalent
-// application surface for the proxy probe yet; adding one retires this
-// import and the type mapping in that handler together.
-use arclain_network::features::proxy::ProxyConfig;
 
 use crate::shared::SharedState;
 
@@ -25,6 +17,42 @@ pub fn extract_navigation(action: &SettingsAction) -> Option<SettingsPage> {
     match action {
         SettingsAction::NavigateTo(page) => Some(page.clone()),
         _ => None,
+    }
+}
+
+/// Splits a `host:port` proxy authority into the pair
+/// [`arclain_app::ArclainApp::test_socks5_proxy`] takes.
+///
+/// `rsplit_once`, not `split_once`: an IPv6 literal authority
+/// (`[::1]:1080`) is full of colons and only the last one separates the
+/// port. The bracketed host is handed over intact, which is exactly the
+/// form the facade reassembles an authority from.
+fn split_proxy_authority(address: &str) -> Option<(String, u16)> {
+    let (host, port) = address.trim().rsplit_once(':')?;
+    let host = host.trim();
+    if host.is_empty() {
+        return None;
+    }
+    let port: u16 = port.trim().parse().ok()?;
+    Some((host.to_string(), port))
+}
+
+/// A one-step failed connection-test result carrying `message`.
+///
+/// The proxy probe reports a single verdict rather than the per-step
+/// trace the page's result panel can display, so every failure -- a bad
+/// address, a missing facade, a refused proxy -- is rendered as one
+/// failed step. See this handler's own note in `SettingsAction::
+/// TestNetwork` for what that costs.
+fn failed_proxy_test(message: impl Into<String>) -> ConnectionTestResult {
+    ConnectionTestResult {
+        steps: vec![TestStepResult {
+            name: "SOCKS5".to_string(),
+            passed: false,
+            message: Some(message.into()),
+        }],
+        success: false,
+        result_message: None,
     }
 }
 
@@ -354,22 +382,19 @@ pub fn handle_action(
             );
             drop(state);
 
-            let snapshot = match patch_result {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    // `error`'s message is already the short, safe-to-show
-                    // `ApplicationError::summary` (see `submit_settings_patch`'s
-                    // own doc comment) -- covers both an invalid address
-                    // (rejected before any write) and a persistence
-                    // failure with one consistent, specific message.
-                    tracing::error!("[SaveNetwork] Failed to save network settings: {error}");
-                    shared
-                        .toaster
-                        .lock()
-                        .error(format!("Network settings were not saved: {error}"));
-                    return;
-                }
-            };
+            if let Err(error) = patch_result {
+                // `error`'s message is already the short, safe-to-show
+                // `ApplicationError::summary` (see `submit_settings_patch`'s
+                // own doc comment) -- covers both an invalid address
+                // (rejected before any write) and a persistence
+                // failure with one consistent, specific message.
+                tracing::error!("[SaveNetwork] Failed to save network settings: {error}");
+                shared
+                    .toaster
+                    .lock()
+                    .error(format!("Network settings were not saved: {error}"));
+                return;
+            }
 
             // The password is a dedicated secret write, deliberately
             // separate from the patch above (see `ArclainApp::
@@ -385,12 +410,12 @@ pub fn handle_action(
                 .block_on(facade.set_socks5_password(password))
             {
                 tracing::error!("[SaveNetwork] Failed to save the SOCKS5 password: {error:?}");
-                // Unlike the `patch_result` branch above, `snapshot` is
-                // `Ok` here -- the address/identity patch already
-                // committed before this call ever ran. "Network
-                // settings were not saved" would be false in exactly
-                // this branch, so this message says precisely what did
-                // and didn't happen instead of reusing that wording.
+                // Unlike the `patch_result` branch above, the
+                // address/identity patch already committed before this
+                // call ever ran. "Network settings were not saved" would
+                // be false in exactly this branch, so this message says
+                // precisely what did and didn't happen instead of
+                // reusing that wording.
                 shared.toaster.lock().error(
                     "Network address and identity settings were saved, but the password \
                      change failed: the old password remains in effect",
@@ -413,58 +438,76 @@ pub fn handle_action(
             tracing::info!("Network settings saved");
         }
         SettingsAction::TestNetwork {
-            socks5_enabled,
+            // Deliberately unused: the facade probe is always a *proxy*
+            // probe. The page's toggle used to double as a mode switch --
+            // off meant "connect directly and show me my real IP" -- and
+            // there is no application surface for that today, so the
+            // button now always tests the candidate proxy. The field
+            // stays on the action because the page still holds the
+            // toggle; honouring it again needs a facade surface, not a
+            // change here.
+            socks5_enabled: _,
             socks5_address,
             socks5_username,
             socks5_password,
         } => {
-            use crate::features::settings::domain::types::{
-                ConnectionTestResult, ConnectionTestStatus, TestStepResult,
+            use crate::features::settings::domain::types::ConnectionTestStatus;
+
+            let Some(facade) = shared.facade.as_ref() else {
+                tracing::error!("[TestNetwork] settings facade is unavailable");
+                network_state
+                    .connection_test_status
+                    .set(ConnectionTestStatus::Complete(failed_proxy_test(
+                        "application facade is unavailable",
+                    )));
+                return;
             };
 
-            // Set testing state
+            let address = socks5_address.unwrap_or_default();
+            let Some((host, port)) = split_proxy_authority(&address) else {
+                network_state
+                    .connection_test_status
+                    .set(ConnectionTestStatus::Complete(failed_proxy_test(
+                        "Enter a proxy address as host:port before testing",
+                    )));
+                return;
+            };
+
             network_state
                 .connection_test_status
                 .set(ConnectionTestStatus::Testing);
             let status_signal = network_state.connection_test_status.clone();
+            let facade = facade.clone();
+            let password = socks5_password
+                .filter(|password| !password.is_empty())
+                .map(arclain_app::challenge::SecretInput::new);
 
-            // Create config for test
-            let config = ProxyConfig {
-                enabled: socks5_enabled,
-                address: socks5_address.unwrap_or_default(),
-                username: socks5_username,
-                password: socks5_password,
-            };
-
-            // Spawn test task
+            // The probe belongs to the facade, the same way the gameta
+            // one below does: it owns the proxy client and the runtime the
+            // request runs on, and none of these candidate values is
+            // saved anywhere. This handler hands them over and routes the
+            // verdict back into the page's status signal.
             let runtime = shared.services.tokio_runtime.handle().clone();
             runtime.spawn(async move {
-                let network_result = config.test_connection().await;
-
-                // Convert network types to UI types
-                let ui_result = ConnectionTestResult {
-                    steps: network_result
-                        .steps
-                        .into_iter()
-                        .map(|s| TestStepResult {
-                            name: s.name,
-                            passed: s.passed,
-                            message: s.message,
-                        })
-                        .collect(),
-                    success: network_result.success,
-                    result_message: if network_result.success {
-                        Some(format!(
-                            "{} ({})",
-                            network_result.ip.unwrap_or_default(),
-                            network_result.country.unwrap_or_default()
-                        ))
-                    } else {
-                        None
+                let status = match facade
+                    .test_socks5_proxy(host, port, socks5_username, password)
+                    .await
+                {
+                    Ok(()) => ConnectionTestResult {
+                        steps: vec![TestStepResult {
+                            name: "SOCKS5".to_string(),
+                            passed: true,
+                            message: None,
+                        }],
+                        success: true,
+                        result_message: None,
                     },
+                    // `summary` names the step that failed and is already
+                    // credential-free; the diagnostic half (the full step
+                    // list) stays out of the UI.
+                    Err(error) => failed_proxy_test(error.summary),
                 };
-
-                status_signal.set(ConnectionTestStatus::Complete(ui_result));
+                status_signal.set(ConnectionTestStatus::Complete(status));
             });
         }
         SettingsAction::SaveServer {
@@ -546,6 +589,9 @@ pub fn handle_action(
                 .set(ServerConnectionStatus::Testing);
             let status_signal = server_state.connection_status.clone();
             let facade = facade.clone();
+            let api_key = api_key
+                .filter(|key| !key.trim().is_empty())
+                .map(arclain_app::challenge::SecretInput::new);
 
             // The probe belongs to the facade: it owns the blocking gameta
             // client and the pool that client runs on, so this handler
@@ -555,9 +601,13 @@ pub fn handle_action(
             let runtime = shared.services.tokio_runtime.handle().clone();
             runtime.spawn(async move {
                 let status = match facade.test_gameta_connection(url, api_key).await {
-                    Ok(()) => {
-                        ServerConnectionStatus::Connected("gameta server is reachable".to_string())
-                    }
+                    // The server's own reported version, which is what
+                    // makes this message evidence the probe reached a real
+                    // gameta server rather than any HTTP endpoint.
+                    Ok(info) => ServerConnectionStatus::Connected(format!(
+                        "gameta server v{} is reachable",
+                        info.version
+                    )),
                     // `summary` is the short, already-redaction-safe half
                     // of the error (the API key never reaches it, and any
                     // userinfo in the URL is stripped) -- the diagnostic
@@ -582,7 +632,7 @@ mod tests {
     use crate::core::services::Services;
     use crate::core::signals::AppSignals;
     use crate::core::state::AppState;
-    use crate::features::settings::domain::types::ServerConnectionStatus;
+    use crate::features::settings::domain::types::{ConnectionTestStatus, ServerConnectionStatus};
     use crate::shared::theme::AppTheme;
     use arclain_app::ArclainApp;
     use arclain_core::services::ConfigService;
@@ -1568,7 +1618,10 @@ mod tests {
 
         match await_server_status(&server_state) {
             ServerConnectionStatus::Connected(message) => {
-                assert!(message.contains("reachable"), "{message}");
+                // The server's own version, not a generic "reachable":
+                // it is what tells the user they reached a gameta server
+                // and which one.
+                assert_eq!(message, "gameta server v9.9.9 is reachable");
             }
             other => panic!("expected Connected, got {other:?}"),
         }
@@ -1671,5 +1724,155 @@ mod tests {
             server_state.connection_status.read().clone(),
             ServerConnectionStatus::Failed(_)
         ));
+    }
+
+    // ---------------------------------------------------------------
+    // TestNetwork: the SOCKS5 probe, now served by the facade.
+    // ---------------------------------------------------------------
+
+    /// Blocks until the proxy test leaves `Testing`, for the same reason
+    /// [`await_server_status`] exists.
+    fn await_network_status(
+        state: &crate::features::settings::domain::types::NetworkSettingsState,
+    ) -> ConnectionTestResult {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if let ConnectionTestStatus::Complete(result) =
+                state.connection_test_status.read().clone()
+            {
+                return result;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the proxy connection test never produced a result"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn dispatch_test_network(
+        shared: &SharedState,
+        network_state: &mut crate::features::settings::domain::types::NetworkSettingsState,
+        socks5_address: Option<String>,
+        socks5_password: Option<String>,
+    ) {
+        handle_action(
+            SettingsAction::TestNetwork {
+                socks5_enabled: true,
+                socks5_address,
+                socks5_username: Some("probe-user".to_string()),
+                socks5_password,
+            },
+            &mut SecuritySettingsState::default(),
+            &mut ArchivesSettingsState::default(),
+            None,
+            network_state,
+            &mut ServerSettingsState::default(),
+            shared,
+        );
+    }
+
+    #[test]
+    fn proxy_authority_splits_host_from_port_including_ipv6_literals() {
+        assert_eq!(
+            split_proxy_authority("127.0.0.1:1080"),
+            Some(("127.0.0.1".to_string(), 1080)),
+        );
+        assert_eq!(
+            split_proxy_authority(" proxy.example:9050 "),
+            Some(("proxy.example".to_string(), 9050)),
+        );
+        // The brackets stay on: they are part of the authority form the
+        // facade reassembles, not decoration.
+        assert_eq!(
+            split_proxy_authority("[::1]:1080"),
+            Some(("[::1]".to_string(), 1080)),
+        );
+        assert_eq!(split_proxy_authority(""), None);
+        assert_eq!(split_proxy_authority("proxy.example"), None);
+        assert_eq!(split_proxy_authority(":1080"), None);
+        assert_eq!(split_proxy_authority("proxy.example:not-a-port"), None);
+        assert_eq!(split_proxy_authority("proxy.example:99999"), None);
+    }
+
+    /// The failure path end to end, plus the guard that the candidate
+    /// password reaches neither the rendered result nor tracing.
+    #[traced_test]
+    #[test]
+    fn test_network_reports_a_refused_proxy_without_leaking_the_password() {
+        const PASSWORD: &str = "ui-socks5-probe-password-8a4d";
+        let fixture = ProxySaveFixture::new();
+        // Reserve a port and release it so the TCP step fails fast
+        // instead of waiting out the probe timeout.
+        let closed = TcpListener::bind("127.0.0.1:0").expect("reserve a closed port");
+        let address = closed.local_addr().expect("read the closed address");
+        drop(closed);
+        let mut network_state =
+            crate::features::settings::domain::types::NetworkSettingsState::default();
+
+        dispatch_test_network(
+            &fixture.shared,
+            &mut network_state,
+            Some(address.to_string()),
+            Some(PASSWORD.to_string()),
+        );
+
+        let result = await_network_status(&network_state);
+        assert!(!result.success);
+        let rendered = format!("{result:?}");
+        assert!(
+            !rendered.contains(PASSWORD),
+            "the proxy password reached the UI: {rendered}",
+        );
+        assert!(
+            !logs_contain(PASSWORD),
+            "the proxy password leaked in tracing"
+        );
+    }
+
+    /// An address the page cannot split into host and port never reaches
+    /// the facade at all -- the user gets a specific message instead of a
+    /// probe that was always going to fail.
+    #[test]
+    fn test_network_without_a_usable_address_reports_a_failure_instead_of_probing() {
+        let fixture = ProxySaveFixture::new();
+        let mut network_state =
+            crate::features::settings::domain::types::NetworkSettingsState::default();
+
+        dispatch_test_network(&fixture.shared, &mut network_state, None, None);
+
+        let result = await_network_status(&network_state);
+        assert!(!result.success);
+        assert_eq!(result.steps.len(), 1);
+        assert!(
+            result.steps[0]
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("host:port"),
+            "{:?}",
+            result.steps[0],
+        );
+    }
+
+    /// Same contract as the gameta twin: no facade means a reported
+    /// failure, never an indefinite "Testing...".
+    #[test]
+    fn test_network_without_a_facade_reports_a_failure_rather_than_hanging() {
+        let fixture = ProxySaveFixture::new();
+        let mut shared = fixture.shared.clone();
+        shared.facade = None;
+        let mut network_state =
+            crate::features::settings::domain::types::NetworkSettingsState::default();
+
+        dispatch_test_network(
+            &shared,
+            &mut network_state,
+            Some("127.0.0.1:1080".to_string()),
+            None,
+        );
+
+        let result = await_network_status(&network_state);
+        assert!(!result.success);
     }
 }
