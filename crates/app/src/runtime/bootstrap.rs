@@ -19,9 +19,13 @@
 //!   *path* is still resolved as part of `AppPaths`.
 //! - **Active context.** The live bridge from the plugin system to "what
 //!   tab is currently active" (`arclain_plugins::ActiveTabBridge`) is
-//!   implemented by `crates/ui`'s `AppSignalsBridge`, which reads
-//!   `AppSignals` -- an egui-integration type this crate must never
-//!   depend on. `crates/ui` wires the real bridge onto the
+//!   this crate's own [`crate::plugins::ArchiveContextBridge`], obtained
+//!   via [`crate::ArclainApp::active_tab_bridge`] -- but installing it
+//!   still cannot happen here: it needs a caller-supplied fallback
+//!   closure for the one case archive-session state alone cannot
+//!   resolve, and `crates/ui`'s own closure writes into `AppSignals`, an
+//!   egui-integration type this crate must never depend on. `crates/ui`
+//!   calls `active_tab_bridge` and wires the result onto the
 //!   `PluginManager` it gets back through
 //!   [`crate::ArclainApp::take_legacy_composition`] immediately after
 //!   this function returns, in the same relative position this step

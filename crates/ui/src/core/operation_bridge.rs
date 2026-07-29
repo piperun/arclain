@@ -1478,8 +1478,7 @@ fn buffer_or_apply_session_metadata(
             // buffered (a plugin reporting an updated guess before its
             // tab is stamped) can still update its own entry even once
             // the map is otherwise at capacity.
-            if pending.len() >= MAX_PENDING_SESSION_METADATA && !pending.contains_key(&session_id)
-            {
+            if pending.len() >= MAX_PENDING_SESSION_METADATA && !pending.contains_key(&session_id) {
                 tracing::warn!(
                     "[operation_bridge] pending_session_metadata is at its {} entry cap -- \
                      dropping metadata reported for session {session_id:?} instead of \
@@ -1847,7 +1846,10 @@ mod tests {
             Some(serde_json::json!({"game": "stamped"})),
         );
 
-        assert_eq!(tab.metadata.get(), Some(serde_json::json!({"game": "stamped"})));
+        assert_eq!(
+            tab.metadata.get(),
+            Some(serde_json::json!({"game": "stamped"}))
+        );
         assert!(
             signals
                 .pending_session_metadata

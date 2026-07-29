@@ -282,7 +282,10 @@ fn buffered_delivery_for_a_not_yet_stamped_tab_is_drained_once_the_tab_is_stampe
 
     let bridge = app.active_tab_bridge(|_| panic!("fallback must not run: the session exists"));
     runtime.block_on(async {
-        bridge.set_session_metadata(session_id.into_raw(), Some(serde_json::json!({"early": true})));
+        bridge.set_session_metadata(
+            session_id.into_raw(),
+            Some(serde_json::json!({"early": true})),
+        );
         arclain_ui::core::operation_bridge::handle_session_event(
             shared.signals(),
             &app,

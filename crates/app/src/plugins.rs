@@ -1139,7 +1139,8 @@ impl ActiveTabBridge for ProductionActiveTabBridge {
     }
 
     fn set_session_metadata(&self, archive_session_id: u64, metadata: Option<serde_json::Value>) {
-        self.inner.set_session_metadata(archive_session_id, metadata);
+        self.inner
+            .set_session_metadata(archive_session_id, metadata);
     }
 
     fn set_active_tab_metadata(&self, metadata: Option<serde_json::Value>) {
@@ -1511,7 +1512,9 @@ mod tests {
 
         bridge.set_session_metadata(session_id.into_raw(), Some(serde_json::json!({"a": 1})));
 
-        let event = events.try_recv().expect("an event must have been published");
+        let event = events
+            .try_recv()
+            .expect("an event must have been published");
         assert_eq!(
             event,
             crate::event::SessionEvent::MetadataChanged { session_id }
@@ -1519,7 +1522,10 @@ mod tests {
         // The event only carries the id -- confirm the write it announces
         // is already committed and observable by the time it arrives.
         let session = sessions.get(session_id).await.unwrap();
-        assert_eq!(session.snapshot().metadata, Some(serde_json::json!({"a": 1})));
+        assert_eq!(
+            session.snapshot().metadata,
+            Some(serde_json::json!({"a": 1}))
+        );
     }
 
     /// A write that never lands (unknown/stale session id) must not
@@ -1618,7 +1624,8 @@ mod tests {
     /// With a session active, the composite bridge behaves exactly like
     /// `ArchiveContextBridge` alone -- the fallback must never run.
     #[tokio::test(flavor = "multi_thread")]
-    async fn production_bridge_delegates_to_inner_and_skips_the_fallback_when_a_session_is_active() {
+    async fn production_bridge_delegates_to_inner_and_skips_the_fallback_when_a_session_is_active()
+    {
         let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
         let session_id = open_test_session(&sessions, vec![]).await;
         let tracker = ActiveArchiveSession::new();
@@ -1698,7 +1705,10 @@ mod tests {
 
         assert!(bridge.archive_path().unwrap().contains("fixture.zip"));
         assert_eq!(bridge.archive_entries(), vec!["a.txt".to_string()]);
-        assert_eq!(bridge.active_archive_session_id(), Some(session_id.into_raw()));
+        assert_eq!(
+            bridge.active_archive_session_id(),
+            Some(session_id.into_raw())
+        );
         assert_eq!(bridge.current_password(), None);
 
         bridge.set_session_metadata(session_id.into_raw(), Some(serde_json::json!({"n": 1})));

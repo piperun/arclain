@@ -410,7 +410,10 @@ mod tests {
         store.publish_metadata_changed(session_id);
 
         let event = receiver.recv().await.unwrap();
-        assert_eq!(event, crate::event::SessionEvent::MetadataChanged { session_id });
+        assert_eq!(
+            event,
+            crate::event::SessionEvent::MetadataChanged { session_id }
+        );
     }
 
     #[tokio::test]
@@ -456,10 +459,7 @@ mod tests {
 
         let result = receiver.recv().await;
         assert!(
-            matches!(
-                result,
-                Err(broadcast::error::RecvError::Lagged(_))
-            ),
+            matches!(result, Err(broadcast::error::RecvError::Lagged(_))),
             "expected a Lagged error once publishes exceed the channel's capacity, got {result:?}"
         );
     }
