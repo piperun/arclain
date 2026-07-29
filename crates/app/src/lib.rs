@@ -39,11 +39,14 @@
 //! re-exported below.
 //!
 //! [`organization`] owns the organization feature's own surface:
-//! archive-profile and organization-rule CRUD, plus the synchronous
-//! [`organization::OrganizePlanPreview`] an organize panel recomputes as
-//! the user changes rules. The `OrganizeRequest` that actually *runs* an
-//! organize stays in [`operations`], alongside every other operation
-//! request.
+//! archive-profile and organization-rule CRUD, the output formats a
+//! profile may name ([`organization::archive_format_options`]), plus the
+//! synchronous [`organization::OrganizePlanPreview`] an organize panel
+//! recomputes as the user changes rules. The `OrganizeRequest` that
+//! actually *runs* an organize stays in [`operations`], alongside every
+//! other operation request -- and binds the session it previewed, so
+//! what a panel applies is the plan it showed (see
+//! [`operations::OrganizeRequest::archive_session_id`]).
 
 pub mod archive;
 pub mod challenge;

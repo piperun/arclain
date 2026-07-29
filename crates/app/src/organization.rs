@@ -210,6 +210,74 @@ pub struct OrganizationProfileInput {
     pub is_default: bool,
 }
 
+/// One output format an [`OrganizationProfileInput`] may name, with
+/// everything a profile editor needs to offer it: the token to submit,
+/// how to label it, the extension its outputs get, and the compression
+/// methods it supports.
+///
+/// Exists so a frontend's format and method dropdowns are not a second,
+/// drifting copy of what this facade actually accepts. Every field is
+/// derived from `arclain_core`'s own format definitions, so a format
+/// added there appears here (and is accepted by
+/// [`OrganizationProfileInput::output_format`]) without a frontend
+/// change.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ArchiveFormatOptionDto {
+    /// What [`OrganizationProfileInput::output_format`] accepts and
+    /// [`OrganizationProfileSummary::output_format`] reports (`"7z"`,
+    /// `"zip"`).
+    pub token: String,
+    /// Human-facing label for this format.
+    pub display_name: String,
+    /// The file extension an organized output built with this format
+    /// gets.
+    pub extension: String,
+    /// Accepted [`OrganizationProfileInput::compression_method`] values
+    /// for this format, in the order a picker should offer them; the
+    /// first is [`Self::default_compression_method`].
+    pub compression_methods: Vec<String>,
+    /// What the backend uses when a profile stores no method.
+    pub default_compression_method: String,
+    /// Whether `solid_archive` means anything for this format. A `zip`
+    /// container has no solid-block concept at all, so a profile editor
+    /// hides the toggle rather than storing a flag nothing can honor
+    /// (the column still exists, and this facade still round-trips
+    /// whatever is in it).
+    pub supports_solid_archive: bool,
+    /// Whether `encrypt_headers` means anything for this format. Only
+    /// 7z can encrypt its own file listing; zip's is always readable.
+    pub supports_header_encryption: bool,
+}
+
+/// Every output format a profile may store. Pure and stateless -- no
+/// app handle, no async, no I/O (the same shape [`crate::analyze_url`]
+/// has, for the same reason: a frontend needs this to render a form,
+/// not to perform an operation).
+pub fn archive_format_options() -> Vec<ArchiveFormatOptionDto> {
+    ArchiveFormat::all()
+        .iter()
+        .map(|format| {
+            let probe = ArchiveProfile {
+                format: *format,
+                ..ArchiveProfile::default()
+            };
+            ArchiveFormatOptionDto {
+                token: format.as_str().to_string(),
+                display_name: format.display_name().to_string(),
+                extension: format.extension().to_string(),
+                compression_methods: probe
+                    .available_compression_methods()
+                    .iter()
+                    .map(|method| (*method).to_string())
+                    .collect(),
+                default_compression_method: probe.default_compression_method().to_string(),
+                supports_solid_archive: matches!(format, ArchiveFormat::SevenZ),
+                supports_header_encryption: matches!(format, ArchiveFormat::SevenZ),
+            }
+        })
+        .collect()
+}
+
 // ============================================================================
 // Preview DTOs.
 // ============================================================================
@@ -734,6 +802,44 @@ mod tests {
         let input = profile_input();
         assert!(!profile_to_core(&input, 0, false).unwrap().is_system);
         assert!(profile_to_core(&input, 4, true).unwrap().is_system);
+    }
+
+    // ── format options ──────────────────────────────────────────────────
+
+    /// The whole point of the enumeration: every token it offers must be
+    /// a token [`profile_to_core`] accepts, and every method it lists for
+    /// a format must be accepted *for that format* -- otherwise a picker
+    /// built from it can compose a profile this facade then rejects.
+    #[test]
+    fn every_offered_format_and_method_is_one_a_profile_input_accepts() {
+        let options = archive_format_options();
+        assert!(!options.is_empty());
+
+        for option in &options {
+            assert!(
+                option
+                    .compression_methods
+                    .contains(&option.default_compression_method),
+                "a format's default method must be one it offers"
+            );
+            for method in &option.compression_methods {
+                let mut input = profile_input();
+                input.output_format = option.token.clone();
+                input.compression_method = Some(method.clone());
+                let core = profile_to_core(&input, 0, false)
+                    .unwrap_or_else(|_| panic!("{} / {method} must be accepted", option.token));
+                assert_eq!(core.format.as_str(), option.token);
+                assert_eq!(core.compression_method.as_deref(), Some(method.as_str()));
+                assert_eq!(core.format.extension(), option.extension);
+            }
+        }
+    }
+
+    #[test]
+    fn format_options_round_trip_through_json() {
+        for option in archive_format_options() {
+            assert_eq!(round_trip(&option), option);
+        }
     }
 
     // ── ids ─────────────────────────────────────────────────────────────
