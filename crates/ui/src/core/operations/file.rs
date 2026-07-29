@@ -1,17 +1,11 @@
 use crate::core::tabs::view_state::RevisionedSelection;
-use crate::core::tabs::TabId;
+use crate::core::tabs::{TabId, ALL_ENTRIES_IN_ONE_DIRECTORY};
 use crate::shared::models::file_entry::FileEntry;
 use crate::shared::SharedState;
 use arclain_app::archive::{ArchivePath, EntrySortKey, ListEntriesRequest, SortDirection};
 use arclain_app::ids::ArchiveSessionId;
 use arclain_app::operations::ArchiveMutationRequest;
 use std::path::PathBuf;
-
-/// How many entries a directory-scoped `list_entries` call requests when
-/// resolving a single archive path to its `EntryId` -- see
-/// [`start_replace_text`]. Mirrors `FileOpsService`'s identical constant
-/// for delete's own path-to-id resolution.
-const ALL_ENTRIES_IN_ONE_DIRECTORY: u32 = u32::MAX;
 
 /// Opens a file picker and adds the chosen files to `tab_id`'s open
 /// archive through the application facade -- see [`start_add_files`] for

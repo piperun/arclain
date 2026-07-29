@@ -155,10 +155,10 @@ impl ArchiveNavigation {
         self.go_to_directory(next)
     }
 
-    /// [`Self::go_to`] for a caller that already holds a validated
-    /// [`ArchivePath`] (a directory row's own path, say) and has nothing
-    /// to normalize.
-    pub fn go_to_directory(&mut self, directory: ArchivePath) -> bool {
+    /// [`Self::go_to`] once the target has been validated -- split out
+    /// so the equality/history rules live in one place regardless of
+    /// where the [`ArchivePath`] came from.
+    fn go_to_directory(&mut self, directory: ArchivePath) -> bool {
         if directory == self.current {
             return false;
         }
@@ -291,10 +291,6 @@ impl TabListing {
     /// The archive session this listing belongs to.
     pub fn session(&self) -> Option<ArchiveSessionId> {
         self.session
-    }
-
-    pub fn navigation(&self) -> &ArchiveNavigation {
-        &self.navigation
     }
 
     /// The directory being browsed -- equivalently

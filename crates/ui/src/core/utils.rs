@@ -264,6 +264,19 @@ mod tests {
         assert_eq!(format_modified_unix_ms(Some(-1000)), "1969-12-31 23:59:59");
     }
 
+    /// The timestamp arrives from a DTO built out of an archive's own
+    /// bytes, so a corrupt or adversarial entry can put an arbitrary
+    /// `i64` in it. Rendering one must not overflow (a debug-build panic
+    /// on the render path) -- the two flooring divisions bound `days` to
+    /// roughly ±10^11 before any multiply happens, which is what makes
+    /// the calendar arithmetic total rather than merely untested.
+    #[test]
+    fn an_absurd_timestamp_renders_something_rather_than_overflowing() {
+        for milliseconds in [i64::MIN, i64::MIN + 1, i64::MAX, i64::MAX - 1] {
+            assert!(!format_modified_unix_ms(Some(milliseconds)).is_empty());
+        }
+    }
+
     // =========================================================================
     // file_entry_from_dto
     // =========================================================================
