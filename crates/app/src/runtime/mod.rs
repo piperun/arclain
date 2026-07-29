@@ -1688,6 +1688,59 @@ impl ArclainApp {
 
     // ==================== Task 11: plugin sessions (end) ====================
 
+    // ============ Task 14n: boundary-zero network surface (start) ===========
+    // The two application-owned halves of the network surface a frontend
+    // used to reach `arclain-network` directly for. The third
+    // (`crate::plugins::analyze_url`) needs no application state at all
+    // and is a free function rather than a method here.
+
+    /// Every domain `plugin_id` has requested network access to, approved
+    /// or still pending, in a stable domain-sorted order.
+    ///
+    /// Reads the one live whitelist this application composed at
+    /// bootstrap -- the same store the plugin HTTP client consults on
+    /// every request -- so what a frontend renders is what the network
+    /// layer will actually enforce, not a snapshot that can drift from
+    /// it. An unknown (but non-empty) `plugin_id` is not an error: it
+    /// simply has requested no domains yet.
+    pub async fn plugin_domain_whitelist(
+        &self,
+        plugin_id: String,
+    ) -> Result<Vec<crate::plugins::DomainWhitelistEntryDto>, ApplicationError> {
+        self.dispatch(move |inner| {
+            let whitelist = inner.core_services().domain_whitelist.read();
+            crate::plugins::plugin_domain_whitelist(&whitelist, &plugin_id)
+        })
+        .await?
+    }
+
+    /// Health-checks a *candidate* gameta server configuration -- the
+    /// values a settings form currently holds, before the user has saved
+    /// them -- and reports whether that server is reachable and healthy.
+    ///
+    /// Persists nothing: neither `server_url` nor `api_key` touches the
+    /// configuration database, the encrypted vault, or this instance's
+    /// live `gameta_client`. Use [`Self::update_settings`] plus
+    /// [`Self::set_gameta_api_key`] to actually save a configuration.
+    ///
+    /// `Ok(())` means the server answered its health endpoint
+    /// successfully. Failures carry a redaction-safe summary: the
+    /// user-typed `server_url` may appear in it (with any embedded
+    /// userinfo stripped -- see `settings_ops::redact_url_userinfo`), the
+    /// `api_key` never does.
+    pub async fn test_gameta_connection(
+        &self,
+        server_url: String,
+        api_key: Option<String>,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_test_gameta_connection(&inner, server_url, api_key).await
+        })
+        .await?
+    }
+
+    // ============= Task 14n: boundary-zero network surface (end) ============
+
     /// Runs `work` against the composed session state on this app's own
     /// Tokio runtime, then awaits the result -- so the computation
     /// itself is never at the mercy of whatever executor happens to be

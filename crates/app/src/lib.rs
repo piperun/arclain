@@ -32,7 +32,11 @@
 //! [`plugins::PluginUiDocument`] and the facade methods
 //! `ArclainApp::{plugins, set_plugin_enabled, open_plugin_session,
 //! plugin_ui_document, close_plugin_session, start_plugin_action,
-//! set_active_archive_session, read_plugin_image}`.
+//! set_active_archive_session, read_plugin_image}`. It also owns the
+//! domain-access surface a frontend used to reach `arclain-network`
+//! directly for: [`plugins::DomainWhitelistEntryDto`] (via
+//! `ArclainApp::plugin_domain_whitelist`) and the pure [`analyze_url`]
+//! re-exported below.
 //!
 //! [`organization`] owns the organization feature's own surface:
 //! archive-profile and organization-rule CRUD, plus the synchronous
@@ -54,6 +58,13 @@ pub mod runtime;
 pub mod settings;
 
 pub use runtime::{AppPaths, ArclainApp, BootstrapConfig};
+
+/// Re-exported at the crate root because it is not an application method
+/// at all: [`analyze_url`] needs no `ArclainApp`, no runtime, and no I/O
+/// (see its own doc comment), so requiring a caller to reach it through
+/// the `plugins` module would suggest a coupling to plugin state that
+/// does not exist. `arclain_app::plugins::analyze_url` still resolves too.
+pub use plugins::analyze_url;
 
 /// Re-exported so `arclain_ui` (and any other frontend) never needs
 /// `arclain_signals` as a direct dependency just to hold reactive state

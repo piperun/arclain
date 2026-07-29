@@ -445,6 +445,251 @@ pub struct PluginSessionSnapshot {
 }
 
 // ============================================================================
+// Domain access: per-plugin whitelist + URL security analysis
+// ============================================================================
+// The two network-owned shapes a frontend needs to render a plugin's
+// "Domain Access" section, mirrored into this crate so no frontend has to
+// depend on `arclain-network` for them. Kept in its own delimited section
+// for the same reason as the task sections in `crate::runtime`: a
+// concurrent worktree may be touching this same shared file.
+
+/// One entry of a plugin's domain whitelist, as reported by
+/// [`crate::ArclainApp::plugin_domain_whitelist`]. Mirrors
+/// `arclain_network::features::whitelist::WhitelistEntry` field for
+/// field.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct DomainWhitelistEntryDto {
+    /// The plugin that requested this domain.
+    pub plugin_id: String,
+    /// The domain itself, normalized to lowercase by the whitelist.
+    pub domain: String,
+    /// Whether this domain is currently granted (by explicit user
+    /// approval or by the plugin's loaded manifest). `false` means the
+    /// plugin asked for it and it is still pending.
+    pub approved: bool,
+}
+
+impl From<arclain_network::features::whitelist::WhitelistEntry> for DomainWhitelistEntryDto {
+    fn from(entry: arclain_network::features::whitelist::WhitelistEntry) -> Self {
+        Self {
+            plugin_id: entry.plugin_id,
+            domain: entry.domain,
+            approved: entry.approved,
+        }
+    }
+}
+
+/// Backs [`crate::ArclainApp::plugin_domain_whitelist`]: every entry
+/// `whitelist` holds for `plugin_id`, in a deterministic order.
+///
+/// Sorted by domain because the underlying store keeps its domains in
+/// `HashSet`s -- so `get_all_entries` returns them in an order that can
+/// differ between two calls in the same process, which would make a
+/// frontend's list of domains reshuffle itself between frames. Sorting
+/// here means every caller sees one stable order without needing to know
+/// that.
+///
+/// A blank `plugin_id` is rejected rather than answered with an empty
+/// list: no plugin id is empty, so the only way to ask for one is a
+/// caller bug, and reporting it as such beats silently claiming the
+/// (nonexistent) plugin requested no domains.
+pub(crate) fn plugin_domain_whitelist(
+    whitelist: &arclain_network::features::whitelist::DomainWhitelist,
+    plugin_id: &str,
+) -> Result<Vec<DomainWhitelistEntryDto>, ApplicationError> {
+    if plugin_id.trim().is_empty() {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "plugin id must not be empty",
+        )
+        .with_recoverability(Recoverability::Fatal)
+        .with_field("plugin_id"));
+    }
+    let mut entries: Vec<DomainWhitelistEntryDto> = whitelist
+        .get_all_entries()
+        .into_iter()
+        .filter(|entry| entry.plugin_id == plugin_id)
+        .map(DomainWhitelistEntryDto::from)
+        .collect();
+    entries.sort_by(|left, right| left.domain.cmp(&right.domain));
+    Ok(entries)
+}
+
+/// The result of [`analyze_url`]: what a URL's host actually resolves to,
+/// plus every security warning the analysis raised. Mirrors
+/// `arclain_network::features::security::DomainInfo`.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct DomainAnalysisDto {
+    /// The URL exactly as analyzed.
+    pub full_url: String,
+    /// The registrable domain (`dlsite.com`, not `api.dlsite.com`).
+    pub effective_domain: String,
+    /// The full host, subdomains included.
+    pub host: String,
+    /// The top-level domain (`com`, `co.jp`).
+    pub tld: String,
+    /// Every warning raised, in detection order. Empty means nothing
+    /// suspicious was found.
+    pub warnings: Vec<DomainWarningDto>,
+}
+
+impl From<arclain_network::features::security::DomainInfo> for DomainAnalysisDto {
+    fn from(info: arclain_network::features::security::DomainInfo) -> Self {
+        Self {
+            full_url: info.full_url,
+            effective_domain: info.effective_domain,
+            host: info.host,
+            tld: info.tld,
+            warnings: info
+                .warnings
+                .into_iter()
+                .map(DomainWarningDto::from)
+                .collect(),
+        }
+    }
+}
+
+/// One security warning about a URL, mirroring
+/// `arclain_network::features::security::DomainWarning` variant for
+/// variant.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DomainWarningDto {
+    /// A lookalike character from another alphabet (homograph attack).
+    HomographDetected {
+        suspicious_char: char,
+        position: usize,
+        looks_like: char,
+    },
+    /// A subdomain shaped to look like a different, trusted domain.
+    SuspiciousSubdomain {
+        subdomain: String,
+        looks_like: String,
+    },
+    /// A top-level domain rarely used for legitimate traffic.
+    UnusualTld { tld: String },
+    /// The URL names a bare IP address instead of a domain.
+    IpAddress { ip: String },
+    /// The URL points at localhost or a private network range.
+    LocalhostOrPrivate,
+    /// The URL contains encoded characters that may hide its real
+    /// destination.
+    SuspiciousEncoding,
+    /// The URL nests an unusual number of subdomain levels.
+    ExcessiveSubdomains { count: usize },
+    /// The domain contains keywords commonly used in phishing.
+    SuspiciousKeywords { keywords: Vec<String> },
+}
+
+impl From<arclain_network::features::security::DomainWarning> for DomainWarningDto {
+    fn from(warning: arclain_network::features::security::DomainWarning) -> Self {
+        use arclain_network::features::security::DomainWarning as Source;
+        match warning {
+            Source::HomographDetected {
+                suspicious_char,
+                position,
+                looks_like,
+            } => Self::HomographDetected {
+                suspicious_char,
+                position,
+                looks_like,
+            },
+            Source::SuspiciousSubdomain {
+                subdomain,
+                looks_like,
+            } => Self::SuspiciousSubdomain {
+                subdomain,
+                looks_like,
+            },
+            Source::UnusualTld { tld } => Self::UnusualTld { tld },
+            Source::IpAddress { ip } => Self::IpAddress { ip },
+            Source::LocalhostOrPrivate => Self::LocalhostOrPrivate,
+            Source::SuspiciousEncoding => Self::SuspiciousEncoding,
+            Source::ExcessiveSubdomains { count } => Self::ExcessiveSubdomains { count },
+            Source::SuspiciousKeywords { keywords } => Self::SuspiciousKeywords { keywords },
+        }
+    }
+}
+
+impl From<&DomainWarningDto> for arclain_network::features::security::DomainWarning {
+    fn from(warning: &DomainWarningDto) -> Self {
+        match warning {
+            DomainWarningDto::HomographDetected {
+                suspicious_char,
+                position,
+                looks_like,
+            } => Self::HomographDetected {
+                suspicious_char: *suspicious_char,
+                position: *position,
+                looks_like: *looks_like,
+            },
+            DomainWarningDto::SuspiciousSubdomain {
+                subdomain,
+                looks_like,
+            } => Self::SuspiciousSubdomain {
+                subdomain: subdomain.clone(),
+                looks_like: looks_like.clone(),
+            },
+            DomainWarningDto::UnusualTld { tld } => Self::UnusualTld { tld: tld.clone() },
+            DomainWarningDto::IpAddress { ip } => Self::IpAddress { ip: ip.clone() },
+            DomainWarningDto::LocalhostOrPrivate => Self::LocalhostOrPrivate,
+            DomainWarningDto::SuspiciousEncoding => Self::SuspiciousEncoding,
+            DomainWarningDto::ExcessiveSubdomains { count } => {
+                Self::ExcessiveSubdomains { count: *count }
+            }
+            DomainWarningDto::SuspiciousKeywords { keywords } => Self::SuspiciousKeywords {
+                keywords: keywords.clone(),
+            },
+        }
+    }
+}
+
+impl DomainWarningDto {
+    /// A human-readable sentence describing this warning, suitable for
+    /// rendering next to the domain it was raised for.
+    ///
+    /// Delegates to the network crate's own wording rather than
+    /// re-spelling it here: two independent copies of the same eight
+    /// sentences would drift the first time one side is reworded, and a
+    /// mirrored DTO whose text silently disagrees with the analysis it
+    /// mirrors is worse than no mirror at all.
+    pub fn description(&self) -> String {
+        arclain_network::features::security::DomainWarning::from(self).description()
+    }
+
+    /// Whether this warning is severe enough that a request to the domain
+    /// should be blocked rather than merely flagged. Delegates for the
+    /// same single-source-of-truth reason [`Self::description`] does.
+    pub fn is_critical(&self) -> bool {
+        arclain_network::features::security::DomainWarning::from(self).is_critical()
+    }
+}
+
+/// Analyzes `url` for domain-level security problems: homograph
+/// characters, lookalike subdomains, unusual TLDs, bare IP hosts, and
+/// suspicious patterns.
+///
+/// Pure and total: no application handle, no runtime, no I/O, no shared
+/// state -- which is exactly why it is a free function rather than an
+/// [`crate::ArclainApp`] method. A frontend calls it directly to decide
+/// whether to warn about a domain it is about to display.
+///
+/// `InvalidInput` if `url` cannot be parsed into a host at all.
+pub fn analyze_url(url: &str) -> Result<DomainAnalysisDto, ApplicationError> {
+    arclain_network::features::security::analyze_url(url)
+        .map(DomainAnalysisDto::from)
+        .map_err(|message| {
+            ApplicationError::new(
+                ApplicationErrorKind::InvalidInput,
+                "URL could not be analyzed",
+            )
+            .with_diagnostic(message)
+            .with_recoverability(Recoverability::UserAction)
+            .with_field("url")
+        })
+}
+
+// ============================================================================
 // Errors
 // ============================================================================
 
@@ -2434,5 +2679,228 @@ mod tests {
             .unwrap();
         let resolved = read_plugin_image(&cache, &images[0].cache_key).unwrap();
         assert_eq!(resolved, bytes);
+    }
+}
+
+/// Domain-access surface tests: the whitelist read model, the URL
+/// analysis mirror, and the serde shape of both. Kept in their own module
+/// rather than appended to `tests` above for the same
+/// minimal-merge-surface reason the source section is delimited.
+#[cfg(test)]
+mod domain_access_tests {
+    use super::*;
+    use arclain_network::features::security::DomainWarning;
+    use arclain_network::features::whitelist::DomainWhitelist;
+
+    /// The URL `crates/network`'s own `test_full_analysis_phishing`
+    /// exercises: a lookalike subdomain chain on an abused free TLD.
+    const PHISHING_URL: &str = "https://secure-login.google.com.evil.tk/verify";
+
+    /// One value of every `DomainWarning` variant. The exhaustive `match`
+    /// below has no wildcard arm, so adding a ninth variant upstream
+    /// fails to compile here until this list grows too -- which is the
+    /// whole point of a mirror type.
+    fn every_source_warning() -> Vec<DomainWarning> {
+        let all = vec![
+            DomainWarning::HomographDetected {
+                suspicious_char: '\u{0430}',
+                position: 1,
+                looks_like: 'a',
+            },
+            DomainWarning::SuspiciousSubdomain {
+                subdomain: "google.com".to_string(),
+                looks_like: "google.com".to_string(),
+            },
+            DomainWarning::UnusualTld {
+                tld: "tk".to_string(),
+            },
+            DomainWarning::IpAddress {
+                ip: "203.0.113.7".to_string(),
+            },
+            DomainWarning::LocalhostOrPrivate,
+            DomainWarning::SuspiciousEncoding,
+            DomainWarning::ExcessiveSubdomains { count: 5 },
+            DomainWarning::SuspiciousKeywords {
+                keywords: vec!["secure-".to_string(), "-login".to_string()],
+            },
+        ];
+        for warning in &all {
+            match warning {
+                DomainWarning::HomographDetected { .. }
+                | DomainWarning::SuspiciousSubdomain { .. }
+                | DomainWarning::UnusualTld { .. }
+                | DomainWarning::IpAddress { .. }
+                | DomainWarning::LocalhostOrPrivate
+                | DomainWarning::SuspiciousEncoding
+                | DomainWarning::ExcessiveSubdomains { .. }
+                | DomainWarning::SuspiciousKeywords { .. } => {}
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn analyze_url_mirrors_the_network_analysis_field_for_field() {
+        let source = arclain_network::features::security::analyze_url(PHISHING_URL)
+            .expect("the network analysis itself must succeed");
+        let dto = analyze_url(PHISHING_URL).expect("the mirrored analysis must succeed");
+
+        assert_eq!(dto.full_url, source.full_url);
+        assert_eq!(dto.effective_domain, source.effective_domain);
+        assert_eq!(dto.host, source.host);
+        assert_eq!(dto.tld, source.tld);
+        assert_eq!(dto.warnings.len(), source.warnings.len());
+        for (mirrored, original) in dto.warnings.iter().zip(source.warnings.iter()) {
+            assert_eq!(mirrored, &DomainWarningDto::from(original.clone()));
+            assert_eq!(mirrored.description(), original.description());
+            assert_eq!(mirrored.is_critical(), original.is_critical());
+        }
+    }
+
+    #[test]
+    fn analyze_url_reports_the_known_warning_case_rather_than_an_empty_list() {
+        let dto = analyze_url(PHISHING_URL).expect("analysis must succeed");
+
+        assert_eq!(dto.effective_domain, "evil.tk");
+        assert!(
+            dto.warnings.iter().any(|warning| matches!(
+                warning,
+                DomainWarningDto::UnusualTld { tld } if tld == "tk"
+            )),
+            "expected the abused-TLD warning, got {:?}",
+            dto.warnings
+        );
+    }
+
+    #[test]
+    fn analyze_url_reports_a_clean_url_with_no_warnings() {
+        let dto = analyze_url("https://dlsite.com/product/123").expect("analysis must succeed");
+
+        assert_eq!(dto.effective_domain, "dlsite.com");
+        assert_eq!(dto.host, "dlsite.com");
+        assert!(dto.warnings.is_empty(), "{:?}", dto.warnings);
+    }
+
+    #[test]
+    fn analyze_url_rejects_an_unparsable_url_as_invalid_input() {
+        let error = analyze_url("not a url at all").expect_err("a hostless string cannot analyze");
+
+        assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(error.field.as_deref(), Some("url"));
+        assert!(error.diagnostic.is_some());
+    }
+
+    #[test]
+    fn every_domain_warning_variant_mirrors_and_round_trips_through_serde() {
+        for source in every_source_warning() {
+            let dto = DomainWarningDto::from(source.clone());
+            assert_eq!(dto.description(), source.description());
+            assert_eq!(dto.is_critical(), source.is_critical());
+
+            let json = serde_json::to_string(&dto).expect("serialize warning");
+            let restored: DomainWarningDto =
+                serde_json::from_str(&json).expect("deserialize warning");
+            assert_eq!(restored, dto, "round trip changed {json}");
+        }
+    }
+
+    #[test]
+    fn domain_analysis_dto_round_trips_through_serde() {
+        let dto = DomainAnalysisDto {
+            full_url: PHISHING_URL.to_string(),
+            effective_domain: "evil.tk".to_string(),
+            host: "secure-login.google.com.evil.tk".to_string(),
+            tld: "tk".to_string(),
+            warnings: every_source_warning()
+                .into_iter()
+                .map(DomainWarningDto::from)
+                .collect(),
+        };
+
+        let json = serde_json::to_string(&dto).expect("serialize analysis");
+        let restored: DomainAnalysisDto =
+            serde_json::from_str(&json).expect("deserialize analysis");
+
+        assert_eq!(restored, dto);
+    }
+
+    #[test]
+    fn domain_whitelist_entry_dto_round_trips_through_serde() {
+        let dto = DomainWhitelistEntryDto {
+            plugin_id: "demo-plugin".to_string(),
+            domain: "dlsite.com".to_string(),
+            approved: true,
+        };
+
+        let json = serde_json::to_string(&dto).expect("serialize entry");
+        let restored: DomainWhitelistEntryDto =
+            serde_json::from_str(&json).expect("deserialize entry");
+
+        assert_eq!(restored, dto);
+    }
+
+    #[test]
+    fn plugin_domain_whitelist_returns_only_the_named_plugin_in_domain_order() {
+        let whitelist = DomainWhitelist::new();
+        whitelist.add_pending("wanted", "zeta.example");
+        whitelist.add_pending("wanted", "alpha.example");
+        whitelist.approve("wanted", "middle.example");
+        whitelist.add_pending("other", "unrelated.example");
+
+        let entries = plugin_domain_whitelist(&whitelist, "wanted").expect("read the whitelist");
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.domain.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha.example", "middle.example", "zeta.example"],
+        );
+        assert!(entries.iter().all(|entry| entry.plugin_id == "wanted"));
+    }
+
+    #[test]
+    fn plugin_domain_whitelist_reports_approval_state_per_domain() {
+        let whitelist = DomainWhitelist::new();
+        whitelist.add_pending("demo", "pending.example");
+        whitelist.approve("demo", "approved.example");
+        whitelist.replace_manifest_domains("demo", ["manifest.example"]);
+
+        let entries = plugin_domain_whitelist(&whitelist, "demo").expect("read the whitelist");
+
+        let approval = |domain: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.domain == domain)
+                .unwrap_or_else(|| panic!("{domain} missing from {entries:?}"))
+                .approved
+        };
+        assert!(!approval("pending.example"));
+        assert!(approval("approved.example"));
+        assert!(
+            approval("manifest.example"),
+            "a manifest grant is an approval the plugin can already use",
+        );
+    }
+
+    #[test]
+    fn plugin_domain_whitelist_reports_an_unknown_plugin_as_having_no_domains() {
+        let whitelist = DomainWhitelist::new();
+        whitelist.add_pending("someone-else", "dlsite.com");
+
+        let entries = plugin_domain_whitelist(&whitelist, "never-asked").expect("read");
+
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn plugin_domain_whitelist_rejects_a_blank_plugin_id() {
+        let whitelist = DomainWhitelist::new();
+
+        let error = plugin_domain_whitelist(&whitelist, "   ")
+            .expect_err("a blank plugin id is a caller bug, not an empty result");
+
+        assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(error.field.as_deref(), Some("plugin_id"));
     }
 }

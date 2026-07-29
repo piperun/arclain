@@ -409,6 +409,55 @@ pub(super) async fn run_set_gameta_api_key(
     Ok(())
 }
 
+/// Health-checks a *candidate* gameta server configuration -- see
+/// [`crate::ArclainApp::test_gameta_connection`] for the surface contract.
+///
+/// Deliberately does **not** take `settings_write_lock`, unlike every
+/// other function in this module that touches gameta configuration: it
+/// mutates nothing at all, so serializing it behind that lock would only
+/// let a slow (up to `arclain_network::PROBE_TIMEOUT`) network probe
+/// block unrelated settings saves, and let an unrelated save block the
+/// user's "Test Connection" button, for no consistency benefit -- there
+/// is no state here for a concurrent write to tear.
+///
+/// The blocking `GametaClient` runs on this application's own blocking
+/// pool rather than inline, so a caller awaiting this from a
+/// `current_thread` runtime never has its executor stalled for the
+/// duration of the probe.
+pub(super) async fn run_test_gameta_connection(
+    inner: &Arc<AppRuntime>,
+    server_url: String,
+    api_key: Option<String>,
+) -> Result<(), ApplicationError> {
+    let server_url = server_url.trim().to_string();
+    if server_url.is_empty() {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "a gameta server URL is required",
+        )
+        .with_recoverability(Recoverability::UserAction)
+        .with_field("server_url"));
+    }
+    let handle = inner
+        .tokio_handle()
+        .ok_or_else(shutdown_mid_request_error)?;
+    let probe_url = server_url.clone();
+    handle
+        .spawn_blocking(move || {
+            arclain_network::features::gameta_client::GametaClient::new(
+                arclain_network::features::gameta_client::ServerConfig {
+                    url: probe_url,
+                    api_key,
+                },
+            )
+            .health()
+        })
+        .await
+        .map_err(internal_join_error)?
+        .map(|_health| ())
+        .map_err(|error| gameta_unreachable_error(&server_url, error))
+}
+
 /// Sets or clears the SOCKS5 password.
 ///
 /// Routed through the *same* journaled `NetworkProxyPersistenceService`
@@ -1083,6 +1132,68 @@ fn backend_error(context: &str, error: impl std::fmt::Display) -> ApplicationErr
     .with_recoverability(Recoverability::Retry)
 }
 
+/// Replaces a URL's `user:password@` userinfo with a fixed marker,
+/// leaving everything else byte-for-byte intact.
+///
+/// A gameta server URL is user-typed configuration, not a secret, so
+/// naming it in an error summary is what makes the failure actionable
+/// ("which server did not answer?"). A URL carrying embedded credentials
+/// is the one exception, and it is not hypothetical: this codebase
+/// already refuses to *store* a SOCKS5 address with userinfo for the same
+/// reason (`ProxyConfig::validate_for_storage`). Scrubbing it here keeps
+/// the useful half of the URL in the message without turning a settings
+/// form into a credential leak the moment a user pastes a URL from a
+/// password manager.
+///
+/// Only userinfo is scrubbed. A query string is left alone: a gameta base
+/// URL has no legitimate query component, so redacting one would be
+/// guesswork about a shape this field never has, and `with_diagnostic`'s
+/// own path-like-token redaction already removes the full URL from the
+/// diagnostic channel regardless.
+fn redact_url_userinfo(url: &str) -> String {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, url),
+    };
+    let (authority, tail) = match rest.find(|c| c == '/' || c == '?' || c == '#') {
+        Some(index) => rest.split_at(index),
+        None => (rest, ""),
+    };
+    // `rsplit_once`: a password may itself contain '@', and only the last
+    // one separates userinfo from the host.
+    let Some((_userinfo, host)) = authority.rsplit_once('@') else {
+        return url.to_string();
+    };
+    match scheme {
+        Some(scheme) => format!("{scheme}://<redacted>@{host}{tail}"),
+        None => format!("<redacted>@{host}{tail}"),
+    }
+}
+
+/// The one failure shape [`run_test_gameta_connection`] reports: the
+/// server named by `server_url` could not be reached, or answered its
+/// health endpoint with something other than success.
+///
+/// The API key is never an input here, so it cannot appear in either
+/// channel: the summary is built from `server_url` alone, and
+/// `with_diagnostic` receives only the client's own error text (which
+/// carries the request URL at most -- redacted by that method's
+/// path-like-token pass -- never a header value).
+fn gameta_unreachable_error(server_url: &str, error: impl std::fmt::Display) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::Backend,
+        format!(
+            "gameta server at {} did not pass a health check",
+            redact_url_userinfo(server_url)
+        ),
+    )
+    .with_diagnostic(error.to_string())
+    .with_recoverability(Recoverability::Retry)
+    .with_retryable(true)
+    .with_suggested_action(SuggestedAction::Retry)
+    .with_field("server_url")
+}
+
 fn persistence_error(context: &str, error: impl std::fmt::Display) -> ApplicationError {
     ApplicationError::new(
         ApplicationErrorKind::Persistence,
@@ -1157,4 +1268,73 @@ fn shutdown_mid_request_error() -> ApplicationError {
 fn internal_join_error(join_error: tokio::task::JoinError) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::Internal, "internal task failed")
         .with_diagnostic(join_error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn userinfo_redaction_leaves_an_ordinary_url_untouched() {
+        for url in [
+            "http://localhost:8080",
+            "https://gameta.example/api",
+            "https://gameta.example:8443/base/path",
+            "gameta.example:8080",
+        ] {
+            assert_eq!(redact_url_userinfo(url), url);
+        }
+    }
+
+    #[test]
+    fn userinfo_redaction_strips_credentials_from_the_authority() {
+        assert_eq!(
+            redact_url_userinfo("https://user:hunter2@gameta.example/api"),
+            "https://<redacted>@gameta.example/api",
+        );
+        assert_eq!(
+            redact_url_userinfo("http://token@gameta.example:8443"),
+            "http://<redacted>@gameta.example:8443",
+        );
+    }
+
+    /// A password containing '@' must not leave its tail behind: only the
+    /// *last* '@' in the authority separates userinfo from the host.
+    #[test]
+    fn userinfo_redaction_splits_on_the_last_at_sign() {
+        assert_eq!(
+            redact_url_userinfo("https://user:p@ss@gameta.example/api"),
+            "https://<redacted>@gameta.example/api",
+        );
+    }
+
+    /// An '@' after the authority (in a path or query) belongs to the
+    /// path, not to any credential, and must be left alone.
+    #[test]
+    fn userinfo_redaction_ignores_an_at_sign_outside_the_authority() {
+        let url = "https://gameta.example/mail@example/inbox";
+        assert_eq!(redact_url_userinfo(url), url);
+    }
+
+    #[test]
+    fn an_unreachable_server_error_names_the_host_but_never_the_credentials() {
+        const PASSWORD: &str = "gameta-url-password-3f8c";
+
+        let error = gameta_unreachable_error(
+            &format!("https://operator:{PASSWORD}@gameta.example/api"),
+            "Health request failed: connection refused",
+        );
+
+        let rendered = format!("{error:?}");
+        assert!(!rendered.contains(PASSWORD), "{rendered}");
+        assert!(!rendered.contains("operator"), "{rendered}");
+        assert!(
+            error.summary.contains("gameta.example"),
+            "{}",
+            error.summary
+        );
+        assert_eq!(error.kind, ApplicationErrorKind::Backend);
+        assert!(error.retryable);
+        assert_eq!(error.field.as_deref(), Some("server_url"));
+    }
 }
