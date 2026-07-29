@@ -20,9 +20,11 @@
 //! mutation committing between this call's own read and its own commit,
 //! which no post-hoc revision re-check can undo once disk writes have
 //! already happened) without needing full cross-resource rollback.
-//! Read-only methods (`settings`, `password_rules`, `organization_profiles`)
-//! never take this lock -- they only ever take the fast `RwLock` for the
-//! instant it takes to clone out a snapshot.
+//! Read-only methods (`settings`, `password_rules`) never take this lock
+//! -- they only ever take the fast `RwLock` for the instant it takes to
+//! clone out a snapshot. `runtime::organization_ops` (archive profiles,
+//! organization rules) takes this same lock for *its* mutations, so a
+//! profile save and a vault move can never interleave.
 //!
 //! ## The precise atomicity guarantee `update_settings` makes (and does not)
 //!
@@ -79,8 +81,7 @@ use arclain_core::DbPaths;
 use crate::challenge::SecretInput;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::settings::{
-    self, OrganizationProfileSummary, PasswordRuleInput, PasswordRuleSummary, SettingsPatch,
-    SettingsSnapshot,
+    self, PasswordRuleInput, PasswordRuleSummary, SettingsPatch, SettingsSnapshot,
 };
 
 use super::AppRuntime;
@@ -115,32 +116,6 @@ pub(super) async fn run_settings(
         security: settings::security_dto(&mutable),
         general: settings::general_dto(&mutable.user_config),
     })
-}
-
-pub(super) async fn run_organization_profiles(
-    inner: &Arc<AppRuntime>,
-) -> Result<Vec<OrganizationProfileSummary>, ApplicationError> {
-    let config_db_path = {
-        let mutable = inner.session.mutable.read();
-        mutable
-            .db_paths
-            .as_ref()
-            .map(|paths| paths.config_db.clone())
-    };
-    let Some(config_db_path) = config_db_path else {
-        return Ok(Vec::new());
-    };
-    let Some(handle) = inner.tokio_handle() else {
-        return Err(shutdown_mid_request_error());
-    };
-    let profiles = handle
-        .spawn_blocking(move || {
-            arclain_core::features::organization::list_archive_profiles(&config_db_path)
-                .map_err(|error| backend_error("listing archive profiles", error))
-        })
-        .await
-        .map_err(internal_join_error)??;
-    Ok(profiles.iter().map(settings::summarize_profile).collect())
 }
 
 pub(super) async fn run_password_rules(

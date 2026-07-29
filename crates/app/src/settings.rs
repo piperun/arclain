@@ -236,12 +236,12 @@ pub struct SettingsPatch {
     pub general: Option<GeneralSettingsPatch>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct OrganizationProfileSummary {
-    pub id: String,
-    pub name: String,
-    pub output_format: String,
-}
+/// Re-exported at its historical path: archive profiles are the
+/// organization feature's own domain (see [`crate::organization`], which
+/// owns the type and the CRUD around it), but they are also what a
+/// settings page lists, and `ArclainApp::organization_profiles` has
+/// always been reachable from here.
+pub use crate::organization::OrganizationProfileSummary;
 
 /// A password rule's non-secret shape: never the stored password itself,
 /// only whether one is configured. See [`PasswordRuleInput`] for the
@@ -469,16 +469,6 @@ pub(crate) fn summarize_pass_rule(rule: &PassRule) -> PasswordRuleSummary {
         priority: rule.priority,
         enabled: rule.enabled,
         password_configured: !rule.password.is_empty(),
-    }
-}
-
-pub(crate) fn summarize_profile(
-    profile: &arclain_core::features::organization::ArchiveProfile,
-) -> OrganizationProfileSummary {
-    OrganizationProfileSummary {
-        id: profile.id.to_string(),
-        name: profile.name.clone(),
-        output_format: profile.format.as_str().to_string(),
     }
 }
 

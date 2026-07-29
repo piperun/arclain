@@ -510,6 +510,48 @@ impl EntryIndex {
     /// for "how many are there" or "give me one page" -- see those
     /// methods' own doc comments. `#[cfg(test)]` counts calls so a test
     /// can assert paging/counting never reaches this.
+    /// Every indexed entry rebuilt into the flat
+    /// `arclain_core::ArchiveEntry` shape the organization rule engine
+    /// consumes, path-sorted so a caller feeding it to that engine gets
+    /// a deterministic input regardless of this index's `HashMap`
+    /// iteration order.
+    ///
+    /// Faithful for exactly the three fields that engine reads -- `path`,
+    /// `is_dir`, and (for the 0-byte prune) `size`. The rest are carried
+    /// through as the index holds them, which differs from a raw backend
+    /// listing in two documented ways, neither of which the engine can
+    /// observe: a directory's `size`/`packed_size` are this index's
+    /// recursive aggregates rather than the row's own value, and
+    /// `modified` is always `None` (the index stores a parsed Unix
+    /// timestamp, and reconstituting the backend's original date string
+    /// from it would be inventing bytes nothing reads).
+    ///
+    /// The directory set is likewise the index's: every ancestor a file
+    /// path implies is present, whether or not the archive listed it
+    /// explicitly. That is invisible to the plan -- `prune_entries`
+    /// flattens to files only, so no directory entry ever reaches move
+    /// computation or content-root detection -- but it *is* what an
+    /// integrity report's folder count sees, and it makes that count
+    /// agree with the folder count `list_entries` reports for the same
+    /// session.
+    fn organization_entries(&self) -> Vec<arclain_core::ArchiveEntry> {
+        let mut entries: Vec<arclain_core::ArchiveEntry> = self
+            .by_id
+            .values()
+            .map(|dto| arclain_core::ArchiveEntry {
+                path: dto.path.as_str().to_string(),
+                size: dto.uncompressed_size,
+                packed_size: dto.compressed_size.unwrap_or(0),
+                modified: None,
+                is_dir: matches!(dto.kind, EntryKind::Directory),
+                encrypted: dto.encrypted,
+                crc32: dto.crc32.clone(),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.is_dir.cmp(&b.is_dir)));
+        entries
+    }
+
     fn file_paths(&self) -> Vec<String> {
         #[cfg(test)]
         FILE_PATHS_CALLS.with(|calls| calls.set(calls.get() + 1));
@@ -838,6 +880,38 @@ impl ArchiveSession {
     /// `local_path` must distinguish.
     pub(crate) fn entry(&self, entry_id: EntryId) -> Option<ArchiveEntryDto> {
         self.entry_index.read().get(entry_id).cloned()
+    }
+
+    /// This session's entries in the shape the organization rule engine
+    /// consumes, paired with the revision they belong to -- see
+    /// [`EntryIndex::organization_entries`] for exactly how faithful the
+    /// reconstruction is.
+    ///
+    /// The revision is read while the index guard is held, so the pair
+    /// is never optimistic: a concurrent [`Self::reindex`] cannot swap
+    /// the index (and therefore cannot reach its own revision bump)
+    /// while this read is in flight, and one that swapped just before
+    /// this acquired the guard reports the *older* revision alongside
+    /// the newer entries. That direction is the safe one -- a caller
+    /// comparing this against `archive_snapshot` concludes "stale,
+    /// recompute", never "current" about entries that are not.
+    ///
+    /// CPU-bound over the whole entry list; callers must invoke it from
+    /// a blocking-safe context, the same requirement [`Self::reindex`]
+    /// carries.
+    pub(crate) fn organization_entries(&self) -> (u64, Vec<arclain_core::ArchiveEntry>) {
+        let index = self.entry_index.read();
+        let revision = self.revision();
+        (revision, index.organization_entries())
+    }
+
+    /// The metadata a plugin last reported for this session, as the raw
+    /// JSON value `emit_metadata` wrote. `None` until a plugin reports
+    /// something. Same value [`Self::snapshot`] carries; a distinct
+    /// accessor so a caller that needs only this does not clone an
+    /// entire snapshot (and does not take the entry-index lock) to get it.
+    pub(crate) fn metadata(&self) -> Option<serde_json::Value> {
+        self.metadata.read().clone()
     }
 
     /// The archive's current source path, alongside the backend handle
@@ -1805,5 +1879,126 @@ mod tests {
             dummy_archive(),
             entries,
         )
+    }
+
+    // ========================================================================
+    // organization_entries: the shape the rule engine consumes.
+    // ========================================================================
+
+    /// The three fields `RuleEngine`/`IntegrityReport` actually read --
+    /// `path`, `is_dir`, `size` -- must come back exactly as the backend
+    /// listed them, in a deterministic order.
+    #[test]
+    fn organization_entries_reproduce_every_file_the_backend_listed() {
+        let session = session_with(&[
+            file("wrapper/b.bin", 20, 5),
+            file("wrapper/a.exe", 10, 3),
+            file("wrapper/empty.log", 0, 0),
+        ]);
+
+        let (revision, entries) = session.organization_entries();
+        assert_eq!(revision, 1);
+
+        let files: Vec<(&str, u64)> = entries
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .map(|entry| (entry.path.as_str(), entry.size))
+            .collect();
+        assert_eq!(
+            files,
+            vec![
+                ("wrapper/a.exe", 10),
+                ("wrapper/b.bin", 20),
+                ("wrapper/empty.log", 0),
+            ],
+            "files come back path-sorted, with their own sizes intact"
+        );
+    }
+
+    /// The index synthesizes an ancestor directory the archive never
+    /// listed. That is invisible to a plan (`prune_entries` flattens to
+    /// files only) but it *is* what an integrity report's folder count
+    /// sees, so pin it rather than leaving it to be discovered.
+    #[test]
+    fn organization_entries_include_directories_the_index_synthesized() {
+        let session = session_with(&[file("wrapper/nested/deep.bin", 1, 1)]);
+
+        let (_, entries) = session.organization_entries();
+        let directories: Vec<&str> = entries
+            .iter()
+            .filter(|entry| entry.is_dir)
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(directories, vec!["wrapper", "wrapper/nested"]);
+    }
+
+    /// An entry the index refuses (an escaping path) is absent from the
+    /// reconstruction too. That is the correct direction: such a path
+    /// would make `OrganizationPlan::validate_paths` reject the whole
+    /// plan, and it is already hidden from every other read of this
+    /// session.
+    #[test]
+    fn organization_entries_omit_paths_the_index_rejected() {
+        let session = session_with(&[
+            file("keep.bin", 1, 1),
+            file("../escape.bin", 1, 1),
+            file("/absolute.bin", 1, 1),
+        ]);
+
+        let (_, entries) = session.organization_entries();
+        let files: Vec<&str> = entries
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(files, vec!["keep.bin"]);
+    }
+
+    /// Pins the documented lossiness: the index stores a parsed
+    /// timestamp, so a reconstruction cannot hand back the backend's
+    /// original date string. Nothing in the organization engine reads
+    /// the field -- this exists so a future reader who wants to is
+    /// warned by a failing test rather than by wrong output.
+    #[test]
+    fn organization_entries_do_not_reconstruct_a_modified_timestamp() {
+        let session = session_with(&[file_with_modified("dated.bin", "2024-01-15 10:00:00")]);
+
+        let (_, entries) = session.organization_entries();
+        let dated = entries
+            .iter()
+            .find(|entry| entry.path == "dated.bin")
+            .expect("the file must be present");
+        assert!(dated.modified.is_none());
+    }
+
+    #[test]
+    fn organization_entries_track_a_reindex() {
+        let session = session_with(&[file("before.bin", 1, 1)]);
+        let revision = session.reindex(&[file("after.bin", 2, 2)]);
+
+        let (reported_revision, entries) = session.organization_entries();
+        assert_eq!(reported_revision, revision);
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| !entry.is_dir)
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["after.bin"]
+        );
+    }
+
+    #[test]
+    fn metadata_reports_what_a_plugin_last_wrote() {
+        let session = session_with(&[file("a.bin", 1, 1)]);
+        assert!(session.metadata().is_none());
+
+        session.set_metadata(Some(serde_json::json!({ "product_id": "X1" })));
+        assert_eq!(
+            session
+                .metadata()
+                .and_then(|value| value.get("product_id").cloned()),
+            Some(serde_json::json!("X1"))
+        );
     }
 }

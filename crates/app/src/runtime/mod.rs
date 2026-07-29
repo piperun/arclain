@@ -24,6 +24,7 @@
 
 mod archive_ops;
 mod bootstrap;
+mod organization_ops;
 mod paths;
 mod processing_ops;
 mod session_store;
@@ -1039,18 +1040,6 @@ impl ArclainApp {
         .await?
     }
 
-    /// Every configured archive-output profile (format/compression
-    /// preset), for a settings/organize UI to list. Empty (not an error)
-    /// if the config database never opened.
-    pub async fn organization_profiles(
-        &self,
-    ) -> Result<Vec<crate::settings::OrganizationProfileSummary>, ApplicationError> {
-        self.dispatch_async(
-            |inner| async move { settings_ops::run_organization_profiles(&inner).await },
-        )
-        .await?
-    }
-
     /// Sets (always overwrites; there is no "clear" -- disable gameta
     /// server integration via [`Self::update_settings`]'s
     /// `network.gameta_server_enabled` instead) the gameta server API
@@ -1140,6 +1129,212 @@ impl ArclainApp {
     }
 
     // ============== Task 10: settings, secrets, vault (end) ==============
+
+    // ============ Task c5: organization rules/profiles (start) ===========
+    // Kept in its own clearly-delimited section for the same reason as
+    // the sections above and below it: concurrent worktrees also edit
+    // this file. Every method here is a thin dispatch wrapper; the logic
+    // lives in `crate::organization` (pure DTOs/validation) and
+    // `runtime::organization_ops` (the `AppRuntime`-touching execution
+    // layer) -- see both modules' own doc comments.
+
+    /// Every saved organization rule -- what decides the organized
+    /// *layout* of an archive's contents. Empty (not an error) when no
+    /// organization service is configured.
+    ///
+    /// A summary's `id` is directly usable as
+    /// [`crate::operations::OrganizeRequest::rule_id`].
+    pub async fn organization_rules(
+        &self,
+    ) -> Result<Vec<crate::organization::OrganizationRuleSummary>, ApplicationError> {
+        self.dispatch_async(|inner| async move {
+            organization_ops::run_organization_rules(&inner).await
+        })
+        .await?
+    }
+
+    /// Creates a rule, or updates an existing one -- see
+    /// [`crate::organization::OrganizationRuleInput`]'s own doc comment
+    /// for exactly which of the two an `id`-less input does. Returns the
+    /// full, updated rule list (matching [`Self::organization_rules`]'s
+    /// shape) so a caller does not need a second round trip to refresh
+    /// its view, the same way [`Self::upsert_password_rule`] does.
+    ///
+    /// `InvalidInput` for an empty name, an empty move pattern, or a
+    /// `trigger.filename_pattern` that is not a valid regular expression
+    /// (an uncompilable pattern would otherwise save fine and then
+    /// silently never match -- `RuleEngine::matches_trigger` treats a
+    /// compile failure as "no match"). `NotFound` when `id` names no
+    /// rule.
+    pub async fn upsert_organization_rule(
+        &self,
+        rule: crate::organization::OrganizationRuleInput,
+    ) -> Result<Vec<crate::organization::OrganizationRuleSummary>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            organization_ops::run_upsert_organization_rule(&inner, rule).await
+        })
+        .await?
+    }
+
+    /// Deletes the rule with `rule_id`. `NotFound` when no rule has that
+    /// id -- see `runtime::organization_ops::run_delete_organization_rule`
+    /// for the one documented case where a delete reports success and
+    /// the rule survives.
+    pub async fn delete_organization_rule(
+        &self,
+        rule_id: String,
+    ) -> Result<Vec<crate::organization::OrganizationRuleSummary>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            organization_ops::run_delete_organization_rule(&inner, rule_id).await
+        })
+        .await?
+    }
+
+    /// Every configured archive-output profile (format/compression
+    /// preset) -- what decides the organized output's *container*, as
+    /// opposed to a rule's layout. For a settings/organize UI to list.
+    /// Empty (not an error) if the config database never opened.
+    ///
+    /// A summary's `id` is directly usable as
+    /// [`crate::operations::OrganizeRequest::profile_id`].
+    pub async fn organization_profiles(
+        &self,
+    ) -> Result<Vec<crate::organization::OrganizationProfileSummary>, ApplicationError> {
+        self.dispatch_async(|inner| async move {
+            organization_ops::run_organization_profiles(&inner).await
+        })
+        .await?
+    }
+
+    /// Creates a profile (`id: None`) or updates one (`id: Some(..)`),
+    /// returning the full, updated profile list.
+    ///
+    /// `InvalidInput` for an empty name, an `output_format` outside the
+    /// set `arclain_core` actually supports, a compression level above
+    /// 9, or a compression method the chosen format does not offer --
+    /// each of which would otherwise be stored and only surface much
+    /// later, as a failed pack or as a profile whose reported format and
+    /// real format disagree. `NotFound` when `id` names no profile.
+    ///
+    /// A profile's `is_system` flag is never taken from the caller: see
+    /// [`crate::organization::OrganizationProfileInput`]. Setting
+    /// `is_default` clears every other profile's default flag; clearing
+    /// it on the current default leaves none.
+    pub async fn upsert_organization_profile(
+        &self,
+        profile: crate::organization::OrganizationProfileInput,
+    ) -> Result<Vec<crate::organization::OrganizationProfileSummary>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            organization_ops::run_upsert_organization_profile(&inner, profile).await
+        })
+        .await?
+    }
+
+    /// Deletes the profile with `profile_id`, returning the full,
+    /// updated profile list.
+    ///
+    /// Preserves the storage layer's existing semantics rather than
+    /// layering new ones on top, so read
+    /// `runtime::organization_ops::run_delete_organization_profile`'s own
+    /// doc comment before relying on this: a **system** profile survives
+    /// the delete and this still reports success (the returned list shows
+    /// it is still there), and deleting the **default** profile does not
+    /// promote a replacement -- the configuration is simply left with no
+    /// default until something sets one. `NotFound` when no profile has
+    /// that id.
+    pub async fn delete_organization_profile(
+        &self,
+        profile_id: String,
+    ) -> Result<Vec<crate::organization::OrganizationProfileSummary>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            organization_ops::run_delete_organization_profile(&inner, profile_id).await
+        })
+        .await?
+    }
+
+    /// Makes `profile_id` the one default profile, clearing every other
+    /// profile's default flag. `NotFound` when no profile has that id --
+    /// a check that matters: the underlying statement pair clears every
+    /// default before setting the named one, so an unvalidated unknown id
+    /// would leave no default at all.
+    pub async fn set_default_organization_profile(
+        &self,
+        profile_id: String,
+    ) -> Result<Vec<crate::organization::OrganizationProfileSummary>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            organization_ops::run_set_default_organization_profile(&inner, profile_id).await
+        })
+        .await?
+    }
+
+    /// What organization rule `rule_id` would do to the archive open in
+    /// `session_id`: the planned moves, the files the run would generate
+    /// or fetch, the resolved template variables, and the integrity
+    /// self-check comparing the planned output's file set to the
+    /// archive's own.
+    ///
+    /// # This is not an operation
+    ///
+    /// An organize panel recomputes this every time the user changes the
+    /// selected rule, so it is deliberately *not* built like the
+    /// mutating flows: it registers nothing with the operation registry,
+    /// mints no [`crate::ids::OperationId`], broadcasts no
+    /// [`crate::event::OperationEvent`], and starts no work that
+    /// outlives the returned future. Awaiting it runs one small indexed
+    /// lookup plus pure in-memory planning and hands back the answer; a
+    /// caller that drops the future simply gets nothing, with no
+    /// operation left behind to cancel or reap. Nothing is written and
+    /// no archive byte is read -- the plan is computed entirely from the
+    /// entry index the session already holds, so it stays cheap at
+    /// interaction frequency even for a large archive.
+    ///
+    /// # Why there is no `profile_id` parameter
+    ///
+    /// [`crate::operations::OrganizeRequest`] carries both a `rule_id`
+    /// and a `profile_id` because they decide different things: the rule
+    /// decides the organized *layout*, the profile decides the output
+    /// archive's *container* (format, compression, solid, header
+    /// encryption). A plan is a function of the rule, the archive's
+    /// name, its entries, and its metadata -- the profile contributes
+    /// nothing to it, and is consumed only when the organize run
+    /// actually packs the result. Taking a `profile_id` here would
+    /// therefore be a parameter this method must validate (a second
+    /// database round trip on a hot path) and then ignore, while telling
+    /// every reader that changing the profile invalidates the preview.
+    /// It does not. A frontend that wants to show the output's
+    /// extension alongside this already has it: `output_format` is on
+    /// every [`crate::organization::OrganizationProfileSummary`]
+    /// [`Self::organization_profiles`] returned.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for an unknown session or rule id. `InvalidInput` when
+    /// the rule cannot produce a usable plan for *this* archive -- an
+    /// output path escaping the organized root, or two entries planned
+    /// onto one destination. That case is a real answer about the
+    /// selected rule, not a transport failure: a caller must surface it
+    /// rather than continuing to display the previous rule's plan.
+    ///
+    /// # A quirk carried over verbatim
+    ///
+    /// [`crate::organization::OrganizeIntegrityDto::file_discrepancy`] is
+    /// reported exactly as `arclain_core`'s `IntegrityReport` computes
+    /// it, which reduces algebraically to `moved_files -
+    /// original_files` and so can never be positive. It is surfaced
+    /// unchanged rather than quietly "corrected" here, because fixing it
+    /// means changing what that core computation means.
+    pub async fn preview_organize_plan(
+        &self,
+        session_id: ArchiveSessionId,
+        rule_id: String,
+    ) -> Result<crate::organization::OrganizePlanPreview, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            organization_ops::run_preview_organize_plan(&inner, session_id, rule_id).await
+        })
+        .await?
+    }
+
+    // ============= Task c5: organization rules/profiles (end) ============
 
     // ==================== Task 11: plugin sessions (start) ====================
     // Kept in its own clearly-delimited section for the same reason as the

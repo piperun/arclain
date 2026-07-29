@@ -1,7 +1,12 @@
 //! Integration tests for the settings/secrets/vault facade surface
-//! (`ArclainApp::settings`/`update_settings`/`organization_profiles`/
-//! `set_gameta_api_key`/`set_socks5_password`/`move_vault`/`rekey_vault`/
-//! `password_rules`/`upsert_password_rule`/`delete_password_rule`).
+//! (`ArclainApp::settings`/`update_settings`/`set_gameta_api_key`/
+//! `set_socks5_password`/`move_vault`/`rekey_vault`/`password_rules`/
+//! `upsert_password_rule`/`delete_password_rule`).
+//!
+//! The organization surface (`organization_profiles`/`organization_rules`
+//! and their CRUD, plus `preview_organize_plan`) has its own file,
+//! `organization_facade.rs` -- archive profiles are reachable through
+//! `arclain_app::settings` only as a re-export.
 //!
 //! `crates/app/src/settings.rs`'s own unit tests cover `PatchValue`
 //! application and DTO conversion in isolation (pure functions, no I/O);
@@ -312,27 +317,6 @@ fn first_run_defaults_reflect_a_fresh_bootstrap() {
         .block_on(app.password_rules())
         .expect("password_rules must succeed");
     assert!(rules.is_empty());
-}
-
-#[test]
-fn organization_profiles_lists_seeded_system_defaults() {
-    let runtime = foreign_runtime();
-    let temp = tempfile::tempdir().unwrap();
-    let app = bootstrap_app(&temp);
-
-    let profiles = runtime
-        .block_on(app.organization_profiles())
-        .expect("organization_profiles must succeed");
-
-    assert!(
-        !profiles.is_empty(),
-        "a fresh bootstrap seeds default archive profiles"
-    );
-    for profile in &profiles {
-        assert!(!profile.id.is_empty());
-        assert!(!profile.name.is_empty());
-        assert!(!profile.output_format.is_empty());
-    }
 }
 
 // ============================================================================
@@ -1800,8 +1784,8 @@ fn settings_and_password_rules_survive_shutdown_and_a_fresh_bootstrap() {
 #[test]
 fn constructs_every_public_settings_dto() {
     use arclain_app::settings::{
-        ArchiveSettingsDto, GeneralSettingsDto, NetworkSettingsDto, OrganizationProfileSummary,
-        PasswordRuleSummary, SecuritySettingsDto, SessionArchiveEntry, SettingsSnapshot,
+        ArchiveSettingsDto, GeneralSettingsDto, NetworkSettingsDto, PasswordRuleSummary,
+        SecuritySettingsDto, SessionArchiveEntry, SettingsSnapshot,
     };
 
     let archive = ArchiveSettingsDto {
@@ -1843,13 +1827,6 @@ fn constructs_every_public_settings_dto() {
         general,
     };
     assert_eq!(snapshot.revision, 0);
-
-    let profile = OrganizationProfileSummary {
-        id: "1".to_string(),
-        name: "profile".to_string(),
-        output_format: "7z".to_string(),
-    };
-    assert_eq!(profile.output_format, "7z");
 
     let rule_summary = PasswordRuleSummary {
         name: "n".to_string(),

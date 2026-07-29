@@ -33,6 +33,13 @@
 //! `ArclainApp::{plugins, set_plugin_enabled, open_plugin_session,
 //! plugin_ui_document, close_plugin_session, start_plugin_action,
 //! set_active_archive_session, read_plugin_image}`.
+//!
+//! [`organization`] owns the organization feature's own surface:
+//! archive-profile and organization-rule CRUD, plus the synchronous
+//! [`organization::OrganizePlanPreview`] an organize panel recomputes as
+//! the user changes rules. The `OrganizeRequest` that actually *runs* an
+//! organize stays in [`operations`], alongside every other operation
+//! request.
 
 pub mod archive;
 pub mod challenge;
@@ -41,6 +48,7 @@ pub mod event;
 pub mod ids;
 pub mod materialization;
 pub mod operations;
+pub mod organization;
 pub mod plugins;
 pub mod runtime;
 pub mod settings;
