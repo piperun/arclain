@@ -1223,9 +1223,21 @@ impl ArclainApp {
             let Some(handle) = inner.tokio_handle() else {
                 return Err(shutdown_error());
             };
+            // The archive session pinned to this plugin session for the
+            // life of it -- see `PluginSessionStore::open`'s own doc
+            // comment for why a background fetch this session later
+            // requests must land there rather than on whichever session
+            // happens to be active when the fetch finishes.
+            let pinned_archive_session = inner.active_archive_session().get();
             inner
                 .plugin_sessions()
-                .open(manager, plugin_id, extension_point, &handle)
+                .open(
+                    manager,
+                    plugin_id,
+                    extension_point,
+                    pinned_archive_session,
+                    &handle,
+                )
                 .await
         })
         .await?
@@ -1380,6 +1392,35 @@ impl ArclainApp {
                 .with_recoverability(Recoverability::Fatal)
             })?;
             crate::plugins::read_plugin_image(cache, &cache_key)
+        })
+        .await?
+    }
+
+    /// Caches image bytes a renderer fetched from a plugin document
+    /// node's `url` fallback, under the plugin namespace `cache_key`
+    /// names -- the write counterpart of [`Self::read_plugin_image`].
+    ///
+    /// Exists because that read decodes the owning plugin out of the key:
+    /// a frontend writing the same bytes into its own cache namespace
+    /// produces an entry the read can never find, so the image stays
+    /// broken forever and the entry is orphaned. See
+    /// `crate::plugins::write_plugin_image` for the full rationale and
+    /// the size cap it shares with the read.
+    pub async fn write_plugin_image(
+        &self,
+        cache_key: String,
+        bytes: Vec<u8>,
+        source_url: Option<String>,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch(move |inner| {
+            let cache = inner.content_cache().ok_or_else(|| {
+                ApplicationError::new(
+                    ApplicationErrorKind::Unsupported,
+                    "content cache is unavailable",
+                )
+                .with_recoverability(Recoverability::Fatal)
+            })?;
+            crate::plugins::write_plugin_image(cache, &cache_key, &bytes, source_url.as_deref())
         })
         .await?
     }

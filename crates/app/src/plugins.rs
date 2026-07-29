@@ -286,6 +286,70 @@ pub(crate) fn read_plugin_image(
         })
 }
 
+/// Caches `bytes` under the plugin namespace `cache_key` names -- the
+/// write counterpart of [`read_plugin_image`], and the only supported way
+/// for a frontend to populate a plugin document's image reference.
+///
+/// A renderer that resolves an `Image`/`ListItem`/`Carousel` node's
+/// `url` fallback (because the plugin has not cached that asset yet) has
+/// fetched bytes that belong in the *plugin's* cache namespace, not the
+/// host's: [`read_plugin_image`] decodes the owner out of the key and
+/// reads from there, so a host-owner write is structurally unreadable by
+/// the very path that asked for it -- an entry that can never be found
+/// again and a recovery loop that can never succeed. Routing the write
+/// through here keeps both halves on one namespace by construction.
+///
+/// Enforces [`MAX_PLUGIN_IMAGE_BYTES`] on the way in, so an oversized
+/// asset is rejected at write time rather than cached and then
+/// permanently rejected on every read. Rejects (`NotFound`) any key this
+/// module did not itself encode, exactly as the read does.
+pub(crate) fn write_plugin_image(
+    content_cache: &arclain_data::ContentCache,
+    cache_key: &str,
+    bytes: &[u8],
+    source_url: Option<&str>,
+) -> Result<(), ApplicationError> {
+    let (plugin_id, raw_key) = decode_plugin_image_cache_key(cache_key).ok_or_else(|| {
+        ApplicationError::new(
+            ApplicationErrorKind::NotFound,
+            "unknown plugin image cache key",
+        )
+        .with_recoverability(Recoverability::Fatal)
+    })?;
+    if bytes.len() > MAX_PLUGIN_IMAGE_BYTES as usize {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "plugin image exceeds the maximum size",
+        )
+        .with_diagnostic(format!(
+            "{} bytes exceeds the {MAX_PLUGIN_IMAGE_BYTES}-byte limit",
+            bytes.len()
+        ))
+        .with_recoverability(Recoverability::Fatal));
+    }
+    content_cache
+        .put_for_owner(
+            &arclain_data::CacheOwner::plugin(plugin_id),
+            raw_key,
+            bytes,
+            // Re-exported by `arclain_core` from `arclain_db`; the same
+            // type `ContentCache::put_for_owner` takes, reached through the
+            // dependency this crate already has.
+            arclain_core::CacheType::Screenshot,
+            None,
+            source_url,
+        )
+        .map(|_| ())
+        .map_err(|error| {
+            ApplicationError::new(
+                ApplicationErrorKind::Internal,
+                "failed to cache plugin image",
+            )
+            .with_diagnostic(error.to_string())
+            .with_recoverability(Recoverability::Retry)
+        })
+}
+
 // ============================================================================
 // Facade-level DTOs (wrap `arclain_plugins::ui_model` shapes with this
 // crate's own opaque ids).
@@ -472,6 +536,9 @@ struct SessionRecord {
     region_id: String,
     revision: u64,
     root: PluginUiNodeDto,
+    /// Which archive session was active when this plugin session opened,
+    /// if any -- see [`PluginSessionStore::open`]'s doc comment.
+    pinned_archive_session: Option<ArchiveSessionId>,
 }
 
 impl SessionRecord {
@@ -570,11 +637,26 @@ impl PluginSessionStore {
     /// successfully with an empty document -- see
     /// `ArclainApp::open_plugin_session`'s own doc comment for why that
     /// is indistinguishable from a real empty layout, and not a bug.
+    ///
+    /// `pinned_archive_session` is whichever archive session was active at
+    /// the moment this session opened, and is where a background metadata
+    /// fetch this session later requests writes its result. A plugin UI
+    /// slot is opened *for* the archive the user is looking at (a panel is
+    /// declared by that archive's browser), so open time is when the
+    /// origin is unambiguous; completion time is not, because a fetch can
+    /// take seconds and the user may switch archives while it runs. The
+    /// event-triggered fetch path pins its own origin for exactly the same
+    /// reason (see `arclain_plugins::manager::dispatch`'s event context).
+    /// `None` -- no archive open at the time, as for a `MainPage` session
+    /// in the plugin settings page -- falls back to whichever session is
+    /// active at completion, which is the best available answer when the
+    /// session never had an origin of its own.
     pub(crate) async fn open(
         &self,
         manager: Arc<SyncMutex<PluginManager>>,
         plugin_id: String,
         extension_point: PluginExtensionPointDto,
+        pinned_archive_session: Option<ArchiveSessionId>,
         handle: &tokio::runtime::Handle,
     ) -> Result<PluginSessionSnapshot, ApplicationError> {
         validate_extension_point(&extension_point)?;
@@ -589,6 +671,7 @@ impl PluginSessionStore {
             extension_point,
             revision: 1,
             root,
+            pinned_archive_session,
         };
         let document = record.document(id);
         self.sessions.write().insert(id, record);
@@ -638,7 +721,7 @@ impl PluginSessionStore {
         request: PluginActionRequest,
         handle: &tokio::runtime::Handle,
     ) -> Result<PluginUiUpdate, ApplicationError> {
-        let (plugin_id, extension_point) = {
+        let (plugin_id, extension_point, pinned_archive_session) = {
             let sessions = self.sessions.read();
             let record = sessions
                 .get(&request.session_id)
@@ -648,7 +731,11 @@ impl PluginSessionStore {
                     return Err(action_rejected(&request.node_id));
                 }
             }
-            (record.plugin_id.clone(), record.extension_point.clone())
+            (
+                record.plugin_id.clone(),
+                record.extension_point.clone(),
+                record.pinned_archive_session,
+            )
         };
 
         let plugin_lock = self.lock_for_plugin(&plugin_id);
@@ -692,7 +779,14 @@ impl PluginSessionStore {
         // synchronously (a gameta cache hit) is already reflected in the
         // layout a `RefreshPanel` in the same response re-fetches.
         if !outcome.fetch_keys.is_empty() {
-            resolve_request_fetches(&manager, &plugin_id, outcome.fetch_keys, handle).await;
+            resolve_request_fetches(
+                &manager,
+                &plugin_id,
+                outcome.fetch_keys,
+                pinned_archive_session,
+                handle,
+            )
+            .await;
         }
 
         let refreshed_root = if outcome.needs_refresh {
@@ -796,12 +890,14 @@ async fn resolve_request_fetches(
     manager: &Arc<SyncMutex<PluginManager>>,
     plugin_id: &str,
     keys: Vec<String>,
+    pinned_archive_session: Option<ArchiveSessionId>,
     handle: &tokio::runtime::Handle,
 ) {
     let Some(instance) = manager.lock().get_plugin_instance(plugin_id) else {
         tracing::warn!(plugin_id, "dropped a RequestFetch for an unknown plugin");
         return;
     };
+    let pinned = pinned_archive_session.map(ArchiveSessionId::into_raw);
     for key in keys {
         let instance = instance.clone();
         let worker_plugin_id = plugin_id.to_string();
@@ -811,6 +907,7 @@ async fn resolve_request_fetches(
                     &instance,
                     &worker_plugin_id,
                     &key,
+                    pinned,
                 )
             })
             .await;

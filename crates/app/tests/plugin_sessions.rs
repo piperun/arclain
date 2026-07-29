@@ -772,6 +772,95 @@ fn read_plugin_image_rejects_an_unknown_cache_key_through_the_full_facade() {
     assert_eq!(error.kind, ApplicationErrorKind::NotFound);
 }
 
+/// The image recovery round trip a renderer actually performs: a document
+/// node's image is not cached (read misses), the renderer fetches the
+/// node's `url` fallback and stores the bytes back under the *same* key,
+/// and the next read returns them byte for byte.
+///
+/// This is the loop that was structurally impossible before
+/// `write_plugin_image` existed: the read decodes the owning plugin out of
+/// the key and reads from that plugin's namespace, while the recovery
+/// write went to the host's, so the second read missed exactly like the
+/// first — a permanently broken image, a 30-second retry forever, and one
+/// orphaned host cache entry per attempt. Driven through the real facade
+/// so the namespace agreement is proven end to end rather than asserted
+/// about two functions in isolation.
+#[test]
+fn a_missed_plugin_image_can_be_recovered_by_a_write_and_read_back() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+    // The exact encoded shape `arclain_app::plugins` rewrites into every
+    // image-bearing node at normalization time.
+    let key = "plugin-image:ui-demo:cover:RJ000001".to_string();
+    let bytes = vec![0x89, 0x50, 0x4E, 0x47, 7, 7, 7, 7];
+
+    runtime.block_on(async {
+        assert_eq!(
+            app.read_plugin_image(key.clone()).await.unwrap_err().kind,
+            ApplicationErrorKind::NotFound,
+            "the asset must start uncached, so this proves recovery and not a pre-seeded read"
+        );
+
+        app.write_plugin_image(
+            key.clone(),
+            bytes.clone(),
+            Some("https://example.invalid/cover.png".to_string()),
+        )
+        .await
+        .expect("the recovery write must succeed");
+
+        assert_eq!(
+            app.read_plugin_image(key.clone()).await.unwrap(),
+            bytes,
+            "the recovery write must land in the namespace the read resolves"
+        );
+    });
+}
+
+/// A write is rejected for any key the facade did not itself encode, the
+/// same way the read is -- a frontend cannot use this to write into an
+/// arbitrary cache namespace of its choosing.
+#[test]
+fn write_plugin_image_rejects_a_key_the_facade_never_encoded() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+
+    for key in ["cover:RJ000001", "plugin-image-but-not-really", ""] {
+        let error = runtime
+            .block_on(app.write_plugin_image(key.to_string(), vec![1, 2, 3], None))
+            .unwrap_err();
+        assert_eq!(error.kind, ApplicationErrorKind::NotFound, "key: {key}");
+    }
+}
+
+/// The cap is enforced on the way in, not only on the way out. Caching an
+/// oversized asset and then rejecting it on every subsequent read would
+/// burn disk for something permanently unreadable.
+#[test]
+fn write_plugin_image_rejects_an_asset_over_the_size_cap() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+    let key = "plugin-image:ui-demo:huge".to_string();
+    let oversized = vec![0u8; arclain_app::plugins::MAX_PLUGIN_IMAGE_BYTES as usize + 1];
+
+    let error = runtime
+        .block_on(app.write_plugin_image(key.clone(), oversized, None))
+        .unwrap_err();
+
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(
+        runtime
+            .block_on(app.read_plugin_image(key))
+            .unwrap_err()
+            .kind,
+        ApplicationErrorKind::NotFound,
+        "a rejected write must leave nothing cached"
+    );
+}
+
 /// Exhaustive serialization coverage for the `OperationResult` variant
 /// this task adds. `ArchiveOpened`/`None` are already covered by earlier
 /// tasks' own tests; this only needs to prove `PluginUiUpdated` itself

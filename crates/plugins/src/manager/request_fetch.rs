@@ -128,15 +128,23 @@ where
 /// interaction* (a panel button, a list selection) rather than from an
 /// archive-open event.
 ///
-/// Unlike the event-worker path, there is no event context to pin the
-/// write to: the interaction came from a document the user is looking at
-/// right now, so both the metadata write and the native fallback resolve
-/// through the installed `ActiveTabBridge` -- the same sink a plugin's own
-/// `emit_metadata` host function uses outside an event context. A frontend
-/// that reports its active archive session (see
-/// [`crate::ActiveTabBridge::active_archive_session_id`]) therefore lands
-/// the result on the right session without this path needing to know
-/// anything about tabs.
+/// `pinned_archive_session_id` is the archive session that was active when
+/// the *plugin session* this interaction belongs to was opened, and is
+/// where the resolved metadata is written. Resolving the destination at
+/// completion instead would land the result on whichever archive happens
+/// to be active when the fetch returns -- and a gameta round trip plus a
+/// native fallback can take seconds, easily long enough for the user to
+/// switch archives. The event-worker path pins its own origin for exactly
+/// this reason (it carries the originating session in its event context),
+/// and the pre-facade UI route captured the origin tab up front too; this
+/// keeps all three consistent.
+///
+/// `None` means the plugin session had no archive open when it opened (a
+/// `MainPage` session in the plugin settings page, say). Those fall back
+/// to whichever session `ActiveTabBridge::active_archive_session_id`
+/// reports at completion, which is the best available answer for a session
+/// that never had an origin of its own -- and then to the bridge's
+/// no-session sink if there is none.
 ///
 /// Takes the instance rather than the [`PluginManager`] deliberately: the
 /// gameta round trip below can take seconds, and a `&PluginManager`
@@ -150,6 +158,7 @@ pub fn resolve_interactive_request_fetch(
     instance_arc: &Arc<parking_lot::Mutex<crate::PluginInstance>>,
     plugin_id: &str,
     key: &str,
+    pinned_archive_session_id: Option<u64>,
 ) -> RequestFetchOutcome {
     let (authorized, gameta_available, active_tab) = {
         let instance = instance_arc.lock();
@@ -182,7 +191,9 @@ pub fn resolve_interactive_request_fetch(
                     .map(|response| response.metadata)
             })
         },
-        |metadata| write_active_session_metadata(active_tab.as_ref(), metadata),
+        |metadata| {
+            write_pinned_session_metadata(active_tab.as_ref(), pinned_archive_session_id, metadata)
+        },
         |key| {
             // The plugin's own handler clears its in-progress flag at the
             // end of its native fetch, so no completion notification is
@@ -224,19 +235,27 @@ where
         .map_err(|error| error.to_string())
 }
 
-/// Writes a resolved payload to whichever archive session the frontend
-/// currently reports as active, falling back to its no-session sink when
-/// none is (the same two-branch split
-/// `crate::host_functions::metadata::emit_metadata` makes outside an event
-/// context).
-fn write_active_session_metadata(
+/// Writes a resolved payload to the archive session this fetch's plugin
+/// session was pinned to at open time, falling back to whichever session
+/// is active now (and then to the bridge's no-session sink) only when
+/// there was no pinned origin -- see
+/// [`resolve_interactive_request_fetch`]'s doc comment for why pinning at
+/// open is the correct origin and completion time is not.
+fn write_pinned_session_metadata(
     active_tab: Option<&Arc<dyn crate::ActiveTabBridge>>,
+    pinned_archive_session_id: Option<u64>,
     metadata: serde_json::Value,
 ) {
     let Some(bridge) = active_tab else {
         warn!("Dropped a resolved RequestFetch payload: no active-tab bridge is installed");
         return;
     };
+    if let Some(session_id) = pinned_archive_session_id {
+        bridge.set_session_metadata(session_id, Some(metadata));
+        return;
+    }
+    // The same two-branch split `crate::host_functions::metadata::
+    // emit_metadata` makes outside an event context.
     match bridge.active_archive_session_id() {
         Some(session_id) => bridge.set_session_metadata(session_id, Some(metadata)),
         None => bridge.set_active_tab_metadata(Some(metadata)),
@@ -382,6 +401,79 @@ mod tests {
             2,
             "a cached lookup and a live fetch are separate host-service uses"
         );
+    }
+
+    /// Records where a metadata write landed, so the pinning tests can
+    /// assert the destination rather than merely that a write happened.
+    #[derive(Default)]
+    struct RecordingBridge {
+        active_session: Option<u64>,
+        session_writes: parking_lot::Mutex<Vec<u64>>,
+        active_tab_writes: parking_lot::Mutex<usize>,
+    }
+
+    impl crate::ActiveTabBridge for RecordingBridge {
+        fn archive_path(&self) -> Option<String> {
+            None
+        }
+        fn current_password(&self) -> Option<String> {
+            None
+        }
+        fn archive_entries(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn active_archive_session_id(&self) -> Option<u64> {
+            self.active_session
+        }
+        fn set_session_metadata(&self, session_id: u64, _metadata: Option<serde_json::Value>) {
+            self.session_writes.lock().push(session_id);
+        }
+        fn set_active_tab_metadata(&self, _metadata: Option<serde_json::Value>) {
+            *self.active_tab_writes.lock() += 1;
+        }
+        fn set_archive_path(&self, _path: Option<String>) {}
+    }
+
+    /// The core of the pinning rule: the destination is decided by where
+    /// the plugin session opened, not by what is active when the fetch
+    /// finishes. `active_session` here is deliberately a *different*
+    /// session, standing in for the user switching archives mid-flight.
+    #[test]
+    fn a_pinned_fetch_writes_to_its_origin_session_not_whatever_is_active_now() {
+        let recording = Arc::new(RecordingBridge {
+            active_session: Some(99),
+            ..RecordingBridge::default()
+        });
+        let bridge: Arc<dyn crate::ActiveTabBridge> = recording.clone();
+
+        write_pinned_session_metadata(Some(&bridge), Some(7), serde_json::json!({"t": 1}));
+
+        assert_eq!(
+            *recording.session_writes.lock(),
+            vec![7],
+            "the write must land on the pinned origin session, not the active one"
+        );
+        assert_eq!(*recording.active_tab_writes.lock(), 0);
+    }
+
+    /// A session with no archive open at open time (a settings-page
+    /// `MainPage` session) has no origin to pin, so it falls back to the
+    /// active session -- and then to the no-session sink.
+    #[test]
+    fn an_unpinned_fetch_falls_back_to_the_active_session_then_to_the_no_session_sink() {
+        let with_active = Arc::new(RecordingBridge {
+            active_session: Some(42),
+            ..RecordingBridge::default()
+        });
+        let bridge: Arc<dyn crate::ActiveTabBridge> = with_active.clone();
+        write_pinned_session_metadata(Some(&bridge), None, serde_json::json!({}));
+        assert_eq!(*with_active.session_writes.lock(), vec![42]);
+
+        let without_active = Arc::new(RecordingBridge::default());
+        let bridge: Arc<dyn crate::ActiveTabBridge> = without_active.clone();
+        write_pinned_session_metadata(Some(&bridge), None, serde_json::json!({}));
+        assert!(without_active.session_writes.lock().is_empty());
+        assert_eq!(*without_active.active_tab_writes.lock(), 1);
     }
 
     #[test]

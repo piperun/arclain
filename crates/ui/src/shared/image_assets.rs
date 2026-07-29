@@ -5,7 +5,7 @@
 //! clone the resulting shared texture handle.
 
 use crate::core::tabs::TabId;
-use arclain_core::ContentCache;
+use arclain_core::{CacheType, ContentCache};
 use eframe::egui;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
@@ -87,8 +87,20 @@ pub enum ImageAssetState {
     Failed(String),
 }
 
+/// Where this store reads image bytes from, removes them from, and --
+/// critically -- writes them back to.
+///
+/// `put` is on the *same* trait as `get` deliberately. A URL-fallback
+/// fetch and the read that asked for it must agree on which cache
+/// namespace the key belongs to; when they were separate code paths (a
+/// `ContentCache::put` at the fetch site, a namespace-decoding read here)
+/// they silently disagreed for plugin-owned keys, producing an entry the
+/// read could never find and a recovery loop that could never succeed.
+/// Routing both through one implementation makes that class of mismatch
+/// unrepresentable.
 trait ImageBytes: Send + Sync {
     fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>>;
+    fn put(&self, key: &str, bytes: &[u8], source_url: Option<&str>) -> anyhow::Result<()>;
     fn remove(&self, key: &str);
 }
 
@@ -97,6 +109,12 @@ struct ContentCacheBytes(Arc<ContentCache>);
 impl ImageBytes for ContentCacheBytes {
     fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         self.0.get(key)
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], source_url: Option<&str>) -> anyhow::Result<()> {
+        self.0
+            .put(key, bytes, CacheType::Screenshot, None, source_url)
+            .map(|_| ())
     }
 
     fn remove(&self, key: &str) {
@@ -153,6 +171,29 @@ impl ImageBytes for FacadeImageBytes {
         }
     }
 
+    /// Writes a URL-fallback fetch back into the *plugin's* namespace,
+    /// the only namespace [`Self::get`] reads plugin keys from. A
+    /// host-namespace write here would be invisible to that read, so the
+    /// asset would render broken and re-fetch every 30 s forever, leaving
+    /// one orphaned host cache entry per attempt.
+    fn put(&self, key: &str, bytes: &[u8], source_url: Option<&str>) -> anyhow::Result<()> {
+        if !key.starts_with(PLUGIN_IMAGE_KEY_PREFIX) {
+            return match &self.fallback {
+                Some(cache) => cache
+                    .put(key, bytes, CacheType::Screenshot, None, source_url)
+                    .map(|_| ()),
+                None => Ok(()),
+            };
+        }
+        self.runtime
+            .block_on(self.facade.write_plugin_image(
+                key.to_string(),
+                bytes.to_vec(),
+                source_url.map(str::to_string),
+            ))
+            .map_err(|error| anyhow::anyhow!(error.summary))
+    }
+
     fn remove(&self, key: &str) {
         // A plugin-owned entry is not this frontend's to evict: the
         // facade owns that namespace, and a corrupt entry there is
@@ -176,6 +217,14 @@ struct EmptyImageBytes;
 impl ImageBytes for EmptyImageBytes {
     fn get(&self, _key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         Ok(None)
+    }
+
+    /// Silently discarded rather than an error: this source exists for
+    /// contexts with no cache at all (early init, hand-built test
+    /// fixtures), where a fetch having nowhere to land is expected, not a
+    /// failure the caller should surface.
+    fn put(&self, _key: &str, _bytes: &[u8], _source_url: Option<&str>) -> anyhow::Result<()> {
+        Ok(())
     }
 
     fn remove(&self, _key: &str) {}
@@ -312,6 +361,30 @@ impl ImageAssetStore {
 
         self.spawn_load(key.to_string(), generation, ctx);
         ImageAssetState::Loading
+    }
+
+    /// Stores bytes a URL-fallback fetch produced for `key`, then retries
+    /// the key so the decode/upload pipeline picks them up.
+    ///
+    /// The single write entry point, deliberately paired with the read on
+    /// [`ImageBytes`]: the caller supplies bytes and a key and does not
+    /// get to decide which cache namespace they land in, because that
+    /// decision must match the one the read makes for the same key. See
+    /// [`ImageBytes`]'s own doc comment for the failure this prevents.
+    ///
+    /// Blocking (a cache write, and for a plugin key a facade round trip),
+    /// so callers must be on a blocking-tolerant context -- every current
+    /// caller is inside `crate::shared::image_fetcher`'s spawned task.
+    pub fn store_fetched(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        source_url: Option<&str>,
+        ctx: egui::Context,
+    ) -> anyhow::Result<()> {
+        self.inner.source.put(key, bytes, source_url)?;
+        self.cache_ready(key, ctx);
+        Ok(())
     }
 
     /// Retry a key after its asynchronous network fetch has populated the

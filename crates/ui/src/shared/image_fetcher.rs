@@ -15,14 +15,21 @@
 //! leak class).
 
 use crate::shared::SharedState;
-use arclain_core::CacheType;
 use arclain_network::{HttpRequest, RequestStatus};
 use eframe::egui;
 
-/// Spawn a background fetch for `url`, caching the response bytes at
-/// `key` in the `content_cache` service on success and notifying the shared
-/// image-asset store. No-ops if `SharedState` doesn't have
-/// a `content_cache` wired (e.g. early-init / test contexts).
+/// Spawn a background fetch for `url`, storing the response bytes at
+/// `key` through the shared image-asset store on success (which then
+/// re-runs its decode/upload pipeline for that key).
+///
+/// Storage goes through `ImageAssetStore::store_fetched` rather than
+/// `content_cache` directly: which namespace a key belongs to is a
+/// decision the *read* side already makes (a plugin document's image key
+/// is scoped to the owning plugin), and both halves must make it
+/// identically. This function therefore no longer gates on
+/// `services.content_cache` being wired either -- a plugin image is
+/// storable through the facade whether or not this frontend has its own
+/// host cache, and the store's own no-cache source absorbs the rest.
 ///
 /// `plugin_id`, when `Some`, routes the HTTP request through the
 /// per-plugin rate-limit / domain-whitelist branch of `AsyncHttpClient`.
@@ -35,9 +42,8 @@ pub fn trigger_image_fetch(
     ctx: egui::Context,
 ) {
     let client = &shared.services.async_http_client;
-    if let Some(cache) = &shared.services.content_cache {
+    {
         let client = client.clone();
-        let cache = cache.clone();
         let image_assets = shared.image_assets.clone();
         // Use runtime handle
         let runtime = &shared.services.tokio_runtime;
@@ -70,13 +76,22 @@ pub fn trigger_image_fetch(
                                 .is_some_and(|ct| ct.starts_with("image/"));
 
                         if is_valid {
-                            // Use blocking put with retry - we're in async task so blocking is fine
+                            // Stored through the image store rather than
+                            // straight into `content_cache`: a plugin
+                            // document's image key is namespaced to the
+                            // owning plugin, and the read side decodes
+                            // that owner out of the key. Writing here
+                            // would put the bytes in the host namespace,
+                            // where the read can never find them -- a
+                            // permanently broken image plus one orphaned
+                            // cache entry per 30s retry. `store_fetched`
+                            // is the one place that decision is made, for
+                            // both halves. Blocking is fine: this is an
+                            // async task, not a UI frame.
                             if let Err(e) =
-                                cache.put(&key, &resp.body, CacheType::Screenshot, None, Some(&url))
+                                image_assets.store_fetched(&key, &resp.body, Some(&url), ctx.clone())
                             {
                                 tracing::warn!("Failed to cache image {}: {}", key, e);
-                            } else {
-                                image_assets.cache_ready(&key, ctx.clone());
                             }
                         } else {
                             tracing::warn!(
