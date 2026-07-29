@@ -1,4 +1,3 @@
-// use arclain_core::ArchiveEntry; // Unused
 // use std::path::PathBuf; // Unused
 
 /// State for batch extraction - extracted files are cached in a temp directory

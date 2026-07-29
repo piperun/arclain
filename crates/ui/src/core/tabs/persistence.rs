@@ -3,7 +3,8 @@
 //! Schema lives in `tabs.json` under the user config dir. Plugin
 //! instances are NOT persisted — they re-spawn lazily on first use
 //! after restore. Navigation breadcrumbs are also not persisted in
-//! v1 (would require serializing arclain_core's NavigationState).
+//! v1 (would require serializing the archive navigation history: the
+//! current folder plus the back and forward stacks).
 
 use super::tabs_collection::TabsCollection;
 use super::TabId;
