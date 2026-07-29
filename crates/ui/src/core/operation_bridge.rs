@@ -451,7 +451,13 @@ async fn relist_for_browser_signals(
             headers_encrypted: info.headers_encrypted,
             encryption_method: info.encryption_method.clone(),
         });
-    tab.listing.set(crate::core::tabs::TabListing::default());
+    // Bound to the session `handle_open_archive_completed` stamped onto
+    // the tab immediately before calling this, so any listing reply
+    // still in flight for the archive this one replaced is refused
+    // rather than seated (see `TabListing::adopt_page`).
+    tab.listing.set(crate::core::tabs::TabListing::for_session(
+        tab.archive_session_id.get(),
+    ));
     {
         let mut view_state = tab.browser_view_state.get();
         if view_state.selection.clear() {

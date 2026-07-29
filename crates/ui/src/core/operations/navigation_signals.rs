@@ -16,14 +16,18 @@
 use crate::core::signals::AppSignals;
 use crate::core::tabs::TabListing;
 
-/// Runs one navigation against the active tab's listing, publishing the
-/// result only when the cursor moved.
+/// Runs one navigation against the active tab's listing.
 ///
 /// `Signal::update` holds its write lock for the whole closure, so the
 /// read-navigate-write sequence is atomic against any other writer of the
-/// same listing -- unlike a `get()`, mutate, `set()` round trip, where two
-/// concurrent navigations each read the same snapshot and one silently
-/// discards the other's move.
+/// same listing -- unlike a `get()`, mutate, `set()` round trip, where a
+/// navigation racing the bridge's own "an archive was opened, reset the
+/// listing" write could silently discard it. That atomicity costs one
+/// spurious repaint request per *refused* navigation (`update` notifies
+/// unconditionally), which is the cheaper side of the trade: a refused
+/// navigation is a Back press at the archive root or a click on the
+/// folder already shown, and egui is repainting during that interaction
+/// regardless.
 fn navigate(signals: &AppSignals, navigation: impl FnOnce(&mut TabListing) -> bool) -> bool {
     let tab = signals.tabs.get().active().clone();
     let mut moved = false;

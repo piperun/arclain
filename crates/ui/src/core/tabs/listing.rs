@@ -21,6 +21,8 @@
 use arclain_app::archive::{
     ArchiveEntryDto, ArchivePath, EntryPage, EntrySortKey, ListEntriesRequest, SortDirection,
 };
+use arclain_app::ids::ArchiveSessionId;
+use std::sync::Arc;
 
 /// How many entries a directory-scoped listing asks for when the caller
 /// wants the whole directory rather than one window of it.
@@ -227,9 +229,9 @@ impl ArchiveNavigation {
     }
 }
 
-/// One tab's archive listing: where it is browsing, the request that
-/// describes what its browser is showing, and the page the archive
-/// session answered with.
+/// One tab's archive listing: which session it is listing, where it is
+/// browsing, the request that describes what its browser is showing, and
+/// the page that session answered with.
 ///
 /// `request.directory` always equals `navigation.current()` -- callers
 /// change it by navigating, never by editing the request -- and every
@@ -237,14 +239,36 @@ impl ArchiveNavigation {
 /// it was requested for and nothing else.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabListing {
+    /// The archive session this listing belongs to, `None` before the
+    /// tab has an archive open. Load-bearing rather than informational:
+    /// it is what [`Self::adopt_page`] checks a page against, and an
+    /// `EntryId` is only unique *within* its own session -- a page from
+    /// a superseded session could otherwise seat rows whose ids name
+    /// entirely different entries in the session the tab now holds, and
+    /// those ids are what an extract or a delete is addressed by.
+    session: Option<ArchiveSessionId>,
     navigation: ArchiveNavigation,
     request: ListEntriesRequest,
-    page: Option<EntryPage>,
+    /// Behind an `Arc` so a renderer reading this signal every frame
+    /// clones a refcount rather than every row of the directory it is
+    /// showing. Only a whole-page replacement ever mutates it, exactly
+    /// like `BrowserEntriesSnapshot`'s own `Arc<[FileEntry]>`.
+    page: Option<Arc<EntryPage>>,
 }
 
 impl Default for TabListing {
     fn default() -> Self {
+        Self::for_session(None)
+    }
+}
+
+impl TabListing {
+    /// A fresh listing at the archive root, bound to `session` -- what a
+    /// tab starts browsing a newly opened archive from, and (with
+    /// `None`) what a tab with no archive open holds.
+    pub fn for_session(session: Option<ArchiveSessionId>) -> Self {
         Self {
+            session,
             navigation: ArchiveNavigation::default(),
             request: ListEntriesRequest {
                 directory: ArchivePath::root(),
@@ -263,9 +287,12 @@ impl Default for TabListing {
             page: None,
         }
     }
-}
 
-impl TabListing {
+    /// The archive session this listing belongs to.
+    pub fn session(&self) -> Option<ArchiveSessionId> {
+        self.session
+    }
+
     pub fn navigation(&self) -> &ArchiveNavigation {
         &self.navigation
     }
@@ -292,7 +319,7 @@ impl TabListing {
     /// first listing lands (and after any navigation, until the listing
     /// for the new directory arrives).
     pub fn page(&self) -> Option<&EntryPage> {
-        self.page.as_ref()
+        self.page.as_deref()
     }
 
     /// The current directory's rows, empty when no page is held.
@@ -305,27 +332,33 @@ impl TabListing {
 
     /// Stores `page` as the answer to the current request.
     ///
-    /// Refuses (reporting `false`) a page that cannot be the answer to
-    /// what is being browsed now: one listing a different directory, and
-    /// one older than a page already held for the same session. Both
-    /// shapes arise from an in-flight `list_entries` whose reply lands
-    /// after navigation moved on or after a newer refresh already
-    /// answered -- without this check the browser would flip back to a
-    /// stale directory or a superseded revision purely on reply order.
+    /// Refuses (reporting `false`) any page that cannot be the answer to
+    /// what is being browsed now:
     ///
-    /// A page from a *different* session is accepted: that is the tab's
-    /// archive having been replaced, so the newer session's listing is
-    /// exactly what should win.
+    /// * one from a session this listing does not belong to -- a reply
+    ///   for the archive the tab held *before* the current one, whose
+    ///   `EntryId`s are meaningless (and actively dangerous, being
+    ///   session-scoped) against the session it holds now;
+    /// * one listing a different directory, from an in-flight request
+    ///   whose reply lands after navigation moved on;
+    /// * one older than a page already held, from a refresh overtaken by
+    ///   a newer one.
+    ///
+    /// Without these the browser would flip to a stale archive,
+    /// directory, or revision purely on reply order.
     pub fn adopt_page(&mut self, page: EntryPage) -> bool {
+        if self.session != Some(page.session_id) {
+            return false;
+        }
         if page.directory != self.request.directory {
             return false;
         }
         if let Some(held) = &self.page {
-            if held.session_id == page.session_id && page.revision < held.revision {
+            if page.revision < held.revision {
                 return false;
             }
         }
-        self.page = Some(page);
+        self.page = Some(Arc::new(page));
         true
     }
 

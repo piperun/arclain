@@ -9,6 +9,12 @@
 use super::*;
 use arclain_app::ids::{ArchiveSessionId, EntryId};
 
+/// A listing bound to session 1 -- what every page helper below answers
+/// for unless a test deliberately names another session.
+fn listing() -> TabListing {
+    TabListing::for_session(Some(ArchiveSessionId::from_raw(1)))
+}
+
 fn page(directory: &str, revision: u64, session: u64, names: &[&str]) -> EntryPage {
     EntryPage {
         session_id: ArchiveSessionId::from_raw(session),
@@ -190,7 +196,7 @@ fn a_leading_separator_is_normalized_away_not_treated_as_absolute() {
 
 #[test]
 fn a_fresh_listing_requests_the_whole_root_directory_by_name() {
-    let listing = TabListing::default();
+    let listing = listing();
     assert_eq!(listing.directory(), &ArchivePath::root());
     assert_eq!(listing.request().sort_key, EntrySortKey::Name);
     assert_eq!(listing.request().sort_direction, SortDirection::Ascending);
@@ -203,7 +209,7 @@ fn a_fresh_listing_requests_the_whole_root_directory_by_name() {
 
 #[test]
 fn navigating_re_points_the_request_and_drops_the_page_it_no_longer_answers() {
-    let mut listing = TabListing::default();
+    let mut listing = listing();
     assert!(listing.adopt_page(page("", 1, 1, &["readme.txt"])));
     assert_eq!(listing.entries().len(), 1);
 
@@ -218,7 +224,7 @@ fn navigating_re_points_the_request_and_drops_the_page_it_no_longer_answers() {
 
 #[test]
 fn a_refused_navigation_leaves_the_request_and_page_alone() {
-    let mut listing = TabListing::default();
+    let mut listing = listing();
     assert!(listing.descend("game"));
     assert!(listing.adopt_page(page("game", 1, 1, &["Game.exe"])));
 
@@ -230,7 +236,7 @@ fn a_refused_navigation_leaves_the_request_and_page_alone() {
 
 #[test]
 fn a_page_for_a_different_directory_is_refused() {
-    let mut listing = TabListing::default();
+    let mut listing = listing();
     assert!(listing.descend("game"));
 
     assert!(
@@ -242,7 +248,7 @@ fn a_page_for_a_different_directory_is_refused() {
 
 #[test]
 fn a_page_older_than_the_one_held_for_the_same_session_is_refused() {
-    let mut listing = TabListing::default();
+    let mut listing = listing();
     assert!(listing.adopt_page(page("", 5, 1, &["current.txt"])));
 
     assert!(!listing.adopt_page(page("", 4, 1, &["stale.txt"])));
@@ -255,23 +261,46 @@ fn a_page_older_than_the_one_held_for_the_same_session_is_refused() {
     assert_eq!(listing.entries()[0].name, "newer.txt");
 }
 
-/// A lower revision from a *different* session is the tab's archive
-/// having been replaced, not a stale reply: a freshly opened session
-/// starts at revision 1, so comparing revisions across sessions would
-/// reject every new archive opened into a tab that had mutated its
-/// previous one.
+/// The guard that matters most. `EntryId` is unique only *within* its
+/// session, so a page from the archive a tab held before this one does
+/// not merely show the wrong rows -- its ids can name entirely different
+/// entries in the session the tab holds now, and an extract or a delete
+/// is addressed by exactly those ids.
 #[test]
-fn a_page_from_a_newly_opened_session_wins_even_at_a_lower_revision() {
+fn a_page_from_another_session_is_refused_however_new_it_looks() {
+    let mut listing = listing();
+    assert!(listing.adopt_page(page("", 1, 1, &["this-archive.txt"])));
+
+    assert!(!listing.adopt_page(page("", 99, 2, &["other-archive.txt"])));
+    assert_eq!(listing.entries()[0].name, "this-archive.txt");
+}
+
+/// A tab with no archive open has no session to answer for, so nothing
+/// can be seated into it at all.
+#[test]
+fn a_sessionless_listing_adopts_nothing() {
     let mut listing = TabListing::default();
+    assert_eq!(listing.session(), None);
+    assert!(!listing.adopt_page(page("", 1, 1, &["anything.txt"])));
+    assert!(listing.page().is_none());
+}
+
+/// Reopening an archive into the tab rebinds the listing, and only then
+/// does the new session's page seat -- a fresh session starts at
+/// revision 1, so the revision guard must not outlive the rebind.
+#[test]
+fn rebinding_to_a_new_session_lets_its_first_page_seat_at_revision_one() {
+    let mut listing = listing();
     assert!(listing.adopt_page(page("", 7, 1, &["old-archive.txt"])));
 
+    listing = TabListing::for_session(Some(ArchiveSessionId::from_raw(2)));
     assert!(listing.adopt_page(page("", 1, 2, &["new-archive.txt"])));
     assert_eq!(listing.entries()[0].name, "new-archive.txt");
 }
 
 #[test]
 fn navigating_resets_the_page_window_to_the_start_of_the_new_directory() {
-    let mut listing = TabListing::default();
+    let mut listing = listing();
     assert!(listing.descend("game"));
     assert_eq!(listing.request().offset, 0);
     assert_eq!(listing.request().directory.as_str(), "game");
@@ -283,7 +312,7 @@ fn navigating_resets_the_page_window_to_the_start_of_the_new_directory() {
 
 #[test]
 fn the_listing_exposes_the_same_history_predicates_the_toolbar_reads() {
-    let mut listing = TabListing::default();
+    let mut listing = listing();
     assert!(!listing.can_go_back());
     assert!(!listing.can_go_forward());
     assert!(!listing.can_go_up());

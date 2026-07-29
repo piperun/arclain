@@ -392,7 +392,12 @@ fn a_zip_entrys_modified_date_survives_the_trip_through_the_dto() {
 fn a_tab_holding_a_page_reports_that_page_as_its_current_directory() {
     let fixture = open_fixture();
 
-    let mut listing = TabListing::default();
+    let mut listing = fixture.tab.listing.get();
+    assert_eq!(
+        listing.session(),
+        fixture.tab.archive_session_id.get(),
+        "the open must have bound the tab's listing to the session it holds"
+    );
     assert!(listing.descend("game"));
     let page = list(&fixture, listing.request());
     assert!(listing.adopt_page(page));
