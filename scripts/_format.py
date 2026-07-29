@@ -13,6 +13,7 @@ ROOT_PACKAGES = (
     "arclain_app",
     "arclain_app_fs",
     "arclain_checksum",
+    "arclain_cli",
     "arclain_core",
     "arclain_data",
     "arclain_db",

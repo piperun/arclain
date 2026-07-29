@@ -7,12 +7,17 @@ Arclain's crates split into two categories:
   hosting. They must stay usable without any GUI toolkit -- no egui,
   eframe, Flutter bridge, or Dart FFI code, and no dependency on a GUI
   crate.
-- GUI_CRATES (theme, ui, widgets) are frontends. They may depend on
-  headless crates in principle, but Stage 1's target architecture routes
-  the frontend through a single facade crate (`app`, package
-  `arclain_app`) instead of reaching into headless internals directly, so
-  every direct dependency on a headless crate *other than* `app` is
-  migration-baseline work still to do -- see SANCTIONED_FRONTEND_DEPENDENCY.
+- GUI_CRATES (theme, ui, widgets) are frontends that embed a real GUI
+  toolkit (egui/eframe). FRONTEND_CRATES additionally includes `cli`: a
+  frontend in the same "routes through `app` instead of reaching into
+  headless internals" sense, but one that embeds no GUI toolkit at all,
+  so it stays out of GUI_CRATES itself (which also names the egui/eframe
+  source-scan target -- see source_violations). Every frontend may depend
+  on headless crates in principle, but Stage 1's target architecture
+  routes it through a single facade crate (`app`, package `arclain_app`)
+  instead of reaching into headless internals directly, so every direct
+  dependency on a headless crate *other than* `app` is migration-baseline
+  work still to do -- see SANCTIONED_FRONTEND_DEPENDENCY.
 
 This module exposes two static checks:
 
@@ -44,11 +49,18 @@ HEADLESS_CRATES = {
 }
 GUI_CRATES = {"theme", "ui", "widgets"}
 
+# Every frontend crate the headless-dependency-boundary rules apply to --
+# GUI_CRATES plus `cli` (arclain-cli, a pure ArclainApp client with no GUI
+# toolkit of its own). Kept separate from GUI_CRATES so that set's own
+# name -- and source_violations's egui/eframe scan, which has no reason to
+# ever apply to `cli` -- stays accurate to "embeds a GUI toolkit".
+FRONTEND_CRATES = GUI_CRATES | {"cli"}
+
 # `app` (`arclain_app`) is the Stage 1 application facade: the one
-# headless crate a GUI crate is *meant* to depend on, replacing direct
-# dependencies on every other headless crate over time. A GUI crate
+# headless crate a frontend crate is *meant* to depend on, replacing
+# direct dependencies on every other headless crate over time. A frontend
 # depending on it is therefore accepted rather than flagged as
-# migration-baseline debt; a GUI crate depending on any other headless
+# migration-baseline debt; a frontend depending on any other headless
 # crate remains a violation.
 SANCTIONED_FRONTEND_DEPENDENCY = "app"
 
@@ -129,14 +141,15 @@ def _dependency_tables(manifest: dict) -> Iterator[tuple[str, dict]]:
 
 
 def dependency_violations(workspace_root: Path) -> list[str]:
-    """Report every workspace path-dependency that crosses the headless/GUI
-    boundary, in either direction. Same-category path dependencies (headless
-    depending on headless, GUI depending on GUI) are accepted."""
+    """Report every workspace path-dependency that crosses the headless/
+    frontend boundary, in either direction. Same-category path dependencies
+    (headless depending on headless, frontend depending on frontend) are
+    accepted."""
     violations = []
-    all_names = HEADLESS_CRATES | GUI_CRATES
+    all_names = HEADLESS_CRATES | FRONTEND_CRATES
     for crate_name, crate_dir, manifest_path in _iter_crate_manifests(workspace_root, all_names):
         is_headless = crate_name in HEADLESS_CRATES
-        forbidden = GUI_CRATES if is_headless else (HEADLESS_CRATES - {SANCTIONED_FRONTEND_DEPENDENCY})
+        forbidden = FRONTEND_CRATES if is_headless else (HEADLESS_CRATES - {SANCTIONED_FRONTEND_DEPENDENCY})
         manifest = _load_manifest(manifest_path)
         for table_label, table in _dependency_tables(manifest):
             for dep_name, dep_value in table.items():
@@ -149,7 +162,7 @@ def dependency_violations(workspace_root: Path) -> list[str]:
                 if target_name not in forbidden:
                     continue
                 if is_headless:
-                    reason = "headless crate must not depend on a GUI crate"
+                    reason = "headless crate must not depend on a frontend crate"
                 else:
                     reason = (
                         "frontend must not depend directly on a headless "
@@ -173,8 +186,8 @@ def source_violations(workspace_root: Path) -> list[str]:
         name: _identifier_pattern(name, case_insensitive=True)
         for name in _BRIDGE_IDENTIFIERS
     }
-    for gui_crate in sorted(GUI_CRATES):
-        crate_ident = f"arclain_{gui_crate}"
+    for frontend_crate in sorted(FRONTEND_CRATES):
+        crate_ident = f"arclain_{frontend_crate}"
         statement_only_patterns[crate_ident] = _identifier_pattern(
             crate_ident, case_insensitive=False,
         )

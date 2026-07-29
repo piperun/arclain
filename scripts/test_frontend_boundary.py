@@ -52,6 +52,17 @@ class TestModuleConstants(unittest.TestCase):
         )
         self.assertEqual(frontend_boundary.GUI_CRATES, {"theme", "ui", "widgets"})
 
+    def test_frontend_crates_is_gui_crates_plus_cli(self):
+        # `cli` (arclain-cli) is a frontend in the same headless-dependency
+        # sense as the GUI crates -- routes through `app` instead of
+        # reaching into headless internals -- but embeds no GUI toolkit,
+        # so it is deliberately absent from GUI_CRATES itself (which also
+        # names source_violations's egui/eframe scan target).
+        self.assertEqual(
+            frontend_boundary.FRONTEND_CRATES,
+            {"theme", "ui", "widgets", "cli"},
+        )
+
 
 class TestDependencyViolations(unittest.TestCase):
     def test_rejects_a_gui_dependency_from_a_headless_crate(self):
@@ -122,6 +133,85 @@ class TestDependencyViolations(unittest.TestCase):
             self.assertEqual(len(violations), 1, violations)
             self.assertIn("ui", violations[0])
             self.assertIn("core", violations[0])
+
+    def test_cli_depending_only_on_app_has_no_violations(self):
+        # `cli` (arclain-cli) is a pure ArclainApp client: like a GUI
+        # crate, it is only ever allowed to reach the headless world
+        # through the sanctioned `app` facade dependency.
+        with tempfile.TemporaryDirectory() as workspace:
+            crates = Path(workspace) / "crates"
+            _write_manifest(crates, "cli", (
+                '[package]\nname = "arclain_cli"\n\n'
+                '[dependencies]\n'
+                'arclain_app = { path = "../app" }\n'
+            ))
+            _write_manifest(crates, "app", '[package]\nname = "arclain_app"\n')
+
+            violations = frontend_boundary.dependency_violations(Path(workspace))
+
+            self.assertEqual(violations, [])
+
+    def test_cli_depending_directly_on_a_headless_crate_is_a_violation(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            crates = Path(workspace) / "crates"
+            _write_manifest(crates, "cli", (
+                '[package]\nname = "arclain_cli"\n\n'
+                '[dependencies]\n'
+                'arclain_app = { path = "../app" }\n'
+                'arclain_core = { path = "../core" }\n'
+            ))
+            _write_manifest(crates, "app", '[package]\nname = "arclain_app"\n')
+            _write_manifest(crates, "core", '[package]\nname = "arclain_core"\n')
+
+            violations = frontend_boundary.dependency_violations(Path(workspace))
+
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn("cli", violations[0])
+            self.assertIn("core", violations[0])
+
+    def test_cli_depending_directly_on_a_headless_crate_as_a_dev_dependency_is_a_violation(self):
+        # The dev-dependencies table is checked too (see
+        # _dependency_tables/_DEPENDENCY_TABLE_NAMES) -- a frontend crate
+        # cannot reach a headless crate's internals from its own test
+        # code either, which is exactly why arclain-cli's own read-surface
+        # tests drive the compiled binary as a subprocess (or bootstrap
+        # against `arclain_app` alone) instead of constructing e.g. an
+        # `arclain_core::ArchiveBackend` fake directly.
+        with tempfile.TemporaryDirectory() as workspace:
+            crates = Path(workspace) / "crates"
+            _write_manifest(crates, "cli", (
+                '[package]\nname = "arclain_cli"\n\n'
+                '[dependencies]\n'
+                'arclain_app = { path = "../app" }\n\n'
+                '[dev-dependencies]\n'
+                'arclain_core = { path = "../core" }\n'
+            ))
+            _write_manifest(crates, "app", '[package]\nname = "arclain_app"\n')
+            _write_manifest(crates, "core", '[package]\nname = "arclain_core"\n')
+
+            violations = frontend_boundary.dependency_violations(Path(workspace))
+
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn("cli", violations[0])
+            self.assertIn("dev-dependencies", violations[0])
+
+    def test_headless_crate_depending_on_cli_is_a_violation(self):
+        # The reverse edge must also be rejected: a headless crate has no
+        # legitimate reason to depend on the CLI frontend.
+        with tempfile.TemporaryDirectory() as workspace:
+            crates = Path(workspace) / "crates"
+            _write_manifest(crates, "core", (
+                '[package]\nname = "arclain_core"\n\n'
+                '[dependencies]\n'
+                'arclain_cli = { path = "../cli" }\n'
+            ))
+            _write_manifest(crates, "cli", '[package]\nname = "arclain_cli"\n')
+
+            violations = frontend_boundary.dependency_violations(Path(workspace))
+
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn("core", violations[0])
+            self.assertIn("cli", violations[0])
 
     def test_accepts_the_declared_dependency_direction(self):
         with tempfile.TemporaryDirectory() as workspace:
@@ -288,6 +378,25 @@ class TestSourceViolations(unittest.TestCase):
 
             self.assertEqual(len(violations), 1, violations)
             self.assertIn("arclain_ui", violations[0])
+
+    def test_flags_use_statement_referencing_the_cli_frontend_crate_name(self):
+        # arclain_cli is a FRONTEND_CRATES member, not a GUI_CRATES one,
+        # but source_violations must still flag a headless crate
+        # referencing it -- see source_violations's own FRONTEND_CRATES
+        # loop.
+        with tempfile.TemporaryDirectory() as workspace:
+            crate_dir = _write_manifest(
+                Path(workspace) / "crates", "core", '[package]\nname = "arclain_core"\n',
+            )
+            _write_source_file(
+                crate_dir, "lib.rs",
+                "use arclain_cli::commands::Cli;\n\nfn noop() {}\n",
+            )
+
+            violations = frontend_boundary.source_violations(Path(workspace))
+
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn("arclain_cli", violations[0])
 
     def test_ignores_doc_comment_mention_of_a_gui_crate_name(self):
         # arclain_ui shows up legitimately in headless doc comments describing

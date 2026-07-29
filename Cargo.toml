@@ -12,6 +12,7 @@ members = [
     "crates/signals",
     "crates/app_fs",
     "crates/app",
+    "crates/cli",
 ]
 default-members = ["crates/ui"]
 exclude = [

@@ -1,0 +1,41 @@
+[package]
+name = "arclain_cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "arclain-cli"
+path = "src/main.rs"
+
+[dependencies]
+# The one sanctioned dependency for a Stage 1 frontend crate -- see
+# scripts/frontend_boundary.py's FRONTEND_CRATES/SANCTIONED_FRONTEND_DEPENDENCY.
+# This crate must never depend on arclain_core/arclain_plugins/etc directly.
+arclain_app = { path = "../app" }
+# CLI argument parsing. Verified on crates.io before adding (package-safety
+# rule): crate id "clap", latest version 4.6.4 (published 2026-07-21),
+# ~999M all-time downloads / ~206M recent, repository
+# https://github.com/clap-rs/clap, MIT OR Apache-2.0, actively maintained
+# (multiple releases in the preceding months) -- the well-known, canonical
+# Rust CLI argument parser, not a typosquat.
+clap = { version = "4.6", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+# `rt`: this crate's own small `current_thread` runtime just awaits
+# facade futures and reads a broadcast channel -- it never spawns
+# multi-threaded work of its own (the application's *internal* work runs
+# on arclain_app's own runtime regardless of which executor awaits it, per
+# arclain_app::runtime's executor-agnostic contract). `sync` is needed to
+# name `tokio::sync::broadcast::error::RecvError` directly when handling
+# a lagged/closed operation-event subscription. `macros` backs
+# `#[tokio::test]` in this crate's own unit tests. `time` backs the
+# bounded poll loop `tests/read_commands.rs`'s own direct-facade
+# cross-check helper uses.
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+# Builds real ZIP fixtures for the integration tests -- same crate/version
+# arclain_app's own tests already depend on (see crates/app/Cargo.toml),
+# so this adds no new crate to the dependency tree.
+zip = "7.0.0"
