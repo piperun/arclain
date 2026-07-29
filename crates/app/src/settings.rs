@@ -168,10 +168,54 @@ pub struct NetworkSettingsDto {
     pub socks5_address: Option<String>,
     pub socks5_username: Option<String>,
     pub socks5_password_configured: bool,
+    /// The *stored* per-plugin proxy overrides: sparse, containing only
+    /// plugins a user has explicitly opted in or out. Not the routing
+    /// map -- see [`Self::effective_plugin_proxy_enabled`] for that, and
+    /// for why the difference matters to anything rendering a toggle.
     pub plugin_proxy_enabled: BTreeMap<String, bool>,
     pub gameta_server_enabled: bool,
     pub gameta_server_url: Option<String>,
     pub gameta_api_key_configured: bool,
+}
+
+impl NetworkSettingsDto {
+    /// The routing map actually in effect: which plugins' traffic goes
+    /// through the SOCKS5 proxy right now.
+    ///
+    /// This is *not* [`Self::plugin_proxy_enabled`]. That field is the
+    /// sparse stored override set; the effective map additionally
+    /// applies the "on by default" plugins and the global kill switch,
+    /// so a plugin with no stored entry can still be routed and every
+    /// entry disappears while the proxy is disabled. A frontend showing
+    /// a per-plugin toggle must read this one -- reading the raw
+    /// overrides would render a default-on plugin as off until the user
+    /// touched it.
+    ///
+    /// Resolved by `arclain_core::utilities::apply_default_proxied_plugins`
+    /// -- the same function the live HTTP client's routing goes through
+    /// -- so a rendered toggle can never disagree with what the network
+    /// stack actually does.
+    pub fn effective_plugin_proxy_enabled(&self) -> BTreeMap<String, bool> {
+        arclain_core::utilities::apply_default_proxied_plugins(
+            self.socks5_enabled,
+            self.plugin_proxy_enabled
+                .iter()
+                .map(|(id, enabled)| (id.clone(), *enabled))
+                .collect(),
+        )
+        .into_iter()
+        .collect()
+    }
+
+    /// Whether `plugin_id`'s traffic is routed through the proxy right
+    /// now -- [`Self::effective_plugin_proxy_enabled`] for a single
+    /// plugin.
+    pub fn plugin_proxy_effective(&self, plugin_id: &str) -> bool {
+        self.effective_plugin_proxy_enabled()
+            .get(plugin_id)
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 /// What a gameta server reported about itself when
@@ -316,6 +360,33 @@ pub struct GeneralSettingsDto {
     /// from_str`, matching that function's own fallback.
     pub drop_behavior: String,
     pub restore_tabs_on_launch: bool,
+}
+
+/// The placeholder a frontend holds in a reactive cell before it has
+/// read the real settings -- so it need not invent its own idea of what
+/// "not loaded yet" looks like, and cannot drift from what this facade
+/// would report for the same absent state.
+///
+/// Built from `UserConfig::default()`, deliberately **not**
+/// `UserConfig::new()`: `default()` is what `bootstrap` itself falls
+/// back to when there is no stored row (`UserConfig::load(..)
+/// .unwrap_or_default()`), while `new()` is the richer "first run"
+/// constructor used when *writing* a fresh row. This impl matches the
+/// read path, because that is the value it stands in for.
+impl Default for GeneralSettingsDto {
+    fn default() -> Self {
+        general_dto(&UserConfig::default())
+    }
+}
+
+/// See [`GeneralSettingsDto::default`] -- same rationale, same
+/// derived-not-restated construction. The two `_configured` secret flags
+/// are `false`: a profile with no stored settings has no stored secrets
+/// either.
+impl Default for NetworkSettingsDto {
+    fn default() -> Self {
+        network_dto(&UserConfig::default(), false, false)
+    }
 }
 
 /// See [`GeneralSettingsDto`]'s own doc comment. Every field's `Clear` is
@@ -1320,6 +1391,94 @@ mod tests {
         assert!(!dto.open_nested_in_new_tab);
         assert_eq!(dto.drop_behavior, "new_tab");
         assert!(dto.restore_tabs_on_launch);
+    }
+
+    /// The placeholder a frontend holds before its first read must be
+    /// what this facade itself reports for a profile with no stored
+    /// `user_config` row -- otherwise the UI briefly renders preferences
+    /// no profile would ever have had.
+    #[test]
+    fn dto_defaults_match_what_an_unstored_profile_reports() {
+        let unstored = UserConfig::default();
+
+        let expected_general = general_dto(&unstored);
+        let default_general = GeneralSettingsDto::default();
+        assert_eq!(
+            default_general.hotkey_bindings,
+            expected_general.hotkey_bindings
+        );
+        assert_eq!(
+            default_general.open_nested_in_new_tab,
+            expected_general.open_nested_in_new_tab
+        );
+        assert_eq!(
+            default_general.drop_behavior,
+            expected_general.drop_behavior
+        );
+        assert_eq!(
+            default_general.restore_tabs_on_launch,
+            expected_general.restore_tabs_on_launch
+        );
+        // Never an empty string: a frontend switching on this token must
+        // always get one `DropBehavior::from_str` recognizes.
+        assert_eq!(default_general.drop_behavior, "new_tab");
+
+        let expected_network = network_dto(&unstored, false, false);
+        let default_network = NetworkSettingsDto::default();
+        assert_eq!(
+            default_network.socks5_enabled,
+            expected_network.socks5_enabled
+        );
+        assert_eq!(
+            default_network.socks5_address,
+            expected_network.socks5_address
+        );
+        assert_eq!(
+            default_network.plugin_proxy_enabled,
+            expected_network.plugin_proxy_enabled
+        );
+        assert!(!default_network.socks5_password_configured);
+        assert!(!default_network.gameta_api_key_configured);
+    }
+
+    /// A default-proxied plugin with no stored entry still reads as
+    /// routed -- the whole reason the effective map exists separately
+    /// from the stored overrides.
+    #[test]
+    fn the_effective_proxy_map_applies_the_defaults_the_stored_overrides_omit() {
+        let network = NetworkSettingsDto {
+            socks5_enabled: true,
+            plugin_proxy_enabled: BTreeMap::from([("custom".to_string(), true)]),
+            ..NetworkSettingsDto::default()
+        };
+
+        let effective = network.effective_plugin_proxy_enabled();
+        assert_eq!(effective.get("dlsite"), Some(&true));
+        assert_eq!(effective.get("custom"), Some(&true));
+        assert!(network.plugin_proxy_effective("dlsite-metadata"));
+        assert!(network.plugin_proxy_effective("custom"));
+        assert!(!network.plugin_proxy_effective("unknown-plugin"));
+    }
+
+    /// An explicit stored `false` still wins over the default-on list,
+    /// and disabling the global proxy clears every route.
+    #[test]
+    fn the_effective_proxy_map_honours_opt_outs_and_the_global_switch() {
+        let opted_out = NetworkSettingsDto {
+            socks5_enabled: true,
+            plugin_proxy_enabled: BTreeMap::from([("dlsite".to_string(), false)]),
+            ..NetworkSettingsDto::default()
+        };
+        assert!(!opted_out.plugin_proxy_effective("dlsite"));
+        assert!(opted_out.plugin_proxy_effective("dlsite-api"));
+
+        let globally_off = NetworkSettingsDto {
+            socks5_enabled: false,
+            plugin_proxy_enabled: BTreeMap::from([("dlsite".to_string(), true)]),
+            ..NetworkSettingsDto::default()
+        };
+        assert!(globally_off.effective_plugin_proxy_enabled().is_empty());
+        assert!(!globally_off.plugin_proxy_effective("dlsite"));
     }
 
     #[test]

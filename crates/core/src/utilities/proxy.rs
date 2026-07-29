@@ -8,24 +8,42 @@ use arclain_db::{SecretsDb, UserConfig};
 use arclain_network::{features::proxy::ProxyConfig, AsyncHttpClient};
 use std::collections::HashMap;
 
-const DEFAULT_PROXIED_PLUGINS: [&str; 4] =
+/// Plugins routed through the global proxy unless a stored override
+/// says otherwise. Public so a caller holding the persisted overrides in
+/// some other shape (a DTO crossing an API boundary, say) can apply the
+/// same defaulting rule through [`apply_default_proxied_plugins`] rather
+/// than restating this list.
+pub const DEFAULT_PROXIED_PLUGINS: [&str; 4] =
     ["dlsite-metadata", "dlsite", "dlsite-api", "dlsite-html"];
 
-/// Derive the runtime routing map from persisted settings.
+/// Turn stored per-plugin overrides into the runtime routing map.
 ///
-/// DLSite integrations use the global proxy by default, while an explicit
-/// persisted `false` remains an opt-out. A disabled global proxy always
-/// clears every per-plugin route.
-pub fn effective_plugin_proxy_map(user_config: &UserConfig) -> HashMap<String, bool> {
-    if !user_config.socks5_enabled {
+/// [`DEFAULT_PROXIED_PLUGINS`] use the global proxy by default, while an
+/// explicit persisted `false` remains an opt-out. A disabled global
+/// proxy always clears every per-plugin route.
+///
+/// Split out from [`effective_plugin_proxy_map`] so callers that hold
+/// the overrides without a whole [`UserConfig`] resolve them by the same
+/// rule instead of a lookalike copy of it.
+pub fn apply_default_proxied_plugins(
+    socks5_enabled: bool,
+    mut overrides: HashMap<String, bool>,
+) -> HashMap<String, bool> {
+    if !socks5_enabled {
         return HashMap::new();
     }
-
-    let mut proxy_map = user_config.get_plugin_proxy_settings();
     for plugin_id in DEFAULT_PROXIED_PLUGINS {
-        proxy_map.entry(plugin_id.to_string()).or_insert(true);
+        overrides.entry(plugin_id.to_string()).or_insert(true);
     }
-    proxy_map
+    overrides
+}
+
+/// Derive the runtime routing map from persisted settings.
+pub fn effective_plugin_proxy_map(user_config: &UserConfig) -> HashMap<String, bool> {
+    apply_default_proxied_plugins(
+        user_config.socks5_enabled,
+        user_config.get_plugin_proxy_settings(),
+    )
 }
 
 /// Resolve proxy configuration from UserConfig and SecretsDb
