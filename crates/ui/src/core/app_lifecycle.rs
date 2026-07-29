@@ -378,13 +378,12 @@ pub(crate) fn open_extracted_file_via_signals(
 /// error path — no special toast in v1.
 ///
 /// `tabs.json` (visual tab shape: id/pinned/active/order, entirely a
-/// GUI concern) remains the actual restore driver here, unchanged. This
-/// also reads back `session.json` (the application-owned, frontend-
-/// neutral `Vec<arclain_app::settings::SessionArchiveEntry>` `save_tabs_
-/// on_exit` writes alongside it) purely to cross-check: a mismatch would
-/// mean the two files drifted out of sync, which is worth a log warning
-/// even though `tabs.json`'s own embedded paths are what this function
-/// actually opens.
+/// GUI concern) still supplies which tab each restored archive attaches
+/// to, but `session.json` (the application-owned, frontend-neutral
+/// `Vec<arclain_app::settings::SessionArchiveEntry>` `save_tabs_on_exit`
+/// writes alongside it) is now the operational driver for *which paths
+/// actually get reopened* — see [`resolve_session_restore_list`]'s own
+/// doc comment.
 pub fn restore_tabs_on_launch(shared_state: &SharedState) {
     let signals = shared_state.signals();
     let user_config = signals.user_config.get();
@@ -407,14 +406,8 @@ pub fn restore_tabs_on_launch(shared_state: &SharedState) {
 
     match crate::core::tabs::load_collection(&tabs_path) {
         Ok(restored) => {
-            // Collect (tab_id, archive_path) pairs before moving the collection.
-            let tab_ids_to_load: Vec<(crate::core::tabs::TabId, std::path::PathBuf)> = restored
-                .tabs()
-                .iter()
-                .filter_map(|t| t.archive_path.get().map(|p| (t.id, p)))
-                .collect();
-
-            check_session_restore_list_matches(&config_dir, &tab_ids_to_load);
+            let session_path = config_dir.join("session.json");
+            let tab_ids_to_load = resolve_session_restore_list(&session_path, &restored);
 
             signals.tabs.set(restored);
 
@@ -438,50 +431,95 @@ pub fn restore_tabs_on_launch(shared_state: &SharedState) {
     }
 }
 
-/// Logs a warning if `session.json` (the application-owned session DTO)
-/// disagrees with what `tabs.json` is about to restore. Never blocks or
-/// alters the restore itself -- see `restore_tabs_on_launch`'s own doc
-/// comment for why `tabs.json` stays the actual driver.
+/// Resolves which archives to actually reopen on launch. The operational
+/// driver is `session.json` (`arclain_app::settings::SessionArchiveEntry`,
+/// this application's own frontend-neutral session file) -- not
+/// `tabs.json`'s embedded per-tab `archive_path` directly. `tabs.json`
+/// still supplies which UI tab (id/pinned/order) each restored path
+/// attaches to; it no longer independently decides *whether* a path gets
+/// reopened.
 ///
-/// Compares both lists as multisets (sorted, not the original order):
-/// `tabs.json`'s tab order (which the user can change by dragging tabs)
-/// has no reason to match whatever order `session.json`'s entries
-/// happened to be written in, so comparing the raw `Vec`s directly
-/// would spuriously warn about a "disagreement" whenever only the order
-/// differed, even though the actual *set* of open archives -- the only
-/// thing this cross-check cares about -- agrees. Sorting rather than
-/// deduplicating preserves correct behavior if the same path is open in
-/// two different tabs at once: `[A, A, B]` and `[A, B]` must still
-/// disagree.
-fn check_session_restore_list_matches(
-    config_dir: &std::path::Path,
-    tab_ids_to_load: &[(crate::core::tabs::TabId, std::path::PathBuf)],
-) {
-    let session_path = config_dir.join("session.json");
-    match arclain_app::settings::load_session_restore_list(&session_path) {
-        Ok(entries) => {
-            let mut expected: Vec<_> = tab_ids_to_load
-                .iter()
-                .map(|(_, path)| path.clone())
-                .collect();
-            let mut actual: Vec<_> = entries.into_iter().map(|entry| entry.source_path).collect();
-            expected.sort();
-            actual.sort();
-            if actual != expected {
-                tracing::warn!(
-                    "[tabs] session.json ({} entries) disagrees with tabs.json ({} entries); \
-                     restoring from tabs.json as usual",
-                    actual.len(),
-                    expected.len()
-                );
-            }
-        }
-        Err(error) => {
-            tracing::debug!(
-                "[tabs] session.json unavailable ({error:?}); restoring from tabs.json as usual"
-            );
-        }
+/// `session.json` and `tabs.json` are always written together, from the
+/// same `col.tabs()` iteration, in the same relative order (see
+/// `save_tabs_on_exit_to`): `session.json`'s entries are exactly
+/// `tabs.json`'s own archive-bearing tabs, filtered to the ones that had
+/// an archive open, in that same order. Matched here as parallel
+/// sequences, position by position, confirming each pair's path agrees
+/// before trusting it -- not merely checked for the same *set* of paths,
+/// the way this function's predecessor (a passive cross-check that never
+/// altered the restore) did. A position where the two disagree is
+/// skipped rather than guessed at: reopening nothing is always safer
+/// than reopening the wrong archive into the wrong tab.
+///
+/// Falls back to trusting every one of `restored`'s own embedded
+/// `archive_path` values directly if `session.json` is missing or
+/// unreadable -- an upgrade from a version that never wrote it, or a
+/// `tabs.json` captured while `restore_tabs_on_launch` was disabled and
+/// since re-enabled (see `save_tabs_on_exit_to`'s own doc comment for why
+/// a disabled toggle actively removes any stale `session.json` it
+/// finds). There is deliberately nothing durable to consult in that
+/// case, so `tabs.json`'s already-loaded shape is the only source left.
+fn resolve_session_restore_list(
+    session_path: &std::path::Path,
+    restored: &crate::core::tabs::TabsCollection,
+) -> Vec<(crate::core::tabs::TabId, std::path::PathBuf)> {
+    let archive_bearing_tabs: Vec<(crate::core::tabs::TabId, std::path::PathBuf)> = restored
+        .tabs()
+        .iter()
+        .filter_map(|t| t.archive_path.get().map(|p| (t.id, p)))
+        .collect();
+
+    // `load_session_restore_list` itself reports a *missing* file as an
+    // empty list (see its own doc comment) -- indistinguishable, from its
+    // `Ok` return alone, from a real prior session that genuinely had
+    // zero archives open. Those two cases need different handling here
+    // (fall back to `tabs.json` vs. trust an authoritative "nothing was
+    // open"), so this checks existence itself first, before ever calling
+    // it.
+    if !session_path.exists() {
+        tracing::debug!(
+            "[tabs] session.json does not exist; trusting tabs.json's own embedded archive paths"
+        );
+        return archive_bearing_tabs;
     }
+
+    let session_entries = match arclain_app::settings::load_session_restore_list(session_path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(
+                "[tabs] session.json exists but failed to load ({error:?}); trusting tabs.json's \
+                 own embedded archive paths"
+            );
+            return archive_bearing_tabs;
+        }
+    };
+
+    if session_entries.len() != archive_bearing_tabs.len() {
+        tracing::warn!(
+            "[tabs] session.json ({} entries) disagrees with tabs.json ({} archive-bearing \
+             tabs); restoring only the positions both agree on",
+            session_entries.len(),
+            archive_bearing_tabs.len()
+        );
+    }
+
+    archive_bearing_tabs
+        .into_iter()
+        .zip(session_entries)
+        .filter_map(|((tab_id, tabs_json_path), session_entry)| {
+            if tabs_json_path == session_entry.source_path {
+                Some((tab_id, tabs_json_path))
+            } else {
+                tracing::warn!(
+                    "[tabs] tabs.json/session.json disagree at this position ({} vs {}); \
+                     skipping this tab rather than reopening the wrong archive",
+                    tabs_json_path.display(),
+                    session_entry.source_path.display()
+                );
+                None
+            }
+        })
+        .collect()
 }
 
 /// Save the current tab session to `tabs.json` in the config dir.
@@ -647,7 +685,7 @@ pub fn update_window_title(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::tabs::{TabId, TabsCollection};
+    use crate::core::tabs::TabsCollection;
     use arclain_app::settings::{save_session_restore_list, SessionArchiveEntry};
     use std::path::PathBuf;
     use tracing_test::traced_test;
@@ -661,13 +699,12 @@ mod tests {
         signals
     }
 
-    /// The "fold 3" order-insensitivity fix: `tabs.json`'s tab order
-    /// (freely changed by dragging tabs) has no reason to match
-    /// whatever order `session.json`'s entries happen to be written in
-    /// -- only the *set* of open archives matters to this cross-check.
-    #[traced_test]
+    /// The common (and by far most frequent) case: `session.json` and
+    /// `tabs.json` were written together by the same `save_tabs_on_exit_to`
+    /// call, so every position agrees -- every archive-bearing tab must be
+    /// resolved for reopening, none skipped.
     #[test]
-    fn check_session_restore_list_matches_ignores_order() {
+    fn resolve_session_restore_list_returns_every_tab_when_session_and_tabs_agree() {
         let dir = tempfile::tempdir().unwrap();
         let a = PathBuf::from("/tmp/a.zip");
         let b = PathBuf::from("/tmp/b.zip");
@@ -675,46 +712,98 @@ mod tests {
             &dir.path().join("session.json"),
             &[
                 SessionArchiveEntry {
-                    source_path: b.clone(),
+                    source_path: a.clone(),
                 },
                 SessionArchiveEntry {
-                    source_path: a.clone(),
+                    source_path: b.clone(),
                 },
             ],
         )
         .expect("write session.json");
 
-        // tabs.json order is the reverse of session.json's.
-        let tab_ids_to_load = vec![(TabId(1), a), (TabId(2), b)];
-        check_session_restore_list_matches(dir.path(), &tab_ids_to_load);
+        let mut col = TabsCollection::new();
+        let tab_a = col.open(Some(a.clone()));
+        let tab_b = col.open(Some(b.clone()));
 
-        assert!(
-            !logs_contain("disagrees"),
-            "the same set of archives in a different order must not warn"
-        );
+        let resolved = resolve_session_restore_list(&dir.path().join("session.json"), &col);
+
+        assert_eq!(resolved, vec![(tab_a, a), (tab_b, b)]);
     }
 
-    /// Companion to the above: a *genuine* mismatch (not just a
-    /// reorder) must still be caught -- proving the sort didn't turn
-    /// this cross-check into a silent no-op.
+    /// A genuine mismatch at one position (not merely a reorder) must be
+    /// skipped rather than trusted -- reopening nothing for that tab is
+    /// safer than reopening whatever `tabs.json` alone claims once the
+    /// two files disagree on what belongs there.
     #[traced_test]
     #[test]
-    fn check_session_restore_list_matches_detects_a_genuine_mismatch() {
+    fn resolve_session_restore_list_skips_a_disagreeing_position_and_warns() {
         let dir = tempfile::tempdir().unwrap();
+        let agreeing = PathBuf::from("/tmp/agreeing.zip");
         save_session_restore_list(
             &dir.path().join("session.json"),
-            &[SessionArchiveEntry {
-                source_path: PathBuf::from("/tmp/only-in-session.zip"),
-            }],
+            &[
+                SessionArchiveEntry {
+                    source_path: PathBuf::from("/tmp/only-in-session.zip"),
+                },
+                SessionArchiveEntry {
+                    source_path: agreeing.clone(),
+                },
+            ],
         )
         .expect("write session.json");
 
-        let tab_ids_to_load = vec![(TabId(1), PathBuf::from("/tmp/only-in-tabs.zip"))];
-        check_session_restore_list_matches(dir.path(), &tab_ids_to_load);
+        let mut col = TabsCollection::new();
+        let mismatched_tab = col.open(Some(PathBuf::from("/tmp/only-in-tabs.zip")));
+        let agreeing_tab = col.open(Some(agreeing.clone()));
 
-        assert!(
-            logs_contain("disagrees"),
-            "a genuinely different set of archives must still warn"
+        let resolved = resolve_session_restore_list(&dir.path().join("session.json"), &col);
+
+        assert_eq!(
+            resolved,
+            vec![(agreeing_tab, agreeing)],
+            "the disagreeing position must be dropped; the agreeing one must still resolve"
+        );
+        let _ = mismatched_tab;
+        assert!(logs_contain("disagree"));
+    }
+
+    /// A missing `session.json` (an upgrade from a version that never
+    /// wrote it, or a re-enabled `restore_tabs_on_launch` toggle with no
+    /// intervening save) falls back to trusting `tabs.json`'s own
+    /// embedded archive paths directly -- there is nothing durable to
+    /// consult, not a genuine disagreement to skip over.
+    #[test]
+    fn resolve_session_restore_list_falls_back_to_tabs_json_when_session_json_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = PathBuf::from("/tmp/a.zip");
+        let mut col = TabsCollection::new();
+        let tab_a = col.open(Some(a.clone()));
+
+        let resolved = resolve_session_restore_list(&dir.path().join("session.json"), &col);
+
+        assert_eq!(resolved, vec![(tab_a, a)]);
+    }
+
+    /// An `session.json` that *exists* but genuinely records zero open
+    /// archives is authoritative, not a fallback trigger -- unlike a
+    /// missing file (see the test above), this is a real prior session
+    /// that had nothing open, and must not fall back to trusting
+    /// `tabs.json` instead.
+    #[test]
+    fn resolve_session_restore_list_trusts_a_genuinely_empty_session_json() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session_restore_list(&dir.path().join("session.json"), &[])
+            .expect("write an empty session.json");
+
+        let mut col = TabsCollection::new();
+        col.open(Some(PathBuf::from("/tmp/a.zip")));
+
+        let resolved = resolve_session_restore_list(&dir.path().join("session.json"), &col);
+
+        assert_eq!(
+            resolved,
+            Vec::new(),
+            "an existing, genuinely empty session.json must not fall back to tabs.json"
         );
     }
 
