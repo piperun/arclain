@@ -124,6 +124,55 @@
 //! extension point rather than at the subset each site happened to
 //! handle, which is the behavior the WIT schema always described.
 //!
+//! # Migration status, and what each remaining extension point needs
+//!
+//! The five extension points migrate independently, because a slot's
+//! *document source* is separable from the host state that decides the
+//! slot exists at all (see "What is deliberately not modeled here"
+//! below). A facade-backed panel can already open a dialog that still
+//! renders through `super::ui_jobs`.
+//!
+//! - **`Panel`** -- migrated. Declared by
+//!   `crate::features::archive_browser::presentation::views::browser_page::
+//!   plugin_panel_section`, drawn by that feature's `Panel` component,
+//!   dispatched through
+//!   `crate::features::plugins::presentation::document_dispatch`.
+//! - **`Dialog`** / **`Page`** -- not migrated. Both are drawn by
+//!   `crate::features::plugins::presentation::views::rendering`, which
+//!   keeps its own `cached_dialog_layout`/`cached_page_layout` plus a
+//!   stale flag, because `PluginUiJobs` can return "busy" and the
+//!   renderer must keep showing the previous layout rather than blanking.
+//!   A slot needs none of that -- [`SlotView::Ready`] already retains the
+//!   last document across an in-flight action -- so migrating them is
+//!   mostly *deletion*: drop the two cache fields, the two stale flags,
+//!   and `invalidate_*_layout`, and swap `cached_or_request_layout` for
+//!   [`PluginSessions::view`] against a `Dialog`/`Page` slot built from
+//!   the `PluginDialogState` entry that is already there. The one piece
+//!   with no slot equivalent is `PageInitState`: a page's `__page_init`
+//!   lifecycle event must run before its first layout read, or the page
+//!   caches its pre-initialization layout. Under the session model that
+//!   becomes an action dispatched against the freshly opened session,
+//!   with the *second* document (the one the dispatch returns) being the
+//!   first one drawn -- which also retires the request-id generation
+//!   guard, since a stale session's result is already rejected by the
+//!   session check in [`PluginSessions::apply_update`].
+//! - **`MainPage`** -- not migrated. Drawn by the plugin detail view,
+//!   which holds a per-plugin `cached_main_layout` for exactly the reason
+//!   a slot makes unnecessary. Migrating it is a
+//!   [`PluginSlot::MainPage`] declaration plus deleting that cache and
+//!   the two invalidation sites that keep it honest.
+//! - **`PluginButton`** -- not migrated, and the most involved of the
+//!   four despite being the smallest surface. The toolbar renders it
+//!   through an injected closure (`crates/ui/src/shared/components/
+//!   toolbar` must not know about `features/plugins`, so
+//!   `core::arclain_app::toolbar_handler` hands it a renderer and a
+//!   dispatcher), and that closure's signature is in terms of flat
+//!   elements and `(plugin_id, event_id, value)` triples. Migrating it
+//!   means re-expressing that seam in terms of a document and
+//!   [`crate::features::plugins::presentation::rendering::DocumentEvent`]
+//!   -- a change to a shared component's contract, not just to a plugin
+//!   call site, which is why it is last rather than first.
+//!
 //! # What is deliberately not modeled here
 //!
 //! - **Where a dialog/page is open** stays in
@@ -424,6 +473,18 @@ impl PluginSessions {
             );
             return;
         };
+        // Logged at info, unlike the drops below: this is the line a
+        // launch smoke test greps for to confirm a given extension point
+        // really rendered through the facade path rather than the legacy
+        // queue. Carries no plugin-authored text -- the region slug and
+        // node count are host-derived.
+        tracing::info!(
+            plugin_id = %record_plugin_id(&document),
+            region = %document.region_id,
+            session_id = session_id.into_raw(),
+            revision = document.revision,
+            "[plugin-sessions] opened a plugin UI session through the facade"
+        );
         state.phase = SlotPhase::Open {
             session_id,
             document: Arc::new(document),
@@ -680,6 +741,13 @@ impl PluginSessions {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// A plugin id is host-supplied (it comes from the plugin's manifest,
+/// validated by `PluginId::parse`), so it is safe to log verbatim --
+/// unlike anything inside the document's nodes, which is guest-authored.
+fn record_plugin_id(document: &PluginUiDocument) -> &str {
+    &document.plugin_id
 }
 
 /// The outcome of a successfully applied [`PluginUiUpdate`]: which slot
