@@ -300,9 +300,15 @@ fn plugin_panel_section(
     use crate::features::plugins::application::{document_is_empty, PluginSlot, SlotView};
 
     let facade = shared.facade.as_ref()?;
+    let tab = shared.signals().tabs.get().active().clone();
     let slot = PluginSlot::Panel {
         plugin_id: plugin_id.to_string(),
-        tab: shared.signals().tabs.get().active_id(),
+        tab: tab.id,
+        // Part of the slot key, so opening a different archive into this
+        // tab yields a different slot -- a fresh session, fetched against
+        // the archive actually on screen and pinned to it. See
+        // `PluginSlot::Panel::archive_session`.
+        archive_session: tab.archive_session_id.get(),
     };
     let SlotView::Ready(document) =
         shared

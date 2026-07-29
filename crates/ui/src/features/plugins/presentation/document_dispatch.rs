@@ -76,19 +76,43 @@ pub fn dispatch_action(
         else {
             return;
         };
-        let Ok(snapshot) = facade.operation(operation_id).await else {
-            return;
-        };
-        crate::core::operation_bridge::handle_plugin_action_event(
-            &shared,
-            OperationEvent {
-                operation_id: snapshot.operation_id,
-                sequence: snapshot.last_sequence,
-                kind: snapshot.kind,
-                state: snapshot.state,
-            },
-        );
+        reconcile_started_action(&shared, &facade, operation_id).await;
     });
+}
+
+/// Routes an action operation's *current* state through the bridge, right
+/// after it was tracked.
+///
+/// This is the race closer: if the operation already reached a terminal
+/// state before [`dispatch_action`] recorded its id, the broadcast event
+/// announcing it was dropped as belonging to no slot and nothing else will
+/// ever deliver it. Re-reading the operation's own snapshot recovers
+/// exactly that case. If it is still running this is a no-op, and the live
+/// broadcast delivers the terminal event normally.
+///
+/// A named function rather than inline so the condition it exists for --
+/// "already terminal by the time we look" -- can be exercised
+/// deterministically. Driving it through [`dispatch_action`] cannot:
+/// that function *starts* the operation, so whether it has finished a few
+/// microseconds later is genuinely a race, and a test asserting either
+/// outcome flakes (measured: 1 failure in 3 runs).
+pub async fn reconcile_started_action(
+    shared: &SharedState,
+    facade: &arclain_app::ArclainApp,
+    operation_id: arclain_app::ids::OperationId,
+) {
+    let Ok(snapshot) = facade.operation(operation_id).await else {
+        return;
+    };
+    crate::core::operation_bridge::handle_plugin_action_event(
+        shared,
+        OperationEvent {
+            operation_id: snapshot.operation_id,
+            sequence: snapshot.last_sequence,
+            kind: snapshot.kind,
+            state: snapshot.state,
+        },
+    );
 }
 
 /// Host navigation, applied to this frontend's own dialog/page state.

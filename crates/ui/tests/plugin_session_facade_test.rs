@@ -22,15 +22,19 @@
 //! application owns its own runtime, and dropping it from inside an async
 //! context panics.
 
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
+use arclain_app::error::ApplicationErrorKind;
 use arclain_app::event::{OperationKind, OperationResult, OperationState};
-use arclain_app::ids::OperationId;
+use arclain_app::ids::{ArchiveSessionId, OperationId};
 use arclain_app::plugins::{PluginActionDto, PluginHostIntentDto, PluginUiNodeKind};
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 use arclain_ui::core::tabs::TabId;
 use arclain_ui::features::plugins::application::{PluginSessions, PluginSlot, SlotView};
+use arclain_ui::features::plugins::presentation::document_dispatch;
 use arclain_ui::shared::image_assets::ImageAssetStore;
 use eframe::egui;
 
@@ -168,6 +172,7 @@ fn declaring_a_panel_slot_opens_a_real_session_and_yields_the_plugins_panel_docu
     let slot = PluginSlot::Panel {
         plugin_id: "ui-demo".to_string(),
         tab: TabId(1),
+        archive_session: Some(ArchiveSessionId::from_raw(1)),
     };
 
     runtime.block_on(async {
@@ -198,6 +203,7 @@ fn re_declaring_a_slot_reuses_its_session_rather_than_opening_another() {
     let slot = PluginSlot::Panel {
         plugin_id: "ui-demo".to_string(),
         tab: TabId(1),
+        archive_session: Some(ArchiveSessionId::from_raw(1)),
     };
 
     runtime.block_on(async {
@@ -333,6 +339,7 @@ fn closing_a_slot_releases_its_facade_session() {
     let slot = PluginSlot::Panel {
         plugin_id: "ui-demo".to_string(),
         tab: TabId(1),
+        archive_session: Some(ArchiveSessionId::from_raw(1)),
     };
 
     runtime.block_on(async {
@@ -357,26 +364,34 @@ fn closing_a_slot_releases_its_facade_session() {
     });
 }
 
-/// The lag path: a `Lagged` broadcast receiver drops a plugin action's
-/// terminal event, and reconciliation must still deliver the document and
-/// drain the registry. Without it the slot renders a document that can
-/// never advance and its operation entry is held for the process's life.
+/// The lag path, driven through the **real** `reconcile_after_lag` rather
+/// than by re-implementing its inner steps.
 ///
-/// The dropped event is simulated by never feeding the broadcast at all
-/// and calling the reconciler directly -- the same way
-/// `operation_bridge_registration_race_test.rs` drives `reconcile_after_lag`
-/// rather than manufacturing a real channel overflow.
+/// A `Lagged` broadcast receiver drops a plugin action's terminal event.
+/// Without the plugin loop in `reconcile_after_lag`, the slot keeps
+/// rendering a document that can never advance and the registry entry is
+/// held for the life of the process. Deleting that loop must fail this
+/// test -- which is exactly what the previous version of it did not do,
+/// because it called `sessions.apply_update` by hand.
+///
+/// The dropped event is modelled the way
+/// `operation_bridge_registration_race_test.rs` models it: nothing ever
+/// subscribes, so the terminal event is gone by construction, and the
+/// reconciler is invoked the same way the bridge's own loop invokes it on
+/// `RecvError::Lagged`.
 #[test]
-fn a_lagged_terminal_event_is_recovered_by_reconciliation() {
+fn reconcile_after_lag_recovers_a_plugin_action_whose_terminal_event_was_dropped() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_with_plugin(&temp, "facade-test-fixture");
-    let runtime = runtime();
-    let sessions = PluginSessions::new();
+    let mut shared = common::create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.clone();
     let slot = PluginSlot::MainPage {
         plugin_id: "facade-test-fixture".to_string(),
     };
 
     runtime.block_on(async {
+        let sessions = shared.plugin_sessions.clone();
         let SlotView::Ready(opened) =
             view_until_resolved(&sessions, &app, runtime.handle(), &slot).await
         else {
@@ -393,29 +408,30 @@ fn a_lagged_terminal_event_is_recovered_by_reconciliation() {
             .await
             .expect("starting an action must succeed");
         wait_for_plugin_action_completion(&app, operation_id).await;
-
         assert!(
             sessions.tracked_ids().contains(&operation_id),
-            "the operation must still be tracked -- its terminal event was 'dropped'"
+            "precondition: the terminal event was never delivered, so it is still tracked"
         );
 
-        // What the lag handler does for each tracked id: re-read the
-        // operation's own snapshot and route it as if it had arrived.
-        let snapshot = app.operation(operation_id).await.unwrap();
-        let OperationState::Completed {
-            result: OperationResult::PluginUiUpdated { update },
-        } = snapshot.state
-        else {
-            panic!("the action must have completed with a document");
-        };
-        let applied = sessions
-            .apply_update(operation_id, update)
-            .expect("reconciliation must apply the recovered update");
+        arclain_ui::core::operation_bridge::reconcile_after_lag(
+            &shared,
+            &shared.operation_origins,
+            &runtime,
+            &app,
+            1,
+        )
+        .await;
 
-        assert!(applied.document.revision > opened.revision);
         assert!(
             sessions.tracked_ids().is_empty(),
-            "reconciliation must drain the registry, not just apply the document"
+            "reconciliation must drain the registry entry"
+        );
+        let SlotView::Ready(recovered) = sessions.view(&app, runtime.handle(), &slot) else {
+            panic!("the slot must still hold a document");
+        };
+        assert!(
+            recovered.revision > opened.revision,
+            "reconciliation must apply the recovered document, not merely clear bookkeeping"
         );
     });
 }
@@ -425,37 +441,126 @@ fn a_lagged_terminal_event_is_recovered_by_reconciliation() {
 /// `ImageAssetStore` routes a plugin key's *write* to the same namespace
 /// its *read* resolves.
 ///
-/// Before both halves shared one `ImageBytes` implementation, the store
-/// read through `read_plugin_image` (plugin namespace, decoded key) while
-/// the fetch site wrote straight to the content cache (host namespace,
-/// encoded key) -- structurally distinct, so a URL-fallback recovery could
-/// never satisfy the read that triggered it.
+/// **Driven from inside a task on the store's own runtime**, which is the
+/// production shape (`image_fetcher::trigger_image_fetch` stores from
+/// exactly there) and the condition that distinguishes a working fix from
+/// an inert one. The first attempt at this fix did the blocking write on
+/// the calling thread; from a runtime worker that panics with "Cannot
+/// start a runtime from within a runtime", so the recovery never ran in
+/// production while a test calling it from a plain thread passed.
 #[test]
-fn the_image_store_writes_plugin_keys_where_it_reads_them() {
+fn the_image_store_writes_plugin_keys_where_it_reads_them_from_inside_a_runtime_task() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_with_plugin(&temp, "ui-demo");
     let runtime = runtime();
     // Built exactly as production does (`SharedState::new`), so this
     // exercises the real routing rather than a test-only source.
     let store = ImageAssetStore::with_plugin_images(None, app.clone(), runtime.clone());
-    let key = "plugin-image:ui-demo:cover:RJ000002";
+    let key = "plugin-image:ui-demo:cover:RJ000002".to_string();
     let bytes = vec![0x89, 0x50, 0x4E, 0x47, 1, 2, 3, 4];
 
-    store
-        .store_fetched(
-            key,
-            &bytes,
-            Some("https://example.invalid/c.png"),
-            egui::Context::default(),
-        )
-        .expect("a URL-fallback store must succeed for a plugin key");
+    runtime.block_on({
+        let store = store.clone();
+        let app = app.clone();
+        let key = key.clone();
+        let bytes = bytes.clone();
+        let runtime = runtime.clone();
+        async move {
+            // `spawn` + `await`, not a direct call: the future must be
+            // polled by a runtime worker thread for this to reproduce the
+            // production context at all.
+            runtime
+                .spawn(async move {
+                    store
+                        .store_fetched(
+                            Some("ui-demo".to_string()),
+                            key,
+                            bytes,
+                            Some("https://example.invalid/c.png".to_string()),
+                            egui::Context::default(),
+                        )
+                        .await
+                })
+                .await
+                .expect("the store task must not panic")
+                .expect("a URL-fallback store must succeed for a plugin key");
 
-    assert_eq!(
-        runtime
-            .block_on(app.read_plugin_image(key.to_string()))
-            .expect("the read that triggered the fetch must now find the bytes"),
-        bytes
-    );
+            assert_eq!(
+                app.read_plugin_image(key_for_read())
+                    .await
+                    .expect("the read that triggered the fetch must now find the bytes"),
+                vec![0x89, 0x50, 0x4E, 0x47, 1, 2, 3, 4]
+            );
+        }
+    });
+
+    fn key_for_read() -> String {
+        "plugin-image:ui-demo:cover:RJ000002".to_string()
+    }
+}
+
+/// A plugin cannot write into another plugin's cache namespace by
+/// authoring a key that names it.
+///
+/// The key encodes its own owner, so on its own it is a bearer token for
+/// a namespace. `write_plugin_image` therefore takes the host's separate
+/// statement of which plugin is acting and refuses a mismatch -- the
+/// facade-side half of the guard whose frontend-side half is
+/// `KeyProvenance`.
+#[test]
+fn a_plugin_cannot_write_into_another_plugins_image_namespace() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let runtime = runtime();
+    let victim_key = "plugin-image:victim-plugin:secret".to_string();
+    let poison = vec![0xDE, 0xAD, 0xBE, 0xEF];
+
+    runtime.block_on(async {
+        // Seed the victim's own entry, acting as the victim.
+        app.write_plugin_image(
+            "victim-plugin".to_string(),
+            victim_key.clone(),
+            vec![1, 2, 3, 4],
+            None,
+        )
+        .await
+        .expect("the owning plugin may write its own namespace");
+
+        // Now the attacker, whose documents are rendered as "ui-demo",
+        // tries to overwrite it by naming the victim in the key.
+        let error = app
+            .write_plugin_image("ui-demo".to_string(), victim_key.clone(), poison, None)
+            .await
+            .expect_err("a key naming another plugin must be refused");
+        assert_eq!(error.kind, ApplicationErrorKind::PermissionDenied);
+
+        assert_eq!(
+            app.read_plugin_image(victim_key).await.unwrap(),
+            vec![1, 2, 3, 4],
+            "the victim's bytes must be untouched"
+        );
+    });
+}
+
+/// A structurally decodable but malformed owner cannot mint a cache
+/// namespace of its own (each carries per-owner quota accounting).
+#[test]
+fn write_plugin_image_rejects_a_malformed_owner_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let runtime = runtime();
+    let bogus = "../../escape";
+
+    let error = runtime
+        .block_on(app.write_plugin_image(
+            bogus.to_string(),
+            format!("plugin-image:{bogus}:k"),
+            vec![1, 2, 3],
+            None,
+        ))
+        .expect_err("a malformed plugin id must be refused");
+
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
 }
 
 /// Every tab-scoped slot of a closing tab is swept, and window-scoped
@@ -470,10 +575,12 @@ fn retaining_open_tabs_closes_only_the_departed_tabs_slots() {
     let kept = PluginSlot::Panel {
         plugin_id: "ui-demo".to_string(),
         tab: TabId(1),
+        archive_session: Some(ArchiveSessionId::from_raw(1)),
     };
     let departed = PluginSlot::Panel {
         plugin_id: "ui-demo".to_string(),
         tab: TabId(2),
+        archive_session: Some(ArchiveSessionId::from_raw(2)),
     };
     let window_scoped = PluginSlot::PluginButton {
         plugin_id: "ui-demo".to_string(),
@@ -485,7 +592,11 @@ fn retaining_open_tabs_closes_only_the_departed_tabs_slots() {
         }
         assert_eq!(sessions.len(), 3);
 
-        sessions.retain_tabs(&app, runtime.handle(), &[TabId(1)]);
+        sessions.retain_hosts(
+            &app,
+            runtime.handle(),
+            &[(TabId(1), Some(ArchiveSessionId::from_raw(1)))],
+        );
 
         assert!(sessions.session_id(&kept).is_some());
         assert!(sessions.session_id(&departed).is_none());
@@ -493,5 +604,185 @@ fn retaining_open_tabs_closes_only_the_departed_tabs_slots() {
             sessions.session_id(&window_scoped).is_some(),
             "a window-scoped slot belongs to no tab and must survive every tab close"
         );
+    });
+}
+
+/// Pins the registration-race re-read -- `dispatch_action`'s own
+/// `reconcile_started_action`, driven with the condition it exists for.
+///
+/// `start_plugin_action`'s worker can reach a terminal state and broadcast
+/// before the caller resumes and records the operation id, so the bridge
+/// drops that event as belonging to no slot. The re-read recovers it.
+///
+/// Exercised by tracking an operation that is *already* terminal, the same
+/// "already finished before registration" shape
+/// `operation_bridge_registration_race_test.rs` manufactures. Nothing
+/// subscribes to the broadcast here, so the re-read is the only path by
+/// which the outcome can arrive: remove it and the registry entry is never
+/// drained and no toast appears.
+///
+/// Deliberately *not* driven through `dispatch_action` itself: that
+/// function starts the operation, so whether it has finished microseconds
+/// later is a genuine race -- a test asserting either outcome flakes
+/// (measured at 1 failure in 3 runs before this was split out).
+#[test]
+fn the_started_action_re_read_applies_a_result_that_raced_its_registration() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "facade-test-fixture");
+    let mut shared = common::create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.clone();
+    let slot = PluginSlot::MainPage {
+        plugin_id: "facade-test-fixture".to_string(),
+    };
+
+    runtime.block_on(async {
+        let SlotView::Ready(opened) =
+            view_until_resolved(&shared.plugin_sessions, &app, runtime.handle(), &slot).await
+        else {
+            panic!("the main-page slot must resolve to a document");
+        };
+
+        let operation_id = shared
+            .plugin_sessions
+            .start_action(
+                &app,
+                &slot,
+                "multi-action".to_string(),
+                PluginActionDto::Activate,
+            )
+            .await
+            .expect("starting an action must succeed");
+        // Terminal *before* the re-read looks -- the race, forced open.
+        wait_for_plugin_action_completion(&app, operation_id).await;
+        assert!(
+            shared.plugin_sessions.tracked_ids().contains(&operation_id),
+            "precondition: no subscriber delivered the terminal event"
+        );
+
+        document_dispatch::reconcile_started_action(&shared, &app, operation_id).await;
+
+        assert!(
+            shared.plugin_sessions.tracked_ids().is_empty(),
+            "the re-read must drain the registry entry"
+        );
+        let SlotView::Ready(applied) = shared.plugin_sessions.view(&app, runtime.handle(), &slot)
+        else {
+            panic!("the slot must still hold a document");
+        };
+        assert!(
+            applied.revision > opened.revision,
+            "the re-read must apply the recovered document, not merely clear bookkeeping"
+        );
+    });
+}
+
+/// N3's stranded-panel hazard: a `Panel` slot opened while no archive is
+/// loaded must not become the answer forever.
+///
+/// The archive session is part of the slot key, so opening an archive
+/// yields a *different* slot -- a fresh session, fetched against the
+/// archive actually on screen. Without that, the archive-less (empty)
+/// document would be cached under the same key and the panel would never
+/// appear.
+#[test]
+fn a_panel_opened_without_an_archive_re_opens_once_one_is_active() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let runtime = runtime();
+    let sessions = PluginSessions::new();
+    let archive_less = PluginSlot::Panel {
+        plugin_id: "ui-demo".to_string(),
+        tab: TabId(1),
+        archive_session: None,
+    };
+    let with_archive = PluginSlot::Panel {
+        plugin_id: "ui-demo".to_string(),
+        tab: TabId(1),
+        archive_session: Some(ArchiveSessionId::from_raw(4)),
+    };
+
+    runtime.block_on(async {
+        view_until_resolved(&sessions, &app, runtime.handle(), &archive_less).await;
+        let archive_less_session = sessions
+            .session_id(&archive_less)
+            .expect("the archive-less panel opened a session");
+
+        view_until_resolved(&sessions, &app, runtime.handle(), &with_archive).await;
+        let with_archive_session = sessions
+            .session_id(&with_archive)
+            .expect("activating an archive must open a fresh session, not reuse the stale one");
+        assert_ne!(archive_less_session, with_archive_session);
+
+        // The per-frame sweep then retires the slot whose archive is gone,
+        // so the stale session does not outlive the archive it was
+        // opened for.
+        sessions.retain_hosts(
+            &app,
+            runtime.handle(),
+            &[(TabId(1), Some(ArchiveSessionId::from_raw(4)))],
+        );
+        assert!(sessions.session_id(&archive_less).is_none());
+        assert_eq!(
+            sessions.session_id(&with_archive),
+            Some(with_archive_session)
+        );
+    });
+}
+
+/// The layout editor's capability probe must not take over the browser's
+/// rendering slot -- that is what silently un-pinned the plugin's metadata
+/// writes and could strand the panel on an archive-less document.
+#[test]
+fn probing_an_extension_point_leaves_no_slot_behind() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let runtime = runtime();
+    let sessions = PluginSessions::new();
+
+    runtime.block_on(async {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let offers_panel = loop {
+            if let Some(answer) = sessions.probe_extension_point(
+                &app,
+                runtime.handle(),
+                "ui-demo",
+                arclain_app::plugins::PluginExtensionPointDto::Panel,
+            ) {
+                break answer;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the probe never answered"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+
+        assert!(offers_panel, "ui-demo does implement a Panel layout");
+        assert!(
+            sessions.is_empty(),
+            "a capability probe must claim no rendering slot"
+        );
+
+        // And the plugin that does not implement one answers false rather
+        // than leaving the editor to guess.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let offers_dialog = loop {
+            if let Some(answer) = sessions.probe_extension_point(
+                &app,
+                runtime.handle(),
+                "ui-demo",
+                arclain_app::plugins::PluginExtensionPointDto::Dialog("nope".to_string()),
+            ) {
+                break answer;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the probe never answered"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert!(!offers_dialog);
+        assert!(sessions.is_empty());
     });
 }

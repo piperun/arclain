@@ -29,6 +29,7 @@ fn panel_slot() -> PluginSlot {
     PluginSlot::Panel {
         plugin_id: "demo".to_string(),
         tab: TabId(1),
+        archive_session: Some(arclain_app::ids::ArchiveSessionId::from_raw(1)),
     }
 }
 

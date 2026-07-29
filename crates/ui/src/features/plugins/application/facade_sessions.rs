@@ -189,7 +189,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arclain_app::ids::{OperationId, PluginSessionId};
+use arclain_app::ids::{ArchiveSessionId, OperationId, PluginSessionId};
 use arclain_app::plugins::{
     PluginActionDto, PluginActionRequest, PluginButtonActionDto, PluginExtensionPointDto,
     PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind, PluginUiUpdate,
@@ -223,6 +223,23 @@ pub enum PluginSlot {
     Panel {
         plugin_id: String,
         tab: TabId,
+        /// The archive session this panel was opened for.
+        ///
+        /// Part of the slot's *identity*, not incidental state: a panel is
+        /// the plugin's view **of an archive**, so the same plugin in the
+        /// same tab showing a different archive is a different panel and
+        /// needs its own session. Without this, opening a second archive
+        /// into a tab left the panel rendering the first archive's
+        /// document forever (nothing invalidates a slot on archive
+        /// change), and a panel first drawn with no archive open could
+        /// never recover once one was.
+        ///
+        /// It also keeps the facade's write-origin pin honest: the facade
+        /// captures the active archive session when the session opens, so
+        /// a slot that outlived an archive change would have its plugin's
+        /// background metadata writes pinned to the archive the user has
+        /// left.
+        archive_session: Option<ArchiveSessionId>,
     },
     Dialog {
         plugin_id: String,
@@ -404,9 +421,23 @@ pub struct PluginSessions {
     inner: Arc<Mutex<Registry>>,
 }
 
+/// Answer to "does this plugin offer anything at this extension point?",
+/// cached per `(plugin_id, region slug)`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbeState {
+    /// A probe session is open; no answer yet.
+    Pending,
+    /// The plugin returned a non-empty document (`true`) or an empty one.
+    Answered(bool),
+}
+
 #[derive(Default)]
 struct Registry {
     slots: HashMap<PluginSlot, SlotState>,
+    /// Capability answers, keyed by `(plugin_id, region slug)`. Kept
+    /// separate from `slots` on purpose -- see
+    /// [`PluginSessions::probe_extension_point`].
+    probes: HashMap<(String, String), ProbeState>,
     /// Reverse index for the operation bridge: an arriving event knows
     /// only its `OperationId`. Populated by [`PluginSessions::dispatch`],
     /// drained on the operation's terminal event.
@@ -697,6 +728,12 @@ impl PluginSessions {
         for slot in self.slots_matching(|slot| slot.plugin_id() == plugin_id) {
             self.close(facade, runtime, &slot);
         }
+        // A disabled plugin offers nothing, and a re-enabled one may offer
+        // something new -- either way the cached answer is stale.
+        self.inner
+            .lock()
+            .probes
+            .retain(|(probed, _), _| probed != plugin_id);
     }
 
     /// Closes every tab-scoped slot whose tab is no longer open.
@@ -708,15 +745,32 @@ impl PluginSessions {
     /// `crate::core::app_lifecycle::sync_active_archive_session` already
     /// uses for the same reason. Missing one site would leak a WASM
     /// session for the rest of the process's life.
-    pub fn retain_tabs(
+    pub fn retain_hosts(
         &self,
         facade: &ArclainApp,
         runtime: &tokio::runtime::Handle,
-        open_tabs: &[TabId],
+        open_tabs: &[(TabId, Option<ArchiveSessionId>)],
     ) {
-        for slot in
-            self.slots_matching(|slot| slot.tab().is_some_and(|tab| !open_tabs.contains(&tab)))
-        {
+        for slot in self.slots_matching(|slot| {
+            let Some(tab) = slot.tab() else {
+                return false;
+            };
+            let Some((_, archive_session)) = open_tabs.iter().find(|(open, _)| *open == tab) else {
+                return true;
+            };
+            // A `Panel` slot is keyed by the archive it was opened for, so
+            // once that tab shows a different archive the old slot has no
+            // host left to draw it -- the browser is already asking for a
+            // different key. Sweeping it here is what stops the previous
+            // archive's WASM session outliving the archive itself.
+            match slot {
+                PluginSlot::Panel {
+                    archive_session: slot_archive,
+                    ..
+                } => slot_archive != archive_session,
+                _ => false,
+            }
+        }) {
             self.close(facade, runtime, &slot);
         }
     }
@@ -737,6 +791,10 @@ impl PluginSessions {
         for slot in self.slots_matching(|_| true) {
             self.close(facade, runtime, &slot);
         }
+        // Cached capability answers are re-derived the same way a document
+        // is: a refresh means "whatever you learned from this plugin may
+        // no longer hold".
+        self.inner.lock().probes.clear();
     }
 
     /// Snapshots the matching slot keys, releasing the registry lock
@@ -749,6 +807,86 @@ impl PluginSessions {
             .filter(|slot| predicate(slot))
             .cloned()
             .collect()
+    }
+
+    /// Answers "does `plugin_id` offer anything at `extension_point`?"
+    /// without claiming a rendering slot.
+    ///
+    /// Returns `None` until the answer is known; safe to call every frame
+    /// (the second and later calls find the cached state).
+    ///
+    /// **Deliberately not [`Self::view`].** A caller that only needs a
+    /// *capability* answer -- the layout editor deciding whether to offer
+    /// a plugin as a configurable info-panel item -- must not take over a
+    /// rendering slot, for two reasons discovered the hard way:
+    ///
+    /// - A slot records the archive session that was active when it
+    ///   opened, and the facade pins background metadata writes to it. A
+    ///   settings page opens with no archive, so a slot opened from there
+    ///   is pinned to nothing; the archive browser then reuses that very
+    ///   session and its plugin's fetches land on whatever archive is
+    ///   active at completion instead of the one being viewed.
+    /// - A slot's document is fetched once. A plugin whose panel depends
+    ///   on an open archive answers "empty" from a settings page, and the
+    ///   browser then reuses that empty document forever.
+    ///
+    /// The probe session is opened, read, and closed immediately, so it
+    /// competes with nothing and leaks nothing. Its answer is cached
+    /// because it changes only when the plugin does (see
+    /// [`Self::close_plugin`] and [`Self::close_all`], which clear it).
+    pub fn probe_extension_point(
+        &self,
+        facade: &ArclainApp,
+        runtime: &tokio::runtime::Handle,
+        plugin_id: &str,
+        extension_point: PluginExtensionPointDto,
+    ) -> Option<bool> {
+        let probe_key = (plugin_id.to_string(), extension_point.region_slug());
+        {
+            let mut registry = self.inner.lock();
+            match registry.probes.get(&probe_key) {
+                Some(ProbeState::Answered(offered)) => return Some(*offered),
+                Some(ProbeState::Pending) => return None,
+                None => {
+                    registry
+                        .probes
+                        .insert(probe_key.clone(), ProbeState::Pending);
+                }
+            }
+        }
+
+        let sessions = self.clone();
+        let app = facade.clone();
+        let plugin = plugin_id.to_string();
+        runtime.spawn(async move {
+            let offered = match app.open_plugin_session(plugin, extension_point).await {
+                Ok(snapshot) => {
+                    // Closed before the answer is even recorded: nothing
+                    // else may observe this session, and a failure to
+                    // close would leak a WASM session per probed plugin.
+                    if let Err(error) = app.close_plugin_session(snapshot.session_id).await {
+                        tracing::debug!(
+                            "[plugin-sessions] closing a probe session failed: {}",
+                            error.summary
+                        );
+                    }
+                    !document_is_empty(&snapshot.document.root)
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        "[plugin-sessions] probing an extension point failed: {}",
+                        error.summary
+                    );
+                    false
+                }
+            };
+            sessions
+                .inner
+                .lock()
+                .probes
+                .insert(probe_key, ProbeState::Answered(offered));
+        });
+        None
     }
 
     /// Installs an already-open slot directly, bypassing the facade call
@@ -790,9 +928,13 @@ impl PluginSessions {
         self.inner.lock().operations.keys().copied().collect()
     }
 
-    /// Whether `operation_id` is one this registry started. Lets the lag
-    /// reconciler tell "this operation's history was evicted, drain it"
-    /// from "this operation was never ours".
+    /// Test/diagnostic: whether `operation_id` is one this registry
+    /// started and has not yet resolved.
+    ///
+    /// Deliberately *not* used by the lag reconciler, which distinguishes
+    /// "ours, drain it" from "never ours" via `fail(id).is_some()` -- one
+    /// locked lookup that also performs the drain, rather than a
+    /// check-then-act pair with a window between them.
     pub fn tracks(&self, operation_id: OperationId) -> bool {
         self.inner.lock().operations.contains_key(&operation_id)
     }
@@ -867,6 +1009,7 @@ mod tests {
         PluginSlot::Panel {
             plugin_id: "demo".to_string(),
             tab: TabId(1),
+            archive_session: Some(ArchiveSessionId::from_raw(1)),
         }
     }
 

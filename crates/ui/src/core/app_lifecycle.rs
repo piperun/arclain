@@ -92,30 +92,35 @@ pub fn sync_active_archive_session(shared: &SharedState) {
     });
 }
 
-/// Closes the facade plugin sessions of any tab that is no longer open.
+/// Closes facade plugin sessions whose host is gone: a tab that closed, or
+/// a `Panel` slot whose tab now shows a different archive.
 ///
 /// Per-frame for the same reason as [`sync_active_archive_session`]: tabs
-/// are removed from several call sites (plain close, close-others,
-/// close-to-the-right, the force-close confirmation), and missing one
-/// would leak a WASM plugin session for the rest of the process's life.
-pub fn sweep_closed_tab_plugin_sessions(shared: &SharedState) {
+/// are removed and archives are swapped from several call sites (plain
+/// close, close-others, close-to-the-right, the force-close confirmation,
+/// every archive-open completion), and missing one would leak a WASM
+/// plugin session for the rest of the process's life.
+pub fn sweep_orphaned_plugin_sessions(shared: &SharedState) {
     let Some(facade) = shared.facade.as_ref() else {
         return;
     };
     if shared.plugin_sessions.is_empty() {
         return;
     }
-    let open_tabs: Vec<crate::core::tabs::TabId> = shared
+    let open_tabs: Vec<(
+        crate::core::tabs::TabId,
+        Option<arclain_app::ids::ArchiveSessionId>,
+    )> = shared
         .signals()
         .tabs
         .get()
         .tabs()
         .iter()
-        .map(|tab| tab.id)
+        .map(|tab| (tab.id, tab.archive_session_id.get()))
         .collect();
     shared
         .plugin_sessions
-        .retain_tabs(facade, shared.services.tokio_runtime.handle(), &open_tabs);
+        .retain_hosts(facade, shared.services.tokio_runtime.handle(), &open_tabs);
 }
 
 /// The pure decision `sync_active_archive_session` makes: whether

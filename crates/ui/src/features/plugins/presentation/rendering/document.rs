@@ -351,7 +351,6 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
         } => render_text_input(ui, sink, id, label, value, placeholder.as_deref()),
         PluginUiNodeKind::Checkbox { label, checked } => {
             let temp_id = ui.make_persistent_id("checkbox");
-            let mut is_checked = *checked;
             // Optimistic local state: a checkbox toggle round-trips through
             // a facade operation, so the incoming document still reports
             // the old value for a frame or two.
@@ -368,7 +367,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
             // correct reading of "the plugin has now answered".
             let optimistic: Option<(u64, bool)> = ui.data(|data| data.get_temp(temp_id));
             let decision = optimistic_checkbox_state(*checked, document_revision, optimistic);
-            is_checked = decision.displayed;
+            let mut is_checked = decision.displayed;
             if decision.retire {
                 ui.data_mut(|data| data.remove::<(u64, bool)>(temp_id));
             }

@@ -40,7 +40,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     app_lifecycle::process_refresh_requests(&app.shared_state, ctx);
     app_lifecycle::bind_signals_once(&app.shared_state, ctx, &mut app._signals_bound);
     app_lifecycle::sync_active_archive_session(&app.shared_state);
-    app_lifecycle::sweep_closed_tab_plugin_sessions(&app.shared_state);
+    app_lifecycle::sweep_orphaned_plugin_sessions(&app.shared_state);
     crate::features::plugins::application::process_plugin_ui_results(
         &app.shared_state,
         &mut app.plugins_feature,

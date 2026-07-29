@@ -169,35 +169,31 @@ impl Region for InfoPanelRegion {
             .filter(|p| p.enabled)
             .map(|p| (p.id.clone(), p.name.clone()))
             .collect();
-        // This is a live `Panel` probe -- "does this plugin have an info
-        // panel worth offering as a configurable item?" -- so it resolves
-        // through the same facade session the archive browser's panel
-        // renders from, not the legacy layout queue. Both ask the same
-        // question about the same extension point for the same tab, so
-        // they share one slot (and therefore one WASM session) rather than
-        // each keeping their own answer and drifting.
+        // The editor needs a *capability* answer -- "does this plugin have
+        // an info panel worth offering as a configurable item?" -- not a
+        // live document. It therefore probes rather than opening the
+        // archive browser's rendering slot: this page runs with no archive
+        // open, and a slot opened from here would both pin the plugin's
+        // background metadata writes to no archive at all and cache an
+        // archive-less (empty) panel document that the browser would then
+        // reuse forever. See `PluginSessions::probe_extension_point`.
         let Some(facade) = shared.facade.as_ref() else {
             return false;
         };
         let runtime = shared.services.tokio_runtime.handle();
-        let active_tab = shared.signals().tabs.get().active_id();
 
         let mut changed = false;
 
         for (plugin_id, plugin_name) in enabled_plugins {
-            let slot = crate::features::plugins::application::PluginSlot::Panel {
-                plugin_id: plugin_id.clone(),
-                tab: active_tab,
-            };
-            let crate::features::plugins::application::SlotView::Ready(document) =
-                shared.plugin_sessions.view(facade, runtime, &slot)
-            else {
-                // Still opening, or failed: no answer yet. The editor
-                // re-runs this sync on later frames, so a slot that
-                // resolves later is picked up then.
-                continue;
-            };
-            if crate::features::plugins::application::document_is_empty(&document.root) {
+            let offers_panel = shared.plugin_sessions.probe_extension_point(
+                facade,
+                runtime,
+                &plugin_id,
+                arclain_app::plugins::PluginExtensionPointDto::Panel,
+            );
+            // `None` is "not answered yet"; the editor re-runs this sync on
+            // later frames and picks the answer up then.
+            if offers_panel != Some(true) {
                 continue;
             }
 
