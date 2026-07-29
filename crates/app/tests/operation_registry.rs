@@ -30,7 +30,7 @@
 use arclain_app::challenge::Challenge;
 use arclain_app::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use arclain_app::event::{
-    OperationEvent, OperationKind, OperationResult, OperationSnapshot, OperationState,
+    OperationEvent, OperationKind, OperationResult, OperationSnapshot, OperationState, SessionEvent,
 };
 use arclain_app::ids::{ArchiveSessionId, ChallengeId, OperationId};
 
@@ -390,6 +390,49 @@ mod challenge_tests {
             path: std::path::PathBuf::from("locked.txt"),
         };
         assert_eq!(challenge.id(), id);
+    }
+}
+
+mod session_event_tests {
+    use super::*;
+
+    #[test]
+    fn metadata_changed_round_trips_through_json() {
+        let event = SessionEvent::MetadataChanged {
+            session_id: ArchiveSessionId::from_raw(4),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let round_tripped: SessionEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped, event);
+    }
+
+    #[test]
+    fn metadata_changed_serializes_with_the_kind_tag_in_snake_case() {
+        let event = SessionEvent::MetadataChanged {
+            session_id: ArchiveSessionId::from_raw(9),
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "metadata_changed",
+                "session_id": 9,
+            })
+        );
+    }
+
+    #[test]
+    fn distinct_session_ids_are_not_equal() {
+        // `SessionEvent` derives `Eq` per the contract -- sanity check
+        // that two events naming different sessions are distinguishable,
+        // not just structurally serializable.
+        let a = SessionEvent::MetadataChanged {
+            session_id: ArchiveSessionId::from_raw(1),
+        };
+        let b = SessionEvent::MetadataChanged {
+            session_id: ArchiveSessionId::from_raw(2),
+        };
+        assert_ne!(a, b);
     }
 }
 

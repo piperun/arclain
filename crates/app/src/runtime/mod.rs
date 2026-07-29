@@ -48,7 +48,7 @@ use crate::archive::{ArchiveSessionStore, EntryPage, ListEntriesRequest, OpenArc
 use crate::challenge::{ChallengeResponse, SecretInput};
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::event::{
-    OperationEvent, OperationKind, OperationResult, OperationSnapshot, OperationState,
+    OperationEvent, OperationKind, OperationResult, OperationSnapshot, OperationState, SessionEvent,
 };
 use crate::ids::{ArchiveSessionId, MaterializationLeaseId, OperationId, PluginSessionId};
 use crate::materialization::{MaterializationLease, MaterializationStore, MaterializeRequest};
@@ -194,8 +194,14 @@ pub(crate) struct AppRuntime {
     /// tracked through.
     operations: OperationRegistry,
     /// Every open archive session, keyed by the `ArchiveSessionId` this
-    /// store itself mints.
-    archive_sessions: ArchiveSessionStore,
+    /// store itself mints. `Arc`-wrapped (unlike most other `AppRuntime`
+    /// fields, which are already reachable through `AppRuntime`'s own
+    /// `Arc`) so `crate::plugins::ArchiveContextBridge` -- constructed
+    /// once and installed on `PluginManager`, entirely independent of
+    /// any one `ArclainApp` clone's lifetime -- can hold its own cheap
+    /// clone of the exact same store instance rather than a second,
+    /// disconnected one.
+    archive_sessions: Arc<ArchiveSessionStore>,
     /// Delivers a `ChallengeResponse`'s live payload to whichever
     /// operation task is waiting on it -- see the module's own doc
     /// comment for why this is a separate structure from `operations`.
@@ -272,6 +278,15 @@ impl AppRuntime {
 
     pub(crate) fn archive_sessions(&self) -> &ArchiveSessionStore {
         &self.archive_sessions
+    }
+
+    /// A cloned handle (cheap: an `Arc` bump) to the same store
+    /// [`Self::archive_sessions`] borrows from -- for constructing a
+    /// long-lived, independently-owned adapter such as
+    /// `crate::plugins::ArchiveContextBridge`, which cannot borrow
+    /// `&AppRuntime` for its own lifetime.
+    pub(crate) fn archive_sessions_handle(&self) -> Arc<ArchiveSessionStore> {
+        self.archive_sessions.clone()
     }
 
     pub(crate) fn challenges(&self) -> &ChallengeWaiters {
@@ -794,6 +809,16 @@ impl ArclainApp {
     /// `OperationRegistry::subscribe`.
     pub fn subscribe_operations(&self) -> tokio::sync::broadcast::Receiver<OperationEvent> {
         self.inner.operations().subscribe()
+    }
+
+    /// Subscribes to the session-event stream: changes to an archive
+    /// session's state that happen outside any operation (a plugin
+    /// writing metadata, or renaming the archive). See
+    /// `crate::archive::ArchiveSessionStore::subscribe_session_events`
+    /// and [`crate::event::SessionEvent`]'s own doc comment for the
+    /// delivery contract.
+    pub fn subscribe_session_events(&self) -> tokio::sync::broadcast::Receiver<SessionEvent> {
+        self.inner.archive_sessions().subscribe_session_events()
     }
 
     /// Answers a pending challenge on `operation_id` with `response`.

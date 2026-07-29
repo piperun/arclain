@@ -510,7 +510,7 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         paths,
         session,
         operations: OperationRegistry::new(),
-        archive_sessions: crate::archive::ArchiveSessionStore::new(),
+        archive_sessions: Arc::new(crate::archive::ArchiveSessionStore::new()),
         challenges: ChallengeWaiters::new(),
         archive_backend_override: config.archive_backend_override,
         extract_runner,

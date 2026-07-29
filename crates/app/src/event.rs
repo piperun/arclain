@@ -97,3 +97,42 @@ pub struct OperationSnapshot {
     pub last_sequence: u64,
     pub state: OperationState,
 }
+
+/// A session-scoped change that happens outside any operation -- the
+/// only case so far is a plugin writing an archive session's metadata
+/// (from an event-triggered fetch, or a panel-driven emit) through
+/// `crate::plugins::ArchiveContextBridge`. Nothing about opening,
+/// closing, or mutating an archive through `start_open_archive`/
+/// `start_archive_mutation` flows through this: those already have their
+/// own progress/completion story via [`OperationEvent`]/[`OperationState`].
+///
+/// Delivered through [`crate::ArclainApp::subscribe_session_events`]: a
+/// bounded, best-effort broadcast with the same lag semantics as
+/// [`OperationEvent`]'s own stream (see `crate::archive::ArchiveSessionStore`'s
+/// own doc comment for the channel itself) -- a subscriber that falls
+/// behind receives `RecvError::Lagged` rather than silently missing
+/// events, and reconciles by re-fetching [`crate::ArclainApp::archive_snapshot`]
+/// for whichever sessions it still cares about, rather than trusting it
+/// never missed one.
+///
+/// Only one variant exists today (a `session_id` is enough to name what
+/// changed and let a subscriber re-fetch the rest), but the type is
+/// already an enum -- adding a second session-scoped change later needs
+/// no brand-new broadcast stream and no new subscribe method, just a new
+/// arm here and in whatever already matches on `MetadataChanged`
+/// exhaustively.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionEvent {
+    /// `session_id`'s metadata (or another session-visible field an
+    /// `archive_snapshot` reconciliation would also pick up, such as its
+    /// `source_path` after a plugin-triggered rename) changed. Carries no
+    /// payload of its own by design -- a subscriber always re-fetches the
+    /// authoritative current state via `archive_snapshot` rather than
+    /// trusting a value that could itself be stale by the time it is
+    /// read, which also keeps this event cheap to construct and free of
+    /// its own lag-ordering concerns (unlike `OperationState::Progress`,
+    /// there is no meaningful "intermediate" value to preserve here --
+    /// only the latest snapshot ever matters).
+    MetadataChanged { session_id: ArchiveSessionId },
+}

@@ -18,11 +18,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::runtime::Handle;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 use crate::archive::ArchiveSession;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
+use crate::event::SessionEvent;
 use crate::ids::ArchiveSessionId;
+
+/// How many [`SessionEvent`]s the broadcast channel buffers before a
+/// subscriber that has not called `recv` yet starts lagging. Mirrors
+/// `crate::operations::registry::EVENT_CHANNEL_CAPACITY`'s exact
+/// reasoning (already a power of two, so `tokio::sync::broadcast`'s own
+/// round-up never surprises this into a larger actual capacity) and its
+/// value -- session-scoped events are session-store-owned exactly the
+/// way operation events are operation-registry-owned, so the contract's
+/// "same lag semantics as operations" is not just a description, it is
+/// the same bound.
+const SESSION_EVENT_CHANNEL_CAPACITY: usize = 256;
 
 fn unknown_session_error(session_id: ArchiveSessionId) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::NotFound, "no such archive session")
@@ -49,14 +61,51 @@ pub(crate) struct ArchiveSessionStore {
     /// this store instance mints is 1" a true, deterministic statement
     /// again.
     next_id: AtomicU64,
+    /// Broadcasts [`SessionEvent`]s for every session this store owns --
+    /// one channel per store instance, exactly like `next_id` above, so
+    /// two unrelated stores in the same process (or the same test
+    /// binary) never cross-deliver events either. See
+    /// [`Self::publish_metadata_changed`] for the one producer and
+    /// [`Self::subscribe_session_events`] for the consumer side.
+    session_events: broadcast::Sender<SessionEvent>,
 }
 
 impl ArchiveSessionStore {
     pub(crate) fn new() -> Self {
+        let (session_events, _receiver) = broadcast::channel(SESSION_EVENT_CHANNEL_CAPACITY);
         Self {
             sessions: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            session_events,
         }
+    }
+
+    /// Subscribes to this store's [`SessionEvent`] stream. Every
+    /// subscriber receives every event published after it subscribes,
+    /// independent of every other subscriber, and a subscriber that does
+    /// not keep up receives [`broadcast::error::RecvError::Lagged`] from
+    /// `recv` instead of silently missing events -- identical delivery
+    /// semantics to `crate::operations::registry::OperationRegistry::subscribe`.
+    pub(crate) fn subscribe_session_events(&self) -> broadcast::Receiver<SessionEvent> {
+        self.session_events.subscribe()
+    }
+
+    /// Publishes [`SessionEvent::MetadataChanged`] for `session_id`. A
+    /// broadcast channel with zero subscribers returns `Err` on send;
+    /// that is a normal, harmless outcome (nobody is listening yet), not
+    /// a store failure, so it is deliberately ignored here -- mirrors
+    /// `OperationRegistry::publish`'s identical reasoning.
+    ///
+    /// Callers publish only after the write it announces has already
+    /// been committed to the session (see `crate::plugins::
+    /// ArchiveContextBridge`'s own call sites) -- a subscriber that reacts
+    /// to this event by calling `archive_snapshot` must always see the
+    /// change it was just told about, never a stale value racing the
+    /// notification.
+    pub(crate) fn publish_metadata_changed(&self, session_id: ArchiveSessionId) {
+        let _ = self
+            .session_events
+            .send(SessionEvent::MetadataChanged { session_id });
     }
 
     /// Mints a fresh [`ArchiveSessionId`], builds the session (indexing
@@ -350,5 +399,68 @@ mod tests {
 
         let second_close = store.close(session.id()).await.unwrap_err();
         assert_eq!(second_close.kind, ApplicationErrorKind::NotFound);
+    }
+
+    #[tokio::test]
+    async fn publish_metadata_changed_delivers_to_a_subscriber() {
+        let store = ArchiveSessionStore::new();
+        let session_id = ArchiveSessionId::from_raw(7);
+        let mut receiver = store.subscribe_session_events();
+
+        store.publish_metadata_changed(session_id);
+
+        let event = receiver.recv().await.unwrap();
+        assert_eq!(event, crate::event::SessionEvent::MetadataChanged { session_id });
+    }
+
+    #[tokio::test]
+    async fn every_subscriber_independently_receives_the_same_event() {
+        let store = ArchiveSessionStore::new();
+        let session_id = ArchiveSessionId::from_raw(3);
+        let mut first = store.subscribe_session_events();
+        let mut second = store.subscribe_session_events();
+
+        store.publish_metadata_changed(session_id);
+
+        assert_eq!(
+            first.recv().await.unwrap(),
+            crate::event::SessionEvent::MetadataChanged { session_id }
+        );
+        assert_eq!(
+            second.recv().await.unwrap(),
+            crate::event::SessionEvent::MetadataChanged { session_id }
+        );
+    }
+
+    #[tokio::test]
+    async fn publishing_with_no_subscribers_does_not_panic() {
+        // `broadcast::Sender::send` returns `Err` with zero receivers --
+        // a normal, harmless outcome (see `publish_metadata_changed`'s own
+        // doc comment), not something that should ever panic or otherwise
+        // disrupt the caller that just committed a real write.
+        let store = ArchiveSessionStore::new();
+        store.publish_metadata_changed(ArchiveSessionId::from_raw(1));
+    }
+
+    #[tokio::test]
+    async fn a_subscriber_that_falls_behind_observes_lagged_rather_than_silently_missing_events() {
+        // Mirrors `OperationRegistry`'s own lag contract: a subscriber
+        // that does not keep up gets told explicitly, rather than the
+        // broadcast silently dropping events it never delivered.
+        let store = ArchiveSessionStore::new();
+        let mut receiver = store.subscribe_session_events();
+
+        for raw_id in 0..(SESSION_EVENT_CHANNEL_CAPACITY as u64 + 1) {
+            store.publish_metadata_changed(ArchiveSessionId::from_raw(raw_id));
+        }
+
+        let result = receiver.recv().await;
+        assert!(
+            matches!(
+                result,
+                Err(broadcast::error::RecvError::Lagged(_))
+            ),
+            "expected a Lagged error once publishes exceed the channel's capacity, got {result:?}"
+        );
     }
 }
