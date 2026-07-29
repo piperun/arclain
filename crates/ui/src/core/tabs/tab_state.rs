@@ -1,14 +1,14 @@
 //! Per-tab state — owns the archive-context signals and the plugin pool.
 
+use super::listing::TabListing;
 use super::plugin_instances::TabPluginPool;
 use super::view_state::{BrowserEntriesSnapshot, BrowserViewState};
 use super::TabId;
 use crate::core::operations::archive::{derive_archive_info, ArchiveExtras, ArchiveInfo};
 use crate::core::signals::ToolbarContext;
+use arclain_app::archive::ArchiveSnapshot;
 use arclain_app::{Computed, Signal};
-use arclain_core::archive::NavigationState;
 use arclain_core::features::organization::GameMetadata;
-use arclain_core::ArchiveEntry;
 use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
@@ -37,7 +37,30 @@ pub struct TabState {
     /// notifies — readers naturally pick up the new value the next
     /// frame because the renderer always polls each frame).
     pub archive_loaded: Computed<bool>,
-    pub entries: Signal<Arc<Vec<ArchiveEntry>>>,
+    /// TRANSITIONAL(4b): every entry in this tab's archive at every
+    /// depth, as the backend listed it.
+    ///
+    /// The archive browser's whole-archive consumers were built on this
+    /// flat list: the folder tree's directory set, a drag-out's
+    /// "everything under this folder" expansion, the derived
+    /// [`ArchiveInfo`] totals, and the plugin bridge's event context.
+    /// None of them are expressible through the application facade's
+    /// read model yet -- `ArclainApp::list_entries` answers one
+    /// *directory* at a time, and no facade method returns whole-archive
+    /// [`arclain_app::archive::ArchiveEntryDto`] rows -- so the tab still
+    /// holds the pre-facade shape for them, written by
+    /// `crate::core::operation_bridge`'s own backend re-list.
+    ///
+    /// This is the field the browser-model migration deletes: the
+    /// relisting side (4b) is what can page `list_entries` across the
+    /// directory tree and hand the tab real, session-minted
+    /// `EntryId`-carrying rows. Deliberately *not* synthesized into DTOs
+    /// here in the meantime: an `EntryId` this crate invented would not
+    /// be the one the owning session assigned, and every facade method
+    /// that takes one (extract, delete, materialize) resolves it against
+    /// that session -- a frontend-minted id could therefore name a
+    /// different entry than the row the user picked.
+    pub entries: Signal<Arc<Vec<arclain_core::ArchiveEntry>>>,
     pub metadata: Signal<Option<serde_json::Value>>,
     // Note: `loading` and `status_message` signals were removed in the
     // 2026-05-19 audit. Both were write-only — set by archive load /
@@ -76,9 +99,22 @@ pub struct TabState {
     /// `.get()`. See audit §4.2 for why this was the right shape.
     pub archive_info: Computed<ArchiveInfo>,
     pub game_metadata: Signal<Option<GameMetadata>>,
-    pub navigation: Signal<NavigationState>,
+    /// Where this tab is browsing inside its archive, the
+    /// directory-scoped listing request that describes it, and the page
+    /// the session answered with -- see [`TabListing`].
+    ///
+    /// Replaces the pre-facade `navigation:
+    /// Signal<arclain_core::archive::NavigationState>`, which navigated a
+    /// bare `String` cursor over the flat `entries` list above.
+    pub listing: Signal<TabListing>,
     pub current_password: Signal<Option<String>>,
     pub selection_count: Signal<usize>,
+    /// TRANSITIONAL(4c): the direct backend handle a drag-out extraction
+    /// still reads `backend_arc()`/`password_ref()` off
+    /// (`crate::features::archive_browser::application::drag_drop_service`).
+    /// Every other archive I/O path goes through the facade's own session
+    /// (see [`Self::archive_session_id`]); the render-side consumers are
+    /// what still need this one, so it dies when they move.
     pub opened_archive: Signal<Option<Arc<RwLock<arclain_core::Archive>>>>,
     /// The application facade's session id for this tab's open archive
     /// (`None` when no archive is open in this tab). Set once the
@@ -97,6 +133,23 @@ pub struct TabState {
     /// that means a second, UI-owned `list()` call rather than reaching
     /// into the facade's own indexed session).
     pub archive_session_id: Signal<Option<arclain_app::ids::ArchiveSessionId>>,
+    /// The [`ArchiveSnapshot`] the facade reported for
+    /// [`Self::archive_session_id`]'s session -- its revision, source
+    /// path, archive type, aggregate entry count and uncompressed total,
+    /// and whatever metadata a plugin has written for it.
+    ///
+    /// Written by `crate::core::operation_bridge` from the very
+    /// `OperationResult::ArchiveOpened { snapshot }` that stamps the
+    /// session id above, so the two never disagree about which archive a
+    /// tab holds. `None` until this tab's first successful open.
+    ///
+    /// Not yet what [`Self::archive_info`] derives from: a snapshot
+    /// reports no compressed total and no archive-wide CRC-32, and its
+    /// `entry_count` includes the ancestor directories the session's
+    /// index synthesizes (the pre-facade count is the backend's own row
+    /// count). Closing those gaps is a facade-side change, so the
+    /// derivation still reads the flat [`Self::entries`] list.
+    pub archive_snapshot: Signal<Option<ArchiveSnapshot>>,
     /// Every operation (archive-open, extraction, or both at once --
     /// see below) currently awaiting a response to a challenge it
     /// raised, oldest first. The front entry is the one shown via this
@@ -246,7 +299,7 @@ pub struct TabState {
 impl TabState {
     pub fn new(id: TabId) -> Self {
         let archive_path: Signal<Option<PathBuf>> = Signal::new(None).with_name("archive_path");
-        let entries: Signal<Arc<Vec<ArchiveEntry>>> =
+        let entries: Signal<Arc<Vec<arclain_core::ArchiveEntry>>> =
             Signal::new(Arc::new(Vec::new())).with_name("entries");
         let archive_extras: Signal<ArchiveExtras> =
             Signal::new(ArchiveExtras::default()).with_name("archive_extras");
@@ -274,11 +327,12 @@ impl TabState {
             archive_extras,
             archive_info,
             game_metadata: Signal::new(None).with_name("game_metadata"),
-            navigation: Signal::new(NavigationState::new()).with_name("navigation"),
+            listing: Signal::new(TabListing::default()).with_name("listing"),
             current_password: Signal::new(None).with_name("current_password"),
             selection_count: Signal::new(0).with_name("selection_count"),
             opened_archive: Signal::new(None).with_name("opened_archive"),
             archive_session_id: Signal::new(None).with_name("archive_session_id"),
+            archive_snapshot: Signal::new(None).with_name("archive_snapshot"),
             pending_challenge: Signal::new(Vec::new()).with_name("pending_challenge"),
             active_extraction_operation: Signal::new(None).with_name("active_extraction_operation"),
             pending_open_operation: Signal::new(None).with_name("pending_open_operation"),
@@ -344,11 +398,12 @@ impl TabState {
         sig_ctx.bind_named(&self.metadata, "tab.metadata");
         sig_ctx.bind_named(&self.archive_extras, "tab.archive_extras");
         sig_ctx.bind_named(&self.game_metadata, "tab.game_metadata");
-        sig_ctx.bind_named(&self.navigation, "tab.navigation");
+        sig_ctx.bind_named(&self.listing, "tab.listing");
         sig_ctx.bind_named(&self.current_password, "tab.current_password");
         sig_ctx.bind_named(&self.selection_count, "tab.selection_count");
         sig_ctx.bind_named(&self.opened_archive, "tab.opened_archive");
         sig_ctx.bind_named(&self.archive_session_id, "tab.archive_session_id");
+        sig_ctx.bind_named(&self.archive_snapshot, "tab.archive_snapshot");
         sig_ctx.bind_named(&self.pending_challenge, "tab.pending_challenge");
         sig_ctx.bind_named(
             &self.active_extraction_operation,

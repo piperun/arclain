@@ -1,10 +1,26 @@
-//! Navigation view utilities
+//! TRANSITIONAL(4c): the pre-facade flat-listing projections the archive
+//! browser's renderer still reads.
 //!
-//! Helper functions for updating view state after navigation changes.
+//! Publishing a tab's visible rows *should* be one
+//! `ArclainApp::list_entries` call for the directory the tab's
+//! [`TabListing`] names, converted with
+//! [`crate::core::utils::file_entry_from_dto`]. It is not yet, because the
+//! rows come from `TabState::entries` -- the whole-archive flat list the
+//! bridge's own backend re-list writes (see that field's own doc comment
+//! for why the facade cannot supply it yet). Until the relisting side
+//! feeds the tab real session pages, scoping that flat list to one
+//! directory means re-running the pre-facade filter, and that filter lives
+//! in `arclain_core`.
+//!
+//! Every remaining `arclain_core` reference in the browser's navigation
+//! path is therefore collected here rather than spread across the render
+//! tree: this module is what the render-side migration deletes, whole.
+//!
+//! [`TabListing`]: crate::core::tabs::TabListing
 
 use crate::core::signals::AppSignals;
 use crate::core::tabs::{TabId, TabState};
-use crate::core::utils::convert_to_file_entry_with_archive_path;
+use crate::shared::models::file_entry::FileEntry;
 use std::sync::Arc;
 use tracing::info;
 
@@ -27,28 +43,88 @@ pub fn refresh_view_entries_for_tab(signals: &AppSignals, tab_id: TabId) {
 
 fn refresh_view_entries_for(tab: &Arc<TabState>) {
     let all_entries = tab.entries.get();
-    let nav = tab.navigation.get();
-    let current_path = nav.current_path.clone();
+    let current_path = tab.listing.get().current_path().to_string();
 
     info!(
-        "refresh_view_entries: calling filter_entries for path='{}' (len={})",
+        "refresh_view_entries: filtering to path='{}' (len={})",
         current_path,
         all_entries.len()
     );
 
-    let filtered_arch_entries = nav.filter_entries_with_archive_paths(&all_entries);
+    let entries = rows_in_directory(&all_entries, &current_path);
 
     info!(
         "refresh_view_entries: got {} entries for path '{}'",
-        filtered_arch_entries.len(),
+        entries.len(),
         current_path
     );
 
-    let entries = filtered_arch_entries
-        .iter()
-        .map(|item| convert_to_file_entry_with_archive_path(&item.entry, &item.archive_path))
-        .collect::<Vec<_>>();
-
     tab.browser_entries
         .update(|snapshot| snapshot.replace(entries));
+}
+
+/// TRANSITIONAL(4c): the display rows for `directory`, scoped out of a
+/// whole-archive flat listing.
+///
+/// The facade equivalent is `ArclainApp::list_entries` for the same
+/// directory, whose `EntryPage` rows convert through
+/// [`crate::core::utils::file_entry_from_dto`]. Both produce the same rows
+/// for the same directory -- the session's own entry index reproduces this
+/// filter's folder synthesis and its recursive size/CRC aggregation -- but
+/// they order ties differently: this one keys on the display-relative path
+/// (so an uppercase name sorts before every lowercase one), the session's
+/// on the lowercased name. Immaterial in practice, because the file list
+/// re-sorts every row itself before rendering.
+pub fn rows_in_directory(
+    entries: &[arclain_core::ArchiveEntry],
+    directory: &str,
+) -> Vec<FileEntry> {
+    let mut navigation = arclain_core::archive::NavigationState::new();
+    navigation.set_current_path(directory);
+    navigation
+        .filter_entries_with_archive_paths(entries)
+        .iter()
+        .map(|visible| row_from_core_entry(&visible.entry, &visible.archive_path))
+        .collect()
+}
+
+/// TRANSITIONAL(4c): every folder in a whole-archive flat listing, for the
+/// tree panel's own projection.
+///
+/// The facade has no whole-archive listing to derive this from (see
+/// `TabState::entries`), so the pre-facade walk still does it. Free
+/// function rather than a method call on a throwaway `NavigationState`
+/// value: the walk never reads that type's cursor at all.
+pub fn all_folders(entries: &[arclain_core::ArchiveEntry]) -> Vec<String> {
+    arclain_core::archive::NavigationState::new().get_all_folders(entries)
+}
+
+/// TRANSITIONAL(4c): one display row built from a pre-facade listing
+/// entry, whose `path` is already relative to the folder on screen and
+/// whose archive-root path is supplied separately.
+///
+/// [`crate::core::utils::file_entry_from_dto`] is the facade-typed
+/// counterpart; keep the two in step until this one goes.
+fn row_from_core_entry(entry: &arclain_core::ArchiveEntry, archive_path: &str) -> FileEntry {
+    let ratio = if entry.size > 0 {
+        format!("{}%", (entry.packed_size * 100 / entry.size))
+    } else {
+        "0%".to_string()
+    };
+
+    FileEntry {
+        name: std::path::Path::new(&entry.path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| entry.path.clone()),
+        path: entry.path.clone(),
+        archive_path: archive_path.to_string(),
+        size: crate::core::utils::format_size(entry.size),
+        compressed: crate::core::utils::format_size(entry.packed_size),
+        ratio,
+        modified: entry.modified.clone().unwrap_or_default(),
+        crc32: entry.crc32.clone().unwrap_or_default(),
+        encrypted: entry.encrypted,
+        is_folder: entry.is_dir,
+    }
 }

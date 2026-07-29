@@ -451,8 +451,7 @@ async fn relist_for_browser_signals(
             headers_encrypted: info.headers_encrypted,
             encryption_method: info.encryption_method.clone(),
         });
-    tab.navigation
-        .set(arclain_core::archive::NavigationState::new());
+    tab.listing.set(crate::core::tabs::TabListing::default());
     {
         let mut view_state = tab.browser_view_state.get();
         if view_state.selection.clear() {
@@ -626,6 +625,10 @@ async fn handle_open_archive_completed(
     }
 
     tab.archive_session_id.set(Some(snapshot.session_id));
+    // Stamped from the same completion payload as the session id above,
+    // so a tab's snapshot can never describe a different archive than the
+    // session it holds.
+    tab.archive_snapshot.set(Some(snapshot.clone()));
     tab.pending_open_operation.set(None);
     dequeue_and_present_next(&tab, operation_id);
 

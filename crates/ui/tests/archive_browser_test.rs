@@ -260,7 +260,7 @@ fn test_navigate_to_folder_action() {
     ctx.handle_action(Action::NavigateToFolder(target.clone()));
 
     assert_eq!(
-        signals.tabs.get().active().navigation.get().current_path,
+        signals.tabs.get().active().listing.get().current_path(),
         target
     );
 }
@@ -280,7 +280,7 @@ fn test_navigate_to_path_action() {
     ctx.handle_action(Action::NavigateToPath(target.clone()));
 
     assert_eq!(
-        signals.tabs.get().active().navigation.get().current_path,
+        signals.tabs.get().active().listing.get().current_path(),
         target
     );
 }
@@ -322,24 +322,17 @@ fn test_copy_path_action() {
     let mut ctx = TestContext::new();
     let signals = ctx.shared.app_state.lock().signals.clone();
 
-    signals
-        .tabs
-        .get()
-        .active()
-        .navigation
-        .get()
-        .set_current_path("root/folder");
+    let tab = signals.tabs.get().active().clone();
+    tab.listing.update(|listing| {
+        assert!(listing.go_to("root/folder"));
+    });
 
     let filename = "file.txt".to_string();
     ctx.handle_action(Action::CopyPath(filename.clone()));
 
-    signals
-        .tabs
-        .get()
-        .active()
-        .navigation
-        .get()
-        .set_current_path("");
+    tab.listing.update(|listing| {
+        assert!(listing.go_to(""));
+    });
     ctx.handle_action(Action::CopyPath(filename));
 }
 

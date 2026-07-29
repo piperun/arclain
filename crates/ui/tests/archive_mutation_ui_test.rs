@@ -265,7 +265,9 @@ fn delete_files_from_a_subdirectory_resolves_through_the_navigated_directory_and
     // Simulate the user having navigated into `subdir` before selecting
     // and deleting `nested.txt` -- `FileOpsService::delete_files` scopes
     // its own `list_entries` call to exactly this signal.
-    tab.navigation.update(|nav| nav.set_current_path("subdir"));
+    tab.listing.update(|listing| {
+        assert!(listing.go_to("subdir"));
+    });
 
     arclain_ui::features::archive_browser::application::FileOpsService.delete_files(
         &shared,

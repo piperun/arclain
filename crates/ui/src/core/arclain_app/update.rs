@@ -143,34 +143,22 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 }
             }
             HotkeyAction::NavigateUp => {
-                // Navigate up one level in archive folder structure
-                let tab = app.shared_state.signals().tabs.get().active().clone();
-                let mut nav = tab.navigation.get();
-                if !nav.current_path.is_empty() {
-                    if let Some(parent) = std::path::Path::new(&nav.current_path)
-                        .parent()
-                        .and_then(|p| p.to_str())
-                    {
-                        nav.path_stack.push(nav.current_path.clone());
-                        nav.current_path = parent.to_string();
-                        nav.forward_stack.clear();
-                        tab.navigation.set(nav);
-                        // Re-filter view entries to match new path
-                        operations::navigation_view::refresh_view_entries(
-                            app.shared_state.signals(),
-                        );
-                    }
+                // Navigate up one level in archive folder structure. The
+                // "push the current folder, clear the forward history"
+                // bookkeeping this used to open-code is what
+                // `navigate_up` itself does.
+                if operations::navigation_signals::navigate_up(app.shared_state.signals()) {
+                    // Re-filter view entries to match new path
+                    operations::navigation_view::refresh_view_entries(app.shared_state.signals());
                 }
             }
             HotkeyAction::NavigateToRoot => {
-                // Navigate to archive root
-                let tab = app.shared_state.signals().tabs.get().active().clone();
-                let mut nav = tab.navigation.get();
-                if !nav.current_path.is_empty() {
-                    nav.path_stack.push(nav.current_path.clone());
-                    nav.current_path = String::new();
-                    nav.forward_stack.clear();
-                    tab.navigation.set(nav);
+                // Navigate to archive root -- an absolute navigation to
+                // the empty path, which is a no-op when already there.
+                if operations::navigation_signals::navigate_to_absolute(
+                    app.shared_state.signals(),
+                    "",
+                ) {
                     // Re-filter view entries to match new path
                     operations::navigation_view::refresh_view_entries(app.shared_state.signals());
                 }

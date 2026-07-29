@@ -340,7 +340,7 @@ pub fn render_path_bar_panel(
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let current_path = tab.navigation.get().current_path.clone();
+            let current_path = tab.listing.get().current_path().to_string();
 
             if let Some(path) = crate::features::archive_browser::presentation::components::file_list::render_breadcrumb(
                 ui,

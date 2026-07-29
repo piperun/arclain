@@ -60,9 +60,12 @@ pub fn render_archive_browser(
             .map(|name| name.to_string_lossy())
             .unwrap_or_else(|| std::borrow::Cow::Borrowed("archive"));
         let archive_entries = tab.entries.get();
-        let navigation = tab.navigation.get();
+        let listing = tab.listing.get();
         let tree = tree_projection.projection(&archive_entries, |entries| {
-            FolderTree::from_folders(&navigation.get_all_folders(entries))
+            // TRANSITIONAL(4c): see `crate::core::operations::navigation_view`.
+            FolderTree::from_folders(&crate::core::operations::navigation_view::all_folders(
+                entries,
+            ))
         });
         render_tree_panel(
             ctx,
@@ -72,7 +75,7 @@ pub fn render_archive_browser(
             tree.tree,
             tree.generation,
             tree_rows,
-            &navigation.current_path,
+            listing.current_path(),
             &mut action,
         );
     }

@@ -27,10 +27,10 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
             .frame(egui::Frame::NONE.fill(app.shared_state.theme.colors.surface_variant))
             .show(ctx, |ui| {
                 let tab = app.shared_state.signals().tabs.get().active().clone();
-                let nav = tab.navigation.get();
-                let can_go_back = nav.can_go_back();
-                let can_go_forward = nav.can_go_forward();
-                let can_go_up = nav.can_go_up();
+                let listing = tab.listing.get();
+                let can_go_back = listing.can_go_back();
+                let can_go_forward = listing.can_go_forward();
+                let can_go_up = listing.can_go_up();
                 let archive_loaded = tab.archive_loaded.get();
                 // Use selection_count signal for decoupled toolbar state
                 let has_selection = tab.selection_count.get() > 0;

@@ -1,12 +1,12 @@
 //! File operations application service
 
 use crate::core::operations;
-use crate::core::tabs::{OpGuard, TabState};
+use crate::core::tabs::{OpGuard, TabState, ALL_ENTRIES_IN_ONE_DIRECTORY};
 use crate::features::archive_operations::ArchiveOperationsState;
 use crate::features::file_editing::domain::types::FileEditLoadState;
 use crate::shared::SharedState;
 use anyhow::{anyhow, Result};
-use arclain_app::archive::{ArchivePath, EntrySortKey, ListEntriesRequest, SortDirection};
+use arclain_app::archive::{EntrySortKey, ListEntriesRequest, SortDirection};
 use arclain_app::operations::ArchiveMutationRequest;
 use arclain_core::backends::BackendSelector;
 use std::path::Path;
@@ -53,16 +53,6 @@ impl TextReadIo for BackendTextReadIo {
     }
 }
 
-/// How many entries a directory-scoped `list_entries` call requests when
-/// resolving [`FileOpsService::delete_files`]'s path-string selection
-/// into `EntryId`s. The browser only ever selects rows from the
-/// currently-viewed directory (`NavigationState::filter_entries` is
-/// itself non-recursive), so one call at that directory with a
-/// generously large limit is enough to see every candidate -- there is
-/// no upper bound on a directory's own entry count worth naming more
-/// precisely than "effectively unbounded" here.
-const ALL_ENTRIES_IN_ONE_DIRECTORY: u32 = u32::MAX;
-
 pub struct FileOpsService;
 
 impl FileOpsService {
@@ -104,12 +94,10 @@ impl FileOpsService {
         };
 
         let tab_id = origin.id;
-        let directory_path = origin.navigation.get().current_path.clone();
+        let directory = origin.listing.get().directory().clone();
         let shared = shared.clone();
         let runtime = shared.services.tokio_runtime.clone();
         runtime.spawn(async move {
-            let directory =
-                ArchivePath::parse(directory_path).unwrap_or_else(|_| ArchivePath::root());
             let page = match app
                 .list_entries(
                     session_id,

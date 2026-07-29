@@ -107,7 +107,7 @@ pub fn start_extraction(shared: &SharedState, tab: &Arc<TabState>, entry_paths: 
     let shared = shared.clone();
     let tab_id = tab.id;
     let tab = tab.clone();
-    let current_directory = tab.navigation.get().current_path.clone();
+    let current_directory = tab.listing.get().directory().clone();
 
     {
         // Built from `default()` rather than mutating whatever the
@@ -138,18 +138,16 @@ pub fn start_extraction(shared: &SharedState, tab: &Arc<TabState>, entry_paths: 
         let entry_ids = if entry_paths.is_empty() {
             Vec::new()
         } else {
-            let directory = arclain_app::archive::ArchivePath::parse(current_directory)
-                .unwrap_or_else(|_| arclain_app::archive::ArchivePath::root());
             let page = match app
                 .list_entries(
                     session_id,
                     arclain_app::archive::ListEntriesRequest {
-                        directory,
+                        directory: current_directory,
                         sort_key: arclain_app::archive::EntrySortKey::Name,
                         sort_direction: arclain_app::archive::SortDirection::Ascending,
                         name_filter: None,
                         offset: 0,
-                        limit: 100_000,
+                        limit: crate::core::tabs::ALL_ENTRIES_IN_ONE_DIRECTORY,
                     },
                 )
                 .await

@@ -31,8 +31,47 @@
 use super::AppState;
 
 impl AppState {
+    /// TRANSITIONAL(4c): the active tab's current directory, in the
+    /// pre-facade flat entry shape.
+    ///
+    /// Reads the tab's own [`arclain_app::archive::EntryPage`] and
+    /// converts each row back down -- the page *is* the current
+    /// directory's listing, so no filtering is needed, and the rows carry
+    /// the session's own folder aggregates rather than this call
+    /// recomputing them. Empty until the tab holds a page for the
+    /// directory it is showing.
+    ///
+    /// Three deliberate differences from the flat filter this replaced:
+    /// `path` is the archive-root path (the identity every live consumer
+    /// keys on) rather than the path relative to the displayed folder;
+    /// `modified` is re-rendered from the parsed timestamp (see
+    /// [`crate::core::utils::format_modified_unix_ms`]), which differs
+    /// only for a backend whose own date string the facade could not
+    /// parse; and a directory's `size`/`packed_size` are the session
+    /// index's recursive aggregates, which is what the pre-facade filter
+    /// computed for a folder row too.
     pub fn get_current_entries(&self) -> Vec<arclain_core::ArchiveEntry> {
         let tab = self.signals.tabs.get().active().clone();
-        tab.navigation.get().filter_entries(&tab.entries.get())
+        tab.listing
+            .get()
+            .entries()
+            .iter()
+            .map(core_entry_from_dto)
+            .collect()
+    }
+}
+
+/// TRANSITIONAL(4c): one pre-facade flat entry rebuilt from a facade
+/// listing row. Goes with [`AppState::get_current_entries`].
+fn core_entry_from_dto(dto: &arclain_app::archive::ArchiveEntryDto) -> arclain_core::ArchiveEntry {
+    let modified = crate::core::utils::format_modified_unix_ms(dto.modified_at_unix_ms);
+    arclain_core::ArchiveEntry {
+        path: dto.path.as_str().to_string(),
+        size: dto.uncompressed_size,
+        packed_size: dto.compressed_size.unwrap_or(0),
+        modified: (!modified.is_empty()).then_some(modified),
+        is_dir: matches!(dto.kind, arclain_app::archive::EntryKind::Directory),
+        encrypted: dto.encrypted,
+        crc32: dto.crc32.clone(),
     }
 }

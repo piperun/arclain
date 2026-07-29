@@ -1,4 +1,5 @@
 use crate::shared::models::file_entry::FileEntry;
+use arclain_app::archive::{ArchiveEntryDto, EntryKind};
 use tracing::error;
 
 pub fn format_duration(duration: std::time::Duration) -> String {
@@ -32,37 +33,86 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-pub fn convert_to_file_entry(entry: &arclain_core::ArchiveEntry) -> FileEntry {
-    convert_to_file_entry_with_archive_path(entry, &entry.path)
+/// Civil date (year, month, day) for a count of days since the Unix
+/// epoch. Howard Hinnant's `civil_from_days` (public domain) -- the exact
+/// inverse of the `days_from_civil` the application facade uses to parse
+/// a backend's `modified` string into
+/// [`ArchiveEntryDto::modified_at_unix_ms`], so a timestamp that made
+/// that trip comes back out unchanged.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]: Mar=0 .. Feb=11
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    (year + i64::from(month <= 2), month, day)
 }
 
-pub fn convert_to_file_entry_with_archive_path(
-    entry: &arclain_core::ArchiveEntry,
-    archive_path: &str,
-) -> FileEntry {
-    let ratio = if entry.size > 0 {
-        format!("{}%", (entry.packed_size * 100 / entry.size))
+/// Renders [`ArchiveEntryDto::modified_at_unix_ms`] as the
+/// `"YYYY-MM-DD HH:MM:SS"` string the file list's Modified column shows,
+/// or the empty string when the entry carries no timestamp.
+///
+/// That format is not a new choice: it is the one every archive backend
+/// that reports a usable date already produced, and the one the facade
+/// parses back out of, so a row's Modified cell reads exactly as it did
+/// before the DTO carried a real timestamp instead of a display string.
+///
+/// The round trip is only lossless for backends whose own `modified`
+/// string matched that shape in the first place -- see this module's
+/// tests, and the DTO-gap note in the browser-model migration report,
+/// for which ones do not.
+pub fn format_modified_unix_ms(modified_at_unix_ms: Option<i64>) -> String {
+    let Some(milliseconds) = modified_at_unix_ms else {
+        return String::new();
+    };
+    // Euclidean division so a pre-1970 timestamp floors toward the
+    // earlier day rather than truncating toward zero (which would report
+    // the wrong date, and a negative time of day).
+    let seconds = milliseconds.div_euclid(1000);
+    let (year, month, day) = civil_from_days(seconds.div_euclid(86_400));
+    let second_of_day = seconds.rem_euclid(86_400);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year,
+        month,
+        day,
+        second_of_day / 3600,
+        (second_of_day % 3600) / 60,
+        second_of_day % 60
+    )
+}
+
+/// Builds the file list's display row for one entry of an
+/// [`arclain_app::archive::EntryPage`].
+///
+/// `FileEntry::path` is the row's path *relative to the folder on
+/// screen*, which for a page's rows is simply the entry's name: a page
+/// lists the direct children of the directory it was requested for, so
+/// nothing in it is more than one segment deep. `FileEntry::archive_path`
+/// carries the archive-root path selection and file operations key on.
+pub fn file_entry_from_dto(dto: &ArchiveEntryDto) -> FileEntry {
+    let compressed_size = dto.compressed_size.unwrap_or(0);
+    let ratio = if dto.uncompressed_size > 0 {
+        format!("{}%", compressed_size * 100 / dto.uncompressed_size)
     } else {
         "0%".to_string()
     };
 
-    // Extract just the filename/folder name from the full path
-    let name = std::path::Path::new(&entry.path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| entry.path.clone());
-
     FileEntry {
-        name,
-        path: entry.path.clone(),
-        archive_path: archive_path.to_string(),
-        size: format_size(entry.size),
-        compressed: format_size(entry.packed_size),
+        name: dto.name.clone(),
+        path: dto.name.clone(),
+        archive_path: dto.path.as_str().to_string(),
+        size: format_size(dto.uncompressed_size),
+        compressed: format_size(compressed_size),
         ratio,
-        modified: entry.modified.clone().unwrap_or_default(),
-        crc32: entry.crc32.clone().unwrap_or_default(),
-        encrypted: entry.encrypted,
-        is_folder: entry.is_dir,
+        modified: format_modified_unix_ms(dto.modified_at_unix_ms),
+        crc32: dto.crc32.clone().unwrap_or_default(),
+        encrypted: dto.encrypted,
+        is_folder: matches!(dto.kind, EntryKind::Directory),
     }
 }
 
@@ -160,80 +210,140 @@ mod tests {
     }
 
     // =========================================================================
-    // convert_to_file_entry
+    // format_modified_unix_ms
     // =========================================================================
 
     #[test]
-    fn convert_to_file_entry_file() {
-        let entry = arclain_core::ArchiveEntry {
-            path: "game/data/save.dat".to_string(),
-            size: 2048,
-            packed_size: 1024,
-            modified: Some("2024-01-15".to_string()),
-            is_dir: false,
-            encrypted: false,
-            crc32: Some("AABBCCDD".to_string()),
-        };
-        let fe = convert_to_file_entry(&entry);
-        assert_eq!(fe.name, "save.dat");
-        assert_eq!(fe.path, "game/data/save.dat");
-        assert_eq!(fe.ratio, "50%");
-        assert_eq!(fe.modified, "2024-01-15");
-        assert_eq!(fe.crc32, "AABBCCDD");
-        assert!(!fe.is_folder);
-        assert!(!fe.encrypted);
+    fn no_timestamp_renders_as_an_empty_modified_cell() {
+        assert_eq!(format_modified_unix_ms(None), "");
     }
 
     #[test]
-    fn convert_to_file_entry_folder() {
-        let entry = arclain_core::ArchiveEntry {
-            path: "game/data".to_string(),
-            size: 0,
-            packed_size: 0,
-            modified: None,
-            is_dir: true,
+    fn the_epoch_renders_as_its_own_civil_date() {
+        assert_eq!(format_modified_unix_ms(Some(0)), "1970-01-01 00:00:00");
+    }
+
+    /// The shape every backend that reports a usable date produces, and
+    /// the shape the facade parses back out of, must survive the trip
+    /// through `modified_at_unix_ms` byte for byte -- otherwise the file
+    /// list's Modified column silently changes format.
+    #[test]
+    fn a_canonical_backend_timestamp_round_trips_byte_for_byte() {
+        // 2024-01-15 10:30:00 UTC
+        assert_eq!(
+            format_modified_unix_ms(Some(1_705_314_600_000)),
+            "2024-01-15 10:30:00"
+        );
+        // 2000-02-29 23:59:59 UTC -- a leap day, and the last second of it
+        assert_eq!(
+            format_modified_unix_ms(Some(951_868_799_000)),
+            "2000-02-29 23:59:59"
+        );
+        // 2100-03-01 00:00:00 UTC -- the century that is not a leap year
+        assert_eq!(
+            format_modified_unix_ms(Some(4_107_542_400_000)),
+            "2100-03-01 00:00:00"
+        );
+    }
+
+    /// Sub-second precision is not part of the displayed format, so a
+    /// timestamp inside a second floors to that second rather than
+    /// rounding into the next one.
+    #[test]
+    fn sub_second_precision_floors_within_its_own_second() {
+        assert_eq!(format_modified_unix_ms(Some(999)), "1970-01-01 00:00:00");
+    }
+
+    /// Truncating division would report the day *after* a pre-epoch
+    /// timestamp, with a negative time of day. Nothing in this workspace
+    /// produces such an archive, but flooring is what makes the
+    /// conversion total rather than accidentally correct only for dates
+    /// after 1970.
+    #[test]
+    fn a_pre_epoch_timestamp_floors_to_the_earlier_day() {
+        assert_eq!(format_modified_unix_ms(Some(-1000)), "1969-12-31 23:59:59");
+    }
+
+    // =========================================================================
+    // file_entry_from_dto
+    // =========================================================================
+
+    fn dto(path: &str, kind: EntryKind) -> ArchiveEntryDto {
+        ArchiveEntryDto {
+            id: arclain_app::ids::EntryId::from_raw(1),
+            path: arclain_app::archive::ArchivePath::parse(path.to_string()).unwrap(),
+            name: path.rsplit('/').next().unwrap().to_string(),
+            kind,
+            compressed_size: Some(0),
+            uncompressed_size: 0,
+            modified_at_unix_ms: None,
             encrypted: false,
             crc32: None,
-        };
-        let fe = convert_to_file_entry(&entry);
-        assert_eq!(fe.name, "data");
-        assert!(fe.is_folder);
-        assert_eq!(fe.ratio, "0%");
-        assert_eq!(fe.modified, "");
-        assert_eq!(fe.crc32, "");
+        }
     }
 
     #[test]
-    fn convert_to_file_entry_encrypted() {
-        let entry = arclain_core::ArchiveEntry {
-            path: "secret.txt".to_string(),
-            size: 100,
-            packed_size: 80,
-            modified: None,
-            is_dir: false,
-            encrypted: true,
-            crc32: None,
-        };
-        let fe = convert_to_file_entry(&entry);
-        assert!(fe.encrypted);
-        assert_eq!(fe.ratio, "80%");
+    fn a_file_row_carries_its_sizes_ratio_date_and_checksum() {
+        let mut entry = dto("game/data/save.dat", EntryKind::File);
+        entry.uncompressed_size = 2048;
+        entry.compressed_size = Some(1024);
+        entry.modified_at_unix_ms = Some(1_705_314_600_000);
+        entry.crc32 = Some("AABBCCDD".to_string());
+
+        let row = file_entry_from_dto(&entry);
+
+        assert_eq!(row.name, "save.dat");
+        assert_eq!(row.archive_path, "game/data/save.dat");
+        assert_eq!(row.size, "2.0 KB");
+        assert_eq!(row.compressed, "1.0 KB");
+        assert_eq!(row.ratio, "50%");
+        assert_eq!(row.modified, "2024-01-15 10:30:00");
+        assert_eq!(row.crc32, "AABBCCDD");
+        assert!(!row.is_folder);
+        assert!(!row.encrypted);
     }
 
     #[test]
-    fn convert_to_file_entry_preserves_explicit_archive_root_path() {
-        let entry = arclain_core::ArchiveEntry {
-            path: "same.txt".to_string(),
-            size: 1,
-            packed_size: 1,
-            modified: None,
-            is_dir: false,
-            encrypted: false,
-            crc32: None,
-        };
+    fn a_folder_row_is_flagged_as_one_and_reports_a_zero_ratio() {
+        let row = file_entry_from_dto(&dto("game/data", EntryKind::Directory));
 
-        let file_entry = convert_to_file_entry_with_archive_path(&entry, "A/same.txt");
+        assert_eq!(row.name, "data");
+        assert!(row.is_folder);
+        assert_eq!(row.ratio, "0%");
+        assert_eq!(row.modified, "");
+        assert_eq!(row.crc32, "");
+    }
 
-        assert_eq!(file_entry.path, "same.txt");
-        assert_eq!(file_entry.archive_path, "A/same.txt");
+    #[test]
+    fn an_encrypted_row_keeps_its_flag_and_computes_its_ratio() {
+        let mut entry = dto("secret.txt", EntryKind::File);
+        entry.uncompressed_size = 100;
+        entry.compressed_size = Some(80);
+        entry.encrypted = true;
+
+        let row = file_entry_from_dto(&entry);
+
+        assert!(row.encrypted);
+        assert_eq!(row.ratio, "80%");
+    }
+
+    /// A row's display path is relative to the folder on screen while
+    /// `archive_path` stays archive-root-relative -- what keeps two
+    /// same-named files in different folders distinct in the selection
+    /// set (see `BrowserProjectionCache`'s own coverage of that bug).
+    #[test]
+    fn a_nested_row_shows_its_name_but_keys_on_its_archive_path() {
+        let row = file_entry_from_dto(&dto("A/same.txt", EntryKind::File));
+
+        assert_eq!(row.path, "same.txt");
+        assert_eq!(row.archive_path, "A/same.txt");
+    }
+
+    /// A symlink has no pre-facade counterpart (no backend reports one),
+    /// but it must never be mistaken for a folder: a folder row navigates
+    /// on double-click instead of opening.
+    #[test]
+    fn a_symlink_row_is_not_treated_as_a_folder() {
+        assert!(!file_entry_from_dto(&dto("link", EntryKind::Symlink)).is_folder);
     }
 }
