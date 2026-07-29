@@ -24,41 +24,6 @@ use arclain_ui::core::operation_bridge::handle_plugin_action_event;
 use arclain_ui::core::tabs::TabId;
 use arclain_ui::features::plugins::application::PluginSlot;
 use arclain_ui::features::plugins::presentation::document_dispatch;
-use std::time::Duration;
-
-/// Copies a workspace plugin fixture into the folder layout the loader
-/// expects -- mirrors the helper in `plugin_session_facade_test.rs` (each
-/// test binary is its own crate).
-fn bootstrap_with_plugin(temp: &tempfile::TempDir, plugin: &str) -> arclain_app::ArclainApp {
-    let paths = arclain_app::AppPaths {
-        config_dir: temp.path().join("config"),
-        data_dir: temp.path().join("data"),
-        cache_dir: temp.path().join("cache"),
-        log_dir: temp.path().join("logs"),
-        plugins_dir: temp.path().join("plugins"),
-    };
-    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins")
-        .join(plugin);
-    let dest = paths.plugins_dir.join(plugin);
-    std::fs::create_dir_all(&dest).expect("create plugin fixture directory");
-    for extension in ["wasm", "toml"] {
-        std::fs::copy(
-            fixture_dir.join(format!("{plugin}.{extension}")),
-            dest.join(format!("{plugin}.{extension}")),
-        )
-        .unwrap_or_else(|error| panic!("copy {plugin}.{extension} fixture: {error}"));
-    }
-    arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
-        paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-    })
-    .expect("bootstrap with a plugin fixture must succeed")
-}
 
 fn panel_slot() -> PluginSlot {
     PluginSlot::Panel {
