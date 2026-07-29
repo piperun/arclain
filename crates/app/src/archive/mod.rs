@@ -11,6 +11,20 @@ pub(crate) use store::ArchiveSessionStore;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::ids::{ArchiveSessionId, EntryId};
 
+/// Reports whether `path`'s file name ends in an extension this
+/// application recognizes as an archive.
+///
+/// Pure and synchronous -- no app handle, no I/O, no check that `path`
+/// exists. Exposed here so a frontend deciding "is this dropped/extracted
+/// file something we should open as an archive?" asks the application
+/// rather than keeping its own copy of the extension list: the list is a
+/// single source of truth shared with the organization pipeline's own
+/// nested-archive discovery, and a frontend-side copy would silently
+/// diverge from it as formats are added.
+pub fn is_archive_extension(path: &std::path::Path) -> bool {
+    arclain_core::features::organization::flatten::is_archive_extension(path)
+}
+
 /// A slash-separated, archive-relative path. Always relative (never an
 /// absolute filesystem path), always forward-slash-normalized regardless
 /// of how it was typed, and never contains a `..` parent-traversal

@@ -28,8 +28,8 @@ pub use dlsite::{detect_dlsite_code, has_dlsite_code};
 pub use file_opener::{FileOpener, OpenStrategy};
 pub use filesystem::rename_no_replace;
 pub use logging::{
-    app_log_dir, app_log_path_for_date, current_app_log_path, init_logging,
-    init_logging_with_filter, plugin_log_dir,
+    app_log_dir, app_log_path_for_date, current_app_log_file_name, current_app_log_path,
+    init_logging, init_logging_with_filter, plugin_log_dir, PLUGIN_LOG_SUBDIR,
 };
 pub use password_matcher::{auto_password_for, PassRule};
 pub use process::hide_console;

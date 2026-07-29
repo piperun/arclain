@@ -25,19 +25,46 @@ pub fn app_log_dir() -> PathBuf {
         .join("logs")
 }
 
+/// Name of the subdirectory of the app log directory that holds
+/// per-plugin log files.
+///
+/// Exposed as a constant so a caller that already knows its own log
+/// directory can locate the plugin logs inside it without re-deriving
+/// the OS-conventional root through [`app_log_dir`].
+pub const PLUGIN_LOG_SUBDIR: &str = "plugins";
+
 /// Directory that stores per-plugin log files.
 pub fn plugin_log_dir() -> PathBuf {
-    app_log_dir().join("plugins")
+    app_log_dir().join(PLUGIN_LOG_SUBDIR)
+}
+
+/// File name of the app log for a specific local date.
+///
+/// The one place arclain's daily log-file naming lives. The path
+/// helpers below build on it, and [`init_logging`] takes its file
+/// appender's name from [`current_app_log_path`] rather than spelling
+/// the pattern a second time, so a reader can never disagree with the
+/// writer about which file the current session lands in.
+fn app_log_file_name_for_date(date: chrono::NaiveDate) -> String {
+    format!("arclain-{}.log", date.format("%Y-%m-%d"))
+}
+
+/// File name of the app log for today's local date.
+///
+/// Same reason [`PLUGIN_LOG_SUBDIR`] is public: a caller holding its own
+/// log directory needs the file name without a root baked into it.
+pub fn current_app_log_file_name() -> String {
+    app_log_file_name_for_date(chrono::Local::now().date_naive())
 }
 
 /// App log path for a specific local date.
 pub fn app_log_path_for_date(date: chrono::NaiveDate) -> PathBuf {
-    app_log_dir().join(format!("arclain-{}.log", date.format("%Y-%m-%d")))
+    app_log_dir().join(app_log_file_name_for_date(date))
 }
 
 /// App log path for today's local date.
 pub fn current_app_log_path() -> PathBuf {
-    app_log_path_for_date(chrono::Local::now().date_naive())
+    app_log_dir().join(current_app_log_file_name())
 }
 
 fn prepare_file_appender(

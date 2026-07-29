@@ -146,6 +146,29 @@ impl AppPaths {
         }
     }
 
+    /// The app log file the current session is being written to, under
+    /// [`log_dir`](Self::log_dir).
+    ///
+    /// Public because a frontend's diagnostics view needs to *read* the
+    /// file the application is writing, and must not re-derive its name:
+    /// the daily-rotation naming (`arclain-YYYY-MM-DD.log`, resolved
+    /// against the local date) belongs to the logging subsystem that
+    /// installs the `tracing` subscriber, so this accessor takes the
+    /// name from there and only supplies the directory.
+    pub fn current_app_log_file(&self) -> PathBuf {
+        self.log_dir
+            .join(arclain_core::utilities::current_app_log_file_name())
+    }
+
+    /// Where per-plugin log files are written, under
+    /// [`log_dir`](Self::log_dir). Same reasoning as
+    /// [`current_app_log_file`](Self::current_app_log_file): the
+    /// subdirectory name is the logging subsystem's, not a frontend's.
+    pub fn plugin_log_dir(&self) -> PathBuf {
+        self.log_dir
+            .join(arclain_core::utilities::PLUGIN_LOG_SUBDIR)
+    }
+
     /// Where `config.sqlite` and `metadata.sqlite` live.
     pub(crate) fn databases_dir(&self) -> PathBuf {
         self.data_dir.join("databases")
@@ -330,6 +353,48 @@ mod tests {
         assert!(paths.config_dir.is_dir());
         assert!(paths.databases_dir().is_dir());
         assert!(paths.secrets_dir().is_dir());
+    }
+
+    #[test]
+    fn log_accessors_are_rooted_at_the_configured_log_dir() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let paths = AppPaths {
+            config_dir: temp.path().join("config"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            log_dir: temp.path().join("logs"),
+            plugins_dir: temp.path().join("plugins"),
+        };
+
+        assert_eq!(paths.plugin_log_dir(), paths.log_dir.join("plugins"));
+
+        let app_log = paths.current_app_log_file();
+        assert_eq!(app_log.parent().unwrap(), paths.log_dir);
+        // The accessor supplies only the directory: the file name must
+        // stay whatever the logging subsystem is writing, so a reader
+        // cannot drift from the writer.
+        assert_eq!(
+            app_log.file_name(),
+            arclain_core::utilities::current_app_log_path().file_name()
+        );
+    }
+
+    #[test]
+    fn system_default_log_paths_match_the_logging_subsystem() {
+        // Under system defaults -- the only configuration a real
+        // deployment runs -- reading log locations through the facade
+        // must resolve exactly the paths the logging subsystem itself
+        // resolves. A frontend that switched from the latter to the
+        // former therefore reads the same files as before.
+        let paths = AppPaths::system_default().unwrap();
+        assert_eq!(
+            paths.current_app_log_file(),
+            arclain_core::utilities::current_app_log_path()
+        );
+        assert_eq!(
+            paths.plugin_log_dir(),
+            arclain_core::utilities::plugin_log_dir()
+        );
     }
 
     #[test]
