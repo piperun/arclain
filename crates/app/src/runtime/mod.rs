@@ -1369,6 +1369,33 @@ impl ArclainApp {
         .await?
     }
 
+    /// Every file path the archive open in `session_id` holds, in stable
+    /// path-sorted order -- what an organize panel's "Original" side is
+    /// built from, so the two trees it shows side by side describe the
+    /// same archive.
+    ///
+    /// Session data, not rule data: this is the archive's own content
+    /// regardless of which rule is selected, so a frontend fetches it
+    /// once per session rather than per preview. Files only -- the
+    /// directories the entry index synthesizes from file paths are
+    /// deliberately absent (a folder with no file under it is not part
+    /// of what an organize run would move), matching what
+    /// [`Self::list_entries`] reports as `EntryKind::File`.
+    ///
+    /// `O(files)`: materializes and clones the whole list. A caller that
+    /// only needs a window of it wants [`Self::list_entries`]'s paging
+    /// instead. `NotFound` for an unknown or already-closed session id.
+    pub async fn archive_file_paths(
+        &self,
+        session_id: ArchiveSessionId,
+    ) -> Result<Vec<String>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let session = inner.archive_sessions().get(session_id).await?;
+            Ok(session.all_file_paths())
+        })
+        .await?
+    }
+
     // ============= Task c5: organization rules/profiles (end) ============
 
     // ==================== Task 11: plugin sessions (start) ====================

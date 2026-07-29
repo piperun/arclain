@@ -989,3 +989,74 @@ fn recent_operations_and_operation_kind_report_open_archive() {
         assert_eq!(ours.kind, OperationKind::OpenArchive);
     });
 }
+
+/// The whole-archive path list an organize panel's "Original" tree is
+/// built from: every file, in the same stable path-sorted order the
+/// paged read model uses, and none of the directories the entry index
+/// synthesizes from those paths.
+#[test]
+fn archive_file_paths_lists_every_file_path_sorted_and_without_synthesized_folders() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    // Deliberately written in a non-sorted order, and with nested paths
+    // whose parent directories the archive never lists explicitly.
+    let archive_path = build_zip_fixture(
+        temp.path(),
+        "fixture.zip",
+        &[
+            ("wrapper/readme.txt", b"read me"),
+            ("wrapper/data/pack.bin", b"packed"),
+            ("wrapper/Game.exe", b"executable"),
+            ("top.txt", b"top level"),
+        ],
+    );
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: archive_path,
+                password: None,
+            })
+            .await
+            .unwrap();
+        let snapshot = wait_for_archive_opened(&app, operation_id).await;
+
+        let paths = app
+            .archive_file_paths(snapshot.session_id)
+            .await
+            .expect("an open session must report its file paths");
+
+        assert_eq!(
+            paths,
+            vec![
+                "top.txt".to_string(),
+                "wrapper/Game.exe".to_string(),
+                "wrapper/data/pack.bin".to_string(),
+                "wrapper/readme.txt".to_string(),
+            ],
+            "every file, path-sorted, and no synthesized `wrapper`/`wrapper/data` folder"
+        );
+
+        // The same paths `list_entries` reports as files, so the panel's
+        // two views of one archive cannot disagree.
+        assert_eq!(
+            paths.len(),
+            snapshot.entry_count as usize - 2,
+            "the two synthesized ancestor folders are counted by entry_count but never listed here"
+        );
+    });
+}
+
+#[test]
+fn archive_file_paths_rejects_a_reconstructed_unknown_session_id() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let unknown = ArchiveSessionId::from_raw(999_999);
+
+    let error = runtime
+        .block_on(app.archive_file_paths(unknown))
+        .unwrap_err();
+    assert_eq!(error.kind, ApplicationErrorKind::NotFound);
+}
