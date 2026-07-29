@@ -82,7 +82,8 @@ use arclain_network::features::proxy::ConnectionTestResult;
 use crate::challenge::SecretInput;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::settings::{
-    self, GametaServerInfo, PasswordRuleInput, PasswordRuleSummary, SettingsPatch, SettingsSnapshot,
+    self, GametaServerInfo, NetworkProbeReport, PasswordRuleInput, PasswordRuleSummary,
+    ProbeStepDto, SettingsPatch, SettingsSnapshot, Socks5Candidate,
 };
 
 use super::AppRuntime;
@@ -471,8 +472,8 @@ pub(super) async fn run_test_gameta_connection(
     })
 }
 
-/// Probes a *candidate* SOCKS5 proxy configuration -- see
-/// [`crate::ArclainApp::test_socks5_proxy`] for the surface contract.
+/// Probes the *candidate* network path -- see
+/// [`crate::ArclainApp::probe_network`] for the surface contract.
 ///
 /// Takes no `settings_write_lock` and persists nothing, for the same
 /// reasons [`run_test_gameta_connection`] does not.
@@ -482,14 +483,48 @@ pub(super) async fn run_test_gameta_connection(
 /// there is no blocking client to hand to `spawn_blocking`; the caller's
 /// `dispatch_async` has already put this future on the application's own
 /// runtime.
-pub(super) async fn run_test_socks5_proxy(
+///
+/// A probe that *ran* returns `Ok` whatever it found: the whole point of
+/// the report is the trace, and a failed step is information to render,
+/// not an error to swallow it. `Err` is reserved for a candidate that
+/// could never have been probed (an unusable authority) or an
+/// application on its way down.
+pub(super) async fn run_probe_network(
     inner: &Arc<AppRuntime>,
-    host: String,
-    port: u16,
-    username: Option<String>,
-    password: Option<SecretInput>,
-) -> Result<(), ApplicationError> {
-    let host = host.trim().to_string();
+    proxy: Option<Socks5Candidate>,
+) -> Result<NetworkProbeReport, ApplicationError> {
+    let candidate = match proxy {
+        Some(proxy) => proxy_candidate(proxy)?,
+        // `enabled: false` is `ProxyConfig::test_connection`'s direct
+        // mode: it skips the DNS and TCP steps that only make sense for
+        // a proxy and reports the egress of an unrouted request -- the
+        // "what is my real IP without the proxy" half of the settings
+        // page's test button.
+        None => arclain_network::features::proxy::ProxyConfig {
+            enabled: false,
+            address: String::new(),
+            username: None,
+            password: None,
+        },
+    };
+    let Some(handle) = inner.tokio_handle() else {
+        return Err(shutdown_mid_request_error());
+    };
+    let result = handle
+        .spawn(async move { candidate.test_connection().await })
+        .await
+        .map_err(internal_join_error)?;
+    Ok(probe_report(result))
+}
+
+/// Turns a candidate into the `ProxyConfig` the probe runs on, rejecting
+/// a host/port pair that could never form a usable authority *before* any
+/// packet leaves -- and with a better message than the probe's own first
+/// failed step would carry.
+fn proxy_candidate(
+    proxy: Socks5Candidate,
+) -> Result<arclain_network::features::proxy::ProxyConfig, ApplicationError> {
+    let host = proxy.host.trim().to_string();
     if host.is_empty() {
         return Err(ApplicationError::new(
             ApplicationErrorKind::InvalidInput,
@@ -498,7 +533,7 @@ pub(super) async fn run_test_socks5_proxy(
         .with_recoverability(Recoverability::UserAction)
         .with_field("host"));
     }
-    if port == 0 {
+    if proxy.port == 0 {
         return Err(ApplicationError::new(
             ApplicationErrorKind::InvalidInput,
             "a proxy port is required",
@@ -507,19 +542,19 @@ pub(super) async fn run_test_socks5_proxy(
         .with_recoverability(Recoverability::UserAction)
         .with_field("port"));
     }
-    // `enabled: true` is what makes this a *proxy* probe rather than
-    // `ProxyConfig::test_connection`'s direct-connection mode: the
-    // candidate values only mean anything routed through.
+    // `enabled: true` is what makes this a *proxy* probe rather than the
+    // direct one above: the candidate values only mean anything routed
+    // through.
     let candidate = arclain_network::features::proxy::ProxyConfig {
         enabled: true,
-        address: format!("{host}:{port}"),
-        username,
-        // Same single exposure point as the gameta key above.
-        password: password.map(|value| value.expose_secret().to_string()),
+        address: format!("{host}:{}", proxy.port),
+        username: proxy.username,
+        // The single grep-able point where the candidate password leaves
+        // its zeroizing container, the same way the gameta key does above.
+        password: proxy
+            .password
+            .map(|value| value.expose_secret().to_string()),
     };
-    // Rejects a malformed authority (embedded userinfo, a path, a bad
-    // host) before any packet leaves, and with a better message than the
-    // probe's own first failed step would carry.
     if let Err(reason) = candidate.validate() {
         return Err(ApplicationError::new(
             ApplicationErrorKind::InvalidInput,
@@ -529,17 +564,41 @@ pub(super) async fn run_test_socks5_proxy(
         .with_recoverability(Recoverability::UserAction)
         .with_field("host"));
     }
-    let Some(handle) = inner.tokio_handle() else {
-        return Err(shutdown_mid_request_error());
+    Ok(candidate)
+}
+
+/// Mirrors a probe result into the report a frontend renders.
+///
+/// Every string carried across is already credential-free at its source:
+/// `ConnectionTestStep::message` holds either an `io::Error` (a DNS or TCP
+/// failure) or `ProxyConfig::log_summary`, which reports only enablement,
+/// the host:port authority, and whether credentials were *present* --
+/// never their values.
+fn probe_report(result: ConnectionTestResult) -> NetworkProbeReport {
+    let report = NetworkProbeReport {
+        steps: result
+            .steps
+            .into_iter()
+            .map(|step| ProbeStepDto {
+                name: step.name,
+                passed: step.passed,
+                message: step.message,
+            })
+            .collect(),
+        ip: result.ip,
+        country: result.country,
     };
-    let result = handle
-        .spawn(async move { candidate.test_connection().await })
-        .await
-        .map_err(internal_join_error)?;
-    if result.success {
-        return Ok(());
-    }
-    Err(socks5_probe_failed_error(&result))
+    // `NetworkProbeReport` carries no success flag of its own: a probe
+    // stops at its first failed step, so "every step passed" is the same
+    // verdict. Asserted rather than assumed, so a change to the probe's
+    // own step bookkeeping shows up as a failing test here instead of a
+    // panel that quietly disagrees with itself.
+    debug_assert_eq!(
+        report.succeeded(),
+        result.success,
+        "probe step trace disagrees with the probe's own success flag",
+    );
+    report
 }
 
 /// Sets or clears the SOCKS5 password.
@@ -1304,48 +1363,6 @@ fn gameta_unreachable_error(server_url: &str, error: impl std::fmt::Display) -> 
     .with_field("server_url")
 }
 
-/// The one failure shape [`run_test_socks5_proxy`] reports, built from the
-/// probe's own step list.
-///
-/// Every piece of text this reads is already credential-free at its
-/// source: `ConnectionTestStep::message` carries either an `io::Error`
-/// (a DNS or TCP failure) or `ProxyConfig::log_summary`, which reports
-/// only enablement, the host:port authority, and whether credentials were
-/// *present* -- never their values. The candidate password therefore has
-/// no path into this error at all, which is what the probe's own
-/// redaction test pins.
-fn socks5_probe_failed_error(result: &ConnectionTestResult) -> ApplicationError {
-    let failed = result.steps.iter().find(|step| !step.passed);
-    let summary = match failed {
-        Some(step) => format!("the SOCKS5 proxy failed the {} check", step.name),
-        None => "the SOCKS5 proxy probe did not complete".to_string(),
-    };
-    let diagnostic = result
-        .steps
-        .iter()
-        .map(|step| {
-            let outcome = if step.passed { "ok" } else { "failed" };
-            match &step.message {
-                Some(message) => format!("{}: {outcome} ({message})", step.name),
-                None => format!("{}: {outcome}", step.name),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    let mut error = ApplicationError::new(ApplicationErrorKind::Backend, summary)
-        .with_recoverability(Recoverability::Retry)
-        .with_retryable(true)
-        .with_suggested_action(SuggestedAction::Retry)
-        .with_field("host");
-    // A failed probe always records the step it failed on, so an empty
-    // list is defensive rather than reachable -- but `Some("")` is a
-    // worse diagnostic than none at all, so it stays unset.
-    if !diagnostic.is_empty() {
-        error = error.with_diagnostic(diagnostic);
-    }
-    error
-}
-
 fn persistence_error(context: &str, error: impl std::fmt::Display) -> ApplicationError {
     ApplicationError::new(
         ApplicationErrorKind::Persistence,
@@ -1425,6 +1442,7 @@ fn internal_join_error(join_error: tokio::task::JoinError) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arclain_network::features::proxy::ConnectionTestStep;
 
     #[test]
     fn userinfo_redaction_leaves_an_ordinary_url_untouched() {
@@ -1495,6 +1513,90 @@ mod tests {
             redact_url_userinfo("not a url user:secret@host"),
             REDACTED_URL,
         );
+    }
+
+    fn step(name: &str, passed: bool, message: Option<&str>) -> ConnectionTestStep {
+        ConnectionTestStep {
+            name: name.to_string(),
+            passed,
+            message: message.map(str::to_string),
+        }
+    }
+
+    /// Field-for-field fidelity against a constructed trace: the panel
+    /// renders a row per step from exactly these three values, so
+    /// summarizing, reordering, or dropping one would change what the
+    /// user sees.
+    #[test]
+    fn probe_report_mirrors_every_step_of_a_successful_trace() {
+        let source = ConnectionTestResult {
+            steps: vec![
+                step("DNS", true, Some("Resolved to 203.0.113.7:1080")),
+                step("TCP", true, None),
+                step("SOCKS5", true, None),
+            ],
+            success: true,
+            ip: Some("198.51.100.9".to_string()),
+            country: Some("Nowhere".to_string()),
+        };
+
+        let report = probe_report(source);
+
+        assert_eq!(
+            report
+                .steps
+                .iter()
+                .map(|step| (step.name.as_str(), step.passed, step.message.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("DNS", true, Some("Resolved to 203.0.113.7:1080")),
+                ("TCP", true, None),
+                ("SOCKS5", true, None),
+            ],
+        );
+        assert_eq!(report.ip.as_deref(), Some("198.51.100.9"));
+        assert_eq!(report.country.as_deref(), Some("Nowhere"));
+        assert!(report.succeeded());
+    }
+
+    /// A probe stops at its first failed step, so the trace keeps the
+    /// steps that did pass -- that partial progress is what tells a user
+    /// where the path breaks.
+    #[test]
+    fn probe_report_keeps_the_passing_steps_that_preceded_a_failure() {
+        let source = ConnectionTestResult {
+            steps: vec![
+                step("DNS", true, Some("Resolved to 203.0.113.7:1080")),
+                step("TCP", false, Some("connection refused")),
+            ],
+            success: false,
+            ip: None,
+            country: None,
+        };
+
+        let report = probe_report(source);
+
+        assert!(!report.succeeded());
+        assert!(report.steps[0].passed);
+        assert!(!report.steps[1].passed);
+        assert_eq!(
+            report.steps[1].message.as_deref(),
+            Some("connection refused")
+        );
+    }
+
+    /// An empty trace is not "everything passed". `succeeded` requires at
+    /// least one step so a probe that produced nothing can never read as
+    /// a success.
+    #[test]
+    fn an_empty_probe_report_does_not_read_as_a_success() {
+        let report = NetworkProbeReport {
+            steps: Vec::new(),
+            ip: None,
+            country: None,
+        };
+
+        assert!(!report.succeeded());
     }
 
     #[test]

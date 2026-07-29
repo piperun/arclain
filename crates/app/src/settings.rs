@@ -165,6 +165,66 @@ pub struct GametaServerInfo {
     pub version: String,
 }
 
+/// The candidate SOCKS5 proxy [`crate::ArclainApp::probe_network`] routes
+/// its probe through. Field names mirror the proxy configuration the
+/// settings form holds, with the stored `host:port` authority already
+/// split into its two parts.
+///
+/// Not `Clone`, `Serialize`, or `Deserialize`: [`SecretInput`] is none of
+/// those on purpose, and that restriction is contagious here by design --
+/// a candidate password must be consumed by the probe it was built for,
+/// never queued, copied, or logged.
+#[derive(Debug)]
+pub struct Socks5Candidate {
+    /// The proxy host exactly as it must appear in an authority: an IPv6
+    /// literal keeps its brackets (`[::1]`).
+    pub host: String,
+    pub port: u16,
+    pub username: Option<String>,
+    pub password: Option<SecretInput>,
+}
+
+/// One step of a network probe, as the settings page's result panel
+/// renders it: a name, whether it passed, and an optional detail line.
+/// Mirrors `arclain_network`'s own `ConnectionTestStep`.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ProbeStepDto {
+    /// `DNS`, `TCP`, `SOCKS5`, or `HTTP` -- which steps appear depends on
+    /// whether the probe went through a proxy.
+    pub name: String,
+    pub passed: bool,
+    /// The resolved address, an error string, or nothing.
+    pub message: Option<String>,
+}
+
+/// What [`crate::ArclainApp::probe_network`] observed: the full per-step
+/// trace, plus the egress address the probe came out of.
+///
+/// There is no `success` flag: a probe stops at its first failed step, so
+/// [`Self::succeeded`] reads it off the trace itself, and every failure is
+/// a failed step a frontend can point at rather than a boolean it has to
+/// explain.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct NetworkProbeReport {
+    pub steps: Vec<ProbeStepDto>,
+    /// The public IP the probe's request appeared to come from. `None`
+    /// unless every step passed.
+    pub ip: Option<String>,
+    /// The country that IP resolved to. `None` unless every step passed.
+    pub country: Option<String>,
+}
+
+impl NetworkProbeReport {
+    /// Whether the probe reached the far end. Every step passing is the
+    /// same condition the underlying probe uses to set its own success
+    /// flag -- see `runtime::settings_ops::run_probe_network`, which
+    /// debug-asserts the two agree so a change on either side surfaces in
+    /// tests rather than as a silently misreported verdict.
+    pub fn succeeded(&self) -> bool {
+        !self.steps.is_empty() && self.steps.iter().all(|step| step.passed)
+    }
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct NetworkSettingsPatch {
     pub socks5_enabled: PatchValue<bool>,
@@ -781,6 +841,35 @@ mod tests {
 
     fn default_user_config() -> UserConfig {
         UserConfig::new()
+    }
+
+    /// The report crosses to a frontend whole, so its wire shape is part
+    /// of the surface: every step, in order, with its detail line, plus
+    /// the egress pair the panel's footer is built from.
+    #[test]
+    fn network_probe_report_round_trips_through_serde() {
+        let report = NetworkProbeReport {
+            steps: vec![
+                ProbeStepDto {
+                    name: "DNS".to_string(),
+                    passed: true,
+                    message: Some("Resolved to 203.0.113.7:1080".to_string()),
+                },
+                ProbeStepDto {
+                    name: "TCP".to_string(),
+                    passed: false,
+                    message: None,
+                },
+            ],
+            ip: Some("198.51.100.9".to_string()),
+            country: Some("Nowhere".to_string()),
+        };
+
+        let json = serde_json::to_string(&report).expect("serialize probe report");
+        let restored: NetworkProbeReport =
+            serde_json::from_str(&json).expect("deserialize probe report");
+
+        assert_eq!(restored, report);
     }
 
     /// The probe hands this straight to a frontend, so its wire shape is

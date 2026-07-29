@@ -1760,35 +1760,42 @@ impl ArclainApp {
         .await?
     }
 
-    /// Probes a *candidate* SOCKS5 proxy -- the values a settings form
-    /// currently holds, before the user has saved them -- by routing a
-    /// real request through it.
+    /// Probes the *candidate* network path -- the values a settings form
+    /// currently holds, before the user has saved them -- by sending a
+    /// real outbound request and reporting every step it took.
     ///
-    /// Persists nothing and touches no live routing: none of the four
-    /// arguments reaches the configuration database, the encrypted vault,
-    /// or this instance's `AsyncHttpClient`. Use [`Self::update_settings`]
-    /// plus [`Self::set_socks5_password`] to actually save a proxy.
+    /// `proxy: None` probes the **direct** path: no proxy, reporting the
+    /// egress the machine actually has. `Some(candidate)` routes the same
+    /// request through the candidate SOCKS5 settings. Those are the two
+    /// halves of a settings page's "test connection" button -- "does my
+    /// proxy work" and "what does the internet see without it".
     ///
-    /// `Ok(())` means the proxy resolved, accepted a TCP connection, and
-    /// carried an outbound HTTP request end to end. Failures name the
-    /// step that failed and carry the whole step list as a diagnostic.
-    /// Neither channel can contain the candidate `password`: every string
-    /// the error is built from is already credential-free at its source
-    /// (see `settings_ops::socks5_probe_failed_error`).
+    /// Persists nothing and touches no live routing: neither the
+    /// candidate nor its password reaches the configuration database, the
+    /// encrypted vault, or this instance's `AsyncHttpClient`. Use
+    /// [`Self::update_settings`] plus [`Self::set_socks5_password`] to
+    /// actually save a proxy.
     ///
-    /// `host` is the proxy host exactly as it must appear in an authority
-    /// -- an IPv6 literal is bracketed (`[::1]`). A `host`/`port` pair
-    /// that cannot form a valid authority is rejected as `InvalidInput`
-    /// before any packet leaves.
-    pub async fn test_socks5_proxy(
+    /// # `Ok` does not mean the probe succeeded
+    ///
+    /// A probe that *ran* returns `Ok` whatever it found, and
+    /// [`crate::settings::NetworkProbeReport::succeeded`] reports the
+    /// verdict. The trace is the point: a frontend renders which step
+    /// failed and why, which an `Err` carrying one summary string cannot
+    /// express. `Err` is reserved for a candidate that could never have
+    /// been probed at all (`InvalidInput` for a host/port pair that
+    /// cannot form an authority -- rejected before any packet leaves) or
+    /// an application already shutting down.
+    ///
+    /// The candidate `password` appears nowhere in the report: every
+    /// string a step carries is credential-free at its source (see
+    /// `settings_ops::probe_report`).
+    pub async fn probe_network(
         &self,
-        host: String,
-        port: u16,
-        username: Option<String>,
-        password: Option<SecretInput>,
-    ) -> Result<(), ApplicationError> {
+        proxy: Option<crate::settings::Socks5Candidate>,
+    ) -> Result<crate::settings::NetworkProbeReport, ApplicationError> {
         self.dispatch_async(move |inner| async move {
-            settings_ops::run_test_socks5_proxy(&inner, host, port, username, password).await
+            settings_ops::run_probe_network(&inner, proxy).await
         })
         .await?
     }

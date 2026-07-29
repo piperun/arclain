@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use arclain_app::challenge::SecretInput;
 use arclain_app::error::ApplicationErrorKind;
+use arclain_app::settings::{NetworkProbeReport, Socks5Candidate};
 use arclain_app::{ArclainApp, BootstrapConfig};
 
 /// Captures `tracing` output from **every** thread for the lifetime of
@@ -437,7 +438,7 @@ fn test_gameta_connection_rejects_a_blank_url_before_any_request() {
 }
 
 // ---------------------------------------------------------------------------
-// test_socks5_proxy
+// probe_network
 // ---------------------------------------------------------------------------
 
 /// Accepts one connection and answers the SOCKS5 greeting with "no
@@ -458,12 +459,25 @@ fn serve_rejecting_socks5(listener: TcpListener) -> std::thread::JoinHandle<()> 
     })
 }
 
+fn candidate_at(address: SocketAddr) -> Socks5Candidate {
+    Socks5Candidate {
+        host: address.ip().to_string(),
+        port: address.port(),
+        username: None,
+        password: None,
+    }
+}
+
+fn step_names(report: &NetworkProbeReport) -> Vec<&str> {
+    report.steps.iter().map(|step| step.name.as_str()).collect()
+}
+
 /// The failure path, and the guard that the candidate password reaches
-/// neither the error nor this crate's tracing. Global capture for the
+/// neither the report nor this crate's tracing. Global capture for the
 /// same reason the gameta twin above uses it: `ProxyConfig::
 /// test_connection` logs from a runtime worker thread.
 #[test]
-fn test_socks5_proxy_reports_a_rejecting_proxy_without_leaking_the_password() {
+fn probe_network_reports_a_rejecting_proxy_without_leaking_the_password() {
     const PASSWORD: &str = "socks5-probe-password-5c1b";
     const USERNAME: &str = "socks5-probe-user-2e9f";
     let logs = tracing_capture::install();
@@ -473,68 +487,112 @@ fn test_socks5_proxy_reports_a_rejecting_proxy_without_leaking_the_password() {
     let address = listener.local_addr().expect("read the sentinel address");
     let sentinel = serve_rejecting_socks5(listener);
 
-    let error = foreign_runtime()
-        .block_on(app.test_socks5_proxy(
-            address.ip().to_string(),
-            address.port(),
-            Some(USERNAME.to_string()),
-            Some(SecretInput::new(PASSWORD.to_string())),
-        ))
-        .expect_err("a proxy that refuses every auth method must not report Ok");
+    let report = foreign_runtime()
+        .block_on(app.probe_network(Some(Socks5Candidate {
+            host: address.ip().to_string(),
+            port: address.port(),
+            username: Some(USERNAME.to_string()),
+            password: Some(SecretInput::new(PASSWORD.to_string())),
+        })))
+        .expect("a probe that ran reports its trace, not an error");
 
-    let rendered = format!("{error:?}");
+    assert!(
+        !report.succeeded(),
+        "a proxy that refuses every auth method must not report success",
+    );
+    let rendered = format!("{report:?}");
     assert!(
         !rendered.contains(PASSWORD),
-        "the proxy password reached the error surface: {rendered}",
+        "the proxy password reached the report: {rendered}",
     );
     assert!(
         !logs.contains(PASSWORD),
         "the proxy password reached this crate's own tracing output",
     );
-    assert_eq!(error.kind, ApplicationErrorKind::Backend);
-    assert!(error.retryable);
     let _ = sentinel.join();
 }
 
-/// A refused TCP connection fails at the `TCP` step, and the step list
-/// reaches the diagnostic so a user can see how far the probe got.
+/// A probe that ran returns `Ok` with the trace, whatever it found. The
+/// panel needs the per-step detail, which an `Err` carrying one summary
+/// string cannot express.
 #[test]
-fn test_socks5_proxy_reports_the_step_that_failed() {
+fn probe_network_returns_the_step_trace_for_a_failed_proxy_probe() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
     let address = unused_local_address();
 
-    let error = foreign_runtime()
-        .block_on(app.test_socks5_proxy(address.ip().to_string(), address.port(), None, None))
-        .expect_err("a closed port must not report Ok");
+    let report = foreign_runtime()
+        .block_on(app.probe_network(Some(candidate_at(address))))
+        .expect("a probe against a closed port still ran");
 
-    assert_eq!(error.kind, ApplicationErrorKind::Backend);
+    assert!(!report.succeeded());
+    // Proxy mode resolves and connects to the proxy first, so a closed
+    // port gets as far as the TCP step and no further.
+    assert_eq!(step_names(&report), vec!["DNS", "TCP"]);
+    let dns = &report.steps[0];
+    assert!(dns.passed);
     assert!(
-        error.summary.contains("TCP"),
-        "the summary should name the failed step: {}",
-        error.summary,
+        dns.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Resolved to"),
+        "{dns:?}",
     );
-    let diagnostic = error.diagnostic.unwrap_or_default();
+    let tcp = &report.steps[1];
+    assert!(!tcp.passed);
+    assert!(tcp.message.is_some(), "a failed step must say why");
+    assert_eq!(report.ip, None);
+    assert_eq!(report.country, None);
+}
+
+/// Mode selection is the whole point of `proxy: Option<_>`: `Some` walks
+/// the proxy's own DNS and TCP steps first, `None` skips straight to the
+/// direct request. Asserted through the step trace rather than a
+/// successful round trip, which would need a real proxy *and* the
+/// third-party endpoint `ProxyConfig::test_connection` targets.
+#[test]
+fn probe_network_routes_direct_and_proxy_modes_down_different_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let runtime = foreign_runtime();
+    let address = unused_local_address();
+
+    let through_proxy = runtime
+        .block_on(app.probe_network(Some(candidate_at(address))))
+        .expect("the proxy probe ran");
+    assert_eq!(step_names(&through_proxy), vec!["DNS", "TCP"]);
+
+    let direct = runtime
+        .block_on(app.probe_network(None))
+        .expect("the direct probe ran");
     assert!(
-        diagnostic.contains("DNS: ok"),
-        "the step list should show how far the probe got: {diagnostic}",
+        !step_names(&direct).contains(&"DNS") && !step_names(&direct).contains(&"TCP"),
+        "the direct path must not probe a proxy's DNS or TCP: {:?}",
+        step_names(&direct),
+    );
+    // Whether the direct probe reaches the internet is not this test's
+    // business; what it must never do is report a SOCKS5 step.
+    assert!(
+        !step_names(&direct).contains(&"SOCKS5"),
+        "the direct path reported a SOCKS5 step: {:?}",
+        step_names(&direct),
     );
 }
 
 #[test]
-fn test_socks5_proxy_persists_nothing() {
+fn probe_network_persists_nothing() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
     let address = unused_local_address();
     let runtime = foreign_runtime();
 
     let before = runtime.block_on(app.settings()).expect("read settings");
-    let _ = runtime.block_on(app.test_socks5_proxy(
-        address.ip().to_string(),
-        address.port(),
-        Some("candidate-user".to_string()),
-        Some(SecretInput::new("candidate-password".to_string())),
-    ));
+    let _ = runtime.block_on(app.probe_network(Some(Socks5Candidate {
+        host: address.ip().to_string(),
+        port: address.port(),
+        username: Some("candidate-user".to_string()),
+        password: Some(SecretInput::new("candidate-password".to_string())),
+    })));
     let after = runtime.block_on(app.settings()).expect("re-read settings");
 
     assert_eq!(before.revision, after.revision);
@@ -550,20 +608,32 @@ fn test_socks5_proxy_persists_nothing() {
     );
 }
 
+/// The one shape that is an `Err`: a candidate that could never have been
+/// probed at all, rejected before any packet leaves.
 #[test]
-fn test_socks5_proxy_rejects_an_unusable_host_and_port_before_any_packet() {
+fn probe_network_rejects_an_unusable_host_and_port_before_any_packet() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
     let runtime = foreign_runtime();
 
     let blank = runtime
-        .block_on(app.test_socks5_proxy(String::new(), 1080, None, None))
+        .block_on(app.probe_network(Some(Socks5Candidate {
+            host: String::new(),
+            port: 1080,
+            username: None,
+            password: None,
+        })))
         .expect_err("a blank host must be rejected");
     assert_eq!(blank.kind, ApplicationErrorKind::InvalidInput);
     assert_eq!(blank.field.as_deref(), Some("host"));
 
     let zero_port = runtime
-        .block_on(app.test_socks5_proxy("127.0.0.1".to_string(), 0, None, None))
+        .block_on(app.probe_network(Some(Socks5Candidate {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            username: None,
+            password: None,
+        })))
         .expect_err("port 0 must be rejected");
     assert_eq!(zero_port.kind, ApplicationErrorKind::InvalidInput);
     assert_eq!(zero_port.field.as_deref(), Some("port"));
@@ -571,7 +641,12 @@ fn test_socks5_proxy_rejects_an_unusable_host_and_port_before_any_packet() {
     // An authority the network crate itself refuses (embedded userinfo)
     // must not reach the wire either.
     let malformed = runtime
-        .block_on(app.test_socks5_proxy("user@proxy.invalid".to_string(), 1080, None, None))
+        .block_on(app.probe_network(Some(Socks5Candidate {
+            host: "user@proxy.invalid".to_string(),
+            port: 1080,
+            username: None,
+            password: None,
+        })))
         .expect_err("a host carrying userinfo must be rejected");
     assert_eq!(malformed.kind, ApplicationErrorKind::InvalidInput);
 }
