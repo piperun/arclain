@@ -189,6 +189,9 @@ impl Drop for RuntimeOwner {
 /// this cannot reach.
 pub(crate) struct AppRuntime {
     paths: AppPaths,
+    /// How many stored password rules `bootstrap` rewrote on the way up
+    /// -- see [`ArclainApp::startup_password_rule_upgrades`].
+    startup_password_rule_upgrades: usize,
     session: SessionStore,
     /// The cancellable, event-broadcasting registry every asynchronous
     /// application operation (starting with `start_open_archive`) is
@@ -445,6 +448,24 @@ impl ArclainApp {
     /// The directories this instance resolved at bootstrap.
     pub fn paths(&self) -> &AppPaths {
         &self.inner.paths
+    }
+
+    /// How many stored password rules this bootstrap broadened as it
+    /// started, out of the rules it found.
+    ///
+    /// Rules auto-saved before the pattern heuristic existed match
+    /// exactly one archive, so siblings sharing a product code or maker
+    /// bracket re-prompt for a password they already have. Bootstrap
+    /// rewrites only those provably-narrow rules, before anything can
+    /// read a rule, and this reports how many it touched -- purely so a
+    /// frontend can tell the user something changed under them. It is a
+    /// count of a completed migration, not a pending one: a frontend
+    /// that ignores it loses a notification, never a correction.
+    ///
+    /// `0` on every launch after the first, since a broadened rule no
+    /// longer matches the narrow fingerprint.
+    pub fn startup_password_rule_upgrades(&self) -> usize {
+        self.inner.startup_password_rule_upgrades
     }
 
     /// What this running application can actually do right now --

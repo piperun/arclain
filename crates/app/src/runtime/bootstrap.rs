@@ -169,6 +169,58 @@ fn initialize_resource_services(
     Ok((cache, manager))
 }
 
+/// Broadens stored password rules that still carry the one-archive-only
+/// pattern auto-saving produced before the pattern heuristic existed,
+/// writing the result back and updating `pass_rules` in place. Returns
+/// how many rules changed.
+///
+/// Runs here, during composition, rather than in a frontend: it rewrites
+/// persisted secrets, and it has to land before *anything* can read a
+/// rule -- an archive opened against the un-upgraded set would re-prompt
+/// for a password the vault already holds. Idempotent, so running it on
+/// every launch costs one list-and-compare after the first: a broadened
+/// pattern no longer matches the narrow fingerprint
+/// `upgrade_auto_saved_rules` requires, so a second pass reports nothing
+/// to do.
+///
+/// Best-effort on the write: a vault that refuses the update leaves the
+/// narrow rules in place (they still work, they just match less than
+/// they could) rather than failing the whole bootstrap, and this
+/// function reports 0 so no frontend claims an upgrade that did not
+/// happen.
+fn upgrade_narrow_auto_saved_rules(dbs: &ConfigDbs, pass_rules: &mut Vec<PassRule>) -> usize {
+    let Some(upgraded) =
+        arclain_core::utilities::password_matcher::upgrade_auto_saved_rules(pass_rules)
+    else {
+        return 0;
+    };
+    let changed = upgraded
+        .iter()
+        .zip(pass_rules.iter())
+        .filter(|(new, old)| new.pattern != old.pattern)
+        .count();
+
+    let db_rules: Vec<arclain_core::DbPassRule> = upgraded
+        .iter()
+        .cloned()
+        .map(|rule| arclain_core::DbPassRule {
+            name: rule.name,
+            pattern: rule.pattern,
+            password: rule.password,
+            priority: rule.priority,
+            enabled: rule.enabled,
+        })
+        .collect();
+    if let Err(error) = dbs.secrets.replace_all_pass_rules(&db_rules) {
+        warn!("Failed to persist upgraded password rules: {error}");
+        return 0;
+    }
+
+    info!("Broadened {changed} auto-saved password rule(s) to match sibling archives");
+    *pass_rules = upgraded;
+    changed
+}
+
 pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationError> {
     info!("Bootstrapping application runtime");
 
@@ -298,6 +350,7 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
     info!("Initialized HTTP client proxy settings");
 
     let mut pass_rules: Vec<PassRule> = Vec::new();
+    let mut startup_password_rule_upgrades = 0usize;
     let mut content_cache: Option<Arc<ContentCache>> = None;
     let mut resource_manager: Option<Arc<ResourceManager>> = None;
     let mut dbs: Option<ConfigDbs> = None;
@@ -344,6 +397,8 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
                                     enabled: rule.enabled,
                                 })
                                 .collect();
+                            startup_password_rule_upgrades =
+                                upgrade_narrow_auto_saved_rules(&opened_dbs, &mut pass_rules);
                         }
                     }
 
@@ -524,6 +579,7 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
 
     Ok(AppRuntime {
         paths,
+        startup_password_rule_upgrades,
         session,
         operations: OperationRegistry::new(),
         archive_sessions: Arc::new(crate::archive::ArchiveSessionStore::new()),

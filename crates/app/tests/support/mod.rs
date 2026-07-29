@@ -98,6 +98,14 @@ fn secrets_dir(paths: &AppPaths) -> PathBuf {
 /// filename (see `arclain_core::utilities::auto_password_for`) -- callers
 /// typically pass `regex::escape(filename)` for an exact match.
 pub fn seed_pass_rule(paths: &AppPaths, pattern: &str, password: &str) {
+    seed_named_pass_rule(paths, "test rule", pattern, password);
+}
+
+/// [`seed_pass_rule`] with the rule's `name` chosen by the caller, for
+/// tests where the name itself is what the code under test keys on --
+/// the auto-saved fingerprint bootstrap's rule upgrade looks for, for
+/// instance.
+pub fn seed_named_pass_rule(paths: &AppPaths, name: &str, pattern: &str, password: &str) {
     let secrets_dir = secrets_dir(paths);
     std::fs::create_dir_all(&secrets_dir).expect("create secrets dir");
     let key_path = secrets_dir.join("master.key");
@@ -118,7 +126,7 @@ pub fn seed_pass_rule(paths: &AppPaths, pattern: &str, password: &str) {
         arclain_core::open_databases(&db_paths, &key).expect("open databases to seed a pass rule");
     dbs.secrets
         .replace_all_pass_rules(&[arclain_core::DbPassRule {
-            name: "test rule".to_string(),
+            name: name.to_string(),
             pattern: pattern.to_string(),
             password: password.to_string(),
             priority: 10,
