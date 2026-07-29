@@ -202,23 +202,24 @@ pub struct AppSignals {
     /// same slot.
     pub egui_ctx: Arc<OnceLock<egui::Context>>,
 
-    /// Metadata a plugin's `set_session_metadata` host function reported
-    /// for a session before any tab had been stamped with that session
-    /// id yet (keyed by the raw `ArchiveSessionId`).
+    /// Metadata reported via a `SessionEvent::MetadataChanged` for a
+    /// session before any tab had been stamped with that session id yet
+    /// (keyed by the raw `ArchiveSessionId`).
     ///
     /// A plugin's `OnArchiveOpen` handler and
     /// `crate::core::operation_bridge`'s own `handle_open_archive_completed`
     /// are two independent consumers of the same operation-completion
     /// event -- nothing guarantees the operation bridge stamps
-    /// `tab.archive_session_id` before the plugin's handler runs and
-    /// calls back into `crate::shared::active_tab_bridge::
-    /// AppSignalsBridge::set_session_metadata`. Without this buffer,
-    /// that race meant the metadata a plugin computed during its very
-    /// first look at the archive could silently vanish (no tab yet
-    /// matched the session id, so the write was dropped). Buffered here
-    /// instead, and drained/applied by `handle_open_archive_completed`
-    /// the moment it stamps the matching tab -- see both functions' own
-    /// doc comments.
+    /// `tab.archive_session_id` before the plugin's handler runs, writes
+    /// metadata (through `arclain_app::plugins::ArchiveContextBridge`),
+    /// and this crate's own session-event worker
+    /// (`crate::core::operation_bridge::buffer_or_apply_session_metadata`)
+    /// reacts to it. Without this buffer, that race meant the metadata a
+    /// plugin computed during its very first look at the archive could
+    /// silently vanish (no tab yet matched the session id, so there was
+    /// nowhere to apply it). Buffered here instead, and drained/applied
+    /// by `handle_open_archive_completed` the moment it stamps the
+    /// matching tab -- see both functions' own doc comments.
     ///
     /// `Option<serde_json::Value>` (not just `Value`) because the
     /// metadata itself can legitimately be `None` -- a plugin clearing

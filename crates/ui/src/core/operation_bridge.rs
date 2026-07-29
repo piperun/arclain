@@ -34,6 +34,17 @@
 //! worker still answers it (declining, so an operation can never hang
 //! forever waiting on a prompt nobody will ever show) and logs a warning,
 //! rather than silently ignoring it.
+//!
+//! A second, independent worker subscribes to `ArclainApp`'s
+//! *session*-event stream (`arclain_app::event::SessionEvent`) alongside
+//! the operation one above -- see [`handle_session_event`]'s own doc
+//! comment for why this is a second task rather than one merged loop.
+//! Session-scoped changes (currently: a plugin's metadata/rename write
+//! through `arclain_app::plugins::ArchiveContextBridge`) happen outside
+//! any operation, so they have no `OperationId`/[`OperationOrigins`]
+//! entry to resolve a tab through -- this worker instead re-fetches
+//! `archive_snapshot` and matches by the session id every tab's own
+//! `archive_session_id` signal already carries.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -41,14 +52,33 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arclain_app::challenge::{Challenge, ChallengeResponse};
-use arclain_app::event::{OperationEvent, OperationKind, OperationResult, OperationState};
-use arclain_app::ids::{MaterializationLeaseId, OperationId};
+use arclain_app::event::{
+    OperationEvent, OperationKind, OperationResult, OperationState, SessionEvent,
+};
+use arclain_app::ids::{ArchiveSessionId, MaterializationLeaseId, OperationId};
 use arclain_app::materialization::MaterializationLease;
 use arclain_app::ArclainApp;
 
 use crate::core::tabs::TabId;
 use crate::shared::dialogs::{ArchiveErrorDialogState, ArchiveErrorKind};
 use crate::shared::SharedState;
+
+/// Upper bound on how many sessions' worth of metadata this bridge will
+/// hold in `AppSignals::pending_session_metadata` while waiting for
+/// their tab to be stamped with the matching `archive_session_id`. A
+/// `SessionEvent::MetadataChanged` can arrive for a session no tab is
+/// stamped with yet (a plugin's `OnArchiveOpen` handler can call back
+/// with metadata before `handle_open_archive_completed` -- a fully
+/// independent consumer of the same operation-completion event --
+/// stamps the originating tab), and every such session is bounded here
+/// exactly like `OperationOrigins`/`MaterializationActions` bound their
+/// own per-operation maps: a made-up or already-superseded session id
+/// would otherwise grow this map forever, since nothing ever drains an
+/// entry whose tab never gets stamped. Reaching this cap is itself a
+/// signal something is wrong, not normal use, so the response is to drop
+/// the *new* entry and log a warning, not silently evict a legitimate
+/// older one that might still be about to be claimed.
+const MAX_PENDING_SESSION_METADATA: usize = 64;
 
 /// Registry of in-flight operations' originating tab, shared between
 /// whichever call site starts an operation ([`Self::register`]) and the
@@ -518,9 +548,9 @@ pub(crate) fn dequeue_and_present_next(
     tab.password_dialog.set(dialog);
 }
 
-/// Drains any metadata a plugin's `set_session_metadata` host function
-/// already reported for `session_id` before this tab was stamped with
-/// it, applying it to `tab` if given -- see `AppSignals::
+/// Drains any metadata [`buffer_or_apply_session_metadata`] already
+/// buffered for `session_id` before this tab was stamped with it,
+/// applying it to `tab` if given -- see `AppSignals::
 /// pending_session_metadata`'s own doc comment for why that race
 /// exists and how the two of them cooperate to close it.
 ///
@@ -534,9 +564,9 @@ pub(crate) fn dequeue_and_present_next(
 /// back with metadata before the tab is stamped).
 ///
 /// Takes `&AppSignals` rather than `&SharedState`: the buffer lives on
-/// signals alone (see that field's own doc comment on why -- it must be
-/// reachable from `AppSignalsBridge::set_session_metadata`, constructed
-/// before a full `SharedState` exists), so this needs nothing else.
+/// signals alone, and this is called from `handle_open_archive_completed`
+/// which already has a `&SharedState` in scope -- taking the narrower
+/// type here just documents that nothing else about `shared` is needed.
 fn apply_buffered_session_metadata(
     signals: &crate::core::signals::AppSignals,
     tab: Option<&crate::core::tabs::TabState>,
@@ -1395,6 +1425,143 @@ pub async fn reconcile_after_lag(
     }
 }
 
+// ---------------------------------------------------------------------
+// Session events: a second, independent stream from the same facade.
+//
+// A session-scoped change (currently: a plugin's metadata/rename write,
+// via `arclain_app::plugins::ArchiveContextBridge`) carries only a
+// session id, not an `OperationId` -- there is no `OperationOrigins`
+// entry to resolve a tab through, and no per-call-site "registered
+// before await" race the way `register_operation` exists to close (see
+// its own doc comment): nothing here ever registers a session id in
+// advance, so every session event is handled the same way whether it is
+// the first one this worker has ever seen for that session or the
+// thousandth. `buffer_or_apply_session_metadata` and
+// `apply_current_session_metadata` are shared by both the live-event
+// path ([`handle_session_event`]) and the lag-reconciliation path
+// ([`reconcile_session_events_after_lag`]) below.
+// ---------------------------------------------------------------------
+
+/// Applies `metadata` to whichever tab currently holds `session_id` open,
+/// or buffers it in `AppSignals::pending_session_metadata` if no tab is
+/// stamped with that session id yet -- mirrors the pre-facade-swap
+/// `AppSignalsBridge::set_session_metadata`'s own buffering exactly (see
+/// [`apply_buffered_session_metadata`]'s doc comment for the race this
+/// exists to close), just triggered by a [`SessionEvent`] instead of a
+/// direct trait-method call from a plugin host function -- the write
+/// itself now lands in `arclain_app::plugins::ArchiveContextBridge`'s own
+/// session store, entirely independent of whether any tab has been
+/// stamped with the session id yet.
+///
+/// No match can mean the tab's session was already closed (nothing left
+/// to update, the write is simply lost) or that `handle_open_archive_
+/// completed` has not yet stamped the originating tab -- this function
+/// cannot tell which case it's in, so it always buffers alongside
+/// applying wherever a match already exists, exactly like the bridge
+/// method it replaces.
+fn buffer_or_apply_session_metadata(
+    signals: &crate::core::signals::AppSignals,
+    session_id: arclain_app::ids::ArchiveSessionId,
+    metadata: Option<serde_json::Value>,
+) {
+    let tab = signals
+        .tabs
+        .get()
+        .tabs()
+        .iter()
+        .find(|tab| tab.archive_session_id.get() == Some(session_id))
+        .cloned();
+    match tab {
+        Some(tab) => tab.metadata.set(metadata),
+        None => {
+            let mut pending = signals.pending_session_metadata.lock().unwrap();
+            // Bounded: see `MAX_PENDING_SESSION_METADATA`'s own doc
+            // comment. `contains_key` first so a session already
+            // buffered (a plugin reporting an updated guess before its
+            // tab is stamped) can still update its own entry even once
+            // the map is otherwise at capacity.
+            if pending.len() >= MAX_PENDING_SESSION_METADATA && !pending.contains_key(&session_id)
+            {
+                tracing::warn!(
+                    "[operation_bridge] pending_session_metadata is at its {} entry cap -- \
+                     dropping metadata reported for session {session_id:?} instead of \
+                     growing unbounded",
+                    MAX_PENDING_SESSION_METADATA
+                );
+                return;
+            }
+            pending.insert(session_id, metadata);
+        }
+    }
+}
+
+/// Re-fetches `session_id`'s current `archive_snapshot` and applies its
+/// metadata via [`buffer_or_apply_session_metadata`]. A `NotFound` result
+/// (the session was already closed by the time this runs) is a harmless
+/// no-op -- there is nothing left to reconcile.
+async fn apply_current_session_metadata(
+    signals: &crate::core::signals::AppSignals,
+    app: &ArclainApp,
+    session_id: arclain_app::ids::ArchiveSessionId,
+) {
+    let Ok(snapshot) = app.archive_snapshot(session_id).await else {
+        return;
+    };
+    buffer_or_apply_session_metadata(signals, session_id, snapshot.metadata);
+}
+
+/// Handles one [`SessionEvent`]. `async` because it re-fetches
+/// `archive_snapshot` rather than trusting a payload the event itself
+/// does not carry -- see `SessionEvent::MetadataChanged`'s own doc
+/// comment for why the event stays payload-free by design. Takes
+/// `&AppSignals` rather than `&SharedState`: like
+/// [`apply_buffered_session_metadata`], nothing else about `SharedState`
+/// is needed.
+pub async fn handle_session_event(
+    signals: &crate::core::signals::AppSignals,
+    app: &ArclainApp,
+    event: SessionEvent,
+) {
+    match event {
+        SessionEvent::MetadataChanged { session_id } => {
+            apply_current_session_metadata(signals, app, session_id).await;
+        }
+    }
+}
+
+/// Called after the session-event receiver reports `Lagged`. Unlike
+/// [`reconcile_after_lag`] (which replays each *tracked operation's* own
+/// current snapshot via [`OperationOrigins::tracked_ids`]), a session
+/// event carries no operation id and nothing here pre-registers "which
+/// sessions this worker cares about" -- every currently open tab with a
+/// stamped `archive_session_id` is exactly that set instead. Re-fetching
+/// each one's `archive_snapshot` catches up on any metadata or rename a
+/// dropped event would have announced, since `archive_snapshot` always
+/// returns the authoritative current state regardless of how many
+/// intermediate events were missed in between. `pub` for the same reason
+/// as `reconcile_after_lag`: integration tests drive this directly
+/// rather than manufacturing a real channel overflow.
+pub async fn reconcile_session_events_after_lag(
+    signals: &crate::core::signals::AppSignals,
+    app: &ArclainApp,
+    skipped: u64,
+) {
+    tracing::warn!(
+        "[operation_bridge] the session-event broadcast channel lagged, dropping {skipped} \
+         event(s) -- reconciling every open tab's session directly"
+    );
+    let session_ids: Vec<arclain_app::ids::ArchiveSessionId> = signals
+        .tabs
+        .get()
+        .tabs()
+        .iter()
+        .filter_map(|tab| tab.archive_session_id.get())
+        .collect();
+    for session_id in session_ids {
+        apply_current_session_metadata(signals, app, session_id).await;
+    }
+}
+
 /// Spawns the bridge worker onto `shared.services.tokio_runtime`. A no-op
 /// if `shared.facade` is `None` (test fixtures that skip a full
 /// `ArclainApp::bootstrap` -- see `SharedState::facade`'s own doc
@@ -1402,37 +1569,75 @@ pub async fn reconcile_after_lag(
 /// (`SharedState::new`) constructs it before calling this, so every
 /// clone of `shared` (including the one captured here) already shares
 /// the same registry call sites register into.
+///
+/// Spawns *two* independent tasks, one per broadcast stream
+/// (`subscribe_operations`/`subscribe_session_events`) rather than
+/// `tokio::select!`-ing both on one loop: the two streams have unrelated
+/// lag-reconciliation strategies (`OperationOrigins::tracked_ids` vs.
+/// every open tab's stamped session id -- see [`reconcile_session_events_
+/// after_lag`]'s own doc comment) and unrelated per-event state
+/// (`OperationOrigins`/`MaterializationActions` vs. none at all), so
+/// merging them into one `match` would only entangle two otherwise
+/// independent concerns for no benefit -- neither stream's ordering
+/// depends on the other's.
 pub fn spawn(shared: &SharedState) {
     let Some(app) = shared.facade.clone() else {
         return;
     };
-    let mut receiver = app.subscribe_operations();
-    let shared = shared.clone();
     let runtime = shared.services.tokio_runtime.clone();
+
+    let mut receiver = app.subscribe_operations();
+    let operations_shared = shared.clone();
+    let operations_app = app.clone();
+    let operations_runtime = runtime.clone();
     runtime.clone().spawn(async move {
         loop {
             match receiver.recv().await {
                 Ok(event) => {
                     handle_event(
-                        &shared,
-                        &shared.operation_origins,
-                        &shared.materialization_actions,
-                        &runtime,
+                        &operations_shared,
+                        &operations_shared.operation_origins,
+                        &operations_shared.materialization_actions,
+                        &operations_runtime,
                         event,
                     )
                     .await;
-                    shared.signals().kick_repaint();
+                    operations_shared.signals().kick_repaint();
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     reconcile_after_lag(
-                        &shared,
-                        &shared.operation_origins,
-                        &runtime,
-                        &app,
+                        &operations_shared,
+                        &operations_shared.operation_origins,
+                        &operations_runtime,
+                        &operations_app,
                         skipped,
                     )
                     .await;
-                    shared.signals().kick_repaint();
+                    operations_shared.signals().kick_repaint();
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    let mut session_receiver = app.subscribe_session_events();
+    let session_shared = shared.clone();
+    let session_app = app.clone();
+    runtime.spawn(async move {
+        loop {
+            match session_receiver.recv().await {
+                Ok(event) => {
+                    handle_session_event(session_shared.signals(), &session_app, event).await;
+                    session_shared.signals().kick_repaint();
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    reconcile_session_events_after_lag(
+                        session_shared.signals(),
+                        &session_app,
+                        skipped,
+                    )
+                    .await;
+                    session_shared.signals().kick_repaint();
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -1625,6 +1830,81 @@ mod tests {
         let tab = TabState::new(crate::core::tabs::TabId(1));
         apply_buffered_session_metadata(&signals, Some(&tab), ArchiveSessionId::from_raw(1));
         assert_eq!(tab.metadata.get(), None);
+    }
+
+    // -- buffer_or_apply_session_metadata --------------------------------
+
+    /// A tab already stamped with the session id gets the metadata
+    /// applied directly -- no buffering involved.
+    #[test]
+    fn buffer_or_apply_session_metadata_applies_directly_to_an_already_stamped_tab() {
+        let signals = AppSignals::new();
+        let tab = signals.tabs.get().active().clone();
+        let session_id = ArchiveSessionId::from_raw(11);
+        tab.archive_session_id.set(Some(session_id));
+
+        buffer_or_apply_session_metadata(
+            &signals,
+            session_id,
+            Some(serde_json::json!({"game": "stamped"})),
+        );
+
+        assert_eq!(tab.metadata.get(), Some(serde_json::json!({"game": "stamped"})));
+        assert!(
+            signals
+                .pending_session_metadata
+                .lock()
+                .unwrap()
+                .get(&session_id)
+                .is_none(),
+            "a directly-applied write must not also sit in the pending buffer"
+        );
+    }
+
+    /// No tab is stamped with the session id yet (mirrors a plugin's
+    /// `OnArchiveOpen` handler calling back before `handle_open_archive_
+    /// completed` gets around to stamping the originating tab) --
+    /// buffered instead of dropped, exactly like the pre-swap bridge's
+    /// own reasoning.
+    #[test]
+    fn buffer_or_apply_session_metadata_buffers_when_no_tab_is_stamped_yet() {
+        let signals = AppSignals::new();
+        let session_id = ArchiveSessionId::from_raw(12);
+
+        buffer_or_apply_session_metadata(
+            &signals,
+            session_id,
+            Some(serde_json::json!({"game": "buffered"})),
+        );
+
+        assert_eq!(
+            signals
+                .pending_session_metadata
+                .lock()
+                .unwrap()
+                .get(&session_id)
+                .cloned(),
+            Some(Some(serde_json::json!({"game": "buffered"})))
+        );
+    }
+
+    /// Regression test mirroring the pre-swap bridge's own cap: this is a
+    /// consumer of a broadcast a WASM plugin's write ultimately triggers,
+    /// so a made-up or already-superseded session id must not grow this
+    /// buffer forever.
+    #[test]
+    fn buffer_or_apply_session_metadata_does_not_grow_the_pending_buffer_past_its_cap() {
+        let signals = AppSignals::new();
+        for raw_id in 0..(MAX_PENDING_SESSION_METADATA as u64 + 10) {
+            buffer_or_apply_session_metadata(
+                &signals,
+                ArchiveSessionId::from_raw(raw_id),
+                Some(serde_json::json!({"n": raw_id})),
+            );
+        }
+        assert!(
+            signals.pending_session_metadata.lock().unwrap().len() <= MAX_PENDING_SESSION_METADATA
+        );
     }
 
     // -- dequeue_and_present_next --------------------------------------
