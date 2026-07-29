@@ -1,3 +1,4 @@
+use crate::utilities::CheckedRelativePath;
 use arclain_db::DieselPool;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
@@ -168,13 +169,6 @@ pub fn sanitize_title(title: &str) -> String {
     sanitize_title_with_config(title, &cache)
 }
 
-/// Windows device names, which name a device rather than a file
-/// whatever directory they appear in and whatever extension follows.
-const RESERVED_DEVICE_NAMES: [&str; 24] = [
-    "CON", "PRN", "AUX", "NUL", "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
-    "COM8", "COM9", "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-];
-
 /// `candidate` as a single, plain file-name component, or `None` when it
 /// cannot be one.
 ///
@@ -188,44 +182,28 @@ const RESERVED_DEVICE_NAMES: [&str; 24] = [
 /// name -- must therefore prove the result still names a file *in* that
 /// directory rather than steering out of it.
 ///
-/// Rejects, in every case regardless of configuration:
-///
-/// * nothing to name a file with (empty, or whitespace only);
-/// * either path separator, so the result cannot address another
-///   directory -- `\` is rejected on Unix too, because a name derived
-///   here routinely travels to Windows inside an archive;
-/// * `:`, which prefixes a drive (`C:...`) and, on NTFS, opens an
-///   alternate data stream (`name:stream`);
-/// * `.` and `..`, which name directories rather than files;
-/// * control characters, including the NUL that truncates a path at
-///   every C API boundary;
-/// * a trailing `.` or space, which Windows silently strips -- the file
-///   created would not be the name that was checked;
-/// * a reserved device name, with or without an extension.
+/// What counts as an unusable name is
+/// [`CheckedRelativePath`](crate::utilities::CheckedRelativePath)'s
+/// answer, not a second opinion: that type already validates the
+/// components of every in-archive path this crate writes (empty, `.`,
+/// `..`, either separator, the characters Windows rejects including
+/// `:`, control characters, trailing dot or space, and the reserved
+/// device names down to the `COM¹`/`COM²`/`COM³` aliases), so deriving
+/// this from it means future hardening lands once and cannot leave one
+/// of the two behind. All this function adds is the part specific to
+/// naming a file: the candidate must be *exactly one* component, not a
+/// relative path of several.
 ///
 /// Returns the trimmed candidate on success, so a caller need not trim
-/// separately and cannot re-introduce a rejected trailing space.
+/// separately and cannot re-introduce a trailing space the validator
+/// would have rejected.
 pub fn plain_file_component(candidate: &str) -> Option<&str> {
     let candidate = candidate.trim();
-    if candidate.is_empty() || candidate == "." || candidate == ".." {
-        return None;
-    }
-    if candidate
-        .chars()
-        .any(|c| matches!(c, '/' | '\\' | ':') || c.is_control())
-    {
-        return None;
-    }
-    // `trim` already removed trailing whitespace; a trailing dot is what
-    // is left to reject.
-    if candidate.ends_with('.') {
-        return None;
-    }
-    let stem = candidate.split('.').next().unwrap_or(candidate);
-    if RESERVED_DEVICE_NAMES
-        .iter()
-        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
-    {
+    let checked = CheckedRelativePath::new(candidate).ok()?;
+    // A path, however safe, is not a file name: `a/b` passes the
+    // component checks above and would still put the output somewhere
+    // other than the directory it was joined onto.
+    if checked.as_path().components().count() != 1 {
         return None;
     }
     Some(candidate)
@@ -328,6 +306,18 @@ mod tests {
             "con",
             "nul.txt",
             "LPT9.zip",
+            // Reached only through the shared validator: the superscript
+            // device aliases Windows also honours, and the characters it
+            // refuses outright.
+            "COM¹",
+            "COM²",
+            "COM³",
+            "wild*card",
+            "quer?y",
+            "quo\"te",
+            "less<than",
+            "more>than",
+            "pipe|d",
         ] {
             assert_eq!(
                 plain_file_component(hostile),

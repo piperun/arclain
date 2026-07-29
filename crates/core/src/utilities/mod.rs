@@ -34,7 +34,7 @@ pub use logging::{
 pub use password_matcher::{auto_password_for, PassRule};
 pub use process::hide_console;
 pub use time::{unix_seconds, unix_seconds_i64};
-pub use title_filter::{sanitize_title, TitleFilterConfig};
+pub use title_filter::{plain_file_component, sanitize_title, TitleFilterConfig};
 
 pub mod proxy;
 pub use proxy::{
