@@ -8,8 +8,8 @@ use crate::features::archive_browser::domain::Action;
 use crate::features::archive_browser::presentation::components::file_list;
 use crate::shared::components::tree_panel::{self, FolderTree, TreeRowProjectionCache};
 use crate::shared::SharedState;
+use arclain_app::Signal;
 use arclain_core::ActionType;
-use arclain_signals::Signal;
 use eframe::egui;
 
 /// Run cache-update work against a borrowed signal value, releasing the signal

@@ -47,6 +47,14 @@ pub mod settings;
 
 pub use runtime::{AppPaths, ArclainApp, BootstrapConfig};
 
+/// Re-exported so `arclain_ui` (and any other frontend) never needs
+/// `arclain_signals` as a direct dependency just to hold reactive state
+/// -- `arclain_signals` is a headless crate under `scripts/
+/// frontend_boundary.py`'s rules, so only this facade may depend on it
+/// directly. `Effect` is deliberately not re-exported: nothing outside
+/// `arclain_signals` itself uses it today.
+pub use arclain_signals::{Computed, Signal};
+
 /// The application facade's own compatibility version, independent of the
 /// crate's Cargo package version. Frontends (egui today, Flutter later)
 /// check this to detect a facade upgrade that changes behavior they need

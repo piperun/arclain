@@ -3,14 +3,15 @@
 //! This module provides reactive signals for async-updated state
 //! that needs to trigger UI updates when changed from background threads.
 
+use crate::core::signal_context::SignalContext;
 use crate::core::state::UiPreferences;
 use crate::core::tabs::TabsCollection;
 use crate::shared::dialogs::archive_error_dialog::ArchiveErrorDialogState;
 use crate::shared::dialogs::ask_each_time_drop::AskEachTimeDropState;
 use crate::shared::dialogs::close_tab_confirm::CloseTabConfirmState;
+use arclain_app::Signal;
 use arclain_core::utilities::PassRule;
 use arclain_core::UiItem;
-use arclain_signals::{Signal, SignalContext};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;

@@ -5,14 +5,6 @@ edition.workspace = true
 description = "Flutter-like reactive signals for Rust"
 license = "MIT"
 
-[features]
-default = []
-egui = ["dep:egui"]
-
 [dependencies]
 parking_lot.workspace = true
 tracing.workspace = true
-
-[dependencies.egui]
-version = "0.33"
-optional = true

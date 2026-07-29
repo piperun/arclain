@@ -209,7 +209,7 @@ impl std::fmt::Debug for SettingsAction {
     }
 }
 
-use arclain_signals::Signal;
+use arclain_app::Signal;
 
 /// State for the network settings page
 #[derive(Clone)]

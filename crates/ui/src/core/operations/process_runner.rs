@@ -3,11 +3,11 @@
 
 use crate::core::signals::ProcessRunState;
 use crate::core::tabs::{OpGuard, TabState};
+use arclain_app::Signal;
 use arclain_core::{
     execute_pipeline, OutputCollisionPolicy, Pipeline, PipelineContext, PipelineProgress,
     COLLISION_POLICY_CONFIG_KEY,
 };
-use arclain_signals::Signal;
 use parking_lot::Mutex;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

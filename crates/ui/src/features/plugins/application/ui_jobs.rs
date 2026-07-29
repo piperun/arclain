@@ -2,12 +2,12 @@
 
 use crate::core::tabs::TabId;
 use crate::features::plugins::domain::types::{PluginInfo, PluginsListState, RequestId};
+use arclain_app::Signal;
 use arclain_core::UserConfig;
 use arclain_plugins::host_functions::EventContext;
 use arclain_plugins::manager::PluginStatusSummary;
 use arclain_plugins::types::{PluginAction, PluginExtensionPoint, PluginLayout, TopTabConfig};
 use arclain_plugins::PluginManager;
-use arclain_signals::Signal;
 use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;

@@ -3,9 +3,9 @@
 //! Processes `PluginAction` values returned from plugin UI events
 //! and dispatches them to the appropriate subsystems.
 
+use arclain_app::Signal;
 use arclain_plugins::action_policy::bound_plugin_actions_with_status;
 use arclain_plugins::types::{PluginAction, ToastLevel as PluginToastLevel};
-use arclain_signals::Signal;
 use arclain_widgets::{Toast, ToastLevel, Toaster};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

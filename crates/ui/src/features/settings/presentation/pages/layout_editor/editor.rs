@@ -11,8 +11,8 @@
 //! is generic over both toolbar and info panel.
 
 use crate::shared::SharedState;
+use arclain_app::Signal;
 use arclain_core::{UiItem, UiRegion, UiService};
-use arclain_signals::Signal;
 use std::marker::PhantomData;
 
 /// Orientation of the preview + selection-area arrow buttons.

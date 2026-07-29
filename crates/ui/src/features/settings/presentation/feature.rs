@@ -8,7 +8,7 @@ use crate::features::settings::presentation::views::settings_content::{
 
 use crate::features::settings::views::{header, layout, navigation};
 use crate::shared::SharedState;
-use arclain_signals::Signal;
+use arclain_app::Signal;
 use eframe::egui;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -76,7 +76,7 @@ impl SettingsFeature {
 
             use crate::features::settings::domain::types::ConnectionTestStatus;
 
-            use arclain_signals::Signal;
+            use arclain_app::Signal;
 
             NetworkSettingsState {
                 socks5_enabled: Signal::new(user_config.socks5_enabled),
@@ -91,7 +91,7 @@ impl SettingsFeature {
 
         let server_state = {
             use crate::features::settings::domain::types::ServerConnectionStatus;
-            use arclain_signals::Signal;
+            use arclain_app::Signal;
 
             let state = shared.app_state.lock();
             let api_key = if let Some(dbs) = &state.dbs {

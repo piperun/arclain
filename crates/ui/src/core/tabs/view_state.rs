@@ -340,7 +340,7 @@ pub struct BrowserViewState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arclain_signals::Signal;
+    use arclain_app::Signal;
     use std::sync::Arc;
 
     fn entry(name: &str) -> FileEntry {

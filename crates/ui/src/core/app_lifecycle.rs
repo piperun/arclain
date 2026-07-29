@@ -104,7 +104,7 @@ pub fn bind_signals_once(shared: &SharedState, ctx: &egui::Context, bound: &mut 
         let state = shared.app_state.lock();
         state.signals.bind_to_context(ctx);
         drop(state);
-        let signal_context = arclain_signals::SignalContext::new(ctx.clone());
+        let signal_context = crate::core::signal_context::SignalContext::new(ctx.clone());
         signal_context.bind_named(
             shared.plugin_ui_jobs.completion_signal(),
             "plugin_ui_completion_epoch",
@@ -466,13 +466,11 @@ pub fn restore_tabs_on_launch(shared_state: &SharedState) {
         return;
     }
 
-    let config_dir = match arclain_app_fs::AppDirectories::init("arclain", None) {
-        Ok(dirs) => dirs.config_dir,
-        Err(e) => {
-            tracing::warn!("[tabs] restore: could not resolve config dir: {}", e);
-            return;
-        }
+    let Some(facade) = shared_state.facade.as_ref() else {
+        tracing::warn!("[tabs] restore: application facade is unavailable");
+        return;
     };
+    let config_dir = facade.paths().config_dir.clone();
     let tabs_path = config_dir.join("tabs.json");
 
     if !tabs_path.exists() {
@@ -613,15 +611,13 @@ fn resolve_session_restore_list(
 /// them -- so a disabled toggle also removes any `session.json` left
 /// over from an *earlier* session when the toggle was still enabled,
 /// not just skips writing a new one.
-pub fn save_tabs_on_exit(signals: &AppSignals) {
-    let config_dir = match arclain_app_fs::AppDirectories::init("arclain", None) {
-        Ok(dirs) => dirs.config_dir,
-        Err(e) => {
-            tracing::warn!("[tabs] on_exit: could not resolve config dir: {}", e);
-            return;
-        }
+pub fn save_tabs_on_exit(shared: &SharedState) {
+    let Some(facade) = shared.facade.as_ref() else {
+        tracing::warn!("[tabs] on_exit: application facade is unavailable");
+        return;
     };
-    save_tabs_on_exit_to(&config_dir, signals);
+    let config_dir = facade.paths().config_dir.clone();
+    save_tabs_on_exit_to(&config_dir, shared.signals());
 }
 
 /// The actual save logic, taking `config_dir` directly rather than

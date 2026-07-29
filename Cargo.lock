@@ -381,6 +381,7 @@ dependencies = [
  "arclain_data",
  "arclain_db",
  "arclain_plugins",
+ "arclain_signals",
  "crc32fast",
  "dirs",
  "gameta_core",
@@ -561,7 +562,6 @@ dependencies = [
 name = "arclain_signals"
 version = "2.3.2"
 dependencies = [
- "egui",
  "parking_lot",
  "tracing",
 ]
@@ -583,11 +583,9 @@ dependencies = [
  "arboard",
  "arclain-network",
  "arclain_app",
- "arclain_app_fs",
  "arclain_core",
  "arclain_db",
  "arclain_plugins",
- "arclain_signals",
  "arclain_theme",
  "arclain_widgets",
  "chrono",

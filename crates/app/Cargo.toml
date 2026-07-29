@@ -34,6 +34,13 @@ arclain-network = { path = "../network" }
 # through `arclain_data::CacheOwner`, which `arclain_core` does not
 # re-export.
 arclain_data = { path = "../data" }
+# Re-exported (`Signal`/`Computed`, see `lib.rs`) so `arclain_ui` can stop
+# depending on `arclain_signals` directly -- headless-to-headless, so
+# this adds no frontend_boundary violation. Default features only: the
+# crate's own former `egui` feature is gone (see its lib.rs doc comment
+# for why), so nothing about this dependency ever pulls egui in
+# transitively through `arclain_app`.
+arclain_signals = { path = "../signals" }
 
 [dev-dependencies]
 tempfile.workspace = true

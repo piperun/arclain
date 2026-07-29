@@ -109,7 +109,7 @@ impl eframe::App for ArclainApp {
         // `shutdown_facade_on_exit`'s own doc comment for why this call
         // exists at all and how it drives the async `shutdown()` future
         // to completion from this synchronous callback.
-        crate::core::app_lifecycle::save_tabs_on_exit(self.shared_state.signals());
+        crate::core::app_lifecycle::save_tabs_on_exit(&self.shared_state);
         crate::core::app_lifecycle::shutdown_facade_on_exit(&self.shared_state);
     }
 }

@@ -5,10 +5,10 @@ use super::view_state::{BrowserEntriesSnapshot, BrowserViewState};
 use super::TabId;
 use crate::core::operations::archive::{derive_archive_info, ArchiveExtras, ArchiveInfo};
 use crate::core::signals::ToolbarContext;
+use arclain_app::{Computed, Signal};
 use arclain_core::archive::NavigationState;
 use arclain_core::features::organization::GameMetadata;
 use arclain_core::ArchiveEntry;
-use arclain_signals::{Computed, Signal};
 use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
@@ -338,7 +338,7 @@ impl TabState {
         if self.signals_bound.swap(true, Ordering::SeqCst) {
             return;
         }
-        let sig_ctx = arclain_signals::SignalContext::new(ctx.clone());
+        let sig_ctx = crate::core::signal_context::SignalContext::new(ctx.clone());
         sig_ctx.bind_named(&self.archive_path, "tab.archive_path");
         sig_ctx.bind_named(&self.entries, "tab.entries");
         sig_ctx.bind_named(&self.metadata, "tab.metadata");
