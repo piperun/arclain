@@ -102,11 +102,11 @@ pub fn create_test_shared_state() -> SharedState {
 /// The returned `TempDir` MUST stay alive for the duration of the test:
 /// dropping it deletes the databases the facade has open.
 ///
-/// A third copy of the same six-line bootstrap: `core::state::vault_ops`
-/// and the settings controller each keep their own, but both are
-/// `#[cfg(test)]`-private to the library and unreachable from an
+/// Deliberately a second copy of the library's own
+/// `test_support::bootstrap_test_facade`: that module is
+/// `#[cfg(test)]`-private to `crates/ui` and unreachable from an
 /// integration test, which compiles as its own crate against the public
-/// API only.
+/// API only (its doc comment says the same from the other side).
 pub fn create_test_shared_state_with_facade() -> (TempDir, SharedState) {
     let temp = tempfile::tempdir().expect("create tempdir for the test facade");
     let app = arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
