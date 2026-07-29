@@ -3,10 +3,12 @@
 //! Renders the properties panel using the standardized Panel component.
 
 use super::panel::{Panel, PanelBody, PanelHeader};
+use crate::features::plugins::application::PluginSlot;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_plugins::types::PluginUiElement;
+use arclain_app::plugins::PluginUiDocument;
 use eframe::egui;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PropertyGroup {
@@ -18,8 +20,8 @@ pub struct PropertyGroup {
 pub enum PanelSection {
     Group(PropertyGroup),
     Plugin {
-        plugin_id: String,
-        elements: Vec<PluginUiElement>,
+        slot: PluginSlot,
+        document: Arc<PluginUiDocument>,
     },
 }
 
@@ -54,10 +56,8 @@ pub fn render(
 
                     panel.render(ui, theme, shared, content_cache.as_ref());
                 }
-                PanelSection::Plugin {
-                    plugin_id,
-                    elements,
-                } => {
+                PanelSection::Plugin { slot, document } => {
+                    let plugin_id = slot.plugin_id();
                     let plugin_name = shared
                         .and_then(|shared| {
                             let config = shared.signals().user_config.get();
@@ -67,16 +67,16 @@ pub fn render(
                         .and_then(|plugins| {
                             plugins
                                 .iter()
-                                .find(|plugin| plugin.id == *plugin_id)
+                                .find(|plugin| plugin.id == plugin_id)
                                 .map(|plugin| plugin.name.clone())
                         })
                         .unwrap_or_else(|| "Plugin".to_string());
 
-                    let panel = Panel::new(format!("plugin_{}", plugin_id))
+                    let panel = Panel::new(format!("plugin_{plugin_id}"))
                         .with_header(PanelHeader::new(plugin_name))
                         .with_body(PanelBody::PluginUI {
-                            plugin_id: plugin_id.clone(),
-                            elements: elements.clone(),
+                            slot: slot.clone(),
+                            document: document.clone(),
                         });
 
                     panel.render(ui, theme, shared, content_cache.as_ref());

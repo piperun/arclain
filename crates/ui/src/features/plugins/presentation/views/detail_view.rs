@@ -129,6 +129,15 @@ pub fn render(
                             shared.plugin_ui_jobs.invalidate_plugin_snapshots();
                             shared.plugin_ui_jobs.invalidate_chrome_snapshot();
                             shared.plugin_ui_jobs.invalidate_all_layouts();
+                            // Facade-backed slots hold a live session
+                            // against the plugin's old enabled state;
+                            // closing them makes the next frame open
+                            // against the new one.
+                            shared.plugin_sessions.close_plugin(
+                                facade,
+                                shared.services.tokio_runtime.handle(),
+                                &plugin_info.id,
+                            );
                             // Bumps the shared epoch `plugins_page::render`
                             // checks for *both* of `PluginsFeature`'s
                             // independent list states (this detail view

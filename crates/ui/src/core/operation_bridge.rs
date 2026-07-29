@@ -1147,6 +1147,61 @@ fn handle_confirm_overwrite_challenge(
     });
 }
 
+/// Routes one `OperationKind::PluginAction` event back to the plugin UI
+/// slot that started it.
+///
+/// The slot registry decides whether the update belongs to the slot at
+/// all -- see
+/// `crate::features::plugins::application::facade_sessions::PluginSessions::apply_update`
+/// for the three rejection cases. This function only handles the egui
+/// side of an accepted one: the new document is already stored by
+/// `apply_update`, so all that remains is running the intents that came
+/// with it against the slot's owning tab, and repainting.
+///
+/// A failed action deliberately does not blank the slot: its last good
+/// document is still valid and still worth drawing (see
+/// `PluginSessions::fail`), so the failure surfaces as a toast instead.
+pub fn handle_plugin_action_event(shared: &SharedState, event: OperationEvent) {
+    use crate::features::plugins::presentation::document_dispatch;
+
+    match event.state {
+        OperationState::Completed {
+            result: OperationResult::PluginUiUpdated { update },
+        } => {
+            let Some(applied) = shared
+                .plugin_sessions
+                .apply_update(event.operation_id, update)
+            else {
+                return;
+            };
+            let origin_tab = applied
+                .slot
+                .tab()
+                .unwrap_or_else(|| shared.signals().tabs.get().active_id());
+            document_dispatch::apply_intents(shared, &applied.slot, origin_tab, applied.intents);
+            shared.signals().kick_repaint();
+        }
+        OperationState::Failed { error } => {
+            if shared.plugin_sessions.fail(event.operation_id).is_some() {
+                tracing::warn!("[operation_bridge] plugin action failed: {error:?}");
+                shared.toaster.lock().error(error.summary);
+                shared.signals().kick_repaint();
+            }
+        }
+        OperationState::Cancelled => {
+            let _ = shared.plugin_sessions.fail(event.operation_id);
+        }
+        // A plugin action carries no progress, raises no challenge, and
+        // its only meaningful completion result is `PluginUiUpdated`.
+        OperationState::Accepted
+        | OperationState::Started
+        | OperationState::Progress { .. }
+        | OperationState::Challenge { .. }
+        | OperationState::SnapshotChanged { .. }
+        | OperationState::Completed { .. } => {}
+    }
+}
+
 /// Handles one operation event, dispatching to the tab-specific handlers
 /// above based on `event.kind`/`event.state`. `async` because the
 /// `OpenArchive` completion path awaits `relist_for_browser_signals`,
@@ -1159,6 +1214,16 @@ async fn handle_event(
     runtime: &tokio::runtime::Runtime,
     event: OperationEvent,
 ) {
+    // Plugin actions are routed by slot, not by tab: their origin lives in
+    // `shared.plugin_sessions`, not in `OperationOrigins` (a window-scoped
+    // slot such as the toolbar's has no owning tab at all). Handled before
+    // the `origins` lookup below, which would otherwise drop every one of
+    // them as "not one of ours".
+    if event.kind == OperationKind::PluginAction {
+        handle_plugin_action_event(shared, event);
+        return;
+    }
+
     let Some(tab_id) = origins.resolve(event.operation_id) else {
         // Not one of ours (or already forgotten after a terminal event) --
         // every operation kind this bridge does not yet handle (convert,

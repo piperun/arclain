@@ -106,6 +106,71 @@ impl ImageBytes for ContentCacheBytes {
     }
 }
 
+/// Prefix `arclain_app`'s normalizer stamps onto every image reference a
+/// plugin document carries. Matched here rather than imported because the
+/// facade deliberately keeps the codec private -- `read_plugin_image` is
+/// the only supported way to resolve one, and this source's whole job is
+/// to route those keys to it.
+const PLUGIN_IMAGE_KEY_PREFIX: &str = "plugin-image:";
+
+/// Resolves plugin-document image references through the application
+/// facade and everything else through the content cache.
+///
+/// `read_plugin_image` decodes the owning plugin out of the key and reads
+/// the bytes from that plugin's own cache namespace under the facade's
+/// per-asset size cap. A bare content-cache read cannot do either: the
+/// namespace is not recoverable from the key, and the cap is the facade's
+/// to enforce.
+struct FacadeImageBytes {
+    facade: arclain_app::ArclainApp,
+    runtime: Arc<tokio::runtime::Runtime>,
+    fallback: Option<Arc<ContentCache>>,
+}
+
+impl ImageBytes for FacadeImageBytes {
+    fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        if !key.starts_with(PLUGIN_IMAGE_KEY_PREFIX) {
+            return match &self.fallback {
+                Some(cache) => cache.get(key),
+                None => Ok(None),
+            };
+        }
+        // Runs on `ImageAssetStore`'s own blocking pool (see
+        // `spawn_load_inner`), never on a worker thread, so blocking on
+        // the facade future here cannot stall the runtime. The facade's
+        // futures are executor-agnostic by contract, so awaiting one from
+        // this crate's runtime rather than the application's own is
+        // supported.
+        match self
+            .runtime
+            .block_on(self.facade.read_plugin_image(key.to_string()))
+        {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind == arclain_app::error::ApplicationErrorKind::NotFound => {
+                Ok(None)
+            }
+            Err(error) => Err(anyhow::anyhow!(error.summary)),
+        }
+    }
+
+    fn remove(&self, key: &str) {
+        // A plugin-owned entry is not this frontend's to evict: the
+        // facade owns that namespace, and a corrupt entry there is
+        // re-fetched by the plugin, not by us. Only fall-through keys
+        // (host-owned cache entries) are evictable here, matching
+        // `ContentCacheBytes`'s behavior for exactly those keys.
+        if key.starts_with(PLUGIN_IMAGE_KEY_PREFIX) {
+            return;
+        }
+        let Some(cache) = &self.fallback else {
+            return;
+        };
+        if let Err(error) = cache.remove(key) {
+            tracing::warn!(%error, %key, "failed to remove corrupt cached image");
+        }
+    }
+}
+
 struct EmptyImageBytes;
 
 impl ImageBytes for EmptyImageBytes {
@@ -186,6 +251,24 @@ impl ImageAssetStore {
 
     pub fn without_cache(runtime: Arc<tokio::runtime::Runtime>) -> Self {
         Self::from_source(Arc::new(EmptyImageBytes), runtime)
+    }
+
+    /// The production source: plugin-document image references resolve
+    /// through the facade, everything else through `cache` -- see
+    /// [`FacadeImageBytes`].
+    pub fn with_plugin_images(
+        cache: Option<Arc<ContentCache>>,
+        facade: arclain_app::ArclainApp,
+        runtime: Arc<tokio::runtime::Runtime>,
+    ) -> Self {
+        Self::from_source(
+            Arc::new(FacadeImageBytes {
+                facade,
+                runtime: runtime.clone(),
+                fallback: cache,
+            }),
+            runtime,
+        )
     }
 
     fn from_source(source: Arc<dyn ImageBytes>, runtime: Arc<tokio::runtime::Runtime>) -> Self {

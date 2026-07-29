@@ -4,11 +4,13 @@
 //! The collapsible/header-action/footer-action machinery from the
 //! original sketch was never wired up, so it's been trimmed here.
 
-use crate::features::plugins::presentation::rendering as ui;
+use crate::features::plugins::application::PluginSlot;
+use crate::features::plugins::presentation::document_dispatch;
+use crate::features::plugins::presentation::rendering::{render_document, DocumentContext};
 
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_plugins::types::PluginUiElement;
+use arclain_app::plugins::PluginUiDocument;
 use eframe::egui;
 use std::sync::Arc;
 
@@ -35,10 +37,15 @@ impl PanelHeader {
 pub enum PanelBody {
     /// Key-value property list
     Properties(Vec<(String, String)>),
-    /// Plugin UI elements
+    /// A plugin's `Panel` document, served by the application facade's
+    /// session contract -- see
+    /// `crate::features::plugins::application::facade_sessions`. The
+    /// caller resolves the slot and its document; this component only
+    /// draws it and routes what the user did back through the shared
+    /// document dispatcher.
     PluginUI {
-        plugin_id: String,
-        elements: Vec<PluginUiElement>,
+        slot: PluginSlot,
+        document: Arc<PluginUiDocument>,
     },
 }
 
@@ -180,67 +187,32 @@ impl Panel {
                         ui.add_space(4.0);
                     }
                 }
-                PanelBody::PluginUI {
-                    plugin_id,
-                    elements,
-                } => {
-                    let pid = plugin_id.clone();
-                    let dialog_signal = shared.map(|s| s.signals().plugin_dialog_state.clone());
-                    let origin_tab = shared.map(|s| s.signals().tabs.get().active_id());
-                    let shared_owned = shared.cloned();
-
-                    let mut callback: ui::UiEventCallback = Box::new(
-                        move |element_id: &str, value: Option<String>| {
-                            if element_id.starts_with("__page_open:") {
-                                if let (Some(signal), Some(origin_tab)) =
-                                    (dialog_signal.as_ref(), origin_tab)
-                                {
-                                    let page_id = element_id.trim_start_matches("__page_open:");
-                                    let mut ds = signal.get();
-                                    ds.open_page(&pid, page_id, origin_tab);
-                                    signal.set(ds);
-                                }
-                                return;
-                            }
-                            if element_id.starts_with("__dialog_open:") {
-                                if let (Some(signal), Some(origin_tab)) =
-                                    (dialog_signal.as_ref(), origin_tab)
-                                {
-                                    let dialog_id = element_id.trim_start_matches("__dialog_open:");
-                                    let mut ds = signal.get();
-                                    ds.open_dialog(&pid, dialog_id, origin_tab);
-                                    signal.set(ds);
-                                }
-                                return;
-                            }
-                            if let (Some(shared), Some(origin_tab)) =
-                                (shared_owned.as_ref(), origin_tab)
-                            {
-                                crate::features::plugins::presentation::dispatch::dispatch_plugin_event_for_tab(
-                                    shared,
-                                    origin_tab,
-                                    pid.clone(),
-                                    element_id.to_string(),
-                                    value,
-                                );
-                            }
+                PanelBody::PluginUI { slot, document } => {
+                    // A `Panel` slot is always tab-scoped, so this cannot
+                    // fall back to the active tab -- routing an event from
+                    // an inactive tab's panel to whichever tab happens to
+                    // be active is exactly the bug per-tab slots exist to
+                    // prevent.
+                    let Some(origin_tab) = slot.tab() else {
+                        continue;
+                    };
+                    let image_owner = crate::shared::image_assets::ImageOwner::plugin_panel(
+                        slot.plugin_id(),
+                        &self.id,
+                        origin_tab,
+                    );
+                    let events = render_document(
+                        ui,
+                        document,
+                        DocumentContext {
+                            colors: &theme.colors,
+                            shared_state: shared,
+                            image_owner: Some(&image_owner),
                         },
                     );
-
-                    let image_owner = origin_tab.map(|tab_id| {
-                        crate::shared::image_assets::ImageOwner::plugin_panel(
-                            plugin_id, &self.id, tab_id,
-                        )
-                    });
-                    ui::render_ui_elements_owned(
-                        ui,
-                        elements,
-                        &mut callback,
-                        &theme.colors,
-                        shared,
-                        Some(plugin_id.as_str()),
-                        image_owner.as_ref(),
-                    );
+                    if let Some(shared) = shared {
+                        document_dispatch::apply_document_events(shared, slot, origin_tab, events);
+                    }
                 }
             }
         }

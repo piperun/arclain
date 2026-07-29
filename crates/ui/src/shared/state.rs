@@ -18,6 +18,12 @@ pub struct SharedState {
     /// Whether a plugin requested layout invalidation since the last frame.
     pub refresh_requests: Arc<AtomicBool>,
     pub plugin_ui_jobs: crate::features::plugins::application::PluginUiJobs,
+    /// Plugin UI slots served by the application facade's session
+    /// contract -- see
+    /// `crate::features::plugins::application::facade_sessions` for the
+    /// full design, including which extension points already read from
+    /// here and which still read from `plugin_ui_jobs` above.
+    pub plugin_sessions: crate::features::plugins::application::PluginSessions,
     /// Shared cached-image state machine used by every image renderer.
     pub image_assets: ImageAssetStore,
     /// Direct access to signals without locking AppState
@@ -101,9 +107,18 @@ impl SharedState {
                 })
             }
         });
-        let image_assets = services.content_cache.as_ref().map_or_else(
-            || ImageAssetStore::without_cache(services.tokio_runtime.clone()),
-            |cache| ImageAssetStore::new(cache.clone(), services.tokio_runtime.clone()),
+        // A plugin document's image references are facade-encoded
+        // (`plugin-image:{plugin_id}:{key}`) rather than bare content-cache
+        // keys, because a plugin's cache entries are namespaced to it and a
+        // bare key is ambiguous once it leaves its session. Resolving those
+        // through `ArclainApp::read_plugin_image` (which decodes the owner
+        // and enforces the facade's own 16 MiB per-asset cap) is what lets
+        // a facade-rendered document show images at all; every other key
+        // still resolves straight through the content cache.
+        let image_assets = ImageAssetStore::with_plugin_images(
+            services.content_cache.clone(),
+            facade.clone(),
+            services.tokio_runtime.clone(),
         );
         let shared = Self {
             app_state: app_state.clone(),
@@ -112,6 +127,7 @@ impl SharedState {
             toaster: Arc::new(Mutex::new(Toaster::new())),
             refresh_requests: Arc::new(AtomicBool::new(false)),
             plugin_ui_jobs,
+            plugin_sessions: crate::features::plugins::application::PluginSessions::new(),
             image_assets,
             signals: signals.clone(),
             facade: Some(facade),

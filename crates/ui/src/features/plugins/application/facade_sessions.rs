@@ -437,45 +437,52 @@ impl PluginSessions {
         }
     }
 
-    /// Dispatches one interaction against `slot`'s open session, spawning
-    /// `start_plugin_action` and recording its operation id so the
-    /// operation bridge can route the result back here.
+    /// Starts one interaction against `slot`'s open session and records
+    /// the resulting operation id so the operation bridge can route the
+    /// result back here.
     ///
-    /// A no-op for a slot that is not `Open`: there is no session to act
-    /// against yet, and the interaction that produced this call cannot
-    /// have come from a document the user could see.
-    pub fn dispatch(
+    /// Returns `Ok(None)` for a slot that is not `Open`: there is no
+    /// session to act against yet, and the interaction that produced this
+    /// call cannot have come from a document the user could see.
+    ///
+    /// Deliberately `async` and *not* self-spawning. The spawn belongs to
+    /// the caller (`crate::features::plugins::presentation::
+    /// document_dispatch::dispatch_action`) because the operation id must
+    /// be reconciled against its current snapshot immediately after being
+    /// tracked -- the facade's worker can complete and broadcast before
+    /// this call even returns the id, and the bridge would drop that
+    /// terminal event as belonging to no slot. Doing the reconcile here
+    /// would mean this registry knowing how to apply intents to egui
+    /// state, which is exactly what it must not know.
+    pub async fn start_action(
         &self,
         facade: &ArclainApp,
-        runtime: &tokio::runtime::Handle,
         slot: &PluginSlot,
         node_id: String,
         action: PluginActionDto,
-    ) {
-        let Some(session_id) = self
+    ) -> Option<OperationId> {
+        let session_id = self
             .inner
             .lock()
             .slots
             .get(slot)
-            .and_then(SlotState::session_id)
-        else {
-            return;
-        };
+            .and_then(SlotState::session_id)?;
 
-        let sessions = self.clone();
-        let app = facade.clone();
-        let slot = slot.clone();
-        runtime.spawn(async move {
-            let request = PluginActionRequest {
-                session_id,
-                node_id,
-                action,
-            };
-            match app.start_plugin_action(request).await {
-                Ok(operation_id) => sessions.track(&slot, operation_id),
-                Err(error) => sessions.set_failed(&slot, error.summary),
+        let request = PluginActionRequest {
+            session_id,
+            node_id,
+            action,
+        };
+        match facade.start_plugin_action(request).await {
+            Ok(operation_id) => {
+                self.track(slot, operation_id);
+                Some(operation_id)
             }
-        });
+            Err(error) => {
+                self.set_failed(slot, error.summary);
+                None
+            }
+        }
     }
 
     /// Records an in-flight action operation against its slot. `pub` so
@@ -599,6 +606,46 @@ impl PluginSessions {
         plugin_id: &str,
     ) {
         for slot in self.slots_matching(|slot| slot.plugin_id() == plugin_id) {
+            self.close(facade, runtime, &slot);
+        }
+    }
+
+    /// Closes every tab-scoped slot whose tab is no longer open.
+    ///
+    /// Swept once per frame rather than hooked into each individual
+    /// tab-close call site (plain close, close-others, close-to-the-right,
+    /// the force-close confirmation, and the shutdown path all remove
+    /// tabs), matching the per-frame reconciliation
+    /// `crate::core::app_lifecycle::sync_active_archive_session` already
+    /// uses for the same reason. Missing one site would leak a WASM
+    /// session for the rest of the process's life.
+    pub fn retain_tabs(
+        &self,
+        facade: &ArclainApp,
+        runtime: &tokio::runtime::Handle,
+        open_tabs: &[TabId],
+    ) {
+        for slot in
+            self.slots_matching(|slot| slot.tab().is_some_and(|tab| !open_tabs.contains(&tab)))
+        {
+            self.close(facade, runtime, &slot);
+        }
+    }
+
+    /// Closes every open slot.
+    ///
+    /// This is how a plugin-requested refresh reaches a facade-backed
+    /// slot. A session has no invalidation protocol -- the document only
+    /// changes as the result of an action dispatched against it -- so a
+    /// refresh triggered from outside any dispatch (the event-driven
+    /// `RefreshPanel` a plugin emits from `OnArchiveOpen`, which never
+    /// passes through `start_plugin_action`) is expressed by dropping the
+    /// session, letting the next render frame open a fresh one against
+    /// the plugin's current state. That is the same effect the pre-cutover
+    /// stack's `invalidate_all_layouts` had, and the same cost: one
+    /// `get-ui-layout` call per visible slot.
+    pub fn close_all(&self, facade: &ArclainApp, runtime: &tokio::runtime::Handle) {
+        for slot in self.slots_matching(|_| true) {
             self.close(facade, runtime, &slot);
         }
     }

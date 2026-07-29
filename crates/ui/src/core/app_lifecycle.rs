@@ -14,6 +14,17 @@ pub fn process_refresh_requests(shared_state: &SharedState, ctx: &egui::Context)
     if shared_state.refresh_requests.swap(false, Ordering::AcqRel) {
         tracing::debug!("Processing plugin layout refresh request");
         shared_state.plugin_ui_jobs.invalidate_all_layouts();
+        // Facade-backed slots have no cache to invalidate: a session's
+        // document only changes as the result of an action dispatched
+        // against it. A refresh requested from outside any dispatch (the
+        // event-driven `RefreshPanel` a plugin emits from `OnArchiveOpen`)
+        // is expressed by closing the sessions so the next frame opens
+        // fresh ones -- see `PluginSessions::close_all`.
+        if let Some(facade) = shared_state.facade.as_ref() {
+            shared_state
+                .plugin_sessions
+                .close_all(facade, shared_state.services.tokio_runtime.handle());
+        }
         let dialog_signal = shared_state.signals().plugin_dialog_state.clone();
         let mut dialog_state = dialog_signal.get();
         dialog_state.invalidate_dialog_layout();
@@ -79,6 +90,32 @@ pub fn sync_active_archive_session(shared: &SharedState) {
             );
         }
     });
+}
+
+/// Closes the facade plugin sessions of any tab that is no longer open.
+///
+/// Per-frame for the same reason as [`sync_active_archive_session`]: tabs
+/// are removed from several call sites (plain close, close-others,
+/// close-to-the-right, the force-close confirmation), and missing one
+/// would leak a WASM plugin session for the rest of the process's life.
+pub fn sweep_closed_tab_plugin_sessions(shared: &SharedState) {
+    let Some(facade) = shared.facade.as_ref() else {
+        return;
+    };
+    if shared.plugin_sessions.is_empty() {
+        return;
+    }
+    let open_tabs: Vec<crate::core::tabs::TabId> = shared
+        .signals()
+        .tabs
+        .get()
+        .tabs()
+        .iter()
+        .map(|tab| tab.id)
+        .collect();
+    shared
+        .plugin_sessions
+        .retain_tabs(facade, shared.services.tokio_runtime.handle(), &open_tabs);
 }
 
 /// The pure decision `sync_active_archive_session` makes: whether

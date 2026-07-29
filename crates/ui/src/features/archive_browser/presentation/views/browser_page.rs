@@ -5,7 +5,7 @@ use crate::core::tabs::view_state::{
 };
 use crate::core::tabs::TabState;
 use crate::features::archive_browser::domain::Action;
-use crate::features::archive_browser::presentation::components::file_list;
+use crate::features::archive_browser::presentation::components::{file_list, properties_panel};
 use crate::shared::components::tree_panel::{self, FolderTree, TreeRowProjectionCache};
 use crate::shared::SharedState;
 use arclain_app::Signal;
@@ -264,18 +264,8 @@ fn render_properties_panel(
                         _ => {
                             if item.action_type == ActionType::Plugin {
                                 if let Some(plugin_id) = &item.action_data {
-                                    let origin_tab = Some(shared.signals().tabs.get().active_id());
-                                    if let Some(Ok(layout)) = shared.plugin_ui_jobs.layout(
-                                        plugin_id,
-                                        crate::features::plugins::application::PluginUiTarget::Panel,
-                                        origin_tab,
-                                    ) {
-                                        if !layout.is_empty() {
-                                            sections.push(properties_panel::PanelSection::Plugin {
-                                                plugin_id: plugin_id.clone(),
-                                                elements: layout.as_ref().clone().flatten(),
-                                            });
-                                        }
+                                    if let Some(section) = plugin_panel_section(shared, plugin_id) {
+                                        sections.push(section);
                                     }
                                 }
                             }
@@ -283,12 +273,8 @@ fn render_properties_panel(
                     }
                 }
 
-                let panel_action = properties_panel::render(
-                    ui,
-                    &shared.theme,
-                    &sections,
-                    Some(shared),
-                );
+                let panel_action =
+                    properties_panel::render(ui, &shared.theme, &sections, Some(shared));
 
                 match panel_action {
                     PropertiesPanelAction::None => {}
@@ -297,6 +283,52 @@ fn render_properties_panel(
         });
 
     action
+}
+
+/// Resolves the facade-backed `Panel` slot for `plugin_id` on the active
+/// tab, opening a plugin session on first sight (see
+/// `crate::features::plugins::application::facade_sessions`).
+///
+/// Returns `None` while the session is still opening, when it failed, and
+/// when the plugin's panel document is empty -- an empty document draws
+/// nothing, so a panel section for it would be an empty titled box. The
+/// pre-cutover path made the same choice against a flat element list.
+fn plugin_panel_section(
+    shared: &SharedState,
+    plugin_id: &str,
+) -> Option<properties_panel::PanelSection> {
+    use crate::features::plugins::application::{PluginSlot, SlotView};
+
+    let facade = shared.facade.as_ref()?;
+    let slot = PluginSlot::Panel {
+        plugin_id: plugin_id.to_string(),
+        tab: shared.signals().tabs.get().active_id(),
+    };
+    let SlotView::Ready(document) =
+        shared
+            .plugin_sessions
+            .view(facade, shared.services.tokio_runtime.handle(), &slot)
+    else {
+        return None;
+    };
+    if document_is_empty(&document.root) {
+        return None;
+    }
+    Some(properties_panel::PanelSection::Plugin { slot, document })
+}
+
+/// Whether a plugin returned nothing to draw. The root of a normalized
+/// document is always a `Single`/`Split` container, so "empty" means that
+/// container has no children rather than the document being absent.
+fn document_is_empty(root: &arclain_app::plugins::PluginUiNodeDto) -> bool {
+    use arclain_app::plugins::PluginUiNodeKind;
+    match &root.kind {
+        PluginUiNodeKind::Single { children } => children.is_empty(),
+        PluginUiNodeKind::Split {
+            sidebar, content, ..
+        } => sidebar.is_empty() && content.is_empty(),
+        _ => false,
+    }
 }
 
 fn render_file_list(
