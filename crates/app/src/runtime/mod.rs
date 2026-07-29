@@ -946,15 +946,29 @@ impl ArclainApp {
         .await
     }
 
-    /// Starts organizing a batch of archives under one organization rule
-    /// (layout) and one archive profile (output format/compression) as a
+    /// Starts organizing archives under one organization rule (layout)
+    /// and one archive profile (output format/compression) as a
     /// cancellable, event-broadcasting operation. Rejects a structurally
     /// invalid request the same way [`Self::start_convert`] does (see
     /// [`crate::operations::OrganizeRequest::validate`]), and additionally
-    /// confirms both ids name an existing rule/profile before registering
-    /// an operation -- an I/O-requiring check `validate` itself cannot
-    /// perform. See [`crate::operations::OrganizeRequest`]'s own doc
-    /// comment for why this needs two ids and has no output transaction.
+    /// confirms both ids name an existing rule/profile -- and, for a
+    /// session-bound request, that the session is still open -- before
+    /// registering an operation, all I/O-requiring checks `validate`
+    /// itself cannot perform. See [`crate::operations::OrganizeRequest`]'s
+    /// own doc comment for why this needs two ids and has no output
+    /// transaction.
+    ///
+    /// # Applying what was previewed
+    ///
+    /// Setting [`crate::operations::OrganizeRequest::archive_session_id`]
+    /// organizes the archive open in that session, from the metadata that
+    /// session holds -- the exact plan [`Self::preview_organize_plan`]
+    /// reports for the same session and rule. Without it, this resolves
+    /// metadata per input from the DLsite library instead, which is the
+    /// only thing a path-only batch can do and is *not* what a preview
+    /// shows. A frontend that previewed a plan must bind the session it
+    /// previewed, or it applies a different plan than the one the user
+    /// approved.
     pub async fn start_organize(
         &self,
         request: OrganizeRequest,
@@ -967,6 +981,12 @@ impl ArclainApp {
                 parsed_ids.profile_id,
             )
             .await?;
+            let binding = match request.archive_session_id {
+                Some(session_id) => {
+                    Some(processing_ops::resolve_session_binding(&inner, session_id).await?)
+                }
+                None => None,
+            };
             let (operation_id, _cancel) = inner.operations().begin(OperationKind::Organize).await;
             // See `start_convert`'s identical comment above -- the same
             // theoretical, non-reachable-in-practice race.
@@ -977,6 +997,7 @@ impl ArclainApp {
                     operation_id,
                     request,
                     parsed_ids,
+                    binding,
                 ));
             }
             Ok(operation_id)

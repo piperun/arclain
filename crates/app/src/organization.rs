@@ -39,7 +39,8 @@ use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, Sugge
 use crate::ids::ArchiveSessionId;
 
 use arclain_core::features::organization::{
-    ArchiveFormat, ArchiveProfile, MoveAction, OrganizationRule, RuleActions, RuleTrigger,
+    ArchiveFormat, ArchiveProfile, GameMetadata, MoveAction, OrganizationRule, RuleActions,
+    RuleTrigger,
 };
 
 /// The highest compression level any profile may store.
@@ -317,6 +318,25 @@ pub struct OrganizePlanPreview {
 // ============================================================================
 // Pure DTO <-> domain conversions.
 // ============================================================================
+
+/// The plan-facing view of one archive session's plugin-reported
+/// metadata: the JSON the `emit_metadata` host function wrote, parsed
+/// the one way every planner in this crate reads it. A blob that fails
+/// to parse yields a metadata-less plan rather than an error, matching
+/// the pre-facade organize panel (which logged and skipped).
+///
+/// One function with two callers on purpose. A preview
+/// ([`crate::runtime::ArclainApp::preview_organize_plan`]) and the
+/// session-bound organize that applies it
+/// ([`crate::operations::OrganizeRequest::archive_session_id`]) must
+/// build their plans from the same metadata or they describe different
+/// outcomes -- so they read it through the same function rather than
+/// through two copies that have to be kept in agreement.
+pub(crate) fn session_metadata_for_planning(
+    raw: Option<serde_json::Value>,
+) -> Option<GameMetadata> {
+    raw.and_then(|value| GameMetadata::from_json(&value.to_string()).ok())
+}
 
 pub(crate) fn summarize_rule(rule: &OrganizationRule) -> OrganizationRuleSummary {
     OrganizationRuleSummary {

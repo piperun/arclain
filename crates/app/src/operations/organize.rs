@@ -25,6 +25,30 @@
 //! rule id, which was incorrect; see `crate::runtime::processing_ops`'s
 //! own doc comment for the corrected flow this now drives.
 //!
+//! ## Binding one organize to one open archive session
+//!
+//! [`OrganizeRequest::archive_session_id`] exists because a *previewed*
+//! organize and an *applied* one must be the same organize.
+//! [`crate::runtime::ArclainApp::preview_organize_plan`] builds its plan
+//! from the metadata the session itself holds -- the JSON a plugin
+//! reported through `emit_metadata`. A path-only batch organize has no
+//! session to read, so it resolves metadata the only way it can: a
+//! DLsite library lookup keyed on a product code detected in the file
+//! name (`crate::runtime::processing_ops::resolve_metadata`). Those two
+//! sources routinely disagree -- a plugin can report a title for an
+//! archive the library has never seen, and the library can hold a stale
+//! row for one a plugin has since re-fetched -- and the plan's root
+//! folder, its move destinations, and the output file's own name are
+//! all functions of the metadata that resolved.
+//!
+//! So a panel that previewed a plan and then applied it through a
+//! path-only request would silently organize something other than what
+//! the user just approved. Naming the session closes that: with a
+//! binding, the archive *is* the session's own, and the metadata is
+//! exactly the value the preview read (snapshotted once when the
+//! operation starts, so a metadata write landing mid-run cannot change
+//! the plan out from under it either).
+//!
 //! **This flow has no output transaction.** `execute_organization_plan`
 //! (the pure core function this now calls, matching the quick action
 //! exactly) extracts, applies the plan, and packs the result via
@@ -42,6 +66,7 @@
 use std::path::PathBuf;
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
+use crate::ids::ArchiveSessionId;
 
 use super::convert::empty_inputs_error;
 
@@ -53,6 +78,9 @@ use super::convert::empty_inputs_error;
 /// NewFolder` uses elsewhere in this facade).
 #[derive(Debug)]
 pub struct OrganizeRequest {
+    /// The archives to organize. Must be empty when
+    /// [`Self::archive_session_id`] is set (the session names the one
+    /// archive), and non-empty otherwise.
     pub inputs: Vec<PathBuf>,
     pub destination: PathBuf,
     /// An `arclain_core::features::organization::ArchiveProfile` id --
@@ -64,6 +92,19 @@ pub struct OrganizeRequest {
     /// layout (which files go where).
     pub rule_id: String,
     pub dry_run: bool,
+    /// Organizes the archive open in this session, using the metadata
+    /// that session holds -- the exact plan
+    /// [`crate::runtime::ArclainApp::preview_organize_plan`] previewed
+    /// for the same session and rule. See this module's doc comment for
+    /// why a previewed organize needs this and a batch one does not.
+    ///
+    /// The archive is the session's own `source_path`, so `inputs` must
+    /// be empty: a caller cannot bind one session's metadata onto a
+    /// different archive's contents, by construction rather than by
+    /// convention. The password the session was opened with is reused
+    /// too, so applying to an archive the user already unlocked does not
+    /// prompt again.
+    pub archive_session_id: Option<ArchiveSessionId>,
 }
 
 /// Both ids this request needs, once parsed from their decimal string
@@ -79,16 +120,37 @@ impl OrganizeRequest {
     /// Validates this request and, on success, parses [`Self::profile_id`]/
     /// [`Self::rule_id`] into the ids they identify.
     ///
-    /// Rejects (as [`ApplicationErrorKind::InvalidInput`]) an empty input
-    /// list or either id string failing to parse as a decimal integer --
-    /// both are purely structural problems, discoverable with no I/O, so
+    /// Rejects (as [`ApplicationErrorKind::InvalidInput`]) an `inputs`
+    /// list that disagrees with [`Self::archive_session_id`], or either
+    /// id string failing to parse as a decimal integer -- all purely
+    /// structural problems, discoverable with no I/O, so
     /// [`crate::runtime::ArclainApp::start_organize`] runs this before
     /// ever registering an operation. Whether the ids actually name an
-    /// *existing* rule/profile is a separate, I/O-requiring check that
-    /// method performs afterward (see `processing_ops::resolve_rule_and_profile`).
+    /// *existing* rule/profile/session is a separate, I/O-requiring
+    /// check that method performs afterward (see
+    /// `processing_ops::resolve_rule_and_profile` and
+    /// `processing_ops::resolve_session_binding`).
     pub(crate) fn validate(&self) -> Result<ParsedIds, ApplicationError> {
-        if self.inputs.is_empty() {
-            return Err(empty_inputs_error());
+        match self.archive_session_id {
+            // A session-bound organize takes its one archive from the
+            // session. Supplied paths are refused rather than ignored:
+            // silently dropping them would let a caller believe it had
+            // organized files this request never touches.
+            Some(_) if !self.inputs.is_empty() => {
+                return Err(ApplicationError::new(
+                    ApplicationErrorKind::InvalidInput,
+                    "a session-bound organize takes its archive from the session, not from inputs",
+                )
+                .with_diagnostic(format!(
+                    "archive_session_id is set and {} input path(s) were also supplied",
+                    self.inputs.len()
+                ))
+                .with_recoverability(Recoverability::UserAction)
+                .with_field("inputs"));
+            }
+            Some(_) => {}
+            None if self.inputs.is_empty() => return Err(empty_inputs_error()),
+            None => {}
         }
         Ok(ParsedIds {
             profile_id: parse_id(&self.profile_id, "profile_id")?,
@@ -121,12 +183,35 @@ mod tests {
             profile_id: profile_id.to_string(),
             rule_id: rule_id.to_string(),
             dry_run: false,
+            archive_session_id: None,
         }
     }
 
     #[test]
     fn empty_inputs_are_rejected() {
         let err = request(vec![], "1", "2").validate().unwrap_err();
+        assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(err.field.as_deref(), Some("inputs"));
+    }
+
+    #[test]
+    fn a_session_bound_request_needs_no_inputs() {
+        let mut request = request(vec![], "1", "2");
+        request.archive_session_id = Some(ArchiveSessionId::from_raw(7));
+        let parsed = request
+            .validate()
+            .expect("the session supplies the archive, so an empty inputs list is correct");
+        assert_eq!(parsed.profile_id, 1);
+        assert_eq!(parsed.rule_id, 2);
+    }
+
+    /// Refused, not ignored: the session's metadata must only ever be
+    /// applied to the session's own archive.
+    #[test]
+    fn a_session_bound_request_rejects_supplied_inputs() {
+        let mut request = request(vec![PathBuf::from("elsewhere.zip")], "1", "2");
+        request.archive_session_id = Some(ArchiveSessionId::from_raw(7));
+        let err = request.validate().unwrap_err();
         assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
         assert_eq!(err.field.as_deref(), Some("inputs"));
     }

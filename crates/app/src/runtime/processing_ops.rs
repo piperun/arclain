@@ -123,6 +123,17 @@
 //!   [`pack_organize_input`] builds afterward (`Archive::with_password`
 //!   instead of `Archive::new`), the same way `archive_ops` carries
 //!   `password_used` into the `ArchiveSession` it builds.
+//! - **A session-bound Organize applies exactly what was previewed.**
+//!   `OrganizeRequest::archive_session_id` replaces all three per-run
+//!   inputs this module would otherwise infer from a bare path (see
+//!   [`OrganizeSources`]): the archive is the session's own
+//!   `source_path`, the plan's metadata is the session's own
+//!   plugin-reported blob read through the same function
+//!   `preview_organize_plan` reads it with, and the listing starts from
+//!   the password the session was already opened with. The metadata
+//!   substitution is the load-bearing one -- see
+//!   `crate::operations::organize`'s own doc comment for why a
+//!   previewed plan and a library-resolved one routinely differ.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -698,6 +709,104 @@ fn stem_from(input: &Path, metadata: Option<&GameMetadata>) -> std::ffi::OsStrin
 
 // ─── Organize: quick-action-style flow, no output transaction ──────────
 
+/// Everything an [`OrganizeRequest::archive_session_id`] contributes,
+/// snapshotted once when the operation starts (see
+/// [`resolve_session_binding`]).
+pub(super) struct SessionBinding {
+    /// The archive to organize: the session's own, never a caller-
+    /// supplied path.
+    source_path: PathBuf,
+    /// The session's plugin-reported metadata, read exactly the way
+    /// `preview_organize_plan` reads it.
+    metadata: Option<GameMetadata>,
+    /// The password the session was opened with, if any -- so applying
+    /// to an already-unlocked archive does not prompt for it a second
+    /// time.
+    password: Option<String>,
+}
+
+/// Snapshots the session an [`OrganizeRequest`] is bound to, before
+/// [`crate::runtime::ArclainApp::start_organize`] registers an operation
+/// for it: `NotFound` for an unknown or already-closed session id is a
+/// request-level rejection, not an operation that starts and
+/// immediately fails.
+///
+/// Snapshotting (rather than re-reading the session per file) is what
+/// makes a session-bound organize deterministic: a plugin writing
+/// metadata while the run is in flight cannot change the plan out from
+/// under the preview the user approved.
+pub(super) async fn resolve_session_binding(
+    inner: &Arc<AppRuntime>,
+    session_id: crate::ids::ArchiveSessionId,
+) -> Result<SessionBinding, ApplicationError> {
+    let session = inner.archive_sessions().get(session_id).await?;
+    // The same brief, uncontended peek at the backend handle
+    // `crate::operations::extract` takes to reuse a session's password
+    // -- the guard is released before this returns and never spans an
+    // `.await`.
+    let password = {
+        let archive = session.archive_arc();
+        let guard = archive.lock();
+        guard.password_ref().map(str::to_string)
+    };
+    Ok(SessionBinding {
+        source_path: session.source_path(),
+        metadata: crate::organization::session_metadata_for_planning(session.metadata()),
+        password,
+    })
+}
+
+/// Where one organize run's plan metadata comes from.
+#[derive(Clone)]
+enum PlanMetadata {
+    /// The bound session's own plugin-reported metadata -- *whatever it
+    /// is, including none at all*. Deliberately never falls back to
+    /// [`PlanMetadata::LibraryLookup`] when the session reports nothing:
+    /// a preview against a session with no metadata plans without any,
+    /// so an apply that quietly found some in the library would organize
+    /// something other than what was previewed.
+    Session(Option<GameMetadata>),
+    /// No session to read: resolve per input from a product code
+    /// detected in its file name, through the DLsite library -- what a
+    /// path-only batch organize has always done.
+    LibraryLookup,
+}
+
+impl PlanMetadata {
+    fn resolve(&self, archive_name: &str, ctx: &OrganizeContext) -> Option<GameMetadata> {
+        match self {
+            Self::Session(metadata) => metadata.clone(),
+            Self::LibraryLookup => resolve_metadata(archive_name, ctx.library_service.as_ref()),
+        }
+    }
+}
+
+/// The three things a [`SessionBinding`] (or its absence) decides for a
+/// whole organize run: which archives it processes, which metadata its
+/// plans are built from, and which password its listings start with.
+struct OrganizeSources {
+    inputs: Vec<PathBuf>,
+    metadata: PlanMetadata,
+    seed_password: Option<String>,
+}
+
+impl OrganizeSources {
+    fn resolve(request: &OrganizeRequest, binding: Option<SessionBinding>) -> Self {
+        match binding {
+            Some(binding) => Self {
+                inputs: vec![binding.source_path],
+                metadata: PlanMetadata::Session(binding.metadata),
+                seed_password: binding.password,
+            },
+            None => Self {
+                inputs: request.inputs.clone(),
+                metadata: PlanMetadata::LibraryLookup,
+                seed_password: None,
+            },
+        }
+    }
+}
+
 /// Confirms an [`OrganizeRequest`]'s already-parsed rule id and profile
 /// id both name existing, real rows before
 /// [`crate::runtime::ArclainApp::start_organize`] registers an operation
@@ -905,13 +1014,23 @@ enum OrganizeListingOutcome {
 /// response against cancellation via `tokio::select!` -- exactly
 /// `archive_ops`'s own shape, generalized to run once per input inside
 /// Organize's own per-file loop rather than once for a whole operation.
+///
+/// `seed_password` is the password a bound session was already opened
+/// with (see [`SessionBinding`]): trying it first is what keeps
+/// applying an organize to an archive the user already unlocked from
+/// prompting them for the same password a second time -- the same reuse
+/// `crate::operations::extract` performs for the identical reason. It
+/// takes the place of the *first* attempt only: if it no longer works
+/// (the file changed underneath the session), this falls through to the
+/// interactive challenge below rather than silently organizing nothing.
 async fn resolve_organize_listing(
     inner: &Arc<AppRuntime>,
     operation_id: OperationId,
     input: &Path,
     ctx: &OrganizeContext,
+    seed_password: Option<&str>,
 ) -> OrganizeListingOutcome {
-    let mut current_password: Option<String> = None;
+    let mut current_password: Option<String> = seed_password.map(str::to_string);
     let mut attempt: u32 = 1;
 
     loop {
@@ -1022,6 +1141,7 @@ pub(super) async fn run_organize(
     operation_id: OperationId,
     request: OrganizeRequest,
     parsed_ids: ParsedIds,
+    binding: Option<SessionBinding>,
 ) {
     if inner
         .operations()
@@ -1031,11 +1151,12 @@ pub(super) async fn run_organize(
     {
         return;
     }
+    let sources = OrganizeSources::resolve(&request, binding);
     if request.dry_run {
-        run_organize_dry_run(&inner, operation_id, &request, &parsed_ids).await;
+        run_organize_dry_run(&inner, operation_id, &request, &parsed_ids, &sources).await;
         return;
     }
-    run_organize_for_real(&inner, operation_id, &request, &parsed_ids).await;
+    run_organize_for_real(&inner, operation_id, &request, &parsed_ids, &sources).await;
 }
 
 async fn run_organize_for_real(
@@ -1043,8 +1164,9 @@ async fn run_organize_for_real(
     operation_id: OperationId,
     request: &OrganizeRequest,
     parsed_ids: &ParsedIds,
+    sources: &OrganizeSources,
 ) {
-    let total = request.inputs.len() as u64;
+    let total = sources.inputs.len() as u64;
     let ctx = build_organize_context(inner);
     let temp_root = std::env::temp_dir();
     let destination = request.destination.clone();
@@ -1055,7 +1177,7 @@ async fn run_organize_for_real(
     let mut failed = 0u64;
     let mut processed = 0u64;
 
-    for (index, input) in request.inputs.iter().cloned().enumerate() {
+    for (index, input) in sources.inputs.iter().cloned().enumerate() {
         if inner.operations().is_cancelled(operation_id).await {
             return;
         }
@@ -1074,28 +1196,35 @@ async fn run_organize_for_real(
         )
         .await;
 
-        let (backend, info, password_used) =
-            match resolve_organize_listing(inner, operation_id, &input, &ctx).await {
-                OrganizeListingOutcome::Resolved {
-                    backend,
-                    info,
-                    password_used,
-                } => (backend, info, password_used),
-                OrganizeListingOutcome::Cancelled => return,
-                OrganizeListingOutcome::Failed(error) => {
-                    processed += 1;
-                    failed += 1;
-                    emit_progress(
-                        inner,
-                        operation_id,
-                        index as u64,
-                        total,
-                        Some(format!("{name}: failed ({error:#})")),
-                    )
-                    .await;
-                    continue;
-                }
-            };
+        let (backend, info, password_used) = match resolve_organize_listing(
+            inner,
+            operation_id,
+            &input,
+            &ctx,
+            sources.seed_password.as_deref(),
+        )
+        .await
+        {
+            OrganizeListingOutcome::Resolved {
+                backend,
+                info,
+                password_used,
+            } => (backend, info, password_used),
+            OrganizeListingOutcome::Cancelled => return,
+            OrganizeListingOutcome::Failed(error) => {
+                processed += 1;
+                failed += 1;
+                emit_progress(
+                    inner,
+                    operation_id,
+                    index as u64,
+                    total,
+                    Some(format!("{name}: failed ({error:#})")),
+                )
+                .await;
+                continue;
+            }
+        };
 
         let Some(handle) = inner.tokio_handle() else {
             return;
@@ -1105,6 +1234,7 @@ async fn run_organize_for_real(
         let temp_root_for_blocking = temp_root.clone();
         let destination_for_blocking = destination.clone();
         let input_for_blocking = input.clone();
+        let metadata_for_blocking = sources.metadata.clone();
 
         let result = handle
             .spawn_blocking(move || {
@@ -1118,6 +1248,7 @@ async fn run_organize_for_real(
                     backend,
                     &info,
                     password_used,
+                    &metadata_for_blocking,
                 )
             })
             .await;
@@ -1199,13 +1330,14 @@ fn pack_organize_input(
     backend: Arc<dyn ArchiveBackend>,
     info: &ArchiveInfo,
     password: Option<String>,
+    plan_metadata: &PlanMetadata,
 ) -> anyhow::Result<PathBuf> {
     let archive_name = input
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("")
         .to_string();
-    let metadata = resolve_metadata(&archive_name, ctx.library_service.as_ref());
+    let metadata = plan_metadata.resolve(&archive_name, ctx);
 
     let (plan, profile) = build_plan_and_profile(
         &archive_name,
@@ -1314,14 +1446,15 @@ async fn run_organize_dry_run(
     operation_id: OperationId,
     request: &OrganizeRequest,
     parsed_ids: &ParsedIds,
+    sources: &OrganizeSources,
 ) {
-    let total = request.inputs.len() as u64;
+    let total = sources.inputs.len() as u64;
     let ctx = build_organize_context(inner);
     let rule_id = parsed_ids.rule_id;
     let profile_id = parsed_ids.profile_id;
     let destination = request.destination.clone();
 
-    for (index, input) in request.inputs.iter().cloned().enumerate() {
+    for (index, input) in sources.inputs.iter().cloned().enumerate() {
         if inner.operations().is_cancelled(operation_id).await {
             return;
         }
@@ -1331,7 +1464,15 @@ async fn run_organize_dry_run(
             .unwrap_or("<unknown>")
             .to_string();
 
-        let info = match resolve_organize_listing(inner, operation_id, &input, &ctx).await {
+        let info = match resolve_organize_listing(
+            inner,
+            operation_id,
+            &input,
+            &ctx,
+            sources.seed_password.as_deref(),
+        )
+        .await
+        {
             OrganizeListingOutcome::Resolved { info, .. } => info,
             OrganizeListingOutcome::Cancelled => return,
             OrganizeListingOutcome::Failed(error) => {
@@ -1353,6 +1494,7 @@ async fn run_organize_dry_run(
         let ctx_for_blocking = ctx.clone();
         let input_for_blocking = input.clone();
         let destination_for_blocking = destination.clone();
+        let metadata_for_blocking = sources.metadata.clone();
 
         let preview = handle
             .spawn_blocking(move || {
@@ -1363,6 +1505,7 @@ async fn run_organize_dry_run(
                     profile_id,
                     &ctx_for_blocking,
                     &info,
+                    &metadata_for_blocking,
                 )
             })
             .await;
@@ -1411,13 +1554,14 @@ fn preview_organize_input(
     profile_id: i64,
     ctx: &OrganizeContext,
     info: &ArchiveInfo,
+    plan_metadata: &PlanMetadata,
 ) -> anyhow::Result<String> {
     let archive_name = input
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("")
         .to_string();
-    let metadata = resolve_metadata(&archive_name, ctx.library_service.as_ref());
+    let metadata = plan_metadata.resolve(&archive_name, ctx);
 
     let (plan, profile) = build_plan_and_profile(
         &archive_name,

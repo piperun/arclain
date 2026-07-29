@@ -51,6 +51,10 @@ pub async fn run(app: &ArclainApp, args: &OrganizeArgs, ctx: &super::Invocation)
             profile_id: args.profile.clone(),
             rule_id: args.rule.clone(),
             dry_run: args.dry_run,
+            // Path-only by construction: this command opens no archive
+            // session, so it has none to bind and resolves metadata the
+            // batch way (see `OrganizeRequest::archive_session_id`).
+            archive_session_id: None,
         })
         .await
     {

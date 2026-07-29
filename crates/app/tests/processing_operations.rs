@@ -714,6 +714,7 @@ fn start_organize_rejects_empty_inputs() {
             profile_id: "1".to_string(),
             rule_id: "1".to_string(),
             dry_run: false,
+            archive_session_id: None,
         }))
         .unwrap_err();
 
@@ -735,6 +736,7 @@ fn start_organize_rejects_non_numeric_profile_id() {
             profile_id: "not-a-number".to_string(),
             rule_id: "1".to_string(),
             dry_run: false,
+            archive_session_id: None,
         }))
         .unwrap_err();
 
@@ -756,6 +758,7 @@ fn start_organize_rejects_non_numeric_rule_id() {
             profile_id: "1".to_string(),
             rule_id: "not-a-number".to_string(),
             dry_run: false,
+            archive_session_id: None,
         }))
         .unwrap_err();
 
@@ -778,6 +781,7 @@ fn start_organize_rejects_unknown_rule_id() {
             profile_id: profile_id.to_string(),
             rule_id: "999999".to_string(),
             dry_run: false,
+            archive_session_id: None,
         }))
         .unwrap_err();
 
@@ -800,6 +804,7 @@ fn start_organize_rejects_unknown_profile_id() {
             profile_id: "999999".to_string(),
             rule_id: rule_id.to_string(),
             dry_run: false,
+            archive_session_id: None,
         }))
         .unwrap_err();
 
@@ -928,6 +933,7 @@ fn start_organize_completes_and_packs_each_input_via_the_resolved_profile() {
                 profile_id: profile_id.to_string(),
                 rule_id: rule_id.to_string(),
                 dry_run: false,
+                archive_session_id: None,
             })
             .await
             .expect("start_organize must be accepted");
@@ -975,6 +981,7 @@ fn start_organize_dry_run_reports_a_real_preview_and_never_touches_the_filesyste
                 profile_id: profile_id.to_string(),
                 rule_id: rule_id.to_string(),
                 dry_run: true,
+                archive_session_id: None,
             })
             .await
             .expect("start_organize (dry_run) must be accepted");
@@ -1032,6 +1039,7 @@ fn start_organize_between_files_cancellation_stops_unstarted_inputs() {
                 profile_id: profile_id.to_string(),
                 rule_id: rule_id.to_string(),
                 dry_run: false,
+                archive_session_id: None,
             })
             .await
             .expect("start_organize must be accepted");
@@ -1184,6 +1192,7 @@ fn start_organize_extraction_failure_leaves_destination_untouched() {
                 profile_id: profile_id.to_string(),
                 rule_id: rule_id.to_string(),
                 dry_run: false,
+                archive_session_id: None,
             })
             .await
             .expect("start_organize must be accepted");
@@ -1242,6 +1251,7 @@ fn start_organize_has_no_output_transaction_and_overwrites_an_existing_destinati
                 profile_id: profile_id.to_string(),
                 rule_id: rule_id.to_string(),
                 dry_run: false,
+                archive_session_id: None,
             })
             .await
             .expect("start_organize must be accepted");
@@ -1299,6 +1309,7 @@ fn start_organize_auto_unlocks_an_encrypted_input_via_a_seeded_pass_rule() {
                 profile_id: profile_id.to_string(),
                 rule_id: rule_id.to_string(),
                 dry_run: false,
+                archive_session_id: None,
             })
             .await
             .expect("start_organize must be accepted");
@@ -1353,6 +1364,7 @@ fn start_organize_with_no_matching_pass_rule_raises_a_challenge_the_correct_resp
                 profile_id: profile_id.to_string(),
                 rule_id: rule_id.to_string(),
                 dry_run: false,
+                archive_session_id: None,
             })
             .await
             .expect("start_organize must be accepted");
@@ -1415,6 +1427,7 @@ fn start_organize_a_wrong_password_response_raises_another_challenge_then_the_co
                 profile_id: profile_id.to_string(),
                 rule_id: rule_id.to_string(),
                 dry_run: false,
+                archive_session_id: None,
             })
             .await
             .expect("start_organize must be accepted");
@@ -1534,6 +1547,7 @@ fn start_organize_dry_run_preview_path_matches_the_real_runs_output_path_when_me
                 profile_id: profile_id.to_string(),
                 rule_id: rule_id.to_string(),
                 dry_run: true,
+                archive_session_id: None,
             })
             .await
             .expect("start_organize (dry_run) must be accepted");
@@ -1567,6 +1581,7 @@ fn start_organize_dry_run_preview_path_matches_the_real_runs_output_path_when_me
                 profile_id: profile_id.to_string(),
                 rule_id: rule_id.to_string(),
                 dry_run: false,
+                archive_session_id: None,
             })
             .await
             .expect("start_organize must be accepted");
@@ -1651,6 +1666,7 @@ fn start_organize_and_start_pipeline_agree_on_the_metadata_driven_stem() {
                 profile_id: profile_id.to_string(),
                 rule_id: rule_id.to_string(),
                 dry_run: false,
+                archive_session_id: None,
             })
             .await
             .expect("start_organize must be accepted");
@@ -2331,4 +2347,421 @@ fn start_pipeline_rollback_removes_partial_output_after_a_genuine_post_write_fai
         siblings, 0,
         "no .arclain-output-* staging sibling should remain after rollback"
     );
+}
+
+// ─── organize: applying exactly what was previewed ─────────────────────
+
+/// Seeds a rule whose organized root folder is *metadata-driven*
+/// (`[$product_id] $title`), plus a zip profile -- unlike
+/// [`seed_rule_and_profile`]'s deliberately metadata-free rule, this one
+/// produces a visibly different plan depending on which metadata
+/// resolved, which is exactly what the session-binding tests below
+/// measure. Returns `(rule_id, profile_id)`.
+fn seed_metadata_driven_rule_and_profile(app: &ArclainApp) -> (i64, i64) {
+    let legacy = app
+        .take_legacy_composition()
+        .expect("take_legacy_composition must succeed for a freshly bootstrapped app");
+    let organization_service = legacy
+        .core_services
+        .organization_service
+        .clone()
+        .expect("organization_service must be composed for a freshly bootstrapped app");
+    let rule = arclain_core::OrganizationRule {
+        id: 0,
+        name: "metadata-driven".to_string(),
+        priority: 0,
+        is_enabled: true,
+        trigger: arclain_core::RuleTrigger::default(),
+        actions: arclain_core::RuleActions {
+            root_folder: Some("[$product_id] $title".to_string()),
+            output_name: None,
+            move_files: vec![arclain_core::MoveAction {
+                pattern: "**".to_string(),
+                target: String::new(),
+            }],
+            use_standard_layout: false,
+        },
+    };
+    let rule_id = organization_service
+        .save_domain_rule(&rule)
+        .expect("seeding the metadata-driven organization rule must succeed");
+
+    let dbs = legacy
+        .dbs
+        .expect("dbs must be available on the first take_legacy_composition call");
+    let mut conn = dbs.config_pool.get().expect("get a pooled connection");
+    let profile = arclain_core::features::organization::ArchiveProfile {
+        id: 0,
+        name: "test-profile".to_string(),
+        description: None,
+        format: arclain_core::features::organization::ArchiveFormat::Zip,
+        compression_level: 1,
+        compression_method: None,
+        solid_archive: false,
+        encrypt_headers: false,
+        is_default: false,
+        is_system: false,
+    };
+    let profile_id = arclain_core::save_profile(&mut conn, &profile.to_db())
+        .expect("seed the test archive profile");
+
+    (rule_id, profile_id)
+}
+
+/// Saves one DLsite library row for the placeholder product code every
+/// fixture in this section uses.
+fn seed_library_title(app: &ArclainApp, title: &str) {
+    let library_service = app
+        .take_legacy_composition()
+        .expect("take_legacy_composition must succeed")
+        .core_services
+        .library_service
+        .clone()
+        .expect("library_service must be composed for a freshly bootstrapped app");
+    let mut metadata = ProductMetadata::new(MetadataSource::DLSite, "RJ123456");
+    metadata.title = Some(title.to_string());
+    library_service
+        .save_metadata(&metadata)
+        .expect("seeding library metadata must succeed");
+}
+
+/// Opens `path` as an archive session and reports the session id, the
+/// same way any frontend gets one.
+async fn open_session(app: &ArclainApp, path: &Path) -> arclain_app::ids::ArchiveSessionId {
+    let operation_id = app
+        .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+            source_path: path.to_path_buf(),
+            password: None,
+        })
+        .await
+        .expect("start_open_archive must be accepted");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let snapshot = app.operation(operation_id).await.expect("operation exists");
+        match snapshot.state {
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::ArchiveOpened { snapshot },
+            } => return snapshot.session_id,
+            OperationState::Failed { error } => panic!("archive open failed: {error:?}"),
+            _ => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "archive open did not complete within the test deadline"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
+}
+
+/// Writes plugin-reported metadata onto a session exactly the way a
+/// plugin's `emit_metadata` host call does -- through the installed
+/// `ActiveTabBridge`, the only path that reaches session metadata.
+fn report_plugin_title(
+    app: &ArclainApp,
+    session_id: arclain_app::ids::ArchiveSessionId,
+    title: &str,
+) {
+    let bridge = app.active_tab_bridge(|_| panic!("fallback must not run: the session exists"));
+    bridge.set_session_metadata(
+        session_id.into_raw(),
+        Some(serde_json::json!({
+            "product_id": "RJ123456",
+            "source": "dlsite",
+            "title": title,
+        })),
+    );
+}
+
+/// THE invariant this task exists for: **what you preview is what you
+/// apply.**
+///
+/// A session whose plugin metadata says one thing while the DLsite
+/// library says another is the case where the two metadata sources
+/// visibly disagree -- the organized root folder, and the output file's
+/// own name, are both functions of whichever resolved. The first half of
+/// this test proves the divergence is real (a path-only organize over
+/// the very same archive organizes it under the *library* title), and
+/// the second proves a session-bound organize applies the plan the
+/// preview reported instead.
+///
+/// Asserted against what the run actually produced, not against a
+/// progress message: the fake backend's "pack" writes a marker naming
+/// the directories it was handed, which for `execute_organization_plan`
+/// is the organized root folder itself.
+#[test]
+fn a_session_bound_organize_applies_the_previewed_plan_not_the_library_metadata() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
+    let (rule_id, profile_id) = seed_metadata_driven_rule_and_profile(&app);
+    seed_library_title(&app, "Library Title");
+
+    // Carries the placeholder product code the library row is keyed by,
+    // so a path-only organize resolves the library's title from it.
+    let input = temp.path().join("[RJ123456] Placeholder.zip");
+    std::fs::write(&input, b"placeholder content for hashing").unwrap();
+
+    // ── the divergence is real: a path-only organize uses the library ──
+    let library_destination = temp.path().join("out-library");
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![input.clone()],
+                destination: library_destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+                archive_session_id: None,
+            })
+            .await
+            .expect("start_organize must be accepted");
+        let (_, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            }
+        );
+    });
+    let library_output = library_destination.join("Library Title.zip");
+    assert!(
+        library_output.exists(),
+        "a path-only organize must resolve metadata through the library"
+    );
+    assert!(
+        std::fs::read_to_string(&library_output)
+            .unwrap()
+            .contains("[RJ123456] Library Title"),
+        "the packed layout must carry the library-titled root folder"
+    );
+
+    // ── preview and apply, bound to a session that disagrees ─────────
+    let destination = temp.path().join("out");
+    let preview = runtime.block_on(async {
+        let session_id = open_session(&app, &input).await;
+        report_plugin_title(&app, session_id, "Plugin Title");
+
+        let preview = app
+            .preview_organize_plan(session_id, rule_id.to_string())
+            .await
+            .expect("previewing the seeded rule must succeed");
+
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                // The session names the archive; supplying it again is
+                // refused (see `OrganizeRequest::validate`).
+                inputs: vec![],
+                destination: destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+                archive_session_id: Some(session_id),
+            })
+            .await
+            .expect("a session-bound start_organize must be accepted");
+        let (messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            },
+            "messages: {messages:?}"
+        );
+        preview
+    });
+
+    assert_eq!(
+        preview.root_folder, "[RJ123456] Plugin Title",
+        "the preview must plan from the session's own plugin metadata"
+    );
+
+    let applied_output = destination.join("Plugin Title.zip");
+    assert!(
+        applied_output.exists(),
+        "the applied run must name its output from the same metadata the preview used"
+    );
+    assert!(
+        !destination.join("Library Title.zip").exists(),
+        "nothing in a session-bound organize may fall back to the library"
+    );
+    assert!(
+        std::fs::read_to_string(&applied_output)
+            .unwrap()
+            .contains(&preview.root_folder),
+        "the packed layout must be the exact root folder the preview reported"
+    );
+}
+
+/// The session's metadata is the plan's metadata *including when there
+/// is none*: falling back to the library for a session that reports
+/// nothing would apply a plan the user never previewed (the preview
+/// would have shown the metadata-less one).
+#[test]
+fn a_session_with_no_plugin_metadata_never_falls_back_to_the_library() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
+    let (rule_id, profile_id) = seed_metadata_driven_rule_and_profile(&app);
+    seed_library_title(&app, "Library Title");
+
+    let input = temp.path().join("[RJ123456] Placeholder.zip");
+    std::fs::write(&input, b"placeholder content for hashing").unwrap();
+    let destination = temp.path().join("out");
+
+    let preview = runtime.block_on(async {
+        let session_id = open_session(&app, &input).await;
+        // Deliberately no `report_plugin_title` call.
+        let preview = app
+            .preview_organize_plan(session_id, rule_id.to_string())
+            .await
+            .expect("previewing the seeded rule must succeed");
+
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![],
+                destination: destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+                archive_session_id: Some(session_id),
+            })
+            .await
+            .expect("a session-bound start_organize must be accepted");
+        let (_, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            }
+        );
+        preview
+    });
+
+    // With no metadata at all there is nothing to expand `$product_id`
+    // or `$title` from, so the rule engine leaves both placeholders
+    // standing -- an ugly folder name, but the one the preview showed.
+    assert_eq!(preview.root_folder, "[$product_id] $title");
+    assert!(
+        !destination.join("Library Title.zip").exists(),
+        "the library title must not leak into a metadata-less session's organize"
+    );
+    // The output stem falls back to the detected product code, exactly
+    // as the metadata-less preview implies.
+    let applied_output = destination.join("RJ123456.zip");
+    assert!(
+        applied_output.exists(),
+        "expected a code-stemmed output, found: {:?}",
+        std::fs::read_dir(&destination)
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect::<Vec<_>>())
+    );
+    assert!(
+        std::fs::read_to_string(&applied_output)
+            .unwrap()
+            .contains(&preview.root_folder),
+        "the packed layout must be the exact root folder the preview reported"
+    );
+}
+
+/// The password a session was opened with is reused, so applying an
+/// organize to an already-unlocked archive never prompts for it again --
+/// the pre-facade panel's own behavior (it reached for the tab's current
+/// password before anything else), preserved through the binding rather
+/// than through a second password store.
+#[test]
+fn a_session_bound_organize_reuses_the_password_the_session_was_opened_with() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let backend: std::sync::Arc<dyn ArchiveBackend> =
+        std::sync::Arc::new(FakeEncryptedOrganizeBackend {
+            correct_password: "session-password-71c3".to_string(),
+        });
+    let app = bootstrap_app_ex(&temp, Some(backend));
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+
+    let input = temp.path().join("organize-session-locked.zip");
+    std::fs::write(&input, b"placeholder content for hashing").unwrap();
+    let destination = temp.path().join("out");
+
+    runtime.block_on(async {
+        // Opened *with* the password, exactly as a user who unlocked the
+        // archive in the browser would have.
+        let operation_id = app
+            .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                source_path: input.clone(),
+                password: Some(SecretInput::new("session-password-71c3".to_string())),
+            })
+            .await
+            .expect("start_open_archive must be accepted");
+        let session_id = loop {
+            match app.operation(operation_id).await.unwrap().state {
+                OperationState::Completed {
+                    result: arclain_app::event::OperationResult::ArchiveOpened { snapshot },
+                } => break snapshot.session_id,
+                OperationState::Failed { error } => panic!("open failed: {error:?}"),
+                _ => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        };
+
+        let mut receiver = app.subscribe_operations();
+        let organize_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![],
+                destination: destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+                archive_session_id: Some(session_id),
+            })
+            .await
+            .expect("a session-bound start_organize must be accepted");
+
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(15), receiver.recv())
+                .await
+                .expect("operation event must arrive within 15s")
+                .expect("operation event channel must not close");
+            if event.operation_id != organize_id {
+                continue;
+            }
+            match event.state {
+                OperationState::Challenge { .. } => {
+                    panic!("the session's own password must unlock this without prompting")
+                }
+                OperationState::Completed { .. } => break,
+                OperationState::Failed { error } => panic!("organize failed: {error:?}"),
+                OperationState::Cancelled => panic!("organize was cancelled"),
+                _ => {}
+            }
+        }
+    });
+
+    assert!(destination.join("organize-session-locked.zip").exists());
+}
+
+/// A session that was closed (or never existed) is a request-level
+/// rejection, not an operation that starts and immediately fails.
+#[test]
+fn start_organize_rejects_an_unknown_archive_session_id() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app(&temp);
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+
+    let err = runtime
+        .block_on(app.start_organize(OrganizeRequest {
+            inputs: vec![],
+            destination: temp.path().join("out"),
+            profile_id: profile_id.to_string(),
+            rule_id: rule_id.to_string(),
+            dry_run: false,
+            archive_session_id: Some(arclain_app::ids::ArchiveSessionId::from_raw(999_999)),
+        }))
+        .unwrap_err();
+
+    assert_eq!(err.kind, ApplicationErrorKind::NotFound);
+    assert_no_operation_was_registered(&app, &runtime);
 }

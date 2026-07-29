@@ -46,7 +46,7 @@ use std::sync::Arc;
 
 use arclain_core::features::organization::engine::RuleEngine;
 use arclain_core::features::organization::metrics::IntegrityReport;
-use arclain_core::features::organization::{ArchiveProfile, GameMetadata};
+use arclain_core::features::organization::ArchiveProfile;
 use arclain_core::services::OrganizationService;
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
@@ -469,14 +469,11 @@ pub(super) async fn run_preview_organize_plan(
                 .unwrap_or_default()
                 .to_string();
             // The plugin-reported metadata blob this session holds, read
-            // exactly the way the pre-facade organize panel read it: the
-            // same JSON the `emit_metadata` host function wrote, parsed
-            // through `GameMetadata::from_json`. A blob that fails to
-            // parse yields a metadata-less preview rather than an error,
-            // matching the pre-facade behavior (which logged and skipped).
-            let metadata = session
-                .metadata()
-                .and_then(|value| GameMetadata::from_json(&value.to_string()).ok());
+            // exactly the way the pre-facade organize panel read it --
+            // and exactly the way a session-bound `start_organize` reads
+            // it when it applies this same plan (see
+            // `organization::session_metadata_for_planning`).
+            let metadata = organization::session_metadata_for_planning(session.metadata());
 
             let plan = RuleEngine::create_plan(&rule, &archive_name, &entries, metadata.as_ref())
                 .map_err(|error| unusable_plan_error(&error))?;
