@@ -17,7 +17,6 @@
 use crate::shared::components::toolbar::ToolbarState;
 use crate::shared::components::tree_panel::{FolderTree, TreePanelState};
 use crate::shared::models::file_entry::{sort_entry_indices, FileEntry, SortState};
-use arclain_core::ArchiveEntry;
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -46,15 +45,34 @@ impl BrowserEntriesSnapshot {
 
 /// Renderer-owned archive folder projection for one tab.
 ///
-/// Archive entry producers replace the complete `Arc<Vec<ArchiveEntry>>`, so
-/// pointer identity is an O(1) revision key. Normalization, hierarchy building,
-/// and sorting therefore run only after a real entry replacement.
-#[derive(Default)]
-pub struct ArchiveTreeProjectionCache {
-    source: Option<Arc<Vec<ArchiveEntry>>>,
+/// Entry producers replace the complete `Arc<Vec<T>>`, so pointer identity
+/// is an O(1) revision key. Normalization, hierarchy building, and sorting
+/// therefore run only after a real entry replacement.
+///
+/// Generic in the entry type rather than naming one: the tree is a
+/// function of whatever folder set `build` derives, so this cache has no
+/// business knowing whether that came from a pre-facade flat listing or
+/// from the application facade's own listing rows. It keeps the tab's
+/// view state free of either.
+pub struct ArchiveTreeProjectionCache<T> {
+    source: Option<Arc<Vec<T>>>,
     tree: FolderTree,
     generation: u64,
     rebuilds: usize,
+}
+
+/// Hand-written rather than derived: `#[derive(Default)]` on a generic
+/// struct demands `T: Default`, which the entry type has no reason to
+/// satisfy just so an empty cache can exist.
+impl<T> Default for ArchiveTreeProjectionCache<T> {
+    fn default() -> Self {
+        Self {
+            source: None,
+            tree: FolderTree::default(),
+            generation: 0,
+            rebuilds: 0,
+        }
+    }
 }
 
 pub struct ArchiveTreeProjection<'a> {
@@ -62,11 +80,11 @@ pub struct ArchiveTreeProjection<'a> {
     pub generation: u64,
 }
 
-impl ArchiveTreeProjectionCache {
+impl<T> ArchiveTreeProjectionCache<T> {
     pub fn projection(
         &mut self,
-        entries: &Arc<Vec<ArchiveEntry>>,
-        build: impl FnOnce(&[ArchiveEntry]) -> FolderTree,
+        entries: &Arc<Vec<T>>,
+        build: impl FnOnce(&[T]) -> FolderTree,
     ) -> ArchiveTreeProjection<'_> {
         let source_changed = self
             .source
@@ -612,39 +630,32 @@ mod tests {
     }
 
     #[test]
-    fn tree_projection_rebuilds_only_when_archive_entry_allocation_changes() {
-        let first = Arc::new(vec![arclain_core::ArchiveEntry {
-            path: "A/file.txt".to_string(),
-            size: 0,
-            packed_size: 0,
-            modified: None,
-            is_dir: false,
-            encrypted: false,
-            crc32: None,
-        }]);
-        let second = Arc::new(vec![arclain_core::ArchiveEntry {
-            path: "B/file.txt".to_string(),
-            ..first[0].clone()
-        }]);
-        let navigation = arclain_core::NavigationState::default();
+    fn tree_projection_rebuilds_only_when_the_entry_allocation_changes() {
+        let first = Arc::new(vec![entry_at("file.txt", "A/file.txt")]);
+        let second = Arc::new(vec![entry_at("file.txt", "B/file.txt")]);
+        let folders_of = |entries: &[FileEntry]| {
+            FolderTree::from_folders(
+                &entries
+                    .iter()
+                    .filter_map(|entry| {
+                        entry
+                            .archive_path
+                            .rsplit_once('/')
+                            .map(|(folder, _)| folder.to_string())
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
         let mut cache = ArchiveTreeProjectionCache::default();
 
-        let first_generation = cache
-            .projection(&first, |entries| {
-                FolderTree::from_folders(&navigation.get_all_folders(entries))
-            })
-            .generation;
+        let first_generation = cache.projection(&first, folders_of).generation;
         let settled_generation = cache
             .projection(&first, |_| panic!("settled tree projection rebuilt"))
             .generation;
         assert_eq!(settled_generation, first_generation);
         assert_eq!(cache.rebuild_count(), 1);
 
-        let replacement_generation = cache
-            .projection(&second, |entries| {
-                FolderTree::from_folders(&navigation.get_all_folders(entries))
-            })
-            .generation;
+        let replacement_generation = cache.projection(&second, folders_of).generation;
         assert_ne!(replacement_generation, first_generation);
         assert_eq!(cache.rebuild_count(), 2);
     }

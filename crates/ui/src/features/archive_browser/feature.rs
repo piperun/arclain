@@ -15,7 +15,11 @@ pub struct ArchiveBrowser {
 #[derive(Default)]
 struct ArchiveTabProjectionCache {
     files: BrowserProjectionCache,
-    tree: ArchiveTreeProjectionCache,
+    // TRANSITIONAL(4c): keyed on the tab's whole-archive flat listing --
+    // the only whole-archive entry source there is until the relisting
+    // side can page the facade's own listing across the directory tree
+    // (see `TabState::entries`).
+    tree: ArchiveTreeProjectionCache<arclain_core::ArchiveEntry>,
     tree_rows: TreeRowProjectionCache,
 }
 

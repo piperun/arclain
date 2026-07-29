@@ -26,7 +26,8 @@ pub fn render_archive_browser(
     shared: &SharedState,
     tab: &TabState,
     projection: &mut BrowserProjectionCache,
-    tree_projection: &mut ArchiveTreeProjectionCache,
+    // TRANSITIONAL(4c): see `ArchiveTabProjectionCache::tree`.
+    tree_projection: &mut ArchiveTreeProjectionCache<arclain_core::ArchiveEntry>,
     tree_rows: &mut TreeRowProjectionCache,
 ) -> Action {
     let mut action = Action::None;
