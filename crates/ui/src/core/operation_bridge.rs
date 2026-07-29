@@ -1153,6 +1153,32 @@ fn handle_confirm_overwrite_challenge(
     });
 }
 
+/// Logs a failed plugin action without reproducing anything the plugin
+/// authored.
+///
+/// `ApplicationError::diagnostic` is the guest-bearing field on this path:
+/// `arclain_app::plugins`'s error constructors fill it from
+/// `PluginError::to_string()`, and several `PluginError` variants carry
+/// guest-derived text -- `Serialization` most directly, since a
+/// `serde_json::Error` quotes the offending value in its own `Display`
+/// (`invalid type: string "<guest text>", expected ...`). Formatting the
+/// whole error with `{:?}` therefore wrote plugin-authored strings into
+/// global tracing, which is exactly what this crate's other plugin traces
+/// are built to avoid (see `plugin_controller`'s `trace_*` family and its
+/// `traced_test` coverage).
+///
+/// Logs the host-classified `kind` and the `correlation_id` instead: enough
+/// to find the operation and its recorded error, nothing the plugin chose.
+/// The `summary` still reaches the user through the toast -- it is a host
+/// constant, but it belongs in the UI rather than duplicated into logs.
+fn trace_plugin_action_failure(error: &arclain_app::error::ApplicationError) {
+    tracing::warn!(
+        kind = ?error.kind,
+        correlation_id = ?error.correlation_id,
+        "[operation_bridge] plugin action failed"
+    );
+}
+
 /// Routes one `OperationKind::PluginAction` event back to the plugin UI
 /// slot that started it.
 ///
@@ -1189,7 +1215,7 @@ pub fn handle_plugin_action_event(shared: &SharedState, event: OperationEvent) {
         }
         OperationState::Failed { error } => {
             if shared.plugin_sessions.fail(event.operation_id).is_some() {
-                tracing::warn!("[operation_bridge] plugin action failed: {error:?}");
+                trace_plugin_action_failure(&error);
                 shared.toaster.lock().error(error.summary);
                 shared.signals().kick_repaint();
             }
@@ -1197,14 +1223,28 @@ pub fn handle_plugin_action_event(shared: &SharedState, event: OperationEvent) {
         OperationState::Cancelled => {
             let _ = shared.plugin_sessions.fail(event.operation_id);
         }
-        // A plugin action carries no progress, raises no challenge, and
-        // its only meaningful completion result is `PluginUiUpdated`.
+        // A plugin action's only meaningful completion result is
+        // `PluginUiUpdated`, but "meaningful" is not "the only one
+        // possible": `OperationResult` is a shared enum that grows, and a
+        // completion carrying any other variant is still *terminal*. The
+        // registry entry must be drained on every terminal state or it is
+        // held for the life of the process, so this arm drains rather than
+        // ignoring -- the same reason the archive path forgets its origin
+        // on `event_is_terminal` regardless of which result it carried.
+        OperationState::Completed { .. } => {
+            if shared.plugin_sessions.fail(event.operation_id).is_some() {
+                tracing::debug!(
+                    "[operation_bridge] a plugin action completed with no document update; \
+                     draining its registry entry and leaving the slot's last document in place"
+                );
+            }
+        }
+        // Genuinely non-terminal: nothing to drain, nothing to apply.
         OperationState::Accepted
         | OperationState::Started
         | OperationState::Progress { .. }
         | OperationState::Challenge { .. }
-        | OperationState::SnapshotChanged { .. }
-        | OperationState::Completed { .. } => {}
+        | OperationState::SnapshotChanged { .. } => {}
     }
 }
 
@@ -1439,6 +1479,15 @@ async fn reconcile_one(
                  already evicted from the registry; forcing it to a terminal state so its tab \
                  does not spin forever"
             );
+            // A plugin action has no tab to unstick, but it does have
+            // registry entries (the slot's `inflight` list and the
+            // operation->slot index) that would otherwise be held for the
+            // life of the process. Draining is the whole recovery here:
+            // the slot keeps its last good document, which is exactly what
+            // a failed action leaves behind anyway.
+            if shared.plugin_sessions.fail(operation_id).is_some() {
+                return;
+            }
             if let Some(tab_id) = origins.resolve(operation_id) {
                 if let Some(tab) = shared.signals().tabs.get().get(tab_id).cloned() {
                     let mut extraction_dialog = tab.extraction_dialog().get();
@@ -1510,6 +1559,14 @@ pub async fn reconcile_after_lag(
          event(s) -- reconciling every tracked operation directly"
     );
     for operation_id in origins.tracked_ids() {
+        reconcile_one(shared, origins, runtime, app, operation_id).await;
+    }
+    // Plugin actions are tracked by slot rather than by tab, so they are
+    // invisible to `OperationOrigins` -- but a lag drops their terminal
+    // events just the same, leaving the slot rendering a document that
+    // will never advance and its registry entries never drained. Same
+    // reconciliation, different registry.
+    for operation_id in shared.plugin_sessions.tracked_ids() {
         reconcile_one(shared, origins, runtime, app, operation_id).await;
     }
 }
@@ -1762,6 +1819,42 @@ mod tests {
     use crate::core::tabs::{PendingChallenge, TabState};
     use arclain_app::challenge::Challenge;
     use arclain_app::ids::{ArchiveSessionId, ChallengeId};
+
+    /// Extends the `trace_*` redaction family (`plugin_controller`'s own
+    /// `plugin_action_traces_redact_guest_values` and siblings) to this
+    /// sink, which was the one plugin-error path still formatting the
+    /// whole `ApplicationError`.
+    ///
+    /// The marker is placed in `diagnostic` specifically because that is
+    /// where guest text actually arrives: `arclain_app::plugins`'s error
+    /// constructors fill it from `PluginError::to_string()`, and a
+    /// `PluginError::Serialization` carries a `serde_json::Error` whose
+    /// `Display` quotes the guest value that failed to parse.
+    #[tracing_test::traced_test]
+    #[test]
+    fn a_failed_plugin_action_trace_redacts_the_plugin_supplied_diagnostic() {
+        let marker = "plugin-diagnostic-must-not-reach-global-tracing";
+        // Built the way a real guest deserialization failure would be, so
+        // this proves the reachable shape rather than a hand-written
+        // string: the guest value ends up inside serde's own message.
+        let serde_error = serde_json::from_str::<u32>(&format!("\"{marker}\"")).unwrap_err();
+        let plugin_error = arclain_plugins::types::PluginError::Serialization(serde_error);
+        let diagnostic = plugin_error.to_string();
+        assert!(
+            diagnostic.contains(marker),
+            "precondition: guest text must actually reach the diagnostic, got {diagnostic}"
+        );
+
+        let error = arclain_app::error::ApplicationError::new(
+            arclain_app::error::ApplicationErrorKind::Plugin,
+            "plugin execution failed",
+        )
+        .with_diagnostic(diagnostic);
+
+        trace_plugin_action_failure(&error);
+
+        assert!(!logs_contain(marker));
+    }
 
     fn password_challenge(challenge_id: u64, attempt: u32) -> Challenge {
         Challenge::Password {

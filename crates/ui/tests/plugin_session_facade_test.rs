@@ -31,6 +31,8 @@ use arclain_app::plugins::{PluginActionDto, PluginHostIntentDto, PluginUiNodeKin
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 use arclain_ui::core::tabs::TabId;
 use arclain_ui::features::plugins::application::{PluginSessions, PluginSlot, SlotView};
+use arclain_ui::shared::image_assets::ImageAssetStore;
+use eframe::egui;
 
 /// Copies a workspace plugin fixture into the folder layout the plugin
 /// loader expects -- mirrors `crates/app/tests/plugin_sessions.rs`'s
@@ -353,6 +355,107 @@ fn closing_a_slot_releases_its_facade_session() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
+}
+
+/// The lag path: a `Lagged` broadcast receiver drops a plugin action's
+/// terminal event, and reconciliation must still deliver the document and
+/// drain the registry. Without it the slot renders a document that can
+/// never advance and its operation entry is held for the process's life.
+///
+/// The dropped event is simulated by never feeding the broadcast at all
+/// and calling the reconciler directly -- the same way
+/// `operation_bridge_registration_race_test.rs` drives `reconcile_after_lag`
+/// rather than manufacturing a real channel overflow.
+#[test]
+fn a_lagged_terminal_event_is_recovered_by_reconciliation() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "facade-test-fixture");
+    let runtime = runtime();
+    let sessions = PluginSessions::new();
+    let slot = PluginSlot::MainPage {
+        plugin_id: "facade-test-fixture".to_string(),
+    };
+
+    runtime.block_on(async {
+        let SlotView::Ready(opened) =
+            view_until_resolved(&sessions, &app, runtime.handle(), &slot).await
+        else {
+            panic!("the main-page slot must resolve to a document");
+        };
+
+        let operation_id = sessions
+            .start_action(
+                &app,
+                &slot,
+                "multi-action".to_string(),
+                PluginActionDto::Activate,
+            )
+            .await
+            .expect("starting an action must succeed");
+        wait_for_plugin_action_completion(&app, operation_id).await;
+
+        assert!(
+            sessions.tracked_ids().contains(&operation_id),
+            "the operation must still be tracked -- its terminal event was 'dropped'"
+        );
+
+        // What the lag handler does for each tracked id: re-read the
+        // operation's own snapshot and route it as if it had arrived.
+        let snapshot = app.operation(operation_id).await.unwrap();
+        let OperationState::Completed {
+            result: OperationResult::PluginUiUpdated { update },
+        } = snapshot.state
+        else {
+            panic!("the action must have completed with a document");
+        };
+        let applied = sessions
+            .apply_update(operation_id, update)
+            .expect("reconciliation must apply the recovered update");
+
+        assert!(applied.document.revision > opened.revision);
+        assert!(
+            sessions.tracked_ids().is_empty(),
+            "reconciliation must drain the registry, not just apply the document"
+        );
+    });
+}
+
+/// The image recovery loop through this frontend's own store, which is
+/// the half `arclain_app`'s round-trip test cannot cover: that
+/// `ImageAssetStore` routes a plugin key's *write* to the same namespace
+/// its *read* resolves.
+///
+/// Before both halves shared one `ImageBytes` implementation, the store
+/// read through `read_plugin_image` (plugin namespace, decoded key) while
+/// the fetch site wrote straight to the content cache (host namespace,
+/// encoded key) -- structurally distinct, so a URL-fallback recovery could
+/// never satisfy the read that triggered it.
+#[test]
+fn the_image_store_writes_plugin_keys_where_it_reads_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let runtime = runtime();
+    // Built exactly as production does (`SharedState::new`), so this
+    // exercises the real routing rather than a test-only source.
+    let store = ImageAssetStore::with_plugin_images(None, app.clone(), runtime.clone());
+    let key = "plugin-image:ui-demo:cover:RJ000002";
+    let bytes = vec![0x89, 0x50, 0x4E, 0x47, 1, 2, 3, 4];
+
+    store
+        .store_fetched(
+            key,
+            &bytes,
+            Some("https://example.invalid/c.png"),
+            egui::Context::default(),
+        )
+        .expect("a URL-fallback store must succeed for a plugin key");
+
+    assert_eq!(
+        runtime
+            .block_on(app.read_plugin_image(key.to_string()))
+            .expect("the read that triggered the fetch must now find the bytes"),
+        bytes
+    );
 }
 
 /// Every tab-scoped slot of a closing tab is swept, and window-scoped

@@ -192,7 +192,7 @@ use std::sync::Arc;
 use arclain_app::ids::{OperationId, PluginSessionId};
 use arclain_app::plugins::{
     PluginActionDto, PluginActionRequest, PluginButtonActionDto, PluginExtensionPointDto,
-    PluginUiDocument, PluginUiUpdate,
+    PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind, PluginUiUpdate,
 };
 use arclain_app::ArclainApp;
 use parking_lot::Mutex;
@@ -268,6 +268,25 @@ impl PluginSlot {
             Self::Dialog { dialog_id, .. } => PluginExtensionPointDto::Dialog(dialog_id.clone()),
             Self::Page { page_id, .. } => PluginExtensionPointDto::Page(page_id.clone()),
         }
+    }
+}
+
+/// Whether a plugin returned nothing to draw for a slot.
+///
+/// A normalized document's root is always a `Single`/`Split` container, so
+/// "empty" means that container has no children -- the document itself is
+/// never absent. Shared by every host that has to decide whether a plugin
+/// *offers* content for an extension point at all (the archive browser
+/// skips drawing an empty panel section; the layout editor skips offering
+/// a plugin that has no panel to configure), so the two cannot drift on
+/// what "this plugin has no panel" means.
+pub fn document_is_empty(root: &PluginUiNodeDto) -> bool {
+    match &root.kind {
+        PluginUiNodeKind::Single { children } => children.is_empty(),
+        PluginUiNodeKind::Split {
+            sidebar, content, ..
+        } => sidebar.is_empty() && content.is_empty(),
+        _ => false,
     }
 }
 
@@ -730,6 +749,52 @@ impl PluginSessions {
             .filter(|slot| predicate(slot))
             .cloned()
             .collect()
+    }
+
+    /// Installs an already-open slot directly, bypassing the facade call
+    /// [`Self::view`] would make.
+    ///
+    /// Exists for tests that need a registry in a known state without a
+    /// bootstrapped application and a real WASM plugin behind it -- the
+    /// bridge-routing tests in particular, which must construct terminal
+    /// events no fixture plugin can currently produce. Not `#[cfg(test)]`
+    /// because those live in `tests/`, which compiles against this crate
+    /// as an external consumer; named `_for_test` so its purpose is
+    /// unmistakable at a call site.
+    pub fn adopt_for_test(
+        &self,
+        slot: &PluginSlot,
+        session_id: PluginSessionId,
+        document: PluginUiDocument,
+    ) {
+        self.inner
+            .lock()
+            .slots
+            .insert(slot.clone(), SlotState::opening());
+        self.opened(slot, session_id, document);
+    }
+
+    /// Every `start_plugin_action` operation this registry is still
+    /// tracking, snapshotted at call time.
+    ///
+    /// The plugin-slot counterpart of
+    /// `crate::core::operation_bridge::OperationOrigins::tracked_ids`, and
+    /// consumed by the same lag handler. A `Lagged` broadcast receiver can
+    /// drop a plugin action's terminal event just as easily as an archive
+    /// operation's, and the consequences are the same shape: the slot
+    /// keeps rendering a document that will never advance, and its entry
+    /// here (plus the slot's own `inflight` entry) is never drained.
+    /// Reconciling these ids against their own snapshots after a lag is
+    /// what closes both.
+    pub fn tracked_ids(&self) -> Vec<OperationId> {
+        self.inner.lock().operations.keys().copied().collect()
+    }
+
+    /// Whether `operation_id` is one this registry started. Lets the lag
+    /// reconciler tell "this operation's history was evicted, drain it"
+    /// from "this operation was never ours".
+    pub fn tracks(&self, operation_id: OperationId) -> bool {
+        self.inner.lock().operations.contains_key(&operation_id)
     }
 
     /// Test/diagnostic access to a slot's current session id.

@@ -2,7 +2,9 @@ pub mod facade_sessions;
 mod ui_jobs;
 
 pub use crate::features::plugins::domain::types::RequestId;
-pub use facade_sessions::{AppliedUpdate, PluginNavigation, PluginSessions, PluginSlot, SlotView};
+pub use facade_sessions::{
+    document_is_empty, AppliedUpdate, PluginNavigation, PluginSessions, PluginSlot, SlotView,
+};
 pub use ui_jobs::{
     PluginUiFailureContext, PluginUiJobs, PluginUiRequest, PluginUiResult, PluginUiTarget,
 };
