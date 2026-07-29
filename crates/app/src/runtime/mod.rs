@@ -1337,6 +1337,34 @@ impl ArclainApp {
             .await
     }
 
+    /// This application's own `arclain_plugins::ActiveTabBridge`
+    /// implementation, resolved through archive-session state (see
+    /// [`Self::set_active_archive_session`]) instead of a UI signal tree,
+    /// composed with `fallback` for the one case that state alone cannot
+    /// resolve: a panel-driven metadata emit with no archive session
+    /// active at all. `fallback` receives exactly that metadata payload
+    /// whenever `active_archive_session_id()` is `None` at call time --
+    /// see `crate::plugins::ProductionActiveTabBridge`'s own doc comment
+    /// for why this crate cannot resolve that case itself (it would mean
+    /// knowing about a frontend's own notion of "the active tab", which
+    /// this crate must never depend on directly).
+    ///
+    /// A frontend installs the returned bridge via
+    /// `arclain_plugins::PluginManager::set_active_tab_bridge`, once,
+    /// alongside the rest of its plugin-manager wiring.
+    pub fn active_tab_bridge(
+        &self,
+        fallback: impl Fn(Option<serde_json::Value>) + Send + Sync + 'static,
+    ) -> Arc<dyn arclain_plugins::ActiveTabBridge> {
+        Arc::new(crate::plugins::ProductionActiveTabBridge::new(
+            crate::plugins::ArchiveContextBridge::new(
+                self.inner.active_archive_session().clone(),
+                self.inner.archive_sessions_handle(),
+            ),
+            fallback,
+        ))
+    }
+
     /// Resolves a [`crate::plugins::PluginUiDocument`] node's encoded
     /// image `cache_key`/`image_key` value into its cached bytes, capped
     /// at [`crate::plugins::MAX_PLUGIN_IMAGE_BYTES`]. `NotFound` for an

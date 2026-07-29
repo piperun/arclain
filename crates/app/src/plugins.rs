@@ -64,21 +64,17 @@
 //!   source-path override, closing the gap `ActiveTabBridge::
 //!   set_active_tab_metadata`'s own doc comment calls out ("a no-op is
 //!   an acceptable implementation only if this bridge truly has no
-//!   notion of the active tab at all"). `PluginManager`'s *installed*
-//!   bridge remains `crates/ui`'s `AppSignalsBridge`, still: a plugin's
-//!   metadata write now lands correctly in `ArchiveSession::metadata`
-//!   (readable via `archive_snapshot`), but nothing yet pushes a changed
-//!   session's metadata back out to a frontend the way `AppSignalsBridge`
-//!   pushes it directly into egui's own tab signal -- the operation-event
-//!   stream (`OperationState`) has no "this session's metadata changed"
-//!   variant, only operation lifecycle ones, so a frontend polling
-//!   `archive_snapshot` for it would be the only option today. Swapping
-//!   the installed bridge without first closing that gap would silently
-//!   stop plugin-reported metadata (e.g. a cover/scene-info panel) from
-//!   ever reaching egui's properties panel again -- a real, user-visible
-//!   regression this task does not ship. Adding that push notification is
-//!   a genuine facade feature, not a bridge swap, and is named here as
-//!   the concrete remaining step.
+//!   notion of the active tab at all"). Every write that actually lands
+//!   also publishes [`crate::event::SessionEvent::MetadataChanged`]
+//!   through [`crate::ArclainApp::subscribe_session_events`] -- the push
+//!   notification a frontend needs to learn that a session's metadata
+//!   (or, after a rename, its `source_path`) changed outside any
+//!   operation, without polling `archive_snapshot` on a timer.
+//!   [`ProductionActiveTabBridge`] composes this bridge with a
+//!   frontend-supplied fallback for the one case archive-session state
+//!   alone cannot resolve (`set_active_tab_metadata` with no session
+//!   active at all), and [`crate::ArclainApp::active_tab_bridge`] is how
+//!   a frontend obtains it to install on `PluginManager`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -860,13 +856,8 @@ impl ActiveArchiveSession {
         *self.0.write() = session_id;
     }
 
-    /// Read by [`ArchiveContextBridge`], which -- see that type's own doc
-    /// comment -- is implemented and tested standalone but not yet the
-    /// bridge installed on `PluginManager` in production, so this has no
-    /// *non-test* caller yet either. `#[allow(dead_code)]` for the same
-    /// reason `crate::operations::registry::OperationRegistry` carries
-    /// the same attribute.
-    #[allow(dead_code)]
+    /// Read by [`ArchiveContextBridge`] on every `ActiveTabBridge` call --
+    /// see that type's own doc comment.
     pub(crate) fn get(&self) -> Option<ArchiveSessionId> {
         *self.0.read()
     }
@@ -874,19 +865,15 @@ impl ActiveArchiveSession {
 
 /// This crate's own `arclain_plugins::ActiveTabBridge` implementation,
 /// backed by [`ActiveArchiveSession`] and `crate::archive::ArchiveSessionStore`
-/// instead of a UI signal tree. See the module doc comment for this
-/// adapter's current wiring status: fully implemented (including real
-/// metadata/rename writes, not stubs) and tested standalone, but not yet
-/// the bridge installed on `PluginManager` in production --
-/// `#[allow(dead_code)]` below for the same reason as
-/// `ActiveArchiveSession::get`.
-#[allow(dead_code)]
+/// instead of a UI signal tree. See the module doc comment for how this
+/// composes with [`ProductionActiveTabBridge`] and
+/// [`crate::ArclainApp::active_tab_bridge`] into the bridge a frontend
+/// installs on `PluginManager`.
 pub(crate) struct ArchiveContextBridge {
     active_session: ActiveArchiveSession,
     sessions: Arc<crate::archive::ArchiveSessionStore>,
 }
 
-#[allow(dead_code)]
 impl ArchiveContextBridge {
     pub(crate) fn new(
         active_session: ActiveArchiveSession,
@@ -936,6 +923,20 @@ impl ArchiveContextBridge {
             tokio::task::block_in_place(|| handle.block_on(sessions.get(session_id))).ok()?;
         Some(read(&session))
     }
+
+    /// Publishes `SessionEvent::MetadataChanged` for `session_id`, but
+    /// only when `committed` is `Some` -- i.e. only when the write this
+    /// call announces actually landed in the session store. `with_session`/
+    /// `with_active_session` return `None` for an unresolvable session
+    /// (unknown id, no active session, no ambient multi-thread runtime),
+    /// and none of those are "something changed" -- publishing anyway
+    /// would tell a subscriber to go re-fetch a snapshot that never
+    /// actually changed, for no reason.
+    fn publish_if_committed<T>(&self, session_id: ArchiveSessionId, committed: Option<T>) {
+        if committed.is_some() {
+            self.sessions.publish_metadata_changed(session_id);
+        }
+    }
 }
 
 impl ActiveTabBridge for ArchiveContextBridge {
@@ -966,19 +967,40 @@ impl ActiveTabBridge for ArchiveContextBridge {
         // No match (`None`) can mean the tab's session was already
         // closed, or this is a stale/fabricated id -- dropping the write
         // silently is correct, matching `ActiveTabBridge::
-        // set_session_metadata`'s own doc comment.
-        self.with_session(session_id, |session| session.set_metadata(metadata));
+        // set_session_metadata`'s own doc comment. Only a write that
+        // actually landed publishes -- see `Self::publish_if_committed`.
+        self.publish_if_committed(
+            session_id,
+            self.with_session(session_id, |session| session.set_metadata(metadata)),
+        );
     }
 
     fn set_active_tab_metadata(&self, metadata: Option<serde_json::Value>) {
-        self.with_active_session(|session| session.set_metadata(metadata));
+        let Some(session_id) = self.active_session.get() else {
+            // No archive session is active at all -- this bridge has no
+            // notion of "the active tab" to fall back to (see the module
+            // doc comment on where that fallback now lives instead).
+            return;
+        };
+        self.publish_if_committed(
+            session_id,
+            self.with_session(session_id, |session| session.set_metadata(metadata)),
+        );
     }
 
     fn set_archive_path(&self, path: Option<String>) {
         let Some(path) = path else {
             return;
         };
-        self.with_active_session(|session| session.set_source_path(std::path::PathBuf::from(path)));
+        let Some(session_id) = self.active_session.get() else {
+            return;
+        };
+        self.publish_if_committed(
+            session_id,
+            self.with_session(session_id, |session| {
+                session.set_source_path(std::path::PathBuf::from(path))
+            }),
+        );
     }
 }
 
@@ -1058,6 +1080,78 @@ impl PluginArchiveAccess for ArchiveContextAccess {
         Err(PluginError::Unavailable(
             "writing archive metadata through this adapter is not yet implemented".to_string(),
         ))
+    }
+}
+
+/// The `ActiveTabBridge` this application installs on `PluginManager` in
+/// production: [`ArchiveContextBridge`], composed with a caller-supplied
+/// `fallback` for the one case archive-session state alone cannot
+/// resolve.
+///
+/// `ActiveTabBridge::set_active_tab_metadata`'s own doc comment mandates
+/// that a production bridge must not leave that method a no-op: "a
+/// no-op is an acceptable implementation only if this bridge truly has
+/// no notion of the active tab at all". `ArchiveContextBridge` alone
+/// *is* exactly that case whenever no archive session is active -- at
+/// the application layer there is no "active tab" independent of a
+/// session, only whichever session `set_active_archive_session` last
+/// reported. A frontend's own notion of "the active tab" (an egui tab,
+/// a Flutter route) is precisely the one thing this crate must never
+/// know about directly (see the crate doc comment's toolkit-independence
+/// rule) -- so `fallback` is how a frontend supplies exactly that one
+/// piece, and nothing more: it is called with the metadata payload only
+/// when [`ActiveTabBridge::active_archive_session_id`] is `None` at the
+/// time of the call. Every other method, including `set_active_tab_
+/// metadata` whenever a session *is* active, resolves entirely through
+/// `inner`, independent of `fallback`.
+pub(crate) struct ProductionActiveTabBridge {
+    inner: ArchiveContextBridge,
+    fallback: Box<dyn Fn(Option<serde_json::Value>) + Send + Sync>,
+}
+
+impl ProductionActiveTabBridge {
+    pub(crate) fn new(
+        inner: ArchiveContextBridge,
+        fallback: impl Fn(Option<serde_json::Value>) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            inner,
+            fallback: Box::new(fallback),
+        }
+    }
+}
+
+impl ActiveTabBridge for ProductionActiveTabBridge {
+    fn archive_path(&self) -> Option<String> {
+        self.inner.archive_path()
+    }
+
+    fn current_password(&self) -> Option<String> {
+        self.inner.current_password()
+    }
+
+    fn archive_entries(&self) -> Vec<String> {
+        self.inner.archive_entries()
+    }
+
+    fn active_archive_session_id(&self) -> Option<u64> {
+        self.inner.active_archive_session_id()
+    }
+
+    fn set_session_metadata(&self, archive_session_id: u64, metadata: Option<serde_json::Value>) {
+        self.inner.set_session_metadata(archive_session_id, metadata);
+    }
+
+    fn set_active_tab_metadata(&self, metadata: Option<serde_json::Value>) {
+        if self.inner.active_archive_session_id().is_some() {
+            self.inner.set_active_tab_metadata(metadata);
+        } else {
+            (self.fallback)(metadata);
+        }
+    }
+
+    fn set_archive_path(&self, path: Option<String>) {
+        self.inner.set_archive_path(path);
     }
 }
 
@@ -1399,6 +1493,222 @@ mod tests {
             .source_path
             .to_string_lossy()
             .contains("renamed.zip"));
+    }
+
+    // -- SessionEvent emission -------------------------------------------
+
+    /// A metadata write that actually lands (a real, still-open session)
+    /// publishes `SessionEvent::MetadataChanged` for that session id,
+    /// after the write is already visible through `archive_snapshot`
+    /// (via `session.snapshot()` here, the same read path).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_session_metadata_publishes_metadata_changed_after_the_write_lands() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let session_id = open_test_session(&sessions, vec![]).await;
+        let mut events = sessions.subscribe_session_events();
+        let tracker = ActiveArchiveSession::new();
+        let bridge = ArchiveContextBridge::new(tracker, sessions.clone());
+
+        bridge.set_session_metadata(session_id.into_raw(), Some(serde_json::json!({"a": 1})));
+
+        let event = events.try_recv().expect("an event must have been published");
+        assert_eq!(
+            event,
+            crate::event::SessionEvent::MetadataChanged { session_id }
+        );
+        // The event only carries the id -- confirm the write it announces
+        // is already committed and observable by the time it arrives.
+        let session = sessions.get(session_id).await.unwrap();
+        assert_eq!(session.snapshot().metadata, Some(serde_json::json!({"a": 1})));
+    }
+
+    /// A write that never lands (unknown/stale session id) must not
+    /// publish -- there is nothing for a subscriber to usefully
+    /// reconcile.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_session_metadata_on_an_unknown_session_does_not_publish() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let mut events = sessions.subscribe_session_events();
+        let tracker = ActiveArchiveSession::new();
+        let bridge = ArchiveContextBridge::new(tracker, sessions);
+
+        bridge.set_session_metadata(999_999, Some(serde_json::json!({"ignored": true})));
+
+        assert!(
+            events.try_recv().is_err(),
+            "no event must be published for a write that never landed"
+        );
+    }
+
+    /// The active-tab metadata write publishes exactly like the
+    /// explicit-session-id path, when a session is active.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_active_tab_metadata_publishes_metadata_changed_when_a_session_is_active() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let session_id = open_test_session(&sessions, vec![]).await;
+        let mut events = sessions.subscribe_session_events();
+        let tracker = ActiveArchiveSession::new();
+        tracker.set(Some(session_id));
+        let bridge = ArchiveContextBridge::new(tracker, sessions.clone());
+
+        bridge.set_active_tab_metadata(Some(serde_json::json!({"title": "demo"})));
+
+        assert_eq!(
+            events.try_recv().unwrap(),
+            crate::event::SessionEvent::MetadataChanged { session_id }
+        );
+    }
+
+    /// With no active session at all, `set_active_tab_metadata` is a
+    /// no-op at this layer (see the module doc comment on where the
+    /// fallback lives instead) -- and correctly publishes nothing, since
+    /// nothing in the session store changed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_active_tab_metadata_does_not_publish_without_an_active_session() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let mut events = sessions.subscribe_session_events();
+        let tracker = ActiveArchiveSession::new();
+        let bridge = ArchiveContextBridge::new(tracker, sessions);
+
+        bridge.set_active_tab_metadata(Some(serde_json::json!({"title": "demo"})));
+
+        assert!(events.try_recv().is_err());
+    }
+
+    /// A rename mutates `source_path`, which is session-visible state
+    /// through `archive_snapshot` exactly like `metadata` -- it publishes
+    /// the same event so a subscriber reconciling via `archive_snapshot`
+    /// picks up the new path too.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_archive_path_publishes_metadata_changed_after_the_rename_lands() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let session_id = open_test_session(&sessions, vec![]).await;
+        let mut events = sessions.subscribe_session_events();
+        let tracker = ActiveArchiveSession::new();
+        tracker.set(Some(session_id));
+        let bridge = ArchiveContextBridge::new(tracker, sessions.clone());
+
+        bridge.set_archive_path(Some("renamed.zip".to_string()));
+
+        assert_eq!(
+            events.try_recv().unwrap(),
+            crate::event::SessionEvent::MetadataChanged { session_id }
+        );
+    }
+
+    /// `set_archive_path(None)` is a defensive early return with no
+    /// session lookup at all (see the method's own early `let Some(path)
+    /// = path else { return }`) -- confirm it does not publish either.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_archive_path_with_no_path_does_not_publish() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let session_id = open_test_session(&sessions, vec![]).await;
+        let mut events = sessions.subscribe_session_events();
+        let tracker = ActiveArchiveSession::new();
+        tracker.set(Some(session_id));
+        let bridge = ArchiveContextBridge::new(tracker, sessions);
+
+        bridge.set_archive_path(None);
+
+        assert!(events.try_recv().is_err());
+    }
+
+    // -- ProductionActiveTabBridge ----------------------------------------
+
+    /// With a session active, the composite bridge behaves exactly like
+    /// `ArchiveContextBridge` alone -- the fallback must never run.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn production_bridge_delegates_to_inner_and_skips_the_fallback_when_a_session_is_active() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let session_id = open_test_session(&sessions, vec![]).await;
+        let tracker = ActiveArchiveSession::new();
+        tracker.set(Some(session_id));
+        let inner = ArchiveContextBridge::new(tracker, sessions.clone());
+        let fallback_calls: Arc<StdMutex<Vec<Option<serde_json::Value>>>> =
+            Arc::new(StdMutex::new(Vec::new()));
+        let fallback_calls_for_closure = fallback_calls.clone();
+        let bridge = ProductionActiveTabBridge::new(inner, move |metadata| {
+            fallback_calls_for_closure.lock().unwrap().push(metadata);
+        });
+
+        bridge.set_active_tab_metadata(Some(serde_json::json!({"title": "demo"})));
+
+        let session = sessions.get(session_id).await.unwrap();
+        assert_eq!(
+            session.snapshot().metadata,
+            Some(serde_json::json!({"title": "demo"}))
+        );
+        assert!(
+            fallback_calls.lock().unwrap().is_empty(),
+            "the fallback must not run when a session is active"
+        );
+    }
+
+    /// With no session active at all, the composite bridge must not
+    /// silently drop the write (matching `ActiveTabBridge::
+    /// set_active_tab_metadata`'s own "every production implementation
+    /// must actually write somewhere" mandate) -- it hands the payload to
+    /// the fallback instead, unmodified.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn production_bridge_invokes_the_fallback_when_no_session_is_active() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let tracker = ActiveArchiveSession::new();
+        let inner = ArchiveContextBridge::new(tracker, sessions);
+        let fallback_calls: Arc<StdMutex<Vec<Option<serde_json::Value>>>> =
+            Arc::new(StdMutex::new(Vec::new()));
+        let fallback_calls_for_closure = fallback_calls.clone();
+        let bridge = ProductionActiveTabBridge::new(inner, move |metadata| {
+            fallback_calls_for_closure.lock().unwrap().push(metadata);
+        });
+
+        bridge.set_active_tab_metadata(Some(serde_json::json!({"title": "no session"})));
+
+        assert_eq!(
+            fallback_calls.lock().unwrap().as_slice(),
+            [Some(serde_json::json!({"title": "no session"}))]
+        );
+    }
+
+    /// Every other `ActiveTabBridge` method is pure delegation to `inner`,
+    /// with no fallback involvement at all -- proven by driving each one
+    /// against a real session and checking it observes exactly what
+    /// `ArchiveContextBridge` alone would have produced.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn production_bridge_delegates_every_other_method_to_inner() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let session_id = open_test_session(
+            &sessions,
+            vec![arclain_core::ArchiveEntry {
+                path: "a.txt".to_string(),
+                size: 1,
+                packed_size: 1,
+                modified: None,
+                is_dir: false,
+                encrypted: false,
+                crc32: None,
+            }],
+        )
+        .await;
+        let tracker = ActiveArchiveSession::new();
+        tracker.set(Some(session_id));
+        let inner = ArchiveContextBridge::new(tracker, sessions.clone());
+        let bridge = ProductionActiveTabBridge::new(inner, |_| {
+            panic!("fallback must never run for this test")
+        });
+
+        assert!(bridge.archive_path().unwrap().contains("fixture.zip"));
+        assert_eq!(bridge.archive_entries(), vec!["a.txt".to_string()]);
+        assert_eq!(bridge.active_archive_session_id(), Some(session_id.into_raw()));
+        assert_eq!(bridge.current_password(), None);
+
+        bridge.set_session_metadata(session_id.into_raw(), Some(serde_json::json!({"n": 1})));
+        assert_eq!(
+            sessions.get(session_id).await.unwrap().snapshot().metadata,
+            Some(serde_json::json!({"n": 1}))
+        );
+
+        bridge.set_archive_path(Some("renamed.zip".to_string()));
+        assert!(bridge.archive_path().unwrap().contains("renamed.zip"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
