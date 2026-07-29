@@ -191,7 +191,6 @@ pub fn process_metadata_signal(
     organization_feature: &mut organization::OrganizationFeature,
 ) {
     let col = shared_state.signals().tabs.get();
-    let active_id = col.active_id();
 
     // Last-consumed wins for the status-bar message. If several
     // tabs consume in one frame (typical for a batch drag-drop) the
@@ -235,18 +234,19 @@ pub fn process_metadata_signal(
         // the right value when they switch to it.
         tab.game_metadata.set(Some(meta.clone()));
 
-        // The Organizer is a global UI singleton tied to the active
-        // tab — only push metadata into it when the consumed tab IS
-        // the active one; otherwise we'd overwrite the organizer
-        // with whichever tab consumed last (rarely the right one).
+        // The Organizer is a global UI singleton, but it is bound to one
+        // archive session — so metadata reaches it only when it is
+        // *that* session's, not merely the active tab's. Without the
+        // check, a background tab finishing its fetch would relabel a
+        // panel that is organizing a different archive.
         //
         // The panel does not plan from this value: the application read
         // the same metadata off the session when it wrote it there, and
         // recomputes the plan itself. What arrives here is what the
         // panel *displays* (the fetched-title badge, the issues
         // export), plus the signal that its plan is now stale.
-        if tab.id == active_id {
-            if let Some(page) = &mut organization_feature.organizer_page {
+        if let Some(page) = &mut organization_feature.organizer_page {
+            if tab.archive_session_id.get() == Some(page.panel.session_id) {
                 page.panel.metadata_changed(Some(meta));
                 tracing::info!("Updated Organization Panel with new metadata");
             }
