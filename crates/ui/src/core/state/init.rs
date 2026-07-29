@@ -77,11 +77,18 @@ impl AppState {
             resource_manager: legacy.resource_manager,
         };
 
-        // Seed the reactive settings mirrors before the first frame, so
-        // nothing renders against `Default` values no profile has.
-        if let Err(error) = me.refresh_settings_signals(&facade, &services.tokio_runtime) {
-            tracing::warn!("Failed to load settings into signals at startup: {error}");
-        }
+        // Seed the reactive settings mirrors before anything can read
+        // them.
+        //
+        // Fatal, not best-effort: the placeholder these signals hold
+        // until this call lands is not a neutral "unknown" -- it is a
+        // set of concrete preference values, and acting on them is
+        // destructive. `restore_tabs_on_launch` reads `false` there, so
+        // a swallowed failure would both skip restoring the previous
+        // session and *delete* its saved list on the way out (see
+        // `app_lifecycle::save_tabs_on_exit_to`). Failing to start is
+        // recoverable; silently discarding the user's session is not.
+        me.refresh_settings_signals(&facade, &services.tokio_runtime)?;
 
         // Set initial server connection status signal based on startup health check.
         // GametaClient caches the version from the health check performed in
