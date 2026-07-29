@@ -64,18 +64,21 @@ impl ArchiveFormat {
     /// format.
     ///
     /// The container decides: only 7z has solid blocks, so the packer
-    /// emits `-ms=on`/`-ms=off` for it and nothing at all for zip (see
-    /// `backends::sevenz_cli::backend`'s per-format switch
-    /// construction). Exposed so a profile editor can hide a toggle that
-    /// would otherwise store a flag nothing can honor, instead of each
-    /// frontend re-deriving "is this 7z?" for itself.
+    /// emits `-ms=on`/`-ms=off` for it and nothing at all for zip.
+    /// Exposed so a profile editor can hide a toggle that would
+    /// otherwise store a flag nothing can honor, instead of each
+    /// frontend re-deriving "is this 7z?" for itself — and tied to the
+    /// switches themselves by
+    /// `backends::sevenz_cli::backend::tests::the_capability_bits_match_the_switches_the_packer_emits`,
+    /// so this answer cannot drift from `profile_args`.
     pub fn supports_solid_archive(&self) -> bool {
         matches!(self, ArchiveFormat::SevenZ)
     }
 
     /// Whether `ArchiveProfile::encrypt_headers` means anything for this
     /// format. Only 7z can encrypt its own file listing (`-mhe=on`); a
-    /// zip's listing is always readable.
+    /// zip's listing is always readable. Pinned to the packer's switches
+    /// alongside [`Self::supports_solid_archive`].
     pub fn supports_header_encryption(&self) -> bool {
         matches!(self, ArchiveFormat::SevenZ)
     }
@@ -227,10 +230,11 @@ mod tests {
         }
     }
 
-    /// The two container capabilities, pinned to what the packer
-    /// actually emits: `-ms`/`-mhe` appear only in the 7z arm of
-    /// `backends::sevenz_cli::backend::create_archive_with_profile`, and
-    /// the zip arm emits neither.
+    /// The two container capabilities. What the packer actually emits is
+    /// asserted against these in
+    /// `backends::sevenz_cli::backend::tests`; this test states the
+    /// expected answers themselves, so a change here has to be
+    /// deliberate in both places.
     #[test]
     fn only_the_seven_zip_container_honours_solid_blocks_and_header_encryption() {
         assert!(ArchiveFormat::SevenZ.supports_solid_archive());

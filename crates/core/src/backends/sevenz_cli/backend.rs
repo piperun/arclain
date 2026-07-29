@@ -42,6 +42,69 @@ pub(super) fn extract_base_args() -> Vec<OsString> {
     ]
 }
 
+/// Every switch a profile contributes to a `7z a` invocation, in order,
+/// up to but not including the destination and the file list.
+///
+/// Extracted from `create_archive_with_profile` so the per-format
+/// behaviour is testable without spawning 7-Zip: this is the *only*
+/// place that decides which container honours which profile field, and
+/// `ArchiveFormat::supports_solid_archive`/`supports_header_encryption`
+/// describe exactly this function to callers that must not re-derive it
+/// (a profile editor hiding a toggle, for one). Their agreement is
+/// asserted in this module's tests.
+fn profile_args(profile: &crate::features::organization::ArchiveProfile) -> Vec<OsString> {
+    use crate::features::organization::ArchiveFormat;
+
+    let mut args = vec![
+        OsString::from("a"),
+        OsString::from(format!("-t{}", profile.format.format_arg())),
+        OsString::from("-y"),
+        OsString::from("-mmt=on"),
+        OsString::from("-bd"),
+        OsString::from("-sccUTF-8"),
+        OsString::from("-scsUTF-8"),
+    ];
+
+    // Compression level (0-9)
+    args.push(OsString::from(format!("-mx={}", profile.compression_level)));
+
+    // Format-specific options
+    match profile.format {
+        ArchiveFormat::SevenZ => {
+            // Compression method
+            if let Some(ref method) = profile.compression_method {
+                args.push(OsString::from(format!("-m0={}", method)));
+            }
+            // Solid archive
+            if profile.solid_archive {
+                args.push(OsString::from("-ms=on"));
+            } else {
+                args.push(OsString::from("-ms=off"));
+            }
+            // Header encryption (requires password, but set the flag)
+            if profile.encrypt_headers {
+                args.push(OsString::from("-mhe=on"));
+            }
+        }
+        ArchiveFormat::Zip => {
+            // Zip compression method
+            if let Some(ref method) = profile.compression_method {
+                // Map method names to 7z zip method identifiers
+                let method_arg = match method.to_lowercase().as_str() {
+                    "deflate" => "Deflate",
+                    "deflate64" => "Deflate64",
+                    "bzip2" => "BZip2",
+                    "lzma" => "LZMA",
+                    _ => "Deflate",
+                };
+                args.push(OsString::from(format!("-mm={}", method_arg)));
+            }
+        }
+    }
+
+    args
+}
+
 impl ArchiveBackend for SevenZipCli {
     fn name(&self) -> &str {
         "7z (CLI)"
@@ -368,8 +431,6 @@ impl ArchiveBackend for SevenZipCli {
         files: &[PathBuf],
         profile: &crate::features::organization::ArchiveProfile,
     ) -> Result<()> {
-        use crate::features::organization::ArchiveFormat;
-
         info!(
             "Creating {} archive with profile '{}': {} with {} files",
             profile.format.display_name(),
@@ -382,52 +443,7 @@ impl ArchiveBackend for SevenZipCli {
             profile.compression_level, profile.compression_method, profile.solid_archive
         );
 
-        let mut args = vec![
-            OsString::from("a"),
-            OsString::from(format!("-t{}", profile.format.format_arg())),
-            OsString::from("-y"),
-            OsString::from("-mmt=on"),
-            OsString::from("-bd"),
-            OsString::from("-sccUTF-8"),
-            OsString::from("-scsUTF-8"),
-        ];
-
-        // Compression level (0-9)
-        args.push(OsString::from(format!("-mx={}", profile.compression_level)));
-
-        // Format-specific options
-        match profile.format {
-            ArchiveFormat::SevenZ => {
-                // Compression method
-                if let Some(ref method) = profile.compression_method {
-                    args.push(OsString::from(format!("-m0={}", method)));
-                }
-                // Solid archive
-                if profile.solid_archive {
-                    args.push(OsString::from("-ms=on"));
-                } else {
-                    args.push(OsString::from("-ms=off"));
-                }
-                // Header encryption (requires password, but set the flag)
-                if profile.encrypt_headers {
-                    args.push(OsString::from("-mhe=on"));
-                }
-            }
-            ArchiveFormat::Zip => {
-                // Zip compression method
-                if let Some(ref method) = profile.compression_method {
-                    // Map method names to 7z zip method identifiers
-                    let method_arg = match method.to_lowercase().as_str() {
-                        "deflate" => "Deflate",
-                        "deflate64" => "Deflate64",
-                        "bzip2" => "BZip2",
-                        "lzma" => "LZMA",
-                        _ => "Deflate",
-                    };
-                    args.push(OsString::from(format!("-mm={}", method_arg)));
-                }
-            }
-        }
+        let mut args = profile_args(profile);
 
         args.push(dest.as_os_str().to_os_string());
 
@@ -742,5 +758,91 @@ pub(super) fn report_progress(cb: Option<&crate::ProgressCallback>, percent: u8)
             current_file: msg.to_string(),
             percent,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::organization::{ArchiveFormat, ArchiveProfile};
+
+    fn profile_for(format: ArchiveFormat) -> ArchiveProfile {
+        ArchiveProfile {
+            format,
+            // Both requested, so a container that honours them emits
+            // their switches and one that does not emits nothing.
+            solid_archive: true,
+            encrypt_headers: true,
+            ..ArchiveProfile::default()
+        }
+    }
+
+    fn switches(profile: &ArchiveProfile) -> Vec<String> {
+        profile_args(profile)
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The capability bits a profile editor hides toggles from must
+    /// describe what the packer actually does. Asserted against the argv
+    /// this function builds, not against a second copy of the rule — so
+    /// teaching a container to honour solid blocks without updating
+    /// `ArchiveFormat` (or the reverse) fails here.
+    #[test]
+    fn the_capability_bits_match_the_switches_the_packer_emits() {
+        for format in ArchiveFormat::all() {
+            let args = switches(&profile_for(*format));
+            assert_eq!(
+                args.iter().any(|arg| arg.starts_with("-ms")),
+                format.supports_solid_archive(),
+                "{} solid-block switch vs supports_solid_archive()",
+                format.as_str()
+            );
+            assert_eq!(
+                args.iter().any(|arg| arg.starts_with("-mhe")),
+                format.supports_header_encryption(),
+                "{} header-encryption switch vs supports_header_encryption()",
+                format.as_str()
+            );
+        }
+    }
+
+    /// A profile that wants neither still names the container's own
+    /// choice explicitly where the container has one, so a solid setting
+    /// is never inherited from 7-Zip's defaults.
+    #[test]
+    fn a_non_solid_seven_zip_profile_says_so_explicitly() {
+        let mut profile = profile_for(ArchiveFormat::SevenZ);
+        profile.solid_archive = false;
+        profile.encrypt_headers = false;
+        let args = switches(&profile);
+        assert!(args.contains(&"-ms=off".to_string()));
+        assert!(!args.iter().any(|arg| arg.starts_with("-mhe")));
+    }
+
+    /// The parts every format shares: the archive-type flag, the
+    /// compression level, and each container's own method switch.
+    #[test]
+    fn every_format_gets_its_type_level_and_method_switches() {
+        let mut seven = profile_for(ArchiveFormat::SevenZ);
+        seven.compression_level = 5;
+        seven.compression_method = Some("LZMA2".to_string());
+        let args = switches(&seven);
+        assert_eq!(args.first().map(String::as_str), Some("a"));
+        assert!(args.contains(&"-t7z".to_string()));
+        assert!(args.contains(&"-mx=5".to_string()));
+        assert!(args.contains(&"-m0=LZMA2".to_string()));
+
+        let mut zip = profile_for(ArchiveFormat::Zip);
+        zip.compression_level = 1;
+        zip.compression_method = Some("deflate".to_string());
+        let args = switches(&zip);
+        assert!(args.contains(&"-tzip".to_string()));
+        assert!(args.contains(&"-mx=1".to_string()));
+        assert!(
+            args.contains(&"-mm=Deflate".to_string()),
+            "zip method names are mapped to 7-Zip's spelling: {args:?}"
+        );
     }
 }
