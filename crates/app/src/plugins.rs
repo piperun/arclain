@@ -305,6 +305,7 @@ pub(crate) fn read_plugin_image(
 /// module did not itself encode, exactly as the read does.
 pub(crate) fn write_plugin_image(
     content_cache: &arclain_data::ContentCache,
+    expected_plugin_id: &str,
     cache_key: &str,
     bytes: &[u8],
     source_url: Option<&str>,
@@ -316,6 +317,30 @@ pub(crate) fn write_plugin_image(
         )
         .with_recoverability(Recoverability::Fatal)
     })?;
+    // The key names its own owner, so on its own it is a bearer token for
+    // a cache namespace: anyone holding the string `plugin-image:victim:k`
+    // could write bytes that `victim` would later render as its own. The
+    // caller must independently state which plugin it is acting for, and
+    // the two must agree.
+    if plugin_id != expected_plugin_id {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::PermissionDenied,
+            "plugin image cache key belongs to a different plugin",
+        )
+        .with_recoverability(Recoverability::Fatal)
+        .with_field("cache_key"));
+    }
+    // Rejects a syntactically decodable but structurally impossible owner
+    // before it can mint a cache namespace (with its own quota accounting)
+    // that no installed plugin could ever read back.
+    if arclain_plugins::types::PluginId::parse(plugin_id).is_err() {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "plugin image cache key names a malformed plugin id",
+        )
+        .with_recoverability(Recoverability::Fatal)
+        .with_field("cache_key"));
+    }
     if bytes.len() > MAX_PLUGIN_IMAGE_BYTES as usize {
         return Err(ApplicationError::new(
             ApplicationErrorKind::InvalidInput,

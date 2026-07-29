@@ -803,6 +803,7 @@ fn a_missed_plugin_image_can_be_recovered_by_a_write_and_read_back() {
         );
 
         app.write_plugin_image(
+            "ui-demo".to_string(),
             key.clone(),
             bytes.clone(),
             Some("https://example.invalid/cover.png".to_string()),
@@ -829,7 +830,12 @@ fn write_plugin_image_rejects_a_key_the_facade_never_encoded() {
 
     for key in ["cover:RJ000001", "plugin-image-but-not-really", ""] {
         let error = runtime
-            .block_on(app.write_plugin_image(key.to_string(), vec![1, 2, 3], None))
+            .block_on(app.write_plugin_image(
+                "ui-demo".to_string(),
+                key.to_string(),
+                vec![1, 2, 3],
+                None,
+            ))
             .unwrap_err();
         assert_eq!(error.kind, ApplicationErrorKind::NotFound, "key: {key}");
     }
@@ -847,7 +853,7 @@ fn write_plugin_image_rejects_an_asset_over_the_size_cap() {
     let oversized = vec![0u8; arclain_app::plugins::MAX_PLUGIN_IMAGE_BYTES as usize + 1];
 
     let error = runtime
-        .block_on(app.write_plugin_image(key.clone(), oversized, None))
+        .block_on(app.write_plugin_image("ui-demo".to_string(), key.clone(), oversized, None))
         .unwrap_err();
 
     assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);

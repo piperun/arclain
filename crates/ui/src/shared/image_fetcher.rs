@@ -27,12 +27,18 @@ use eframe::egui;
 /// decision the *read* side already makes (a plugin document's image key
 /// is scoped to the owning plugin), and both halves must make it
 /// identically. This function therefore no longer gates on
-/// `services.content_cache` being wired either -- a plugin image is
+/// `services.content_cache` being wired directly -- a plugin image is
 /// storable through the facade whether or not this frontend has its own
-/// host cache, and the store's own no-cache source absorbs the rest.
+/// host cache. It asks the store instead
+/// ([`ImageAssetStore::can_store`]), and no-ops when nothing could
+/// receive the bytes: issuing an HTTP request whose result is then
+/// discarded, reporting success, and re-triggering every 30 s is worse
+/// than not fetching.
 ///
 /// `plugin_id`, when `Some`, routes the HTTP request through the
-/// per-plugin rate-limit / domain-whitelist branch of `AsyncHttpClient`.
+/// per-plugin rate-limit / domain-whitelist branch of `AsyncHttpClient`,
+/// and is also the host's own statement of which plugin's namespace the
+/// bytes may be written into -- see [`ImageAssetStore::store_fetched`].
 /// `None` uses the host's default request path.
 pub fn trigger_image_fetch(
     shared: &SharedState,
@@ -41,8 +47,22 @@ pub fn trigger_image_fetch(
     key: String,
     ctx: egui::Context,
 ) {
+    // The write choke point for cross-plugin key forgery, mirroring
+    // `ImageAssetStore::request`'s read-side check. Every URL-fallback
+    // fetch in this frontend goes through here (flat renderer, document
+    // renderer, carousel), each declaring which plugin it is rendering, so
+    // a key naming a *different* plugin is refused before any request is
+    // issued -- and long before the bytes could be written into that
+    // plugin's namespace for it to later render as its own.
+    if !crate::shared::image_assets::image_key_is_addressable_by(&key, plugin_id.as_deref()) {
+        tracing::warn!(
+            plugin_id = plugin_id.as_deref().unwrap_or("<none>"),
+            "refused an image fetch for a key naming a different plugin's cache namespace"
+        );
+        return;
+    }
     let client = &shared.services.async_http_client;
-    {
+    if shared.image_assets.can_store(&key) {
         let client = client.clone();
         let image_assets = shared.image_assets.clone();
         // Use runtime handle
@@ -84,12 +104,25 @@ pub fn trigger_image_fetch(
                             // would put the bytes in the host namespace,
                             // where the read can never find them -- a
                             // permanently broken image plus one orphaned
-                            // cache entry per 30s retry. `store_fetched`
+                            // cache entry per 30 s retry. `store_fetched`
                             // is the one place that decision is made, for
-                            // both halves. Blocking is fine: this is an
-                            // async task, not a UI frame.
-                            if let Err(e) =
-                                image_assets.store_fetched(&key, &resp.body, Some(&url), ctx.clone())
+                            // both halves.
+                            //
+                            // Awaited, not called: `store_fetched` moves
+                            // the (blocking) write onto the blocking pool
+                            // itself. This task runs *on* the store's own
+                            // runtime, so doing the blocking write inline
+                            // here panicked with "Cannot start a runtime
+                            // from within a runtime".
+                            if let Err(e) = image_assets
+                                .store_fetched(
+                                    plugin_id.clone(),
+                                    key.clone(),
+                                    resp.body,
+                                    Some(url.clone()),
+                                    ctx.clone(),
+                                )
+                                .await
                             {
                                 tracing::warn!("Failed to cache image {}: {}", key, e);
                             }

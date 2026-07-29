@@ -1406,8 +1406,15 @@ impl ArclainApp {
     /// broken forever and the entry is orphaned. See
     /// `crate::plugins::write_plugin_image` for the full rationale and
     /// the size cap it shares with the read.
+    /// `plugin_id` is the caller's own statement of which plugin's
+    /// document referenced `cache_key`, and must match the owner encoded
+    /// in the key itself. The key alone is not authority: it names its own
+    /// namespace, so accepting it unchecked would let any caller holding a
+    /// `plugin-image:victim:k` string write bytes `victim` would later
+    /// render as its own.
     pub async fn write_plugin_image(
         &self,
+        plugin_id: String,
         cache_key: String,
         bytes: Vec<u8>,
         source_url: Option<String>,
@@ -1420,7 +1427,13 @@ impl ArclainApp {
                 )
                 .with_recoverability(Recoverability::Fatal)
             })?;
-            crate::plugins::write_plugin_image(cache, &cache_key, &bytes, source_url.as_deref())
+            crate::plugins::write_plugin_image(
+                cache,
+                &plugin_id,
+                &cache_key,
+                &bytes,
+                source_url.as_deref(),
+            )
         })
         .await?
     }

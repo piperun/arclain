@@ -262,6 +262,23 @@ fn process_bounded_action(
                 start_index
             );
             if let Some(signal) = ctx.lightbox_signal {
+                // The lightbox renders under `ImageOwner::Lightbox`, which
+                // names no plugin, so the store's own read guard cannot
+                // check these keys for it. This is the ingress where the
+                // acting plugin *is* known, so a key naming a different
+                // plugin's cache namespace is dropped here instead --
+                // unlike the facade path, whose lightbox intents the host
+                // stamped itself and which is therefore correct by
+                // construction.
+                let images: Vec<_> = images
+                    .into_iter()
+                    .filter(|(cache_key, _)| {
+                        crate::shared::image_assets::image_key_is_addressable_by(
+                            cache_key,
+                            Some(plugin_id),
+                        )
+                    })
+                    .collect();
                 let state = LightboxState::open(images, start_index, title);
                 signal.set(state);
             } else {
