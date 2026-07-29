@@ -5,47 +5,6 @@ use std::{fs, io::Write, path::PathBuf};
 // Re-export PassRule from password_matcher for backwards compatibility
 pub use crate::utilities::password_matcher::PassRule;
 
-/// Controls what happens when a file is dropped onto the window without
-/// aiming at a specific overlay zone.
-///
-/// Ctrl+drop always forces `Replace` regardless of this setting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DropBehavior {
-    /// Open the dropped archive in a new tab (default).
-    #[default]
-    NewTab,
-    /// Replace the currently active tab with the dropped archive.
-    Replace,
-    /// Ask the user each time (v1 stub: logs and falls back to NewTab).
-    AskEachTime,
-}
-
-impl DropBehavior {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            DropBehavior::NewTab => "new_tab",
-            DropBehavior::Replace => "replace",
-            DropBehavior::AskEachTime => "ask_each_time",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "replace" => DropBehavior::Replace,
-            "ask_each_time" => DropBehavior::AskEachTime,
-            _ => DropBehavior::NewTab,
-        }
-    }
-
-    pub fn display_name(self) -> &'static str {
-        match self {
-            DropBehavior::NewTab => "Open as new tab",
-            DropBehavior::Replace => "Replace current tab",
-            DropBehavior::AskEachTime => "Ask each time",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub sevenzip_path: Option<PathBuf>,

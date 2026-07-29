@@ -88,11 +88,20 @@ fn find_profile<'a>(
 mod tests {
     use super::*;
 
+    /// A profile whose only interesting fields are the two
+    /// [`find_profile`] matches on; everything else is filler.
     fn profile(id: &str) -> OrganizationProfileSummary {
         OrganizationProfileSummary {
             id: id.to_string(),
             name: format!("Profile {id}"),
+            description: None,
             output_format: "zip".to_string(),
+            compression_level: 5,
+            compression_method: None,
+            solid_archive: false,
+            encrypt_headers: false,
+            is_default: false,
+            is_system: false,
         }
     }
 

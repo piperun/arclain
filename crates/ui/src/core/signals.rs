@@ -146,12 +146,6 @@ pub struct AppSignals {
     /// nothing here interprets it.
     pub plugin_visibility: Signal<Option<String>>,
 
-    /// Password rules for auto-unlock, as non-secret summaries. The
-    /// stored passwords deliberately never reach this reactive layer --
-    /// the code that actually needs one (auto-unlock on archive open)
-    /// reads `AppState::pass_rules`, not this.
-    pub pass_rules: Signal<Vec<arclain_app::settings::PasswordRuleSummary>>,
-
     /// [NEW] Status Bar State
     pub status_bar: Signal<crate::shared::components::status_bar::StatusBarInfo>,
 
@@ -396,7 +390,6 @@ impl AppSignals {
             network_settings: Signal::new(Default::default()).with_name("network_settings"),
             security_settings: Signal::new(Default::default()).with_name("security_settings"),
             plugin_visibility: Signal::new(None).with_name("plugin_visibility"),
-            pass_rules: Signal::new(Vec::new()).with_name("pass_rules"),
             status_bar: Signal::new(
                 crate::shared::components::status_bar::StatusBarInfo::default(),
             )
@@ -455,7 +448,13 @@ impl AppSignals {
         signal_ctx.bind_named(&self.info_panel_items, "info_panel_items");
         signal_ctx.bind_named(&self.context_menu_items, "context_menu_items");
         signal_ctx.bind_named(&self.ui_preferences, "ui_preferences");
-        signal_ctx.bind_named(&self.pass_rules, "pass_rules");
+        // Every settings change repaints: a preference that only takes
+        // effect on the next input event reads as a broken toggle.
+        signal_ctx.bind_named(&self.general_settings, "general_settings");
+        signal_ctx.bind_named(&self.archive_settings, "archive_settings");
+        signal_ctx.bind_named(&self.network_settings, "network_settings");
+        signal_ctx.bind_named(&self.security_settings, "security_settings");
+        signal_ctx.bind_named(&self.plugin_visibility, "plugin_visibility");
         signal_ctx.bind_named(&self.status_bar, "status_bar");
         // Note: per-tab password_dialog is not bound here — it lives in TabState
         // (post 2026-05-20 B3 reframed slice)
@@ -518,7 +517,11 @@ impl AppSignals {
         self.info_panel_items.set(Vec::new());
         self.context_menu_items.set(Vec::new());
         self.ui_preferences.set(UiPreferences::default());
-        self.pass_rules.set(Vec::new());
+        self.general_settings.set(Default::default());
+        self.archive_settings.set(Default::default());
+        self.network_settings.set(Default::default());
+        self.security_settings.set(Default::default());
+        self.plugin_visibility.set(None);
         self.status_bar
             .set(crate::shared::components::status_bar::StatusBarInfo::default());
         self.process_run.set(ProcessRunState::default());

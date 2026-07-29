@@ -217,12 +217,19 @@ impl NetworkSettingsDto {
 
     /// Whether `plugin_id`'s traffic is routed through the proxy right
     /// now -- [`Self::effective_plugin_proxy_enabled`] for a single
-    /// plugin.
+    /// plugin, without building the map. Frontends call this once per
+    /// rendered toggle, so it allocates nothing.
+    ///
+    /// Same three rules, in the same order as
+    /// `apply_default_proxied_plugins`: the global switch wins, then a
+    /// stored override, then the default-on list. Pinned against the map
+    /// itself by `the_two_effective_proxy_reads_always_agree`.
     pub fn plugin_proxy_effective(&self, plugin_id: &str) -> bool {
-        self.effective_plugin_proxy_enabled()
-            .get(plugin_id)
-            .copied()
-            .unwrap_or(false)
+        self.socks5_enabled
+            && match self.plugin_proxy_enabled.get(plugin_id) {
+                Some(stored) => *stored,
+                None => arclain_core::utilities::DEFAULT_PROXIED_PLUGINS.contains(&plugin_id),
+            }
     }
 }
 
@@ -371,12 +378,13 @@ pub struct GeneralSettingsDto {
     /// whatever blob it is handed.
     pub hotkey_bindings: Option<String>,
     pub open_nested_in_new_tab: bool,
-    /// Stored as the same string token `arclain_core::config::settings::
-    /// DropBehavior::as_str`/`from_str` use ("new_tab" | "replace" |
-    /// "ask_each_time") -- this facade re-exports neither the enum nor a
-    /// validating conversion; an unrecognized token round-trips as-is and
-    /// is interpreted as "new_tab" by any reader using `DropBehavior::
-    /// from_str`, matching that function's own fallback.
+    /// One of `"new_tab"`, `"replace"`, or `"ask_each_time"`. Carried as
+    /// a plain token rather than an enum: which of the three a given
+    /// frontend can actually offer is its own business (a headless
+    /// client has no tabs to drop onto at all). Unvalidated on the way
+    /// through -- an unrecognized token round-trips as-is, and every
+    /// reader is expected to treat one it does not know as `"new_tab"`,
+    /// the behavior with no prerequisites.
     pub drop_behavior: String,
     pub restore_tabs_on_launch: bool,
 }
@@ -1477,8 +1485,8 @@ mod tests {
             default_general.restore_tabs_on_launch,
             expected_general.restore_tabs_on_launch
         );
-        // Never an empty string: a frontend switching on this token must
-        // always get one `DropBehavior::from_str` recognizes.
+        // Never an empty string: a frontend switching on this token
+        // must always get one of the three documented values.
         assert_eq!(default_general.drop_behavior, "new_tab");
 
         let expected_network = network_dto(&unstored, false, false);
@@ -1516,6 +1524,46 @@ mod tests {
         assert!(network.plugin_proxy_effective("dlsite-metadata"));
         assert!(network.plugin_proxy_effective("custom"));
         assert!(!network.plugin_proxy_effective("unknown-plugin"));
+    }
+
+    /// The single-plugin read and the whole-map read are two
+    /// implementations of one rule, so every case must agree -- a
+    /// divergence would render a toggle that disagrees with what the
+    /// network stack does.
+    #[test]
+    fn the_two_effective_proxy_reads_always_agree() {
+        let overrides = [
+            ("dlsite", false),
+            ("dlsite-api", true),
+            ("custom", true),
+            ("custom-off", false),
+        ];
+        for socks5_enabled in [false, true] {
+            let network = NetworkSettingsDto {
+                socks5_enabled,
+                plugin_proxy_enabled: overrides
+                    .iter()
+                    .map(|(id, enabled)| ((*id).to_string(), *enabled))
+                    .collect(),
+                ..NetworkSettingsDto::default()
+            };
+            let map = network.effective_plugin_proxy_enabled();
+            for plugin_id in [
+                "dlsite",
+                "dlsite-api",
+                "dlsite-html",
+                "dlsite-metadata",
+                "custom",
+                "custom-off",
+                "never-mentioned",
+            ] {
+                assert_eq!(
+                    network.plugin_proxy_effective(plugin_id),
+                    map.get(plugin_id).copied().unwrap_or(false),
+                    "the two reads disagree for {plugin_id:?} with socks5_enabled={socks5_enabled}"
+                );
+            }
+        }
     }
 
     /// An explicit stored `false` still wins over the default-on list,

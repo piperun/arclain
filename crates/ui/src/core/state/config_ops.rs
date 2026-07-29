@@ -56,11 +56,10 @@ impl AppState {
     /// snapshot so already-rendered UI picks up the change on the next
     /// frame.
     ///
-    /// The signals are filled from `settings()`/`password_rules()`
-    /// rather than from the legacy composition beside them: those are
-    /// the shapes every reader now works in, and reading them from the
-    /// facade means the frontend never has to know how a preference is
-    /// stored to display it.
+    /// The signals are filled from `settings()` rather than from the
+    /// legacy composition beside them: that is the shape every reader
+    /// now works in, and reading it from the facade means the frontend
+    /// never has to know how a preference is stored to display it.
     ///
     /// Settings/secrets/vault mutations go through the facade first
     /// (see `vault_ops.rs`/`password_ops.rs`/`settings_controller.rs`);
@@ -102,22 +101,16 @@ impl AppState {
         facade: &arclain_app::ArclainApp,
         runtime: &tokio::runtime::Runtime,
     ) -> anyhow::Result<()> {
-        let (snapshot, rules) = runtime.block_on(async {
-            let snapshot = facade
+        let snapshot = runtime.block_on(async {
+            facade
                 .settings()
                 .await
-                .map_err(|error| describe_facade_error("reading current settings", error))?;
-            let rules = facade
-                .password_rules()
-                .await
-                .map_err(|error| describe_facade_error("reading current password rules", error))?;
-            Ok::<_, anyhow::Error>((snapshot, rules))
+                .map_err(|error| describe_facade_error("reading current settings", error))
         })?;
         self.signals.general_settings.set(snapshot.general);
         self.signals.archive_settings.set(snapshot.archive);
         self.signals.network_settings.set(snapshot.network);
         self.signals.security_settings.set(snapshot.security);
-        self.signals.pass_rules.set(rules);
         Ok(())
     }
 

@@ -266,8 +266,18 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
                 .with_connection(|conn| {
                     UserConfig::ensure_table(conn)?;
                     let user_config = UserConfig::load(conn)?.unwrap_or_default();
+                    // Deliberately not `?`: a failure reading this one
+                    // key/value entry must not discard the `user_config`
+                    // row that was just read successfully. That row
+                    // decides the 7-Zip path, the HTTP proxy routing,
+                    // and which plugins load; losing it to a missing
+                    // collision policy would be wildly out of
+                    // proportion, and the policy has its own documented
+                    // fallback.
                     let collision_policy =
-                        arclain_core::get_config(conn, arclain_core::COLLISION_POLICY_CONFIG_KEY)?;
+                        arclain_core::get_config(conn, arclain_core::COLLISION_POLICY_CONFIG_KEY)
+                            .ok()
+                            .flatten();
                     Ok((user_config, collision_policy))
                 })
                 .unwrap_or_default()
