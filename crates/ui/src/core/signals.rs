@@ -225,6 +225,16 @@ pub struct AppSignals {
     /// pending".
     pub pending_session_metadata:
         Arc<Mutex<HashMap<arclain_app::ids::ArchiveSessionId, Option<serde_json::Value>>>>,
+
+    /// The archive session id last reported to `ArclainApp::
+    /// set_active_archive_session` by `crate::core::app_lifecycle::
+    /// sync_active_archive_session`, so that function can tell whether
+    /// the active tab's session actually changed since the last frame
+    /// without querying the facade itself. `None` at startup matches the
+    /// facade's own initial `ActiveArchiveSession` state (no session
+    /// active), so the first frame with an archive already open in the
+    /// active tab correctly triggers exactly one sync call, not zero.
+    pub active_archive_session_synced: Arc<Mutex<Option<arclain_app::ids::ArchiveSessionId>>>,
 }
 
 /// Proxy that lets callers keep the old `signals.extraction_dialog
@@ -366,6 +376,7 @@ impl AppSignals {
                 .with_name("archive_error_dialog"),
             egui_ctx: Arc::new(OnceLock::new()),
             pending_session_metadata: Arc::new(Mutex::new(HashMap::new())),
+            active_archive_session_synced: Arc::new(Mutex::new(None)),
         }
     }
 

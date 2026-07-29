@@ -23,6 +23,81 @@ pub fn process_refresh_requests(shared_state: &SharedState, ctx: &egui::Context)
     }
 }
 
+/// Reports the active tab's archive session to `ArclainApp::
+/// set_active_archive_session` whenever it has changed since the last
+/// frame, so plugin host functions that resolve "which archive is
+/// active" through the facade (once `arclain_app::plugins::
+/// ArchiveContextBridge` becomes `PluginManager`'s installed bridge --
+/// see that module's own doc comment for what remains before that
+/// swap) see the same tab egui does.
+///
+/// Checked once per frame rather than hooked into every individual
+/// tab-activation call site (switch/open/close/replace/restore, spread
+/// across several files): the active tab's `archive_session_id` is
+/// itself a per-tab `Signal` that changes independently of the outer
+/// `tabs` collection signal (an async archive-open completing stamps it
+/// well after the tab became active, entirely inside `crate::core::
+/// operation_bridge::handle_open_archive_completed`, which never
+/// touches the outer collection) -- no single mutation-site hook would
+/// catch every case without re-subscribing per active tab every time it
+/// changes. A once-per-frame comparison against
+/// `AppSignals::active_archive_session_synced` is simpler, provably
+/// complete (every path that changes either the active tab or its
+/// session id is a plain signal write this reads fresh next frame), and
+/// cheap on the common no-change frame (one lock, one `Option` compare).
+///
+/// The facade call itself is spawned onto the shared runtime rather than
+/// blocking this frame on it -- matches `crate::core::operation_bridge::
+/// renew_due_external_open_leases`'s identical reasoning for the same
+/// "per-frame check, fire-and-forget on change" shape.
+pub fn sync_active_archive_session(shared: &SharedState) {
+    let Some(facade) = shared.facade.clone() else {
+        return;
+    };
+    let current = shared
+        .signals()
+        .tabs
+        .get()
+        .active()
+        .archive_session_id
+        .get();
+    let mut last_synced = shared
+        .signals()
+        .active_archive_session_synced
+        .lock()
+        .unwrap();
+    if !active_archive_session_changed(current, &mut last_synced) {
+        return;
+    }
+    drop(last_synced);
+
+    let runtime = shared.services.tokio_runtime.clone();
+    runtime.spawn(async move {
+        if let Err(error) = facade.set_active_archive_session(current).await {
+            tracing::warn!(
+                "[tabs] failed to sync the active archive session to the facade: {error:?}"
+            );
+        }
+    });
+}
+
+/// The pure decision `sync_active_archive_session` makes: whether
+/// `current` differs from `last_synced`, updating `last_synced` to match
+/// if so. Extracted so it can be unit-tested directly without a real
+/// `ArclainApp` -- the facade dispatch itself (and `set_active_archive_
+/// session`'s own behavior) is exercised by `arclain_app`'s own
+/// `set_active_archive_session_accepts_both_a_session_id_and_none` test.
+fn active_archive_session_changed(
+    current: Option<arclain_app::ids::ArchiveSessionId>,
+    last_synced: &mut Option<arclain_app::ids::ArchiveSessionId>,
+) -> bool {
+    if *last_synced == current {
+        return false;
+    }
+    *last_synced = current;
+    true
+}
+
 /// Bind signals to egui context for automatic repaint
 pub fn bind_signals_once(shared: &SharedState, ctx: &egui::Context, bound: &mut bool) {
     if !*bound {
@@ -686,9 +761,58 @@ pub fn update_window_title(
 mod tests {
     use super::*;
     use crate::core::tabs::TabsCollection;
+    use arclain_app::ids::ArchiveSessionId;
     use arclain_app::settings::{save_session_restore_list, SessionArchiveEntry};
     use std::path::PathBuf;
     use tracing_test::traced_test;
+
+    #[test]
+    fn active_archive_session_changed_is_false_when_nothing_open_matches_a_fresh_tracker() {
+        let mut last_synced = None;
+        assert!(!active_archive_session_changed(None, &mut last_synced));
+        assert_eq!(last_synced, None);
+    }
+
+    #[test]
+    fn active_archive_session_changed_detects_none_to_some() {
+        let mut last_synced = None;
+        let session_id = ArchiveSessionId::from_raw(1);
+
+        assert!(active_archive_session_changed(
+            Some(session_id),
+            &mut last_synced
+        ));
+
+        assert_eq!(last_synced, Some(session_id));
+    }
+
+    #[test]
+    fn active_archive_session_changed_detects_some_to_some_and_some_to_none() {
+        let session_a = ArchiveSessionId::from_raw(1);
+        let session_b = ArchiveSessionId::from_raw(2);
+        let mut last_synced = Some(session_a);
+
+        assert!(active_archive_session_changed(
+            Some(session_b),
+            &mut last_synced
+        ));
+        assert_eq!(last_synced, Some(session_b));
+
+        assert!(active_archive_session_changed(None, &mut last_synced));
+        assert_eq!(last_synced, None);
+    }
+
+    #[test]
+    fn active_archive_session_changed_is_idempotent_for_repeated_identical_values() {
+        let session_id = ArchiveSessionId::from_raw(7);
+        let mut last_synced = Some(session_id);
+
+        assert!(
+            !active_archive_session_changed(Some(session_id), &mut last_synced),
+            "reporting the same session id again must not be treated as a change"
+        );
+        assert_eq!(last_synced, Some(session_id));
+    }
 
     fn signals_with_restore(restore_tabs_on_launch: bool) -> AppSignals {
         let signals = AppSignals::new();

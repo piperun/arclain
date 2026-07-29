@@ -36,6 +36,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // and `crate::shared::active_tab_bridge`.
     app_lifecycle::process_refresh_requests(&app.shared_state, ctx);
     app_lifecycle::bind_signals_once(&app.shared_state, ctx, &mut app._signals_bound);
+    app_lifecycle::sync_active_archive_session(&app.shared_state);
     crate::features::plugins::application::process_plugin_ui_results(
         &app.shared_state,
         &mut app.plugins_feature,
