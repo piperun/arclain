@@ -59,6 +59,26 @@ impl ArchiveFormat {
             ArchiveFormat::Zip => "ZIP",
         }
     }
+
+    /// Whether `ArchiveProfile::solid_archive` means anything for this
+    /// format.
+    ///
+    /// The container decides: only 7z has solid blocks, so the packer
+    /// emits `-ms=on`/`-ms=off` for it and nothing at all for zip (see
+    /// `backends::sevenz_cli::backend`'s per-format switch
+    /// construction). Exposed so a profile editor can hide a toggle that
+    /// would otherwise store a flag nothing can honor, instead of each
+    /// frontend re-deriving "is this 7z?" for itself.
+    pub fn supports_solid_archive(&self) -> bool {
+        matches!(self, ArchiveFormat::SevenZ)
+    }
+
+    /// Whether `ArchiveProfile::encrypt_headers` means anything for this
+    /// format. Only 7z can encrypt its own file listing (`-mhe=on`); a
+    /// zip's listing is always readable.
+    pub fn supports_header_encryption(&self) -> bool {
+        matches!(self, ArchiveFormat::SevenZ)
+    }
 }
 
 /// Archive format profile with compression settings
@@ -182,4 +202,40 @@ pub fn list_archive_profiles(
     let db_profiles =
         arclain_db::list_profiles(&mut conn).with_context(|| "listing archive profiles")?;
     Ok(db_profiles.iter().map(ArchiveProfile::from_db).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every format's compression menu must offer its own default, or a
+    /// profile editor's method picker opens on a value it cannot show.
+    #[test]
+    fn every_format_offers_its_own_default_method() {
+        for format in ArchiveFormat::all() {
+            let probe = ArchiveProfile {
+                format: *format,
+                ..ArchiveProfile::default()
+            };
+            assert!(
+                probe
+                    .available_compression_methods()
+                    .contains(&probe.default_compression_method()),
+                "{} does not offer its own default method",
+                format.as_str()
+            );
+        }
+    }
+
+    /// The two container capabilities, pinned to what the packer
+    /// actually emits: `-ms`/`-mhe` appear only in the 7z arm of
+    /// `backends::sevenz_cli::backend::create_archive_with_profile`, and
+    /// the zip arm emits neither.
+    #[test]
+    fn only_the_seven_zip_container_honours_solid_blocks_and_header_encryption() {
+        assert!(ArchiveFormat::SevenZ.supports_solid_archive());
+        assert!(ArchiveFormat::SevenZ.supports_header_encryption());
+        assert!(!ArchiveFormat::Zip.supports_solid_archive());
+        assert!(!ArchiveFormat::Zip.supports_header_encryption());
+    }
 }

@@ -238,14 +238,16 @@ pub struct ArchiveFormatOptionDto {
     pub compression_methods: Vec<String>,
     /// What the backend uses when a profile stores no method.
     pub default_compression_method: String,
-    /// Whether `solid_archive` means anything for this format. A `zip`
-    /// container has no solid-block concept at all, so a profile editor
-    /// hides the toggle rather than storing a flag nothing can honor
-    /// (the column still exists, and this facade still round-trips
-    /// whatever is in it).
+    /// Whether `solid_archive` means anything for this format, as
+    /// `arclain_core`'s own `ArchiveFormat::supports_solid_archive`
+    /// answers it: a container with no solid-block concept ignores the
+    /// flag, so a profile editor hides the toggle rather than storing
+    /// something nothing can honor (the column still exists, and this
+    /// facade still round-trips whatever is in it).
     pub supports_solid_archive: bool,
-    /// Whether `encrypt_headers` means anything for this format. Only
-    /// 7z can encrypt its own file listing; zip's is always readable.
+    /// Whether `encrypt_headers` means anything for this format, from
+    /// `ArchiveFormat::supports_header_encryption` — only a container
+    /// that can encrypt its own file listing.
     pub supports_header_encryption: bool,
 }
 
@@ -271,8 +273,8 @@ pub fn archive_format_options() -> Vec<ArchiveFormatOptionDto> {
                     .map(|method| (*method).to_string())
                     .collect(),
                 default_compression_method: probe.default_compression_method().to_string(),
-                supports_solid_archive: matches!(format, ArchiveFormat::SevenZ),
-                supports_header_encryption: matches!(format, ArchiveFormat::SevenZ),
+                supports_solid_archive: format.supports_solid_archive(),
+                supports_header_encryption: format.supports_header_encryption(),
             }
         })
         .collect()
@@ -832,6 +834,31 @@ mod tests {
                 assert_eq!(core.compression_method.as_deref(), Some(method.as_str()));
                 assert_eq!(core.format.extension(), option.extension);
             }
+        }
+    }
+
+    /// The capability bits are core's answer, not a second copy of it:
+    /// a format core teaches to support solid blocks must show up here
+    /// without this crate being edited.
+    #[test]
+    fn format_options_report_the_capabilities_core_reports() {
+        for option in archive_format_options() {
+            let format = ArchiveFormat::all()
+                .iter()
+                .find(|format| format.as_str() == option.token)
+                .expect("every offered token must name a real format");
+            assert_eq!(
+                option.supports_solid_archive,
+                format.supports_solid_archive(),
+                "{} solid-archive support",
+                option.token
+            );
+            assert_eq!(
+                option.supports_header_encryption,
+                format.supports_header_encryption(),
+                "{} header-encryption support",
+                option.token
+            );
         }
     }
 
