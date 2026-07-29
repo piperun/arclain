@@ -10,12 +10,10 @@
 //! format added to the application appears here without a change to
 //! this file.
 
-use super::format_label;
+use super::{format_label, format_options};
 use crate::shared::components::settings_form::SectionHeader;
 use crate::shared::dialogs::{DialogMode, FormDialog, FormDialogConfig, FormDialogResult};
-use arclain_app::organization::{
-    archive_format_options, OrganizationProfileInput, OrganizationProfileSummary,
-};
+use arclain_app::organization::{OrganizationProfileInput, OrganizationProfileSummary};
 use arclain_widgets::{TextInput, ThemedDropdown};
 use eframe::egui;
 
@@ -48,17 +46,16 @@ impl Default for AddProfileDialog {
 /// A new profile: the application's first offered format at its own
 /// default compression method, solid, mid compression.
 fn blank_profile() -> OrganizationProfileInput {
-    let format = archive_format_options()
-        .into_iter()
-        .next()
+    let format = format_options()
+        .first()
         .expect("the application must offer at least one archive format");
     OrganizationProfileInput {
         id: None,
         name: String::new(),
         description: None,
-        output_format: format.token,
+        output_format: format.token.clone(),
         compression_level: 5,
-        compression_method: Some(format.default_compression_method),
+        compression_method: Some(format.default_compression_method.clone()),
         solid_archive: true,
         encrypt_headers: false,
         is_default: false,
@@ -167,11 +164,10 @@ impl AddProfileDialog {
         SectionHeader::new("Format Settings").show(ui, &theme.colors);
         ui.add_space(8.0);
 
-        let formats = archive_format_options();
+        let formats = format_options();
         let selected_format = formats
             .iter()
-            .find(|option| option.token.eq_ignore_ascii_case(&profile.output_format))
-            .cloned();
+            .find(|option| option.token.eq_ignore_ascii_case(&profile.output_format));
 
         egui::Grid::new("profile_format")
             .num_columns(2)
@@ -182,7 +178,7 @@ impl AddProfileDialog {
                     .with_theme_colors(&theme.colors)
                     .width(150.0)
                     .show_ui(ui, |ui| {
-                        for format in &formats {
+                        for format in formats {
                             let selected =
                                 format.token.eq_ignore_ascii_case(&profile.output_format);
                             if ui
@@ -207,7 +203,6 @@ impl AddProfileDialog {
                 .width(150.0)
                 .show_ui(ui, |ui| {
                     let methods = selected_format
-                        .as_ref()
                         .map(|format| format.compression_methods.as_slice())
                         .unwrap_or_default();
                     for method in methods {
@@ -252,18 +247,12 @@ impl AddProfileDialog {
             });
 
         // Options only the chosen container can honor.
-        if selected_format
-            .as_ref()
-            .is_some_and(|format| format.supports_solid_archive)
-        {
+        if selected_format.is_some_and(|format| format.supports_solid_archive) {
             ui.add_space(8.0);
             ui.checkbox(&mut profile.solid_archive, "Create solid archive")
                 .on_hover_text("Solid archives have better compression but slower random access");
         }
-        if selected_format
-            .as_ref()
-            .is_some_and(|format| format.supports_header_encryption)
-        {
+        if selected_format.is_some_and(|format| format.supports_header_encryption) {
             ui.checkbox(&mut profile.encrypt_headers, "Encrypt file headers")
                 .on_hover_text("Hide file names when password-protected (7z only)");
         }

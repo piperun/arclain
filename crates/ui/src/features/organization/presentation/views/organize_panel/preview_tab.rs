@@ -7,7 +7,18 @@ use egui_extras::{Size, StripBuilder};
 
 impl OrganizePanel {
     pub(super) fn render_preview_tab(&mut self, ui: &mut egui::Ui, theme: &AppTheme) {
-        if let Some(plan) = self.preview().cloned() {
+        // Destructured rather than cloned: the plan is read here while
+        // `ui_state` is written, and the two are disjoint fields. A
+        // clone would copy every planned move, download and resolved
+        // variable once per rendered frame.
+        let Self {
+            archive_name,
+            metadata,
+            preview,
+            ui_state,
+            ..
+        } = self;
+        if let Some(plan) = preview.as_ref() {
             egui::Frame::NONE
                 .fill(theme.colors.surface_variant)
                 .inner_margin(10.0)
@@ -48,7 +59,7 @@ impl OrganizePanel {
                                 )))
                                 .clicked()
                             {
-                                self.ui_state.export_dialog.open();
+                                ui_state.export_dialog.open();
                             }
                         });
                     });
@@ -187,9 +198,9 @@ impl OrganizePanel {
                     {
                         super::integrity::export_issues_report(
                             report,
-                            &self.ui_state.original_tree,
-                            &self.ui_state.organized_tree,
-                            self.metadata.as_ref(),
+                            &ui_state.original_tree,
+                            &ui_state.organized_tree,
+                            metadata.as_ref(),
                         );
                     }
                 }
@@ -208,30 +219,30 @@ impl OrganizePanel {
                 for (filter, label) in filters {
                     if ui
                         .selectable_label(
-                            self.ui_state.preview_filter == filter,
+                            ui_state.preview_filter == filter,
                             RichText::new(label).size(11.0),
                         )
                         .clicked()
                     {
-                        self.ui_state.preview_filter = filter;
+                        ui_state.preview_filter = filter;
                     }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ThemedDropdown::new(
                         "depth_limit",
-                        match self.ui_state.depth_limit {
+                        match ui_state.depth_limit {
                             None => "Depth: All".to_string(),
                             Some(0) => "Depth: Root".to_string(),
                             Some(n) => format!("Depth: {}", n),
                         },
                     )
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.ui_state.depth_limit, None, "All");
-                        ui.selectable_value(&mut self.ui_state.depth_limit, Some(0), "Root Only");
-                        ui.selectable_value(&mut self.ui_state.depth_limit, Some(1), "1 Level");
-                        ui.selectable_value(&mut self.ui_state.depth_limit, Some(2), "2 Levels");
-                        ui.selectable_value(&mut self.ui_state.depth_limit, Some(3), "3 Levels");
+                        ui.selectable_value(&mut ui_state.depth_limit, None, "All");
+                        ui.selectable_value(&mut ui_state.depth_limit, Some(0), "Root Only");
+                        ui.selectable_value(&mut ui_state.depth_limit, Some(1), "1 Level");
+                        ui.selectable_value(&mut ui_state.depth_limit, Some(2), "2 Levels");
+                        ui.selectable_value(&mut ui_state.depth_limit, Some(3), "3 Levels");
                     });
                 });
             });
@@ -256,7 +267,7 @@ impl OrganizePanel {
                                 ui.vertical(|ui| {
                                     ui.set_height(available.y - 40.0);
 
-                                    let original_title = format!("Original: {}", self.archive_name);
+                                    let original_title = format!("Original: {}", archive_name);
                                     ui.add(
                                         egui::Label::new(
                                             arclain_widgets::Text::new(&original_title)
@@ -274,10 +285,10 @@ impl OrganizePanel {
                                         .show(ui, |ui| {
                                             preview_tree::render_tree(
                                                 ui,
-                                                &mut self.ui_state.original_tree_state,
-                                                &self.ui_state.original_tree,
-                                                self.ui_state.preview_filter,
-                                                self.ui_state.depth_limit,
+                                                &mut ui_state.original_tree_state,
+                                                &ui_state.original_tree,
+                                                ui_state.preview_filter,
+                                                ui_state.depth_limit,
                                             );
                                         });
                                 });
@@ -324,10 +335,10 @@ impl OrganizePanel {
                                         .show(ui, |ui| {
                                             preview_tree::render_tree(
                                                 ui,
-                                                &mut self.ui_state.organized_tree_state,
-                                                &self.ui_state.organized_tree,
-                                                self.ui_state.preview_filter,
-                                                self.ui_state.depth_limit,
+                                                &mut ui_state.organized_tree_state,
+                                                &ui_state.organized_tree,
+                                                ui_state.preview_filter,
+                                                ui_state.depth_limit,
                                             );
                                         });
                                 });

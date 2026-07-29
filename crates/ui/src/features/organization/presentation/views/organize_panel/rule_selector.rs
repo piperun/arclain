@@ -3,14 +3,16 @@ use arclain_app::organization::OrganizationRuleSummary;
 use arclain_widgets::ThemedDropdown;
 use eframe::egui;
 
+/// Renders the rule dropdown, reporting only a raised action: a
+/// selection change needs no separate signal, because the panel notices
+/// that the plan it is showing is no longer the selected rule's.
 pub fn render_rule_selector(
     ui: &mut egui::Ui,
     archive_name: &str,
     rules: &[OrganizationRuleSummary],
     selected_rule_index: &mut usize,
-) -> (Option<OrganizePanelAction>, bool) {
+) -> Option<OrganizePanelAction> {
     let mut action = None;
-    let mut changed = false;
 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(egui_phosphor::regular::FUNNEL).size(14.0));
@@ -68,11 +70,8 @@ pub fn render_rule_selector(
                                 egui::Button::new(egui::RichText::new(label).weak())
                                     .selected(*selected_rule_index == i),
                             );
-                        } else if ui
-                            .selectable_value(selected_rule_index, i, &rule.name)
-                            .changed()
-                        {
-                            changed = true;
+                        } else {
+                            ui.selectable_value(selected_rule_index, i, &rule.name);
                         }
                     }
                     ui.add_space(4.0);
@@ -89,5 +88,5 @@ pub fn render_rule_selector(
         });
     });
 
-    (action, changed)
+    action
 }

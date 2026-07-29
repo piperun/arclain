@@ -343,13 +343,12 @@ impl OrganizePanel {
 
         ui.add_space(4.0);
 
-        let (sel_action, _changed) = rule_selector::render_rule_selector(
+        if let Some(act) = rule_selector::render_rule_selector(
             ui,
             &self.archive_name,
             &self.rules,
             &mut self.ui_state.selected_rule_index,
-        );
-        if let Some(act) = sel_action {
+        ) {
             action = Some(act);
         }
 

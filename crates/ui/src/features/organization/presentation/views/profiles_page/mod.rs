@@ -29,7 +29,7 @@ use std::cell::Cell;
 /// a row's real format behind a guess.
 pub fn format_label(token: &str) -> String {
     format_option(token)
-        .map(|option| option.display_name)
+        .map(|option| option.display_name.clone())
         .unwrap_or_else(|| token.to_string())
 }
 
@@ -37,15 +37,27 @@ pub fn format_label(token: &str) -> String {
 /// fallback [`format_label`] makes.
 pub fn format_extension(token: &str) -> String {
     format_option(token)
-        .map(|option| option.extension)
+        .map(|option| option.extension.clone())
         .unwrap_or_else(|| token.to_string())
+}
+
+/// Every output format the application offers, resolved once.
+///
+/// The enumeration is static (it describes the formats this build
+/// supports, not anything stored), and these helpers run per table row
+/// and per dropdown entry on every frame -- rebuilding the list each
+/// time would allocate a handful of strings per row per frame for an
+/// answer that cannot change.
+fn format_options() -> &'static [ArchiveFormatOptionDto] {
+    static OPTIONS: std::sync::OnceLock<Vec<ArchiveFormatOptionDto>> = std::sync::OnceLock::new();
+    OPTIONS.get_or_init(archive_format_options)
 }
 
 /// The offered format matching `token`, if the application still offers
 /// it.
-fn format_option(token: &str) -> Option<ArchiveFormatOptionDto> {
-    archive_format_options()
-        .into_iter()
+fn format_option(token: &str) -> Option<&'static ArchiveFormatOptionDto> {
+    format_options()
+        .iter()
         .find(|option| option.token.eq_ignore_ascii_case(token))
 }
 
