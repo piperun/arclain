@@ -34,18 +34,20 @@
 //! - Hidden/disabled action rejection, via
 //!   `arclain_plugins::ui_model::PluginUiNodeDto::find`.
 //!
+//! - `PluginAction::RequestFetch` (the gameta-or-native background
+//!   metadata fetch) is resolved through
+//!   `arclain_plugins::resolve_interactive_request_fetch` -- the same
+//!   routing policy the event-triggered path
+//!   (`PluginEvent::OnArchiveOpen` -> `RequestFetch`) runs, sharing one
+//!   capability gate, one per-plugin network permit, one
+//!   gameta-then-native ordering, and one payload size cap. The two paths
+//!   differ only in where the result lands: the event path pins it to the
+//!   session the event originated from, while an interaction resolves
+//!   through whichever archive session the frontend currently reports as
+//!   active, since the user is looking at that document right now.
+//!
 //! Deliberately **not** ported in this pass, and named here rather than
 //! silently dropped:
-//! - `PluginAction::RequestFetch` (the gameta-or-native background
-//!   metadata fetch egui's `plugin_controller::spawn_background_fetch`
-//!   implements) is recognized and logged, but no network fetch runs --
-//!   see [`apply_bounded_action`]'s own doc comment. The event-triggered
-//!   fetch path (`PluginEvent::OnArchiveOpen` -> `RequestFetch`, entirely
-//!   inside `arclain_plugins::manager::dispatch`) is untouched by this
-//!   task and still works; only a *panel/button-triggered* fetch
-//!   dispatched through this module's `dispatch_action` would be
-//!   affected, and nothing calls that path in production yet (egui's
-//!   renderer has not been cut over -- see this task's report).
 //! - `arclain_plugins::types::PluginArchiveAccess` (the `PluginArchiveContextId`
 //!   -keyed trait [`ArchiveContextAccess`] implements) has no installation
 //!   point anywhere in `arclain_plugins` today -- no `PluginManager`/
@@ -681,12 +683,19 @@ impl PluginSessionStore {
 
         let bounded = arclain_plugins::action_policy::bound_plugin_actions(actions);
         let mut intents = Vec::with_capacity(bounded.len());
-        let mut needs_refresh = false;
+        let mut outcome = BoundedActionOutcome::default();
         for action in bounded {
-            apply_bounded_action(action, &plugin_id, &mut intents, &mut needs_refresh);
+            apply_bounded_action(action, &plugin_id, &mut intents, &mut outcome);
         }
 
-        let refreshed_root = if needs_refresh {
+        // Resolved before the refresh below, so a fetch that lands
+        // synchronously (a gameta cache hit) is already reflected in the
+        // layout a `RefreshPanel` in the same response re-fetches.
+        if !outcome.fetch_keys.is_empty() {
+            resolve_request_fetches(&manager, &plugin_id, outcome.fetch_keys, handle).await;
+        }
+
+        let refreshed_root = if outcome.needs_refresh {
             Some(
                 self.fetch_and_normalize(&manager, &plugin_id, &extension_point, handle)
                     .await?,
@@ -757,6 +766,65 @@ fn to_host_extension_point(
     }
 }
 
+/// What one dispatch's batch of bounded actions asked this layer to do,
+/// beyond the [`PluginHostIntentDto`]s it produced for the renderer.
+#[derive(Default)]
+struct BoundedActionOutcome {
+    /// Set by any number of `RefreshPanel` actions; the caller re-fetches
+    /// the layout exactly once regardless of how many arrived.
+    needs_refresh: bool,
+    /// Every `RequestFetch` key, in the order the plugin emitted them.
+    /// `action_policy` already caps how many survive one response.
+    fetch_keys: Vec<String>,
+}
+
+/// Runs each `RequestFetch` key through
+/// `arclain_plugins::resolve_interactive_request_fetch`, the same routing
+/// policy the event-triggered path uses (capability gate, per-plugin
+/// network permit, gameta-then-native ordering, payload size cap).
+///
+/// Each key runs on a blocking-pool thread: the gameta round trip is
+/// synchronous and can take seconds. The plugin manager's lock is taken
+/// only long enough to resolve the instance, never held across the
+/// network call -- otherwise one plugin's slow fetch would stall every
+/// other plugin operation in the application.
+///
+/// Failures are logged rather than failing the dispatch: a metadata fetch
+/// that could not be satisfied is not a reason to discard the plugin's
+/// updated document and the intents that came with it.
+async fn resolve_request_fetches(
+    manager: &Arc<SyncMutex<PluginManager>>,
+    plugin_id: &str,
+    keys: Vec<String>,
+    handle: &tokio::runtime::Handle,
+) {
+    let Some(instance) = manager.lock().get_plugin_instance(plugin_id) else {
+        tracing::warn!(plugin_id, "dropped a RequestFetch for an unknown plugin");
+        return;
+    };
+    for key in keys {
+        let instance = instance.clone();
+        let worker_plugin_id = plugin_id.to_string();
+        let outcome = handle
+            .spawn_blocking(move || {
+                arclain_plugins::resolve_interactive_request_fetch(
+                    &instance,
+                    &worker_plugin_id,
+                    &key,
+                )
+            })
+            .await;
+        match outcome {
+            Ok(outcome) => tracing::debug!(plugin_id, ?outcome, "resolved a plugin RequestFetch"),
+            Err(error) => tracing::warn!(
+                plugin_id,
+                %error,
+                "a plugin RequestFetch worker failed"
+            ),
+        }
+    }
+}
+
 /// Applies one bounded (`arclain_plugins::action_policy`-passed)
 /// `PluginAction` to this dispatch's outcome: either a
 /// [`PluginHostIntentDto`] a renderer should react to, or a host-internal
@@ -768,15 +836,16 @@ fn to_host_extension_point(
 /// returning several in one response should still trigger exactly one
 /// re-fetch.
 ///
-/// `RequestFetch` is deliberately a no-op here for now (see the module
-/// doc comment's "not ported in this pass" section): it is logged and
-/// dropped rather than silently ignored, so its absence is visible in
-/// application logs rather than invisible.
+/// `RequestFetch` is collected rather than resolved inline: resolving it
+/// needs the plugin manager and a blocking thread, neither of which this
+/// pure function has, and the caller must run every key *before* the
+/// refresh so a synchronously-satisfied fetch is already visible in the
+/// re-fetched layout.
 fn apply_bounded_action(
     action: arclain_plugins::types::PluginAction,
     plugin_id: &str,
     intents: &mut Vec<PluginHostIntentDto>,
-    needs_refresh: &mut bool,
+    outcome: &mut BoundedActionOutcome,
 ) {
     use arclain_plugins::types::PluginAction;
 
@@ -789,7 +858,7 @@ fn apply_bounded_action(
             });
         }
         PluginAction::RefreshPanel { .. } => {
-            *needs_refresh = true;
+            outcome.needs_refresh = true;
         }
         PluginAction::CloseDialog => intents.push(PluginHostIntentDto::CloseDialog),
         PluginAction::CopyToClipboard { text } => {
@@ -823,12 +892,7 @@ fn apply_bounded_action(
             intents.push(PluginHostIntentDto::SetPageDisplayName { name });
         }
         PluginAction::RequestFetch { key } => {
-            tracing::debug!(
-                plugin_id,
-                key,
-                "plugin requested a background metadata fetch via the renderer-neutral facade; \
-                 not yet resolved by this layer (see arclain_app::plugins's module doc comment)"
-            );
+            outcome.fetch_keys.push(key);
         }
     }
 }
@@ -931,10 +995,13 @@ impl ArchiveContextBridge {
     /// only when `committed` is `Some` -- i.e. only when the write this
     /// call announces actually landed in the session store. `with_session`/
     /// `with_active_session` return `None` for an unresolvable session
-    /// (unknown id, no active session, no ambient multi-thread runtime),
-    /// and none of those are "something changed" -- publishing anyway
-    /// would tell a subscriber to go re-fetch a snapshot that never
-    /// actually changed, for no reason.
+    /// (an unknown or already-closed session id, or no active session at
+    /// all), and neither is "something changed" -- publishing anyway would
+    /// tell a subscriber to go re-fetch a snapshot that never actually
+    /// changed, for no reason. Resolution no longer depends on an ambient
+    /// runtime: the session store's lock is genuinely synchronous, so
+    /// every caller thread resolves identically (see
+    /// [`ArchiveContextBridge::with_session`]).
     fn publish_if_committed<T>(&self, session_id: ArchiveSessionId, committed: Option<T>) {
         if committed.is_some() {
             self.sessions.publish_metadata_changed(session_id);
@@ -1906,32 +1973,61 @@ mod tests {
     #[test]
     fn refresh_panel_sets_the_refresh_flag_and_is_not_surfaced_as_an_intent() {
         let mut intents = Vec::new();
-        let mut needs_refresh = false;
+        let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
             arclain_plugins::types::PluginAction::RefreshPanel {
                 extension_point: "MainPage".to_string(),
             },
             "demo",
             &mut intents,
-            &mut needs_refresh,
+            &mut outcome,
         );
-        assert!(needs_refresh);
+        assert!(outcome.needs_refresh);
         assert!(intents.is_empty());
     }
 
+    /// `RequestFetch` is host-internal: it never reaches a renderer as an
+    /// intent, and it does not itself ask for a refresh. It is collected
+    /// so `dispatch_action` can resolve it against the plugin manager on a
+    /// blocking thread -- see `resolve_request_fetches`.
     #[test]
-    fn request_fetch_is_not_surfaced_as_an_intent_and_does_not_request_a_refresh() {
+    fn request_fetch_is_collected_for_the_host_rather_than_surfaced_as_an_intent() {
         let mut intents = Vec::new();
-        let mut needs_refresh = false;
+        let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
             arclain_plugins::types::PluginAction::RequestFetch {
                 key: "dlsite:RJ000001".to_string(),
             },
             "demo",
             &mut intents,
-            &mut needs_refresh,
+            &mut outcome,
         );
-        assert!(!needs_refresh);
+        assert!(!outcome.needs_refresh);
+        assert!(intents.is_empty());
+        assert_eq!(outcome.fetch_keys, vec!["dlsite:RJ000001".to_string()]);
+    }
+
+    /// Several keys in one response are all retained, in emission order:
+    /// unlike `RefreshPanel` (which coalesces to a single re-fetch), two
+    /// fetches name two different products and both must run.
+    #[test]
+    fn several_request_fetch_keys_in_one_response_are_all_retained_in_order() {
+        let mut intents = Vec::new();
+        let mut outcome = BoundedActionOutcome::default();
+        for key in ["dlsite:RJ1", "fanza:VJ2"] {
+            apply_bounded_action(
+                arclain_plugins::types::PluginAction::RequestFetch {
+                    key: key.to_string(),
+                },
+                "demo",
+                &mut intents,
+                &mut outcome,
+            );
+        }
+        assert_eq!(
+            outcome.fetch_keys,
+            vec!["dlsite:RJ1".to_string(), "fanza:VJ2".to_string()]
+        );
         assert!(intents.is_empty());
     }
 
@@ -2061,7 +2157,7 @@ mod tests {
     #[test]
     fn show_toast_converts_into_a_bounded_host_intent() {
         let mut intents = Vec::new();
-        let mut needs_refresh = false;
+        let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
             arclain_plugins::types::PluginAction::ShowToast {
                 message: "done".to_string(),
@@ -2069,7 +2165,7 @@ mod tests {
             },
             "demo",
             &mut intents,
-            &mut needs_refresh,
+            &mut outcome,
         );
         assert_eq!(
             intents,
@@ -2083,28 +2179,28 @@ mod tests {
     #[test]
     fn close_dialog_converts_into_a_bounded_host_intent() {
         let mut intents = Vec::new();
-        let mut needs_refresh = false;
+        let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
             arclain_plugins::types::PluginAction::CloseDialog,
             "demo",
             &mut intents,
-            &mut needs_refresh,
+            &mut outcome,
         );
         assert_eq!(intents, vec![PluginHostIntentDto::CloseDialog]);
-        assert!(!needs_refresh);
+        assert!(!outcome.needs_refresh);
     }
 
     #[test]
     fn copy_to_clipboard_converts_into_a_bounded_host_intent() {
         let mut intents = Vec::new();
-        let mut needs_refresh = false;
+        let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
             arclain_plugins::types::PluginAction::CopyToClipboard {
                 text: "clip me".to_string(),
             },
             "demo",
             &mut intents,
-            &mut needs_refresh,
+            &mut outcome,
         );
         assert_eq!(
             intents,
@@ -2117,14 +2213,14 @@ mod tests {
     #[test]
     fn set_page_display_name_converts_into_a_bounded_host_intent() {
         let mut intents = Vec::new();
-        let mut needs_refresh = false;
+        let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
             arclain_plugins::types::PluginAction::SetPageDisplayName {
                 name: "New Title".to_string(),
             },
             "demo",
             &mut intents,
-            &mut needs_refresh,
+            &mut outcome,
         );
         assert_eq!(
             intents,
@@ -2144,7 +2240,7 @@ mod tests {
     #[test]
     fn open_lightbox_encodes_cache_keys_and_they_resolve_through_read_plugin_image() {
         let mut intents = Vec::new();
-        let mut needs_refresh = false;
+        let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
             arclain_plugins::types::PluginAction::OpenLightbox {
                 images: vec![
@@ -2159,7 +2255,7 @@ mod tests {
             },
             "demo-plugin",
             &mut intents,
-            &mut needs_refresh,
+            &mut outcome,
         );
 
         let PluginHostIntentDto::OpenLightbox {

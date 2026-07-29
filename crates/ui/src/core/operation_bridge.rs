@@ -638,10 +638,16 @@ async fn handle_open_archive_completed(
     // would otherwise never reach this tab at all, since
     // `reconcile_session_events_after_lag` only re-checks tabs *already*
     // stamped with a session id -- this tab had none until the line
-    // above. Fetching fresh here closes that gap unconditionally: it is
-    // a harmless no-op re-application on the overwhelmingly common path
-    // (no metadata has landed yet), and the authoritative fix on the rare
-    // one.
+    // above. Fetching fresh here closes that gap unconditionally.
+    //
+    // It is also what clears the *previous* archive's metadata when a tab
+    // is reused: a freshly minted session starts with `metadata: None`, so
+    // applying its current snapshot overwrites whatever the tab was
+    // showing for the archive it just replaced. Without this, reopening a
+    // different archive into an already-populated tab would leave the old
+    // archive's properties panel and status-bar chip visible until some
+    // later write happened to land -- so this is load-bearing on the
+    // common path, not only on the lagged one.
     if let Some(app) = shared.facade.clone() {
         apply_current_session_metadata(shared.signals(), &app, snapshot.session_id).await;
     }

@@ -70,7 +70,10 @@ pub(crate) use bindings::PluginWorld;
 pub use active_tab::ActiveTabBridge;
 pub use host_functions::HostFunctions;
 pub use loader::{DiscoveredPlugin, PluginLoader};
-pub use manager::{PluginEventScheduler, PluginListItem, PluginManager};
+pub use manager::{
+    resolve_interactive_request_fetch, PluginEventScheduler, PluginListItem, PluginManager,
+    RequestFetchOutcome,
+};
 pub use runtime::{LoadedPlugin, PluginInstance, WasmRuntime};
 pub use types::{
     BadgeConfig, PluginCapability, PluginError, PluginEvent, PluginInfo, PluginManifest,

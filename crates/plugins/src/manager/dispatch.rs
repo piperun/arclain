@@ -1,5 +1,6 @@
 //! Event dispatching for plugin manager
 
+use super::request_fetch::RequestFetchOutcome;
 use super::types::ManagedPlugin;
 use super::{PluginEventScheduler, PluginManager};
 use crate::runtime::PluginInstance;
@@ -45,13 +46,6 @@ fn trace_event_dispatch_failure(plugin_id: &str, _error: &PluginError) {
 
 fn trace_native_fetch_dispatch_failure(_error: &PluginError) {
     error!("Plugin native fetch dispatch failed");
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RequestFetchOutcome {
-    Denied,
-    ServerHandled,
-    NativeFallback,
 }
 
 fn with_event_context<T>(
@@ -115,9 +109,14 @@ fn set_event_session_metadata(
     }
 }
 
-/// Execute the event-worker RequestFetch route behind the instance's
-/// immutable manifest capabilities. The injected operations keep the exact
-/// production route testable without making a real network request.
+/// Execute the event-worker RequestFetch route: the shared policy in
+/// [`super::request_fetch::resolve_request_fetch`], with this path's own
+/// metadata sink (the *originating* event's session, not whichever is
+/// active now -- the user may have switched tabs during the HTTP round
+/// trip) and its own capability resolution. The injected operations keep
+/// the exact production route testable without making a real network
+/// request.
+#[allow(clippy::too_many_arguments)]
 fn process_event_worker_request_fetch<Permit, Get, Fetch, Fallback>(
     instance: &Arc<Mutex<PluginInstance>>,
     plugin_id: &str,
@@ -125,7 +124,7 @@ fn process_event_worker_request_fetch<Permit, Get, Fetch, Fallback>(
     active_tab: Option<&Arc<dyn crate::ActiveTabBridge>>,
     archive_session_id: u64,
     gameta_available: bool,
-    mut acquire_host_service_permit: Permit,
+    acquire_host_service_permit: Permit,
     get_from_server: Get,
     fetch_from_server: Fetch,
     native_fallback: Fallback,
@@ -139,59 +138,17 @@ where
     let authorized = instance
         .lock()
         .has_capabilities(&crate::types::REQUEST_FETCH_CAPABILITIES);
-    if !authorized {
-        tracing::warn!(
-            plugin_id,
-            "Denied RequestFetch without Network and ArchiveMetadataWrite capabilities"
-        );
-        return RequestFetchOutcome::Denied;
-    }
-    if !gameta_available {
-        native_fallback(key);
-        return RequestFetchOutcome::NativeFallback;
-    }
-    if let Err(error) = acquire_host_service_permit() {
-        tracing::warn!(
-            plugin_id,
-            %error,
-            "Denied RequestFetch by plugin host-service network policy"
-        );
-        return RequestFetchOutcome::Denied;
-    }
-
-    let (source, product_id) = key.split_once(':').unwrap_or(("dlsite", key));
-    match get_from_server(source, product_id) {
-        Ok(Some(metadata)) => {
-            if !crate::types::metadata_value_within_limit(&metadata) {
-                return RequestFetchOutcome::Denied;
-            }
-            set_event_session_metadata(active_tab, archive_session_id, metadata);
-            info!("[EventWorker] Set metadata signal via gameta server");
-            RequestFetchOutcome::ServerHandled
-        }
-        Ok(None) => {
-            if acquire_host_service_permit().is_err() {
-                return RequestFetchOutcome::Denied;
-            }
-            match fetch_from_server(source, product_id) {
-                Ok(Some(metadata)) => {
-                    if !crate::types::metadata_value_within_limit(&metadata) {
-                        return RequestFetchOutcome::Denied;
-                    }
-                    set_event_session_metadata(active_tab, archive_session_id, metadata);
-                    RequestFetchOutcome::ServerHandled
-                }
-                Ok(None) | Err(_) => {
-                    native_fallback(key);
-                    RequestFetchOutcome::NativeFallback
-                }
-            }
-        }
-        Err(_) => {
-            native_fallback(key);
-            RequestFetchOutcome::NativeFallback
-        }
-    }
+    super::request_fetch::resolve_request_fetch(
+        plugin_id,
+        key,
+        authorized,
+        gameta_available,
+        acquire_host_service_permit,
+        get_from_server,
+        fetch_from_server,
+        |metadata| set_event_session_metadata(active_tab, archive_session_id, metadata),
+        native_fallback,
+    )
 }
 
 impl PluginManager {

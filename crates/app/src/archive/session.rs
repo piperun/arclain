@@ -488,10 +488,20 @@ impl EntryIndex {
         self.by_id.get(&entry_id)
     }
 
-    /// Every `File` entry's archive-relative path, in no particular
-    /// order. What a whole-archive extraction pre-scans for destination
-    /// collisions -- there is no `EntryId` selection to resolve in that
-    /// case, only "every file this archive would write".
+    /// Every `File` entry's archive-relative path, in the same stable,
+    /// path-sorted order [`Self::file_paths_page`] returns. What a
+    /// whole-archive extraction pre-scans for destination collisions --
+    /// there is no `EntryId` selection to resolve in that case, only
+    /// "every file this archive would write".
+    ///
+    /// Walks `sorted_file_ids` rather than `by_id.values()`: iterating a
+    /// `HashMap` yields an arbitrary, run-to-run-varying order, so the
+    /// full list and any page of it would disagree about which path comes
+    /// first, and two runs over an unchanged archive would produce
+    /// differently-ordered lists. Both consumers of this method (a
+    /// collision pre-scan, and the plugin bridge's `archive_entries`) are
+    /// better served by a deterministic order, and `sorted_file_ids` is
+    /// already built during indexing at no extra cost.
     ///
     /// Deliberately **not** what [`Self::file_count`]/
     /// [`Self::file_paths_page`] are built on: this materializes and
@@ -503,9 +513,9 @@ impl EntryIndex {
     fn file_paths(&self) -> Vec<String> {
         #[cfg(test)]
         FILE_PATHS_CALLS.with(|calls| calls.set(calls.get() + 1));
-        self.by_id
-            .values()
-            .filter(|dto| dto.kind == EntryKind::File)
+        self.sorted_file_ids
+            .iter()
+            .filter_map(|id| self.by_id.get(id))
             .map(|dto| dto.path.as_str().to_string())
             .collect()
     }

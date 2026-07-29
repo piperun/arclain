@@ -4,14 +4,17 @@
 //! - `types` - PluginListItem, ManagedPlugin types
 //! - `lifecycle` - Plugin loading, unloading, installation
 //! - `dispatch` - Event dispatching to plugins
+//! - `request_fetch` - The shared `PluginAction::RequestFetch` routing policy
 //! - `queries` - Query methods for plugin state
 
 mod dispatch;
 mod lifecycle;
 mod queries;
+pub mod request_fetch;
 mod snapshot;
 mod types;
 
+pub use request_fetch::{resolve_interactive_request_fetch, RequestFetchOutcome};
 pub use snapshot::EnabledPluginSnapshot;
 pub use types::{FailedPlugin, PluginListItem, PluginStatusSummary};
 use types::{InitialPluginSettings, ManagedPlugin};
