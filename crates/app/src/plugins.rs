@@ -896,10 +896,27 @@ impl ArchiveContextBridge {
     /// worker of a **multi-thread** Tokio runtime (`Handle::try_current`
     /// returns `Err`, and this method returns `None`, from a plain
     /// `std::thread` with no ambient runtime at all, or from a
-    /// current-thread runtime). Every caller that reaches a WASM call
-    /// through this bridge does so via `PluginSessionStore`'s own
-    /// `spawn_blocking` calls on this application's multi-thread runtime,
-    /// which satisfies this requirement.
+    /// current-thread runtime). `PluginSessionStore`'s own `spawn_blocking`
+    /// calls (panel/button-triggered plugin actions) satisfy this.
+    ///
+    /// `arclain_plugins::PluginManager`'s event-dispatch worker (which
+    /// calls a plugin's `OnArchiveOpen` handler, and so can also reach
+    /// this bridge) does **not**: it runs on a bare `std::thread::spawn`
+    /// thread with no Tokio context entered at all. Verified (by
+    /// [`tests::archive_context_bridge_degrades_gracefully_from_a_bare_thread_with_no_tokio_context`])
+    /// to degrade gracefully rather than panic in that case -- `Handle::
+    /// try_current()` is the very first thing this method calls, and its
+    /// `Err` short-circuits via `?` before `block_in_place` (the actually-
+    /// panic-risking call) is ever reached. In practice this gap is moot
+    /// for `OnArchiveOpen` specifically: `crates/plugins`'s own archive-
+    /// reading host functions (`archive.rs`) check the event context
+    /// first and resolve `archive_path`/`archive_entries` from the event's
+    /// own copied data, never reaching `ActiveTabBridge` at all while an
+    /// event context is installed -- so a plugin's `OnArchiveOpen` handler
+    /// never actually depends on this bridge answering correctly from that
+    /// thread. A future caller reaching this bridge from some other bare
+    /// thread, outside both of these existing safe paths, would still only
+    /// see a degraded `None`/no-op, never a panic.
     fn with_active_session<T>(
         &self,
         read: impl FnOnce(&crate::archive::ArchiveSession) -> T,
@@ -1375,6 +1392,62 @@ mod tests {
             .await
             .unwrap();
         session.id()
+    }
+
+    /// `ArchiveContextBridge`'s own doc comment on `with_session` names an
+    /// open question: it requires the calling thread to be a worker of a
+    /// multi-thread Tokio runtime, and `arclain_plugins::PluginManager`'s
+    /// event-dispatch worker (which calls into a plugin's `OnArchiveOpen`
+    /// handler, which can call back into this bridge via `archive_path`/
+    /// `detect_code_from_archive`-style host functions) runs on a bare
+    /// `std::thread::spawn` thread with no Tokio context at all -- not a
+    /// runtime worker in any sense. This resolves whether that combination
+    /// is merely *degraded* (a graceful `None`, matching "no active
+    /// session") or *unsound* (a panic that would poison the plugin's
+    /// wasmtime store -- see `crates/plugins`' own generic-trap
+    /// classification for why a poisoned store is a big deal).
+    ///
+    /// `Handle::try_current()` is the very first thing `with_session`
+    /// calls, and it returns `Err` (not a panic) when no runtime is
+    /// entered on the current thread -- `?` on `.ok()` turns that into an
+    /// early `None` before `block_in_place` (the actually-panicking-if-
+    /// misused call) is ever reached. This test proves that behavior
+    /// holds through the real bridge, from a thread built exactly like
+    /// `PluginManager`'s own event worker (`std::thread::spawn`, no
+    /// runtime entered), not just asserted from reading the source.
+    #[test]
+    fn archive_context_bridge_degrades_gracefully_from_a_bare_thread_with_no_tokio_context() {
+        let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
+        let tracker = ActiveArchiveSession::new();
+        // Session id is irrelevant here -- with no runtime entered at
+        // all, `with_session` never gets far enough to look one up.
+        tracker.set(Some(ArchiveSessionId::from_raw(1)));
+        let bridge = ArchiveContextBridge::new(tracker, sessions);
+
+        // A bare OS thread, exactly like `PluginManager::new_with_plugin_
+        // log_dir`'s `std::thread::spawn(move || { Self::event_worker(...)
+        // })` -- deliberately NOT spawned from inside a `tokio::runtime`
+        // context, and not itself entering one.
+        let handle = std::thread::spawn(move || {
+            let path =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bridge.archive_path()));
+            let metadata = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                bridge.set_session_metadata(1, Some(serde_json::json!({"a": 1})));
+            }));
+            (path, metadata)
+        });
+        let (path_result, metadata_result) = handle.join().expect("worker thread must not panic");
+
+        assert_eq!(
+            path_result.expect("archive_path must not panic from a bare thread"),
+            None,
+            "with no Tokio context reachable, this degrades to None rather than resolving the \
+             real (active but unreachable) session"
+        );
+        assert!(
+            metadata_result.is_ok(),
+            "set_session_metadata must not panic from a bare thread either"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
