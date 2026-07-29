@@ -7,5 +7,8 @@ pub mod features;
 pub mod platform;
 pub mod shared;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 // Re-export ArclainApp for convenience
 pub use core::arclain_app::ArclainApp;

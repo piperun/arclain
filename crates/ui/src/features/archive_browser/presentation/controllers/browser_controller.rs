@@ -159,10 +159,9 @@ impl BrowserController {
         shared: &SharedState,
     ) -> Vec<arclain_core::features::organization::OrganizationRule> {
         let mut rules = Vec::new();
-        let user_config = shared.signals().user_config.get();
         let dlsite_enabled = shared
             .plugin_ui_jobs
-            .plugin_snapshot(&user_config)
+            .plugin_snapshot(shared.signals().plugin_visibility.get())
             .and_then(Result::ok)
             .map(|plugins| {
                 plugins.iter().any(|p| {

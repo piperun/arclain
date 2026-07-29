@@ -33,9 +33,23 @@
 use super::ArclainApp;
 use crate::core::operations;
 use crate::features::password_management;
+use crate::features::settings::types::DropBehavior;
+use crate::shared::components::drop_overlay::DropZone;
 use crate::shared::dialogs;
 use crate::shared::image_assets::ImageOwner;
 use eframe::egui;
+
+/// Where a drop that aimed at no overlay zone goes, given the user's
+/// default preference. `None` means "do not route it at all" -- the
+/// preference is to ask, so the caller stashes the paths for the modal
+/// instead of opening anything.
+fn unaimed_drop_zone(preference: DropBehavior) -> Option<DropZone> {
+    match preference {
+        DropBehavior::NewTab => Some(DropZone::NewTab),
+        DropBehavior::Replace => Some(DropZone::ReplaceCurrent),
+        DropBehavior::AskEachTime => None,
+    }
+}
 
 pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     // Render Password Dialog (now per-tab — read/write to active tab).
@@ -619,21 +633,16 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
                                         Some(z) => z,
                                         None => {
                                             // No zone aim — honor the user's default preference.
-                                            let user_config =
-                                                app.shared_state.signals().user_config.get();
-                                            match arclain_core::DropBehavior::from_str(
-                                                user_config
-                                                    .drop_behavior
-                                                    .as_deref()
-                                                    .unwrap_or("new_tab"),
-                                            ) {
-                                                arclain_core::DropBehavior::NewTab => {
-                                                    DropZone::NewTab
-                                                }
-                                                arclain_core::DropBehavior::Replace => {
-                                                    DropZone::ReplaceCurrent
-                                                }
-                                                arclain_core::DropBehavior::AskEachTime => {
+                                            let preference = crate::features::settings::types::DropBehavior::from_settings_str(
+                                                &app.shared_state
+                                                    .signals()
+                                                    .general_settings
+                                                    .get()
+                                                    .drop_behavior,
+                                            );
+                                            match unaimed_drop_zone(preference) {
+                                                Some(zone) => zone,
+                                                None => {
                                                     // Defer routing. Stash all dropped paths in
                                                     // the ask_each_time_drop signal and skip the
                                                     // immediate path-routing for this drop. The
@@ -764,5 +773,46 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
         active_tab_for_lightbox
             .lightbox_state
             .set_if_changed(lightbox_state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The routing this handler applies when a drop aimed at no overlay
+    /// zone. Pinned per preference so the "ask" case stays the only one
+    /// that routes nothing -- routing it anywhere would open an archive
+    /// the user has not yet chosen a destination for.
+    #[test]
+    fn an_unaimed_drop_follows_the_stored_preference() {
+        assert_eq!(
+            unaimed_drop_zone(DropBehavior::NewTab),
+            Some(DropZone::NewTab)
+        );
+        assert_eq!(
+            unaimed_drop_zone(DropBehavior::Replace),
+            Some(DropZone::ReplaceCurrent)
+        );
+        assert_eq!(unaimed_drop_zone(DropBehavior::AskEachTime), None);
+    }
+
+    /// The same routing, reached the way the handler reaches it: from
+    /// the stored token rather than from an already-parsed value. An
+    /// unrecognized token opens a new tab, never nothing.
+    #[test]
+    fn an_unaimed_drop_routes_every_stored_token() {
+        for (token, expected) in [
+            ("new_tab", Some(DropZone::NewTab)),
+            ("replace", Some(DropZone::ReplaceCurrent)),
+            ("ask_each_time", None),
+            ("unrecognized", Some(DropZone::NewTab)),
+        ] {
+            assert_eq!(
+                unaimed_drop_zone(DropBehavior::from_settings_str(token)),
+                expected,
+                "stored drop preference {token:?} routed unexpectedly"
+            );
+        }
     }
 }

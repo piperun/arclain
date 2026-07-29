@@ -60,8 +60,9 @@ pub fn render(
                     let plugin_id = slot.plugin_id();
                     let plugin_name = shared
                         .and_then(|shared| {
-                            let config = shared.signals().user_config.get();
-                            shared.plugin_ui_jobs.plugin_snapshot(&config)
+                            shared
+                                .plugin_ui_jobs
+                                .plugin_snapshot(shared.signals().plugin_visibility.get())
                         })
                         .and_then(Result::ok)
                         .and_then(|plugins| {

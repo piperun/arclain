@@ -31,9 +31,9 @@ pub fn render_archives_settings(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     state: &mut ArchivesSettingsState,
-    config_service: Option<&arclain_core::services::ConfigService>,
+    stored_collision_policy: &str,
 ) -> Option<SettingsAction> {
-    pages::archives::render(ui, theme, state, config_service)
+    pages::archives::render(ui, theme, state, stored_collision_policy)
 }
 
 /// Render the Security settings page
@@ -62,14 +62,12 @@ pub fn render_plugins_settings(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     plugins_state: &mut PluginsListState,
-    app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
     crate::features::plugins::presentation::views::render_plugins_settings(
         ui,
         theme,
         plugins_state,
-        app_state,
         shared,
     )
 }
@@ -113,7 +111,6 @@ pub fn render_settings_content(
     theme: &AppTheme,
     page: &SettingsPage,
     borrows: SettingsContentBorrows<'_>,
-    app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
     let SettingsContentBorrows {
@@ -170,8 +167,16 @@ pub fn render_settings_content(
             }
         }
         SettingsPage::Archives => {
-            let cfg = shared.and_then(|s| s.services.config_service.as_deref());
-            render_archives_settings(ui, theme, archives_state, cfg)
+            let stored_collision_policy = shared
+                .map(|s| {
+                    s.signals()
+                        .archive_settings
+                        .read()
+                        .default_collision_policy
+                        .clone()
+                })
+                .unwrap_or_default();
+            render_archives_settings(ui, theme, archives_state, &stored_collision_policy)
         }
         SettingsPage::Security => render_security_settings(ui, theme, security_state),
         SettingsPage::PasswordRules => {
@@ -193,10 +198,11 @@ pub fn render_settings_content(
                                     return Some(SettingsAction::NavigateTo(page));
                                 }
                                 other => {
-                                    let user_config = shared_state.signals().user_config.get();
                                     let plugins = shared_state
                                         .plugin_ui_jobs
-                                        .plugin_snapshot(&user_config)
+                                        .plugin_snapshot(
+                                            shared_state.signals().plugin_visibility.get(),
+                                        )
                                         .and_then(Result::ok);
                                     crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
                                         rp,
@@ -220,7 +226,7 @@ pub fn render_settings_content(
         }
         SettingsPage::Plugins => {
             if let Some(plugins_state) = plugins_state {
-                render_plugins_settings(ui, theme, plugins_state, app_state, shared)
+                render_plugins_settings(ui, theme, plugins_state, shared)
             } else {
                 ui.label("Plugins feature not available.");
                 None
@@ -290,10 +296,9 @@ pub fn render_settings_content(
                     if let Some(org_service) = shared_state.services.organization_service.as_ref() {
                         let output = rp.render_edit_rule(ui, theme, *rule_id);
                         if let Some(data_action) = output.data_action {
-                            let user_config = shared_state.signals().user_config.get();
                             let plugins = shared_state
                                 .plugin_ui_jobs
-                                .plugin_snapshot(&user_config)
+                                .plugin_snapshot(shared_state.signals().plugin_visibility.get())
                                 .and_then(Result::ok);
                             crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
                                 rp,

@@ -387,9 +387,7 @@ pub(crate) fn open_nested_archive_in_tab(
     archive_path: &std::path::Path,
 ) {
     let signals = shared_state.signals();
-    let user_config = signals.user_config.get();
-    let open_in_new_tab = user_config.open_nested_in_new_tab;
-    drop(user_config);
+    let open_in_new_tab = signals.general_settings.read().open_nested_in_new_tab;
 
     let mut col = signals.tabs.get();
     let target_tab_id = if open_in_new_tab {
@@ -486,7 +484,7 @@ pub(crate) fn open_extracted_file_via_signals(
 /// Called once during `SharedState::new()`, after `shared` itself is
 /// fully built (so the archive-open operations this spawns can register
 /// with the operation bridge same as any other open). Reads
-/// `restore_tabs_on_launch` from the already-loaded `user_config` signal.
+/// `restore_tabs_on_launch` from the already-loaded settings signal.
 /// If enabled and the file exists, replaces the default single-tab
 /// collection and spawns background loads for every tab that had an
 /// archive open. Missing files surface through the existing status-bar
@@ -501,8 +499,7 @@ pub(crate) fn open_extracted_file_via_signals(
 /// doc comment.
 pub fn restore_tabs_on_launch(shared_state: &SharedState) {
     let signals = shared_state.signals();
-    let user_config = signals.user_config.get();
-    if !user_config.restore_tabs_on_launch {
+    if !signals.general_settings.read().restore_tabs_on_launch {
         return;
     }
 
@@ -690,7 +687,7 @@ fn save_tabs_on_exit_to(config_dir: &std::path::Path, signals: &AppSignals) {
     }
 
     let session_path = config_dir.join("session.json");
-    if !signals.user_config.get().restore_tabs_on_launch {
+    if !signals.general_settings.read().restore_tabs_on_launch {
         if let Err(error) = arclain_app::settings::clear_session_restore_list(&session_path) {
             tracing::warn!(
                 "[tabs] failed to remove {}: {error:?}",
@@ -867,10 +864,12 @@ mod tests {
 
     fn signals_with_restore(restore_tabs_on_launch: bool) -> AppSignals {
         let signals = AppSignals::new();
-        signals.user_config.set(arclain_core::UserConfig {
-            restore_tabs_on_launch,
-            ..Default::default()
-        });
+        signals
+            .general_settings
+            .set(arclain_app::settings::GeneralSettingsDto {
+                restore_tabs_on_launch,
+                ..Default::default()
+            });
         signals
     }
 

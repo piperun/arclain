@@ -42,8 +42,10 @@ impl Region for ToolbarRegion {
     const AXIS: Axis = Axis::Horizontal;
 
     fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool {
-        let user_config = shared.signals().user_config.get();
-        let Some(Ok(snapshot)) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) else {
+        let Some(Ok(snapshot)) = shared
+            .plugin_ui_jobs
+            .plugin_snapshot(shared.signals().plugin_visibility.get())
+        else {
             return false;
         };
         let enabled_plugins: Vec<_> = snapshot
@@ -160,8 +162,10 @@ impl Region for InfoPanelRegion {
     const AXIS: Axis = Axis::Vertical;
 
     fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool {
-        let user_config = shared.signals().user_config.get();
-        let Some(Ok(snapshot)) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) else {
+        let Some(Ok(snapshot)) = shared
+            .plugin_ui_jobs
+            .plugin_snapshot(shared.signals().plugin_visibility.get())
+        else {
             return false;
         };
         let enabled_plugins: Vec<_> = snapshot

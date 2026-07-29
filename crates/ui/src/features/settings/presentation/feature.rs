@@ -53,13 +53,14 @@ pub struct SettingsFeature {
 
 impl SettingsFeature {
     pub fn new(shared: &SharedState) -> Self {
-        // Load saved settings from config signal
-        let user_config = shared.signals().user_config.get();
-        let open_nested_in_new_tab = user_config.open_nested_in_new_tab;
-        let drop_behavior = arclain_core::DropBehavior::from_str(
-            user_config.drop_behavior.as_deref().unwrap_or("new_tab"),
+        // Seed the form state from the settings mirrors.
+        let general = shared.signals().general_settings.get();
+        let network = shared.signals().network_settings.get();
+        let open_nested_in_new_tab = general.open_nested_in_new_tab;
+        let drop_behavior = crate::features::settings::types::DropBehavior::from_settings_str(
+            &general.drop_behavior,
         );
-        let restore_tabs_on_launch = user_config.restore_tabs_on_launch;
+        let restore_tabs_on_launch = general.restore_tabs_on_launch;
 
         let network_state = {
             let state = shared.app_state.lock();
@@ -79,11 +80,9 @@ impl SettingsFeature {
             use arclain_app::Signal;
 
             NetworkSettingsState {
-                socks5_enabled: Signal::new(user_config.socks5_enabled),
-                socks5_address: Signal::new(user_config.socks5_address.clone().unwrap_or_default()),
-                socks5_username: Signal::new(
-                    user_config.socks5_username.clone().unwrap_or_default(),
-                ),
+                socks5_enabled: Signal::new(network.socks5_enabled),
+                socks5_address: Signal::new(network.socks5_address.clone().unwrap_or_default()),
+                socks5_username: Signal::new(network.socks5_username.clone().unwrap_or_default()),
                 socks5_password: Signal::new(password),
                 connection_test_status: Signal::new(ConnectionTestStatus::Idle),
             }
@@ -106,8 +105,8 @@ impl SettingsFeature {
             drop(state);
 
             ServerSettingsState {
-                enabled: Signal::new(user_config.gameta_server_enabled),
-                url: Signal::new(user_config.gameta_server_url.clone().unwrap_or_default()),
+                enabled: Signal::new(network.gameta_server_enabled),
+                url: Signal::new(network.gameta_server_url.clone().unwrap_or_default()),
                 api_key: Signal::new(api_key),
                 connection_status: Signal::new(ServerConnectionStatus::Idle),
             }
@@ -121,7 +120,14 @@ impl SettingsFeature {
             },
             network_state,
             server_state,
-            security_state: SecuritySettingsState::default(),
+            security_state: {
+                let security = shared.signals().security_settings.get();
+                SecuritySettingsState {
+                    default_secrets_db: security.default_secrets_database_path,
+                    default_key_file: security.default_key_file_path,
+                    ..SecuritySettingsState::default()
+                }
+            },
             archives_state: ArchivesSettingsState::default(),
 
             interface_state: InterfaceSettingsState::default(),
@@ -168,7 +174,7 @@ impl SettingsFeature {
 
         match page {
             SettingsPage::General => {
-                let stored_drop = arclain_core::DropBehavior::from_str(
+                let stored_drop = crate::features::settings::types::DropBehavior::from_settings_str(
                     state
                         .user_config
                         .drop_behavior
@@ -357,7 +363,6 @@ impl SettingsFeature {
                                 &shared.theme,
                                 page,
                                 content_borrows,
-                                &shared.app_state,
                                 Some(shared),
                             );
 

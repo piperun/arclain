@@ -10,7 +10,6 @@ use crate::shared::dialogs::archive_error_dialog::ArchiveErrorDialogState;
 use crate::shared::dialogs::ask_each_time_drop::AskEachTimeDropState;
 use crate::shared::dialogs::close_tab_confirm::CloseTabConfirmState;
 use arclain_app::Signal;
-use arclain_core::utilities::PassRule;
 use arclain_core::UiItem;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -123,11 +122,35 @@ pub struct AppSignals {
     /// UI display preferences - reactive for settings changes
     pub ui_preferences: Signal<UiPreferences>,
 
-    /// User preferences from config DB - reactive
-    pub user_config: Signal<arclain_core::UserConfig>,
+    /// General/interface preferences, mirrored from the application's
+    /// own settings snapshot. Refreshed by
+    /// `AppState::refresh_settings_from_facade` after any settings
+    /// change so already-rendered UI picks it up next frame.
+    pub general_settings: Signal<arclain_app::settings::GeneralSettingsDto>,
 
-    /// Password rules for auto-unlock (from secrets DB)
-    pub pass_rules: Signal<Vec<PassRule>>,
+    /// Archive backend/directory preferences and the pipeline collision
+    /// default, mirrored the same way as [`Self::general_settings`].
+    pub archive_settings: Signal<arclain_app::settings::ArchiveSettingsDto>,
+
+    /// Proxy/server preferences, mirrored the same way as
+    /// [`Self::general_settings`].
+    pub network_settings: Signal<arclain_app::settings::NetworkSettingsDto>,
+
+    /// Vault locations and the encrypted-CRC policy, mirrored the same
+    /// way as [`Self::general_settings`].
+    pub security_settings: Signal<arclain_app::settings::SecuritySettingsDto>,
+
+    /// Per-plugin visibility overrides, as the opaque JSON blob the
+    /// plugin snapshot builder keys its cache on. Not part of the
+    /// settings snapshot: it is a plugin-list rendering concern, and
+    /// nothing here interprets it.
+    pub plugin_visibility: Signal<Option<String>>,
+
+    /// Password rules for auto-unlock, as non-secret summaries. The
+    /// stored passwords deliberately never reach this reactive layer --
+    /// the code that actually needs one (auto-unlock on archive open)
+    /// reads `AppState::pass_rules`, not this.
+    pub pass_rules: Signal<Vec<arclain_app::settings::PasswordRuleSummary>>,
 
     /// [NEW] Status Bar State
     pub status_bar: Signal<crate::shared::components::status_bar::StatusBarInfo>,
@@ -368,7 +391,11 @@ impl AppSignals {
             info_panel_items: Signal::new(Vec::new()).with_name("info_panel_items"),
             context_menu_items: Signal::new(Vec::new()).with_name("context_menu_items"),
             ui_preferences: Signal::new(UiPreferences::default()).with_name("ui_preferences"),
-            user_config: Signal::new(arclain_core::UserConfig::default()).with_name("user_config"),
+            general_settings: Signal::new(Default::default()).with_name("general_settings"),
+            archive_settings: Signal::new(Default::default()).with_name("archive_settings"),
+            network_settings: Signal::new(Default::default()).with_name("network_settings"),
+            security_settings: Signal::new(Default::default()).with_name("security_settings"),
+            plugin_visibility: Signal::new(None).with_name("plugin_visibility"),
             pass_rules: Signal::new(Vec::new()).with_name("pass_rules"),
             status_bar: Signal::new(
                 crate::shared::components::status_bar::StatusBarInfo::default(),

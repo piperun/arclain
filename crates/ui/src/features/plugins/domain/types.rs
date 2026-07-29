@@ -154,14 +154,18 @@ impl PluginsListState {
 
 impl PluginsListState {
     /// Update plugin list from plugin manager
+    /// `plugin_visibility` is the stored per-plugin visibility blob
+    /// (a `{plugin_id: {slot: bool}}` JSON object), or `None` when
+    /// nothing has been stored. Unparseable content is treated the same
+    /// as absent -- a corrupt blob hides no plugin.
     pub fn update_from_manager(
         &mut self,
         manager: &arclain_plugins::PluginManager,
-        user_config: &arclain_core::UserConfig,
+        plugin_visibility: Option<&str>,
     ) {
         self.plugins.clear();
 
-        let visibility_json = user_config.plugin_visibility.as_deref().unwrap_or("{}");
+        let visibility_json = plugin_visibility.unwrap_or("{}");
         let visibility_map: std::collections::HashMap<
             String,
             std::collections::HashMap<String, bool>,

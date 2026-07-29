@@ -14,7 +14,6 @@ pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     plugins_state: &mut PluginsListState,
-    app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
     if let Some(shared) = shared {
@@ -31,7 +30,6 @@ pub fn render(
         ui,
         theme,
         plugins_state,
-        app_state,
         shared,
         content_cache,
     )

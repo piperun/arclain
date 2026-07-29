@@ -194,6 +194,12 @@ pub fn finish_archive_load(shared: &SharedState, tab: &crate::core::tabs::TabSta
         .as_ref()
         .and_then(|p| p.to_str())
         .map(|s| s.to_string());
+    // Stays on `AppState::pass_rules` (which carries the decrypted
+    // passwords) rather than the facade: `ArclainApp::password_rules`
+    // returns summaries that report only *whether* a password is
+    // configured, so auto-unlock cannot be expressed through it. Closing
+    // this needs the facade to own auto-unlock itself, not a wider
+    // password-rule read model.
     let auto_pw = arclain_core::utilities::auto_password_for(
         &pass_rules,
         archive_name_owned.as_deref(),
@@ -341,6 +347,17 @@ pub fn derive_archive_info(
     }
 }
 
+/// The pre-facade conversion path: spawns the 7-Zip CLI directly,
+/// reports progress over an `mpsc` channel, and resolves an auto-password
+/// straight from `AppState`.
+///
+/// **Currently unreachable**: nothing calls it. Conversion runs through
+/// `ArclainApp::start_convert`/`start_pipeline` (driven by the process
+/// page and the operation bridge). Left in place rather than migrated or
+/// deleted because it belongs to the process-page work that retires the
+/// remaining operation bypasses -- every `arclain_core` reference below
+/// dies with the function, and rewriting it here would be migrating code
+/// that is scheduled for removal.
 pub fn convert_archive(
     state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     status_info: &mut status_bar::StatusBarInfo,

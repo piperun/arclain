@@ -10,7 +10,6 @@ use crate::shared::image_assets::{ImageAssetStore, ImageOwner};
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use eframe::egui;
-use parking_lot::Mutex;
 use std::sync::Arc;
 
 /// Render the Plugin Page (coordinator)
@@ -19,7 +18,6 @@ pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     state: &mut PluginsListState,
-    app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
     content_cache: Option<Arc<arclain_core::ContentCache>>,
 ) -> Option<SettingsAction> {
@@ -50,7 +48,6 @@ pub fn render(
             ui,
             theme,
             state,
-            app_state,
             shared,
             content_cache.as_ref(),
         );

@@ -10,19 +10,18 @@ use crate::shared::components::Form;
 use crate::shared::image_assets::ImageOwner;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_core::utilities::effective_plugin_proxy_map;
-use arclain_core::UserConfig;
+use arclain_app::settings::NetworkSettingsDto;
 use arclain_widgets::toggle_switch::ToggleSwitch;
 use arclain_widgets::Chips;
 use eframe::egui;
-use parking_lot::Mutex;
 use std::sync::Arc;
 
-fn plugin_proxy_toggle_value(user_config: &UserConfig, plugin_id: &str) -> bool {
-    effective_plugin_proxy_map(user_config)
-        .get(plugin_id)
-        .copied()
-        .unwrap_or(false)
+/// Whether this plugin's traffic is routed through the proxy right now.
+/// The *effective* answer, not the stored override -- a default-proxied
+/// plugin with no stored entry is routed, and nothing is while the
+/// global proxy is off. See `NetworkSettingsDto::plugin_proxy_effective`.
+fn plugin_proxy_toggle_value(network: &NetworkSettingsDto, plugin_id: &str) -> bool {
+    network.plugin_proxy_effective(plugin_id)
 }
 
 /// The raw (sparse, override-only) per-plugin proxy map with `plugin_id`'s
@@ -33,13 +32,13 @@ fn plugin_proxy_toggle_value(user_config: &UserConfig, plugin_id: &str) -> bool 
 /// applying live routing is the facade's `update_settings`'s job (see
 /// `render`'s Proxy Settings toggle handler).
 fn plugin_proxy_override_map(
-    user_config: &UserConfig,
+    network: &NetworkSettingsDto,
     plugin_id: &str,
     enabled: bool,
 ) -> std::collections::BTreeMap<String, bool> {
-    let mut settings = user_config.get_plugin_proxy_settings();
+    let mut settings = network.plugin_proxy_enabled.clone();
     settings.insert(plugin_id.to_string(), enabled);
-    settings.into_iter().collect()
+    settings
 }
 
 /// Render the plugin detail view
@@ -48,7 +47,6 @@ pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     state: &mut PluginsListState,
-    app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
     _content_cache: Option<&Arc<arclain_core::ContentCache>>,
 ) -> bool {
@@ -153,10 +151,11 @@ pub fn render(
             .show(ui, &theme.colors);
 
         // Proxy Settings
-        let proxy_enabled = {
-            let app = app_state.lock();
-            plugin_proxy_toggle_value(&app.user_config, &plugin_info.id)
-        };
+        let network_settings = shared.map(|shared| shared.signals().network_settings.get());
+        let proxy_enabled = network_settings
+            .as_ref()
+            .map(|network| plugin_proxy_toggle_value(network, &plugin_info.id))
+            .unwrap_or(false);
         let mut proxy_toggle_val = proxy_enabled;
 
         crate::shared::components::settings_form::SettingsRow::new("Network Proxy")
@@ -176,9 +175,12 @@ pub fn render(
                         return;
                     };
 
-                    let mut app = app_state.lock();
+                    let Some(network) = network_settings.as_ref() else {
+                        return;
+                    };
                     let plugin_proxy_enabled =
-                        plugin_proxy_override_map(&app.user_config, &plugin_info.id, proxy_toggle_val);
+                        plugin_proxy_override_map(network, &plugin_info.id, proxy_toggle_val);
+                    let mut app = shared.app_state.lock();
                     let patch_result = app.submit_settings_patch(
                         facade,
                         &shared.services.tokio_runtime,
@@ -564,55 +566,71 @@ pub(crate) fn invalidate_main_layout_on_plugin_change(state: &mut PluginsListSta
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arclain_core::UserConfig;
+
+    /// A network snapshot with the proxy on and `overrides` stored.
+    fn network_with(overrides: &[(&str, bool)]) -> NetworkSettingsDto {
+        NetworkSettingsDto {
+            socks5_enabled: true,
+            plugin_proxy_enabled: overrides
+                .iter()
+                .map(|(id, enabled)| ((*id).to_string(), *enabled))
+                .collect(),
+            ..NetworkSettingsDto::default()
+        }
+    }
 
     #[test]
     fn plugin_proxy_toggle_uses_inherited_dlsite_defaults() {
-        let mut config = UserConfig::new();
-        config.socks5_enabled = true;
+        let network = network_with(&[]);
 
-        assert!(plugin_proxy_toggle_value(&config, "dlsite"));
-        assert!(plugin_proxy_toggle_value(&config, "dlsite-metadata"));
-        assert!(plugin_proxy_toggle_value(&config, "dlsite-api"));
-        assert!(plugin_proxy_toggle_value(&config, "dlsite-html"));
-        assert!(!plugin_proxy_toggle_value(&config, "custom"));
+        assert!(plugin_proxy_toggle_value(&network, "dlsite"));
+        assert!(plugin_proxy_toggle_value(&network, "dlsite-metadata"));
+        assert!(plugin_proxy_toggle_value(&network, "dlsite-api"));
+        assert!(plugin_proxy_toggle_value(&network, "dlsite-html"));
+        assert!(!plugin_proxy_toggle_value(&network, "custom"));
     }
 
     #[test]
     fn plugin_proxy_toggle_preserves_explicit_overrides() {
-        let mut config = UserConfig::new();
-        config.socks5_enabled = true;
-        config.set_plugin_proxy_enabled("dlsite-api", false);
-        config.set_plugin_proxy_enabled("custom", true);
+        let network = network_with(&[("dlsite-api", false), ("custom", true)]);
 
-        assert!(!plugin_proxy_toggle_value(&config, "dlsite-api"));
-        assert!(plugin_proxy_toggle_value(&config, "custom"));
+        assert!(!plugin_proxy_toggle_value(&network, "dlsite-api"));
+        assert!(plugin_proxy_toggle_value(&network, "custom"));
+    }
+
+    /// With the global proxy off nothing is routed, whatever the stored
+    /// overrides say -- so the toggle must read off too.
+    #[test]
+    fn plugin_proxy_toggle_is_off_while_the_global_proxy_is_disabled() {
+        let network = NetworkSettingsDto {
+            socks5_enabled: false,
+            ..network_with(&[("custom", true)])
+        };
+
+        assert!(!plugin_proxy_toggle_value(&network, "custom"));
+        assert!(!plugin_proxy_toggle_value(&network, "dlsite"));
     }
 
     #[test]
     fn plugin_proxy_override_map_preserves_other_explicit_overrides() {
-        let mut config = UserConfig::new();
-        config.socks5_enabled = true;
-        config.set_plugin_proxy_enabled("dlsite-api", false);
+        let network = network_with(&[("dlsite-api", false)]);
 
-        let map = plugin_proxy_override_map(&config, "custom", true);
+        let map = plugin_proxy_override_map(&network, "custom", true);
 
         assert_eq!(map.get("custom"), Some(&true));
         assert_eq!(map.get("dlsite-api"), Some(&false));
         // Never-overridden plugins are not baked in here -- the raw stored
         // map carries only explicit overrides; `dlsite`/`dlsite-html`'s
-        // inherited defaults resolve at read time via
-        // `effective_plugin_proxy_map`, not at write time.
+        // inherited defaults resolve at read time, not at write time.
         assert_eq!(map.get("dlsite"), None);
         assert_eq!(map.get("dlsite-html"), None);
     }
 
     #[test]
     fn plugin_proxy_override_map_updates_an_existing_override_in_place() {
-        let mut config = UserConfig::new();
-        config.set_plugin_proxy_enabled("existing", true);
+        let network = network_with(&[("existing", true)]);
 
-        let map = plugin_proxy_override_map(&config, "existing", false);
+        let map = plugin_proxy_override_map(&network, "existing", false);
 
         assert_eq!(map.get("existing"), Some(&false));
         assert_eq!(map.len(), 1);

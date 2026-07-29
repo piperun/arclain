@@ -52,21 +52,32 @@ impl AppState {
     /// Re-syncs this state's still-legacy settings/vault mirror
     /// (`user_config`, `pass_rules`, `encrypted_crc_policy`, `db_paths`,
     /// `dbs`) from `arclain_app::ArclainApp`'s own live state, and
-    /// updates the two reactive signal mirrors (`user_config`,
-    /// `pass_rules`) so already-rendered UI picks up the change on the
-    /// next frame.
+    /// refreshes the reactive settings signals from the facade's own
+    /// snapshot so already-rendered UI picks up the change on the next
+    /// frame.
     ///
-    /// Settings/secrets/vault mutations now go through the facade first
+    /// The signals are filled from `settings()`/`password_rules()`
+    /// rather than from the legacy composition beside them: those are
+    /// the shapes every reader now works in, and reading them from the
+    /// facade means the frontend never has to know how a preference is
+    /// stored to display it.
+    ///
+    /// Settings/secrets/vault mutations go through the facade first
     /// (see `vault_ops.rs`/`password_ops.rs`/`settings_controller.rs`);
-    /// this is the one place that pulls the result back into `AppState`
-    /// afterward, closing the loop the facade's own `take_legacy_
-    /// composition` doc comment describes -- call this once, right
-    /// after any such facade call succeeds. `backend_selector`/
-    /// `fallback_backend`/`last_entries` are untouched: nothing this
-    /// task's facade surface does ever changes them.
+    /// this is the one place that pulls the result back afterward,
+    /// closing the loop the facade's own `take_legacy_composition` doc
+    /// comment describes -- call this once, right after any such facade
+    /// call succeeds. `backend_selector`/`fallback_backend`/
+    /// `last_entries` are untouched: no settings/vault mutation ever
+    /// changes them.
+    ///
+    /// Blocks briefly on `runtime` -- see `vault_ops.rs`'s own module
+    /// doc comment for why that's the right choice from a synchronous
+    /// egui action handler.
     pub fn refresh_settings_from_facade(
         &mut self,
         facade: &arclain_app::ArclainApp,
+        runtime: &tokio::runtime::Runtime,
     ) -> anyhow::Result<()> {
         let legacy = facade
             .take_legacy_composition()
@@ -76,8 +87,37 @@ impl AppState {
         self.encrypted_crc_policy = legacy.encrypted_crc_policy;
         self.db_paths = legacy.db_paths;
         self.dbs = legacy.dbs;
-        self.signals.user_config.set(self.user_config.clone());
-        self.signals.pass_rules.set(self.pass_rules.clone());
+        self.signals
+            .plugin_visibility
+            .set(self.user_config.plugin_visibility.clone());
+        self.refresh_settings_signals(facade, runtime)
+    }
+
+    /// Fills the reactive settings mirrors from the facade's own
+    /// snapshot. Split out of [`Self::refresh_settings_from_facade`] so
+    /// startup can populate them once without also re-taking a legacy
+    /// composition it already holds.
+    pub fn refresh_settings_signals(
+        &self,
+        facade: &arclain_app::ArclainApp,
+        runtime: &tokio::runtime::Runtime,
+    ) -> anyhow::Result<()> {
+        let (snapshot, rules) = runtime.block_on(async {
+            let snapshot = facade
+                .settings()
+                .await
+                .map_err(|error| describe_facade_error("reading current settings", error))?;
+            let rules = facade
+                .password_rules()
+                .await
+                .map_err(|error| describe_facade_error("reading current password rules", error))?;
+            Ok::<_, anyhow::Error>((snapshot, rules))
+        })?;
+        self.signals.general_settings.set(snapshot.general);
+        self.signals.archive_settings.set(snapshot.archive);
+        self.signals.network_settings.set(snapshot.network);
+        self.signals.security_settings.set(snapshot.security);
+        self.signals.pass_rules.set(rules);
         Ok(())
     }
 
@@ -109,7 +149,7 @@ impl AppState {
                 .await
                 .map_err(|error| describe_facade_error("saving settings", error))
         })?;
-        self.refresh_settings_from_facade(facade)?;
+        self.refresh_settings_from_facade(facade, runtime)?;
         Ok(snapshot)
     }
 }

@@ -3,7 +3,6 @@
 use crate::core::tabs::TabId;
 use crate::features::plugins::domain::types::{PluginInfo, PluginsListState, RequestId};
 use arclain_app::Signal;
-use arclain_core::UserConfig;
 use arclain_plugins::host_functions::EventContext;
 use arclain_plugins::manager::PluginStatusSummary;
 use arclain_plugins::types::{PluginAction, PluginExtensionPoint, PluginLayout, TopTabConfig};
@@ -63,8 +62,11 @@ pub enum PluginUiRequest {
         target: PluginUiTarget,
         origin_tab: Option<TabId>,
     },
+    /// Rebuild the plugin list. Carries only the per-plugin visibility
+    /// blob the list actually reads -- see
+    /// `PluginsListState::update_from_manager`.
     Snapshot {
-        user_config: UserConfig,
+        plugin_visibility: Option<String>,
     },
     ChromeSnapshot,
     NetworkLog,
@@ -192,9 +194,7 @@ impl PluginUiRequest {
                 target,
                 origin_tab,
             } => RequestKey::Layout(plugin_id.clone(), target.clone(), *origin_tab),
-            Self::Snapshot { user_config } => {
-                RequestKey::Snapshot(user_config.plugin_visibility.clone())
-            }
+            Self::Snapshot { plugin_visibility } => RequestKey::Snapshot(plugin_visibility.clone()),
             Self::ChromeSnapshot => RequestKey::ChromeSnapshot,
             Self::NetworkLog => RequestKey::NetworkLog,
             Self::Install { wasm_path } => RequestKey::Install(request_id, wasm_path.clone()),
@@ -931,14 +931,11 @@ impl PluginUiJobs {
 
     pub fn plugin_snapshot(
         &self,
-        user_config: &UserConfig,
+        plugin_visibility: Option<String>,
     ) -> Option<std::result::Result<Arc<Vec<PluginInfo>>, Arc<str>>> {
-        let key = user_config.plugin_visibility.clone();
-        let snapshot = self.cache.lock().snapshots.get(&key).cloned();
+        let snapshot = self.cache.lock().snapshots.get(&plugin_visibility).cloned();
         if snapshot.is_none() {
-            self.request(PluginUiRequest::Snapshot {
-                user_config: user_config.clone(),
-            });
+            self.request(PluginUiRequest::Snapshot { plugin_visibility });
         }
         snapshot
     }
@@ -1285,12 +1282,12 @@ fn execute(
                 layout,
             }
         }
-        PluginUiRequest::Snapshot { user_config } => {
+        PluginUiRequest::Snapshot { plugin_visibility } => {
             let Some(manager) = manager else {
                 return PluginUiResult::Failed {
                     request_id,
                     context: PluginUiFailureContext::Snapshot {
-                        visibility: user_config.plugin_visibility.clone(),
+                        visibility: plugin_visibility.clone(),
                     },
                     error: "plugin manager unavailable".to_string(),
                 };
@@ -1298,7 +1295,7 @@ fn execute(
             let plugins = {
                 let manager = manager.lock();
                 let mut state = PluginsListState::default();
-                state.update_from_manager(&manager, &user_config);
+                state.update_from_manager(&manager, plugin_visibility.as_deref());
                 state.plugins
             };
             PluginUiResult::SnapshotLoaded {

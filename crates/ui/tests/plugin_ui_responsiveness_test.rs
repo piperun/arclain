@@ -2,7 +2,6 @@
 
 mod common;
 
-use arclain_core::UserConfig;
 use arclain_plugins::{types::PluginAction, PluginManager};
 use arclain_ui::core::tabs::TabId;
 use arclain_ui::features::plugins::application::{
@@ -222,7 +221,6 @@ fn plugin_settings_selection_change_releases_the_previous_image_owner() {
                 ui,
                 &shared.theme,
                 &mut state,
-                &shared.app_state,
                 Some(&shared),
                 None,
             );
@@ -257,10 +255,10 @@ fn request_returns_while_manager_is_blocked_and_duplicate_is_coalesced() {
     let (sent, received) = mpsc::channel();
     let request_thread = std::thread::spawn(move || {
         let first = requester.request(PluginUiRequest::Snapshot {
-            user_config: UserConfig::default(),
+            plugin_visibility: None,
         });
         let duplicate = requester.request(PluginUiRequest::Snapshot {
-            user_config: UserConfig::default(),
+            plugin_visibility: None,
         });
         sent.send((first, duplicate)).expect("send request ids");
     });
@@ -303,7 +301,7 @@ fn invalidation_rejects_a_late_snapshot_result() {
     let starting_epoch = jobs.completion_signal().get();
 
     jobs.request(PluginUiRequest::Snapshot {
-        user_config: UserConfig::default(),
+        plugin_visibility: None,
     });
     jobs.invalidate_plugin_snapshots();
     drop(manager_guard);
@@ -322,7 +320,7 @@ fn invalidation_rejects_a_late_snapshot_result() {
         "an invalidated request must not publish a stale result"
     );
     assert!(
-        jobs.plugin_snapshot(&UserConfig::default()).is_none(),
+        jobs.plugin_snapshot(None).is_none(),
         "late result repopulated the invalidated snapshot cache"
     );
 }

@@ -65,9 +65,9 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         // Reset signal
         app.shared_state.signals().hotkeys_updated.set(false);
 
-        // Reload manager from current user config
-        let config = app.shared_state.signals().user_config.get();
-        let bindings_map = if let Some(json) = &config.hotkey_bindings {
+        // Reload manager from the current general settings
+        let general = app.shared_state.signals().general_settings.get();
+        let bindings_map = if let Some(json) = &general.hotkey_bindings {
             serde_json::from_str::<std::collections::HashMap<String, String>>(json)
                 .unwrap_or_default()
         } else {

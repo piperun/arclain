@@ -26,17 +26,14 @@ pub fn render(
                 );
                 ui.add_space(12.0);
 
-                // Default paths come from `state.default_paths`, captured
-                // once at state construction (see SecuritySettingsState).
-                let default_key = state
-                    .default_paths
-                    .as_ref()
-                    .and_then(|d| d.key_file.as_ref())
-                    .map(|p| p.to_string_lossy());
+                // Default paths come from the application's settings
+                // snapshot, read once when this state was built (see
+                // SecuritySettingsState).
+                let default_key = state.default_key_file.as_ref().map(|p| p.to_string_lossy());
                 let default_db = state
-                    .default_paths
+                    .default_secrets_db
                     .as_ref()
-                    .map(|d| d.secrets_db.to_string_lossy());
+                    .map(|p| p.to_string_lossy());
 
                 // Key file picker
                 ui.label(

@@ -5,6 +5,118 @@
 use crate::features::password_management::dialogs::zip_pass_rules::PasswordRule;
 use std::collections::HashMap;
 
+/// What happens when an archive is dropped on the window without aiming
+/// at a specific overlay zone.
+///
+/// The application stores this as a plain string token
+/// (`GeneralSettingsDto::drop_behavior`); this is the one place that
+/// token is turned into something the UI can `match` on, and the one
+/// place a choice is turned back into a token. Every screen and handler
+/// that cares about the preference goes through
+/// [`Self::from_settings_str`]/[`Self::as_settings_str`] rather than
+/// comparing strings of its own -- an unrecognized token has exactly one
+/// interpretation, decided here.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum DropBehavior {
+    /// Open the dropped archive in a new tab.
+    #[default]
+    NewTab,
+    /// Replace the currently active tab with the dropped archive.
+    Replace,
+    /// Ask the user which of the two to do, on every drop.
+    AskEachTime,
+}
+
+impl DropBehavior {
+    /// The only place a stored token becomes a behavior. An
+    /// unrecognized one reads as [`Self::NewTab`], matching what the
+    /// application documents about the field.
+    pub fn from_settings_str(value: &str) -> Self {
+        match value {
+            "replace" => Self::Replace,
+            "ask_each_time" => Self::AskEachTime,
+            _ => Self::NewTab,
+        }
+    }
+
+    /// The only place a behavior becomes a stored token. Round-trips
+    /// with [`Self::from_settings_str`].
+    pub fn as_settings_str(self) -> &'static str {
+        match self {
+            Self::NewTab => "new_tab",
+            Self::Replace => "replace",
+            Self::AskEachTime => "ask_each_time",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::NewTab => "Open as new tab",
+            Self::Replace => "Replace current tab",
+            Self::AskEachTime => "Ask each time",
+        }
+    }
+
+    /// Every variant, in the order the settings dropdown lists them.
+    pub const ALL: [Self; 3] = [Self::NewTab, Self::Replace, Self::AskEachTime];
+}
+
+/// What a batch pipeline does when a producing step is about to write
+/// over an existing path, unless the pipeline itself overrides it.
+///
+/// Same shape and same reason as [`DropBehavior`]: the application
+/// stores a string token, and this is the one place that token is
+/// turned into a value the UI can `match` on and render.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum CollisionPolicy {
+    /// Consult the run history and deduplicate, or prompt.
+    #[default]
+    Smart,
+    /// Leave the existing content untouched.
+    Skip,
+    /// Replace the existing content.
+    Overwrite,
+    /// Fail the step.
+    Fail,
+}
+
+impl CollisionPolicy {
+    /// The only place a stored token becomes a policy. An unrecognized
+    /// one reads as [`Self::Smart`] -- the same policy the pipeline
+    /// executor falls back to when no app default resolves.
+    pub fn from_settings_str(value: &str) -> Self {
+        match value {
+            "fail" => Self::Fail,
+            "skip" => Self::Skip,
+            "overwrite" => Self::Overwrite,
+            _ => Self::Smart,
+        }
+    }
+
+    /// The only place a policy becomes a stored token. Round-trips with
+    /// [`Self::from_settings_str`].
+    pub fn as_settings_str(self) -> &'static str {
+        match self {
+            Self::Smart => "smart",
+            Self::Skip => "skip",
+            Self::Overwrite => "overwrite",
+            Self::Fail => "fail",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Smart => "Smart (dedup / prompt)",
+            Self::Skip => "Skip if exists",
+            Self::Overwrite => "Overwrite",
+            Self::Fail => "Fail on existing",
+        }
+    }
+
+    /// Every variant, in the order the settings dropdown lists them.
+    pub const ALL: [Self; 4] = [Self::Smart, Self::Skip, Self::Overwrite, Self::Fail];
+}
+
 /// Encrypted CRC policy for encrypted archives
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum EncryptedCrcPolicy {
@@ -57,6 +169,11 @@ pub enum SettingsAction {
     SavePasswordRules { rules: Vec<PasswordRule> },
     /// Save archives settings
     SaveArchives { temp_dir: Option<String> },
+    /// Persist the app-wide default for what a batch pipeline does when
+    /// its output path already exists. Separate from `SaveArchives`
+    /// because the dropdown commits on change rather than on the page's
+    /// Save button, matching the behavior it has always had.
+    SaveCollisionPolicy { policy: CollisionPolicy },
     /// Install a plugin from a .wasm file
     InstallPlugin { wasm_path: String },
     /// Clear the cache index (database entries)
@@ -72,7 +189,7 @@ pub enum SettingsAction {
     /// Save general settings
     SaveGeneral {
         open_nested_in_new_tab: bool,
-        drop_behavior: arclain_core::DropBehavior,
+        drop_behavior: DropBehavior,
         restore_tabs_on_launch: bool,
     },
     /// Save network settings
@@ -140,6 +257,10 @@ impl std::fmt::Debug for SettingsAction {
             Self::SaveArchives { temp_dir } => f
                 .debug_struct("SaveArchives")
                 .field("temp_dir", temp_dir)
+                .finish(),
+            Self::SaveCollisionPolicy { policy } => f
+                .debug_struct("SaveCollisionPolicy")
+                .field("policy", policy)
                 .finish(),
             Self::InstallPlugin { wasm_path } => f
                 .debug_struct("InstallPlugin")
@@ -264,7 +385,7 @@ pub struct GeneralSettingsState {
     /// Whether to open nested archives in a new tab (true) or replace current view (false)
     pub open_nested_in_new_tab: Signal<bool>,
     /// What to do when a file is dropped without aiming at a specific overlay zone.
-    pub drop_behavior: Signal<arclain_core::DropBehavior>,
+    pub drop_behavior: Signal<DropBehavior>,
     /// Whether to restore the previous tab session on launch.
     pub restore_tabs_on_launch: Signal<bool>,
 }
@@ -273,7 +394,7 @@ impl Default for GeneralSettingsState {
     fn default() -> Self {
         Self {
             open_nested_in_new_tab: Signal::new(false),
-            drop_behavior: Signal::new(arclain_core::DropBehavior::default()),
+            drop_behavior: Signal::new(DropBehavior::default()),
             restore_tabs_on_launch: Signal::new(true),
         }
     }
@@ -317,11 +438,13 @@ pub struct SecuritySettingsState {
     pub encrypted_crc_policy: Signal<EncryptedCrcPolicy>,
     pub info: Signal<String>,
     pub error: Signal<String>,
-    /// Default DB paths captured once at state construction so the
-    /// render path can show them as hint text without recomputing
-    /// (which would touch `dirs::config_dir()` and env-var lookups
-    /// every frame).
-    pub default_paths: Option<arclain_core::DbPaths>,
+    /// Where the vault would go if its override were cleared -- shown
+    /// as hint text next to the two path fields. Read from the
+    /// application's settings snapshot when this state is built, since
+    /// it never changes while the application runs.
+    pub default_secrets_db: Option<std::path::PathBuf>,
+    /// See [`Self::default_secrets_db`], for the key file.
+    pub default_key_file: Option<std::path::PathBuf>,
 }
 
 impl Default for SecuritySettingsState {
@@ -332,7 +455,8 @@ impl Default for SecuritySettingsState {
             encrypted_crc_policy: Signal::new(EncryptedCrcPolicy::default()),
             info: Signal::new(String::new()),
             error: Signal::new(String::new()),
-            default_paths: arclain_core::DbPaths::calculate_defaults("arclain").ok(),
+            default_secrets_db: None,
+            default_key_file: None,
         }
     }
 }
@@ -349,9 +473,10 @@ pub struct ArchivesSettingsState {
     pub verify_after_organize: Signal<bool>,
     /// App-wide default for what the pipeline executor does when a predicted
     /// output path already exists (per-pipeline overrides still win).
-    pub default_collision_policy: Signal<arclain_core::OutputCollisionPolicy>,
-    /// Lazily loaded flag — `false` until the first render reads the stored
-    /// value from `app_config`.
+    pub default_collision_policy: Signal<CollisionPolicy>,
+    /// Lazily hydrated flag — `false` until the first render seeds
+    /// [`Self::default_collision_policy`] from the stored settings, so a
+    /// selection in progress is never overwritten on a later frame.
     pub collision_policy_loaded: Signal<bool>,
 }
 
@@ -364,7 +489,7 @@ impl Default for ArchivesSettingsState {
             checksum_algorithm: Signal::new(ChecksumAlgorithm::default()),
             verify_after_extract: Signal::new(false),
             verify_after_organize: Signal::new(false),
-            default_collision_policy: Signal::new(arclain_core::OutputCollisionPolicy::Smart),
+            default_collision_policy: Signal::new(CollisionPolicy::default()),
             collision_policy_loaded: Signal::new(false),
         }
     }
@@ -563,5 +688,88 @@ mod tests {
         assert!(result.steps.is_empty());
         assert!(!result.success);
         assert!(result.result_message.is_none());
+    }
+
+    // =========================================================================
+    // DropBehavior / CollisionPolicy: the one place each stored token is
+    // interpreted.
+    // =========================================================================
+
+    #[test]
+    fn drop_behavior_round_trips_every_stored_token() {
+        for (token, expected) in [
+            ("new_tab", DropBehavior::NewTab),
+            ("replace", DropBehavior::Replace),
+            ("ask_each_time", DropBehavior::AskEachTime),
+        ] {
+            assert_eq!(DropBehavior::from_settings_str(token), expected);
+            assert_eq!(expected.as_settings_str(), token);
+        }
+    }
+
+    /// Anything the application has stored that this build does not
+    /// recognize -- an older token, a newer one, a hand-edited row --
+    /// resolves to the default rather than to a panic or an empty
+    /// dropdown.
+    #[test]
+    fn drop_behavior_reads_an_unrecognized_token_as_the_default() {
+        for token in ["", "New_Tab", "ASK_EACH_TIME", "something-else"] {
+            assert_eq!(
+                DropBehavior::from_settings_str(token),
+                DropBehavior::NewTab,
+                "unrecognized token {token:?} must fall back to the default"
+            );
+        }
+        assert_eq!(DropBehavior::default(), DropBehavior::NewTab);
+    }
+
+    /// The dropdown must offer every variant -- a variant missing from
+    /// `ALL` would be selectable only by editing storage by hand.
+    #[test]
+    fn drop_behavior_all_covers_every_variant() {
+        let mut seen: Vec<&str> = DropBehavior::ALL
+            .iter()
+            .map(|behavior| behavior.as_settings_str())
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(seen, ["ask_each_time", "new_tab", "replace"]);
+    }
+
+    #[test]
+    fn collision_policy_round_trips_every_stored_token() {
+        for (token, expected) in [
+            ("smart", CollisionPolicy::Smart),
+            ("skip", CollisionPolicy::Skip),
+            ("overwrite", CollisionPolicy::Overwrite),
+            ("fail", CollisionPolicy::Fail),
+        ] {
+            assert_eq!(CollisionPolicy::from_settings_str(token), expected);
+            assert_eq!(expected.as_settings_str(), token);
+        }
+    }
+
+    /// `Smart` is what the pipeline executor itself falls back to when
+    /// no app default resolves, so an unrecognized token must display as
+    /// the policy that would actually run.
+    #[test]
+    fn collision_policy_reads_an_unrecognized_token_as_smart() {
+        for token in ["", "Smart", "smrt", "overwrit"] {
+            assert_eq!(
+                CollisionPolicy::from_settings_str(token),
+                CollisionPolicy::Smart,
+                "unrecognized token {token:?} must fall back to the policy that runs"
+            );
+        }
+        assert_eq!(CollisionPolicy::default(), CollisionPolicy::Smart);
+    }
+
+    #[test]
+    fn collision_policy_all_covers_every_variant() {
+        let mut seen: Vec<&str> = CollisionPolicy::ALL
+            .iter()
+            .map(|policy| policy.as_settings_str())
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(seen, ["fail", "overwrite", "skip", "smart"]);
     }
 }

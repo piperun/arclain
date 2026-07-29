@@ -2,7 +2,7 @@
 //!
 //! Contains the general settings page with appearance and behavior options.
 
-use crate::features::settings::types::{GeneralSettingsState, SettingsAction};
+use crate::features::settings::types::{DropBehavior, GeneralSettingsState, SettingsAction};
 use crate::shared::components::settings_form::{Form, SettingsGroup, SettingsRow};
 use crate::shared::theme::AppTheme;
 use arclain_widgets::{ThemedDropdown, ToggleSwitch};
@@ -76,11 +76,7 @@ pub fn render(
                     .with_theme_colors(colors)
                     .width(220.0)
                     .show_ui(ui, |ui| {
-                        for opt in [
-                            arclain_core::DropBehavior::NewTab,
-                            arclain_core::DropBehavior::Replace,
-                            arclain_core::DropBehavior::AskEachTime,
-                        ] {
+                        for opt in DropBehavior::ALL {
                             if ui
                                 .selectable_label(current == opt, opt.display_name())
                                 .clicked()

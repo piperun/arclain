@@ -35,7 +35,6 @@ impl PluginsFeature {
                 ui,
                 &shared.theme,
                 &mut self.list_state,
-                &shared.app_state,
                 Some(shared),
                 content_cache,
             );

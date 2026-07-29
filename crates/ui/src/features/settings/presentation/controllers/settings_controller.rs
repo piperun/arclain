@@ -20,6 +20,26 @@ pub fn extract_navigation(action: &SettingsAction) -> Option<SettingsPage> {
     }
 }
 
+/// Turns one row of the password-rules dialog's in-memory draft into the
+/// application's write shape.
+///
+/// `password` is always `Some`: the dialog edits a full rule list with
+/// the password visible in the form, so every row it submits carries the
+/// password that should be in effect afterward. (The facade's "`None`
+/// means keep the stored password" convention is for callers editing a
+/// rule *without* seeing its secret; this dialog is not one.)
+fn password_rule_input(
+    rule: crate::features::password_management::dialogs::zip_pass_rules::PasswordRule,
+) -> arclain_app::settings::PasswordRuleInput {
+    arclain_app::settings::PasswordRuleInput {
+        name: rule.name,
+        pattern: rule.pattern,
+        priority: rule.priority,
+        enabled: rule.enabled,
+        password: Some(arclain_app::challenge::SecretInput::new(rule.password)),
+    }
+}
+
 /// Splits a `host:port` proxy authority into the pair
 /// [`arclain_app::ArclainApp::test_socks5_proxy`] takes.
 ///
@@ -147,6 +167,7 @@ pub fn handle_action(
                         },
                         transfer_directory: arclain_app::settings::PatchValue::Keep,
                         sevenzip_path: arclain_app::settings::PatchValue::Keep,
+                        default_collision_policy: arclain_app::settings::PatchValue::Keep,
                     }),
                     network: None,
                     security: None,
@@ -154,6 +175,36 @@ pub fn handle_action(
             );
             if let Err(e) = patch_result {
                 tracing::error!("Failed to save user config: {}", e);
+            }
+        }
+        SettingsAction::SaveCollisionPolicy { policy } => {
+            let Some(facade) = shared.facade.as_ref() else {
+                tracing::error!("Cannot save the collision policy: settings facade is unavailable");
+                return;
+            };
+            let mut state = shared.app_state.lock();
+            let patch_result = state.submit_settings_patch(
+                facade,
+                &shared.services.tokio_runtime,
+                |expected_revision| arclain_app::settings::SettingsPatch {
+                    expected_revision,
+                    general: None,
+                    archive: Some(arclain_app::settings::ArchiveSettingsPatch {
+                        backend_mode: arclain_app::settings::PatchValue::Keep,
+                        cache_directory: arclain_app::settings::PatchValue::Keep,
+                        temp_directory: arclain_app::settings::PatchValue::Keep,
+                        transfer_directory: arclain_app::settings::PatchValue::Keep,
+                        sevenzip_path: arclain_app::settings::PatchValue::Keep,
+                        default_collision_policy: arclain_app::settings::PatchValue::Set(
+                            policy.as_settings_str().to_string(),
+                        ),
+                    }),
+                    network: None,
+                    security: None,
+                },
+            );
+            if let Err(e) = patch_result {
+                tracing::error!("Failed to persist the collision policy: {}", e);
             }
         }
         SettingsAction::SaveKeyboardMouse { bindings } => {
@@ -222,18 +273,9 @@ pub fn handle_action(
                 return;
             };
             let mut state = shared.app_state.lock();
-            let core_rules = rules
-                .into_iter()
-                .map(|r| arclain_core::PassRule {
-                    name: r.name,
-                    pattern: r.pattern,
-                    password: r.password,
-                    priority: r.priority,
-                    enabled: r.enabled,
-                })
-                .collect();
+            let inputs = rules.into_iter().map(password_rule_input).collect();
             if let Err(e) =
-                state.save_password_rules(facade, &shared.services.tokio_runtime, core_rules)
+                state.save_password_rules(facade, &shared.services.tokio_runtime, inputs)
             {
                 tracing::error!("Failed to save password rules: {}", e);
             }
@@ -348,7 +390,7 @@ pub fn handle_action(
                             open_nested_in_new_tab,
                         ),
                         drop_behavior: arclain_app::settings::PatchValue::Set(
-                            drop_behavior.as_str().to_string(),
+                            drop_behavior.as_settings_str().to_string(),
                         ),
                         restore_tabs_on_launch: arclain_app::settings::PatchValue::Set(
                             restore_tabs_on_launch,
@@ -451,7 +493,10 @@ pub fn handle_action(
                 );
                 return;
             }
-            let _ = shared.app_state.lock().refresh_settings_from_facade(facade);
+            let _ = shared
+                .app_state
+                .lock()
+                .refresh_settings_from_facade(facade, &shared.services.tokio_runtime);
 
             // Live routing (`shared.services.async_http_client`, the
             // same `Arc` `update_settings` already applied it to -- see
@@ -592,7 +637,10 @@ pub fn handle_action(
                 );
                 match result {
                     Ok(()) => {
-                        let _ = shared.app_state.lock().refresh_settings_from_facade(facade);
+                        let _ = shared
+                            .app_state
+                            .lock()
+                            .refresh_settings_from_facade(facade, &shared.services.tokio_runtime);
                     }
                     Err(error) => {
                         tracing::error!("[SaveServer] Failed to save API key: {error:?}");
@@ -663,7 +711,7 @@ mod tests {
     use crate::core::state::AppState;
     use crate::features::settings::domain::types::{ConnectionTestStatus, ServerConnectionStatus};
     use crate::shared::theme::AppTheme;
-    use arclain_app::ArclainApp;
+    use crate::test_support::bootstrap_test_facade;
     use arclain_core::services::ConfigService;
     use arclain_core::UserConfig;
     use arclain_widgets::Toaster;
@@ -677,6 +725,74 @@ mod tests {
     use tracing_test::traced_test;
 
     const PROXY_PLUGIN_ID: &str = "proxy-map-test-plugin";
+
+    /// Every field of a dialog row reaches the write shape, including
+    /// the password -- which `PasswordRuleInput` carries as a
+    /// `SecretInput` that neither clones nor prints, so the only way to
+    /// check it is to submit the input and read back what got stored.
+    #[test]
+    fn a_password_rule_draft_becomes_the_applications_write_shape() {
+        let draft = crate::features::password_management::dialogs::zip_pass_rules::PasswordRule {
+            name: "Maker archives".to_string(),
+            pattern: r"^\[Maker\]".to_string(),
+            password: "draft-password-4f21".to_string(),
+            priority: 7,
+            enabled: false,
+        };
+
+        let input = password_rule_input(draft);
+
+        assert_eq!(input.name, "Maker archives");
+        assert_eq!(input.pattern, r"^\[Maker\]");
+        assert_eq!(input.priority, 7);
+        assert!(!input.enabled);
+        assert!(
+            input.password.is_some(),
+            "the dialog edits the password in the form, so every submitted row must carry one -- \
+             `None` would mean \"keep whatever is stored\" and silently discard an edit"
+        );
+        assert!(
+            !format!("{input:?}").contains("draft-password-4f21"),
+            "the password must not be printable off the write shape"
+        );
+    }
+
+    /// The round trip the settings page actually performs: a draft row
+    /// submitted through the facade comes back as a stored rule with the
+    /// same non-secret fields and a configured password.
+    #[test]
+    fn a_submitted_password_rule_draft_round_trips_through_the_facade() {
+        let temp = tempfile::tempdir().unwrap();
+        let facade = bootstrap_test_facade(&temp);
+        let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
+
+        let input = password_rule_input(
+            crate::features::password_management::dialogs::zip_pass_rules::PasswordRule {
+                name: "Maker archives".to_string(),
+                pattern: r"^\[Maker\]".to_string(),
+                password: "draft-password-9c07".to_string(),
+                priority: 7,
+                enabled: false,
+            },
+        );
+        runtime
+            .block_on(facade.upsert_password_rule(input))
+            .expect("upsert the drafted rule");
+
+        let stored = runtime
+            .block_on(facade.password_rules())
+            .expect("read password rules");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].name, "Maker archives");
+        assert_eq!(stored[0].pattern, r"^\[Maker\]");
+        assert_eq!(stored[0].priority, 7);
+        assert!(!stored[0].enabled);
+        assert!(stored[0].password_configured);
+        assert!(
+            !format!("{stored:?}").contains("draft-password-9c07"),
+            "the stored summary must never carry the password itself"
+        );
+    }
 
     fn serve_proxy_sentinel(
         proxy: TcpListener,
@@ -700,66 +816,121 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
-    fn sevenzip_exe_name() -> &'static str {
-        "7zz.exe"
+    /// The archives page commits its collision-policy dropdown on
+    /// change, so this covers the whole loop the user drives: the
+    /// dropdown's action reaches persistence, and the reactive mirror
+    /// the page reads back on its next hydration reports the new value.
+    #[test]
+    fn saving_the_collision_policy_persists_it_and_refreshes_the_mirror() {
+        use crate::features::settings::domain::types::CollisionPolicy;
+
+        let temp = tempfile::tempdir().expect("create test directory");
+        let facade = bootstrap_test_facade(&temp);
+        let shared = shared_state_from_facade(facade);
+
+        assert_eq!(
+            shared
+                .signals()
+                .archive_settings
+                .read()
+                .default_collision_policy,
+            "smart",
+            "a fresh profile starts on the pipeline's own default"
+        );
+
+        handle_action(
+            SettingsAction::SaveCollisionPolicy {
+                policy: CollisionPolicy::Overwrite,
+            },
+            &mut SecuritySettingsState::default(),
+            &mut ArchivesSettingsState::default(),
+            None,
+            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
+            &mut ServerSettingsState::default(),
+            &shared,
+        );
+
+        assert_eq!(
+            shared
+                .signals()
+                .archive_settings
+                .read()
+                .default_collision_policy,
+            "overwrite",
+            "the mirror the archives page hydrates from must reflect the save"
+        );
+
+        let facade = shared.facade.as_ref().expect("facade");
+        let persisted = shared
+            .services
+            .tokio_runtime
+            .block_on(facade.settings())
+            .expect("read settings back");
+        assert_eq!(persisted.archive.default_collision_policy, "overwrite");
+
+        // And the page turns that token back into the same selection it
+        // submitted -- the round trip the dropdown depends on.
+        assert_eq!(
+            CollisionPolicy::from_settings_str(&persisted.archive.default_collision_policy),
+            CollisionPolicy::Overwrite
+        );
     }
 
-    #[cfg(not(windows))]
-    fn sevenzip_exe_name() -> &'static str {
-        "7zz"
-    }
-
-    /// Bootstraps a real `ArclainApp` for settings-page tests that
-    /// exercise the actual facade-backed save path -- `SaveNetwork`/
-    /// `SaveServer`/`SaveSecurity`/etc. now build a patch and submit it
-    /// through `shared.facade`, so a fixture with `facade: None` (this
-    /// module's own pre-facade convention, still used by
-    /// `crates/ui/tests/common/mod.rs` for unrelated dispatcher tests)
-    /// would never exercise them at all. Seeds a dummy 7-Zip the same
-    /// way `arclain_app`'s own `tests/support::seed_working_sevenzip_config`
-    /// does -- that module is test-private to the `arclain_app` package
-    /// and unreachable from here, so this reimplements just the one seam
-    /// these tests need.
-    fn bootstrap_test_facade(temp: &TempDir) -> ArclainApp {
-        let paths = arclain_app::AppPaths {
-            config_dir: temp.path().join("config"),
-            data_dir: temp.path().join("data"),
-            cache_dir: temp.path().join("cache"),
-            log_dir: temp.path().join("logs"),
-            plugins_dir: temp.path().join("plugins"),
+    /// Builds a `SharedState` around an already-bootstrapped facade, the
+    /// same unpacking `AppState::new` performs at startup. The caller
+    /// keeps the `TempDir` the facade was bootstrapped against alive for
+    /// as long as it uses the result.
+    fn shared_state_from_facade(facade: arclain_app::ArclainApp) -> SharedState {
+        let legacy = facade
+            .take_legacy_composition()
+            .expect("take legacy composition for the test fixture");
+        let services = Arc::new(Services {
+            core: (*legacy.core_services).clone(),
+            plugin_manager: legacy.plugin_manager,
+            content_cache: legacy.content_cache,
+            resource_manager: legacy.resource_manager,
+        });
+        let signals = AppSignals::new();
+        signals
+            .plugin_visibility
+            .set(legacy.user_config.plugin_visibility.clone());
+        let app_state = AppState {
+            user_config: legacy.user_config,
+            pass_rules: legacy.pass_rules,
+            backend_selector: legacy.backend_selector,
+            fallback_backend: legacy.fallback_backend,
+            last_entries: vec![],
+            encrypted_crc_policy: legacy.encrypted_crc_policy,
+            db_paths: legacy.db_paths,
+            dbs: legacy.dbs,
+            signals: signals.clone(),
         };
+        app_state
+            .refresh_settings_signals(&facade, &services.tokio_runtime)
+            .expect("seed the settings signals for the fixture");
 
-        let sevenzip_path = temp.path().join(sevenzip_exe_name());
-        std::fs::write(
-            &sevenzip_path,
-            b"not a real binary, only its path is checked",
-        )
-        .expect("write dummy 7-Zip executable");
-
-        let databases_dir = paths.data_dir.join("databases");
-        std::fs::create_dir_all(&databases_dir).expect("create databases dir");
-        let config_db_path = databases_dir.join("config.sqlite");
-        let db = arclain_core::config::ConfigDb::open(&config_db_path).expect("open config db");
-        let conn = db.into_sqlite_db();
-        conn.with_connection(|conn| {
-            UserConfig::ensure_table(conn)?;
-            let mut config = UserConfig::new();
-            config.sevenzip_path = Some(sevenzip_path.to_string_lossy().into_owned());
-            config.save(conn)?;
-            Ok(())
-        })
-        .expect("seed sevenzip_path into test config db");
-
-        arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
-            paths_override: Some(paths),
-            worker_threads: None,
-            archive_backend_override: None,
-            extract_runner_override: None,
-            materialization_lease_ttl_override: None,
-            materialization_cleanup_interval_override: None,
-        })
-        .expect("bootstrap the settings-page test facade")
+        let plugin_ui_jobs = crate::features::plugins::application::PluginUiJobs::new(
+            services.plugin_manager.clone(),
+            services.tokio_runtime.clone(),
+        );
+        let image_assets = crate::shared::image_assets::ImageAssetStore::without_cache(
+            services.tokio_runtime.clone(),
+        );
+        SharedState {
+            app_state: Arc::new(Mutex::new(app_state)),
+            services,
+            theme: AppTheme::new(false),
+            toaster: Arc::new(Mutex::new(Toaster::new())),
+            refresh_requests: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            plugin_ui_jobs,
+            plugin_sessions: crate::features::plugins::application::PluginSessions::new(),
+            image_assets,
+            signals,
+            facade: Some(facade),
+            operation_origins: crate::core::operation_bridge::OperationOrigins::new(),
+            materialization_actions: crate::core::operation_bridge::MaterializationActions::new(),
+            external_open_leases: crate::core::operation_bridge::ExternalOpenLeases::new(),
+        }
     }
 
     struct ProxySaveFixture {
@@ -827,60 +998,12 @@ mod tests {
                     .expect("persist previous proxy password");
             });
 
-            let legacy = facade
-                .take_legacy_composition()
-                .expect("take legacy composition for the test fixture");
-            let config_service = legacy
-                .core_services
+            let shared = shared_state_from_facade(facade);
+            let config_service = shared
+                .services
                 .config_service
                 .clone()
                 .expect("config service must be available after a real bootstrap");
-
-            let services = Services {
-                core: (*legacy.core_services).clone(),
-                plugin_manager: legacy.plugin_manager,
-                content_cache: legacy.content_cache,
-                resource_manager: legacy.resource_manager,
-            };
-            let services = Arc::new(services);
-
-            let signals = AppSignals::new();
-            signals.user_config.set(legacy.user_config.clone());
-            let app_state = AppState {
-                user_config: legacy.user_config,
-                pass_rules: legacy.pass_rules,
-                backend_selector: legacy.backend_selector,
-                fallback_backend: legacy.fallback_backend,
-                last_entries: vec![],
-                encrypted_crc_policy: legacy.encrypted_crc_policy,
-                db_paths: legacy.db_paths,
-                dbs: legacy.dbs,
-                signals: signals.clone(),
-            };
-
-            let plugin_ui_jobs = crate::features::plugins::application::PluginUiJobs::new(
-                services.plugin_manager.clone(),
-                services.tokio_runtime.clone(),
-            );
-            let image_assets = crate::shared::image_assets::ImageAssetStore::without_cache(
-                services.tokio_runtime.clone(),
-            );
-            let shared = SharedState {
-                app_state: Arc::new(Mutex::new(app_state)),
-                services,
-                theme: AppTheme::new(false),
-                toaster: Arc::new(Mutex::new(Toaster::new())),
-                refresh_requests: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                plugin_ui_jobs,
-                plugin_sessions: crate::features::plugins::application::PluginSessions::new(),
-                image_assets,
-                signals,
-                facade: Some(facade),
-                operation_origins: crate::core::operation_bridge::OperationOrigins::new(),
-                materialization_actions: crate::core::operation_bridge::MaterializationActions::new(
-                ),
-                external_open_leases: crate::core::operation_bridge::ExternalOpenLeases::new(),
-            };
 
             Self {
                 shared,
@@ -912,8 +1035,8 @@ mod tests {
             assert_proxy_fields_eq(&state.user_config, &self.previous, "app state");
             drop(state);
 
-            let signal = self.shared.signals.user_config.get();
-            assert_proxy_fields_eq(&signal, &self.previous, "user-config signal");
+            let signal = self.shared.signals.network_settings.get();
+            assert_network_signal_matches(&signal, &self.previous);
             let persisted = self
                 .config_service
                 .get_user_config()
@@ -988,6 +1111,28 @@ mod tests {
         }
     }
 
+    /// The reactive network mirror's counterpart to
+    /// [`assert_proxy_fields_eq`]: same three proxy identity fields,
+    /// read off the settings DTO the signal now carries instead of a
+    /// `UserConfig`.
+    fn assert_network_signal_matches(
+        actual: &arclain_app::settings::NetworkSettingsDto,
+        expected: &UserConfig,
+    ) {
+        assert_eq!(
+            actual.socks5_enabled, expected.socks5_enabled,
+            "network signal proxy enablement changed"
+        );
+        assert_eq!(
+            actual.socks5_address, expected.socks5_address,
+            "network signal proxy address changed"
+        );
+        assert_eq!(
+            actual.socks5_username, expected.socks5_username,
+            "network signal proxy username changed"
+        );
+    }
+
     fn assert_proxy_fields_eq(actual: &UserConfig, expected: &UserConfig, surface: &str) {
         assert_eq!(
             actual.socks5_enabled, expected.socks5_enabled,
@@ -1034,7 +1179,7 @@ mod tests {
         let observable_state = format!(
             "{:?} {:?} {:?}",
             fixture.shared.app_state.lock().user_config,
-            fixture.shared.signals.user_config.get(),
+            fixture.shared.signals.network_settings.get(),
             fixture.shared.toaster.lock()
         );
         for secret in [address_user, address_password, direct_user, direct_password] {
@@ -1397,48 +1542,8 @@ mod tests {
             "test setup must reproduce a genuinely unavailable vault"
         );
 
-        let services = Services {
-            core: (*legacy.core_services).clone(),
-            plugin_manager: legacy.plugin_manager,
-            content_cache: legacy.content_cache,
-            resource_manager: legacy.resource_manager,
-        };
-        let services = Arc::new(services);
-        let signals = AppSignals::new();
-        signals.user_config.set(legacy.user_config.clone());
-        let app_state = AppState {
-            user_config: legacy.user_config,
-            pass_rules: legacy.pass_rules,
-            backend_selector: legacy.backend_selector,
-            fallback_backend: legacy.fallback_backend,
-            last_entries: vec![],
-            encrypted_crc_policy: legacy.encrypted_crc_policy,
-            db_paths: legacy.db_paths,
-            dbs: legacy.dbs,
-            signals: signals.clone(),
-        };
-        let plugin_ui_jobs = crate::features::plugins::application::PluginUiJobs::new(
-            services.plugin_manager.clone(),
-            services.tokio_runtime.clone(),
-        );
-        let image_assets = crate::shared::image_assets::ImageAssetStore::without_cache(
-            services.tokio_runtime.clone(),
-        );
-        let shared = SharedState {
-            app_state: Arc::new(Mutex::new(app_state)),
-            services,
-            theme: AppTheme::new(false),
-            toaster: Arc::new(Mutex::new(Toaster::new())),
-            refresh_requests: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            plugin_ui_jobs,
-            plugin_sessions: crate::features::plugins::application::PluginSessions::new(),
-            image_assets,
-            signals,
-            facade: Some(facade),
-            operation_origins: crate::core::operation_bridge::OperationOrigins::new(),
-            materialization_actions: crate::core::operation_bridge::MaterializationActions::new(),
-            external_open_leases: crate::core::operation_bridge::ExternalOpenLeases::new(),
-        };
+        drop(legacy);
+        let shared = shared_state_from_facade(facade);
 
         handle_action(
             SettingsAction::SaveNetwork {

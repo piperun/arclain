@@ -20,8 +20,11 @@ pub fn request_plugin_snapshot(shared: &SharedState, state: &mut PluginsListStat
     if state.snapshot_status != SnapshotStatus::Idle {
         return;
     }
-    let user_config = shared.signals().user_config.get();
-    if let Some(snapshot) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) {
+    let plugin_visibility = shared.signals().plugin_visibility.get();
+    if let Some(snapshot) = shared
+        .plugin_ui_jobs
+        .plugin_snapshot(plugin_visibility.clone())
+    {
         match snapshot {
             Ok(snapshot) => {
                 state.plugins = snapshot.as_ref().clone();
@@ -37,7 +40,7 @@ pub fn request_plugin_snapshot(shared: &SharedState, state: &mut PluginsListStat
     }
     let request_id = shared
         .plugin_ui_jobs
-        .request(PluginUiRequest::Snapshot { user_config });
+        .request(PluginUiRequest::Snapshot { plugin_visibility });
     state.snapshot_status = SnapshotStatus::Pending;
     state.snapshot_request_id = Some(request_id);
 }
@@ -209,7 +212,9 @@ fn persist_plugin_settings(
     match result {
         Ok(()) => {
             let mut app = shared.app_state.lock();
-            if let Err(error) = app.refresh_settings_from_facade(facade) {
+            if let Err(error) =
+                app.refresh_settings_from_facade(facade, &shared.services.tokio_runtime)
+            {
                 tracing::error!(
                     "Failed to refresh settings mirror after plugin settings save: {error}"
                 );

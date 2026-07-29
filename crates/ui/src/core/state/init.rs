@@ -46,8 +46,9 @@ impl AppState {
             signals: AppSignals::new(),
         };
 
-        me.signals.user_config.set(me.user_config.clone());
-        me.signals.pass_rules.set(me.pass_rules.clone());
+        me.signals
+            .plugin_visibility
+            .set(me.user_config.plugin_visibility.clone());
 
         // Active context: `ArclainApp::active_tab_bridge` resolves
         // everything through this application's own archive-session
@@ -75,6 +76,12 @@ impl AppState {
             content_cache: legacy.content_cache,
             resource_manager: legacy.resource_manager,
         };
+
+        // Seed the reactive settings mirrors before the first frame, so
+        // nothing renders against `Default` values no profile has.
+        if let Err(error) = me.refresh_settings_signals(&facade, &services.tokio_runtime) {
+            tracing::warn!("Failed to load settings into signals at startup: {error}");
+        }
 
         // Set initial server connection status signal based on startup health check.
         // GametaClient caches the version from the health check performed in

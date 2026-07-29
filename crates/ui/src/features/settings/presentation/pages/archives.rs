@@ -3,34 +3,31 @@
 //! Contains settings for extraction, compression, and integrity verification.
 
 use crate::features::settings::types::{
-    ArchivesSettingsState, ChecksumAlgorithm, ChecksumMode, SettingsAction,
+    ArchivesSettingsState, ChecksumAlgorithm, ChecksumMode, CollisionPolicy, SettingsAction,
 };
 use crate::shared::components::settings_form::{Form, SettingsGroup, SettingsRow};
 use crate::shared::theme::AppTheme;
-use arclain_core::{OutputCollisionPolicy, COLLISION_POLICY_CONFIG_KEY};
 use arclain_widgets::{
     ButtonSize, TextButton, TextInput, TextInputSize, ThemedDropdown, ToggleSwitch,
 };
 use eframe::egui;
 
-/// Render the Archives settings page
+/// Render the Archives settings page.
+///
+/// `stored_collision_policy` is the token the application currently has
+/// stored; it seeds the dropdown once and is ignored on later frames so
+/// a selection in progress is never overwritten mid-interaction.
 pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     state: &mut ArchivesSettingsState,
-    config_service: Option<&arclain_core::services::ConfigService>,
+    stored_collision_policy: &str,
 ) -> Option<SettingsAction> {
     let mut action = None;
 
-    // One-shot: hydrate the collision policy from app_config on first render.
     if !*state.collision_policy_loaded.read() {
-        if let Some(svc) = config_service {
-            if let Ok(Some(raw)) = svc.get(COLLISION_POLICY_CONFIG_KEY) {
-                if let Some(policy) = OutputCollisionPolicy::from_settings_str(&raw) {
-                    *state.default_collision_policy.write() = policy;
-                }
-            }
-        }
+        *state.default_collision_policy.write() =
+            CollisionPolicy::from_settings_str(stored_collision_policy);
         *state.collision_policy_loaded.write() = true;
     }
 
@@ -123,12 +120,7 @@ pub fn render(
                     .with_theme_colors(colors)
                     .width(240.0)
                     .show_ui(ui, |ui| {
-                        for opt in [
-                            OutputCollisionPolicy::Smart,
-                            OutputCollisionPolicy::Skip,
-                            OutputCollisionPolicy::Overwrite,
-                            OutputCollisionPolicy::Fail,
-                        ] {
+                        for opt in CollisionPolicy::ALL {
                             if ui
                                 .selectable_label(current == opt, opt.display_name())
                                 .clicked()
@@ -140,16 +132,7 @@ pub fn render(
 
                 if next != current {
                     *state.default_collision_policy.write() = next;
-                    if let Some(svc) = config_service {
-                        if let Err(e) =
-                            svc.set(COLLISION_POLICY_CONFIG_KEY, next.to_settings_str())
-                        {
-                            tracing::error!(
-                                "[settings] Failed to persist collision policy: {}",
-                                e
-                            );
-                        }
-                    }
+                    action = Some(SettingsAction::SaveCollisionPolicy { policy: next });
                 }
             })
             .show(ui, &theme.colors);
