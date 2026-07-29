@@ -6,7 +6,9 @@
 
 use crate::features::plugins::application::PluginSlot;
 use crate::features::plugins::presentation::document_dispatch;
-use crate::features::plugins::presentation::rendering::{render_document, DocumentContext};
+use crate::features::plugins::presentation::rendering::{
+    render_document, DocumentContext, DocumentExtent, PANEL_SPLIT_MAX_HEIGHT,
+};
 
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
@@ -208,6 +210,10 @@ impl Panel {
                             colors: &theme.colors,
                             shared_state: shared,
                             image_owner: Some(&image_owner),
+                            // This panel is one section in a scrolling
+                            // stack, so a plugin `Split` must not claim
+                            // the rest of it -- see `DocumentExtent`.
+                            extent: DocumentExtent::Bounded(PANEL_SPLIT_MAX_HEIGHT),
                         },
                     );
                     if let Some(shared) = shared {

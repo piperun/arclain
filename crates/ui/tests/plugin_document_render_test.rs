@@ -14,7 +14,7 @@ use arclain_app::plugins::{
 };
 use arclain_ui::features::plugins::application::PluginNavigation;
 use arclain_ui::features::plugins::presentation::rendering::{
-    render_document, DocumentContext, DocumentEvent,
+    render_document, DocumentContext, DocumentEvent, DocumentExtent,
 };
 use arclain_ui::shared::theme::AppTheme;
 use egui_kittest::kittest::Queryable as _;
@@ -53,7 +53,10 @@ fn button(id: &str, label: &str, action: Option<PluginButtonActionDto>) -> Plugi
 struct Stage {
     document: PluginUiDocument,
     theme: AppTheme,
+    extent: DocumentExtent,
     events: Vec<DocumentEvent>,
+    /// Vertical room the document consumed, for the extent test.
+    consumed: f32,
 }
 
 impl Stage {
@@ -61,7 +64,9 @@ impl Stage {
         Self {
             document,
             theme: AppTheme::new(false),
+            extent: DocumentExtent::Full,
             events: Vec::new(),
+            consumed: 0.0,
         }
     }
 }
@@ -73,6 +78,7 @@ fn harness(document: PluginUiDocument) -> Harness<'static, Stage> {
                 colors: &stage.theme.colors,
                 shared_state: None,
                 image_owner: None,
+                extent: stage.extent,
             };
             let mut events = render_document(ui, &stage.document, ctx);
             // Latch every event across frames: the click lands on one
@@ -298,5 +304,90 @@ fn sibling_nodes_with_identical_labels_stay_individually_addressable() {
             node_id: "second".to_string(),
             action: PluginActionDto::Activate,
         }]
+    );
+}
+
+/// A `Split` in a stacked host is bounded so it cannot swallow the rest of
+/// the panel; in a host that owns its container it is not.
+#[test]
+fn a_split_is_height_bounded_only_when_the_host_asks_for_it() {
+    fn split_document() -> PluginUiDocument {
+        let mut doc = document(Vec::new());
+        doc.root = node(
+            "#root",
+            PluginUiNodeKind::Split {
+                sidebar: vec![node(
+                    "s",
+                    PluginUiNodeKind::Label {
+                        text: "Sidebar".to_string(),
+                        bold: false,
+                        size: None,
+                    },
+                )],
+                content: vec![node(
+                    "c",
+                    PluginUiNodeKind::Label {
+                        text: "Content".to_string(),
+                        bold: false,
+                        size: None,
+                    },
+                )],
+                sidebar_width: Some(120.0),
+            },
+        );
+        doc
+    }
+
+    let mut bounded = Harness::new_ui_state(
+        |ui, stage: &mut Stage| {
+            let before = ui.cursor().min.y;
+            let ctx = DocumentContext {
+                colors: &stage.theme.colors,
+                shared_state: None,
+                image_owner: None,
+                extent: stage.extent,
+            };
+            let _ = render_document(ui, &stage.document, ctx);
+            // Record how much vertical room the document consumed.
+            stage.consumed = ui.cursor().min.y - before;
+        },
+        Stage {
+            extent: DocumentExtent::Bounded(120),
+            ..Stage::new(split_document())
+        },
+    );
+    bounded.run();
+    let bounded_height = bounded.state().consumed;
+
+    let mut full = Harness::new_ui_state(
+        |ui, stage: &mut Stage| {
+            let before = ui.cursor().min.y;
+            let ctx = DocumentContext {
+                colors: &stage.theme.colors,
+                shared_state: None,
+                image_owner: None,
+                extent: stage.extent,
+            };
+            let _ = render_document(ui, &stage.document, ctx);
+            stage.consumed = ui.cursor().min.y - before;
+        },
+        Stage {
+            extent: DocumentExtent::Full,
+            ..Stage::new(split_document())
+        },
+    );
+    full.run();
+
+    // Both still render the real two-pane layout -- bounding must not
+    // flatten the split away the way the pre-cutover panel path did.
+    assert!(bounded.query_by_label("Sidebar").is_some());
+    assert!(bounded.query_by_label("Content").is_some());
+    assert!(
+        bounded_height <= 140.0,
+        "a bounded split must respect its cap, consumed {bounded_height}"
+    );
+    assert!(
+        full.state().consumed > bounded_height,
+        "an unbounded split must be free to take more room than a bounded one"
     );
 }

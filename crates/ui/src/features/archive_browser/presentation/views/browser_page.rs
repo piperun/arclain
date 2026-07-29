@@ -297,7 +297,7 @@ fn plugin_panel_section(
     shared: &SharedState,
     plugin_id: &str,
 ) -> Option<properties_panel::PanelSection> {
-    use crate::features::plugins::application::{PluginSlot, SlotView};
+    use crate::features::plugins::application::{document_is_empty, PluginSlot, SlotView};
 
     let facade = shared.facade.as_ref()?;
     let slot = PluginSlot::Panel {
@@ -315,20 +315,6 @@ fn plugin_panel_section(
         return None;
     }
     Some(properties_panel::PanelSection::Plugin { slot, document })
-}
-
-/// Whether a plugin returned nothing to draw. The root of a normalized
-/// document is always a `Single`/`Split` container, so "empty" means that
-/// container has no children rather than the document being absent.
-fn document_is_empty(root: &arclain_app::plugins::PluginUiNodeDto) -> bool {
-    use arclain_app::plugins::PluginUiNodeKind;
-    match &root.kind {
-        PluginUiNodeKind::Single { children } => children.is_empty(),
-        PluginUiNodeKind::Split {
-            sidebar, content, ..
-        } => sidebar.is_empty() && content.is_empty(),
-        _ => false,
-    }
 }
 
 fn render_file_list(

@@ -169,21 +169,35 @@ impl Region for InfoPanelRegion {
             .filter(|p| p.enabled)
             .map(|p| (p.id.clone(), p.name.clone()))
             .collect();
-        let origin_tab = Some(shared.signals().tabs.get().active_id());
+        // This is a live `Panel` probe -- "does this plugin have an info
+        // panel worth offering as a configurable item?" -- so it resolves
+        // through the same facade session the archive browser's panel
+        // renders from, not the legacy layout queue. Both ask the same
+        // question about the same extension point for the same tab, so
+        // they share one slot (and therefore one WASM session) rather than
+        // each keeping their own answer and drifting.
+        let Some(facade) = shared.facade.as_ref() else {
+            return false;
+        };
+        let runtime = shared.services.tokio_runtime.handle();
+        let active_tab = shared.signals().tabs.get().active_id();
 
         let mut changed = false;
 
         for (plugin_id, plugin_name) in enabled_plugins {
-            let Some(Ok(layout)) = shared.plugin_ui_jobs.layout(
-                &plugin_id,
-                crate::features::plugins::application::PluginUiTarget::Panel,
-                origin_tab,
-            ) else {
+            let slot = crate::features::plugins::application::PluginSlot::Panel {
+                plugin_id: plugin_id.clone(),
+                tab: active_tab,
+            };
+            let crate::features::plugins::application::SlotView::Ready(document) =
+                shared.plugin_sessions.view(facade, runtime, &slot)
+            else {
+                // Still opening, or failed: no answer yet. The editor
+                // re-runs this sync on later frames, so a slot that
+                // resolves later is picked up then.
                 continue;
             };
-            let has_info_panel = !layout.is_empty();
-
-            if !has_info_panel {
+            if crate::features::plugins::application::document_is_empty(&document.root) {
                 continue;
             }
 

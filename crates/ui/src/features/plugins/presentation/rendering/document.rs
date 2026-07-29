@@ -92,17 +92,51 @@ impl DocumentEvent {
     }
 }
 
+/// How much vertical room the host is willing to give a document.
+///
+/// `Split` is the only node kind that cares. Drawn with the real
+/// `SidePanel`+`CentralPanel` pair it claims *all* remaining space in its
+/// parent `Ui`, which is correct for a full-page host and wrong inside a
+/// stacked properties panel: one plugin's split would swallow the scroll
+/// area and push every section below it out of view. The pre-cutover panel
+/// path avoided this by flattening splits away entirely (discarding the
+/// sidebar/content distinction), which is worse -- it silently changed the
+/// layout the plugin asked for. Bounding the height keeps the two-pane
+/// layout the schema describes while leaving the host's own stacking
+/// intact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DocumentExtent {
+    /// The document owns its container: a page, a dialog, a settings
+    /// detail view. `Split` fills it.
+    Full,
+    /// The document is one section among several in a scrolling host.
+    /// `Split` is capped at this many points tall.
+    Bounded(u32),
+}
+
+/// Default cap for a document hosted in the archive browser's properties
+/// panel. Sized to show a usable two-pane layout without dominating a
+/// panel that also stacks archive info, file info, and attributes.
+pub const PANEL_SPLIT_MAX_HEIGHT: u32 = 320;
+
 /// Everything a document render needs beyond the document itself.
 #[derive(Clone, Copy)]
 pub struct DocumentContext<'a> {
     pub colors: &'a ThemeColors,
     pub shared_state: Option<&'a SharedState>,
     pub image_owner: Option<&'a ImageOwner>,
+    /// See [`DocumentExtent`]. Hosts that own their whole container pass
+    /// `Full`; stacked hosts pass `Bounded`.
+    pub extent: DocumentExtent,
 }
 
 struct Sink<'a> {
     ctx: DocumentContext<'a>,
     plugin_id: &'a str,
+    /// The revision of the document being drawn. Read by widgets that
+    /// hold optimistic local state across a facade round trip, so a reply
+    /// of any kind retires the guess -- see the `Checkbox` arm.
+    document_revision: u64,
     events: Vec<DocumentEvent>,
 }
 
@@ -137,6 +171,7 @@ pub fn render_document(
     let mut sink = Sink {
         ctx,
         plugin_id: &document.plugin_id,
+        document_revision: document.revision,
         events: Vec::new(),
     };
     // Scope the whole document by its session id: two slots rendering the
@@ -171,6 +206,7 @@ fn render_node(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'_>) {
 fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'_>) {
     let id = node.id.as_str();
     let colors = sink.colors();
+    let document_revision = sink.document_revision;
     match &node.kind {
         PluginUiNodeKind::Single { children } => render_children(ui, children, sink),
         PluginUiNodeKind::Split {
@@ -178,19 +214,37 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
             content,
             sidebar_width,
         } => {
-            egui::SidePanel::left(ui.id().with("split_sidebar"))
-                .resizable(true)
-                .default_width(sidebar_width.unwrap_or(250.0))
-                .show_inside(ui, |ui| {
+            let sidebar_width = sidebar_width.unwrap_or(250.0);
+            let draw = |ui: &mut egui::Ui, sink: &mut Sink<'_>| {
+                egui::SidePanel::left(ui.id().with("split_sidebar"))
+                    .resizable(true)
+                    .default_width(sidebar_width)
+                    .show_inside(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("split_sidebar_scroll")
+                            .show(ui, |ui| render_children(ui, sidebar, sink));
+                    });
+                egui::CentralPanel::default().show_inside(ui, |ui| {
                     egui::ScrollArea::vertical()
-                        .id_salt("split_sidebar_scroll")
-                        .show(ui, |ui| render_children(ui, sidebar, sink));
+                        .id_salt("split_content_scroll")
+                        .show(ui, |ui| render_children(ui, content, sink));
                 });
-            egui::CentralPanel::default().show_inside(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("split_content_scroll")
-                    .show(ui, |ui| render_children(ui, content, sink));
-            });
+            };
+            match sink.ctx.extent {
+                DocumentExtent::Full => draw(ui, sink),
+                // `SidePanel`/`CentralPanel` take all remaining height of
+                // whatever `Ui` they are shown inside, so bounding means
+                // giving them a smaller `Ui` to be inside of rather than
+                // asking them to be shorter. See `DocumentExtent`.
+                DocumentExtent::Bounded(max_height) => {
+                    let height = (max_height as f32).min(ui.available_height());
+                    let width = ui.available_width();
+                    ui.allocate_ui(egui::vec2(width, height), |ui| {
+                        ui.set_min_height(height);
+                        draw(ui, sink);
+                    });
+                }
+            }
         }
         PluginUiNodeKind::Group {
             title,
@@ -300,20 +354,34 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
             let mut is_checked = *checked;
             // Optimistic local state: a checkbox toggle round-trips through
             // a facade operation, so the incoming document still reports
-            // the old value for a frame or two. Cleared as soon as the
-            // document catches up.
-            if let Some(optimistic) = ui.data(|data| data.get_temp::<bool>(temp_id)) {
-                if optimistic == *checked {
-                    ui.data_mut(|data| data.remove::<bool>(temp_id));
-                } else {
-                    is_checked = optimistic;
-                }
+            // the old value for a frame or two.
+            //
+            // Discarded on *any* newer document revision, not only when
+            // the plugin's value happens to match what was clicked. A
+            // plugin is free to reject a toggle (a licence checkbox that
+            // stays off until a key is entered, a mutually-exclusive
+            // option) and answer with the same value it had before; keyed
+            // on value-match, the optimistic entry would then never clear
+            // and the control would show the user's click forever while
+            // the plugin believed the opposite. Keyed on revision, a reply
+            // of any kind is what retires the guess -- which is also the
+            // correct reading of "the plugin has now answered".
+            let optimistic: Option<(u64, bool)> = ui.data(|data| data.get_temp(temp_id));
+            let decision = optimistic_checkbox_state(*checked, document_revision, optimistic);
+            is_checked = decision.displayed;
+            if decision.retire {
+                ui.data_mut(|data| data.remove::<(u64, bool)>(temp_id));
             }
             let mut toggled = None;
             SettingsRow::new(label)
                 .action(|ui| {
                     if ui.add(ToggleSwitch::new(&mut is_checked)).changed() {
-                        ui.data_mut(|data| data.insert_temp(temp_id, is_checked));
+                        // Stamped with the revision this click was made
+                        // against, so the next document to arrive retires
+                        // it regardless of what value it carries.
+                        ui.data_mut(|data| {
+                            data.insert_temp(temp_id, (document_revision, is_checked))
+                        });
                         toggled = Some(is_checked);
                     }
                 })
@@ -556,6 +624,61 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
         PluginUiNodeKind::MetadataGrid { items, columns } => {
             render_metadata_grid(ui, colors, items, columns.unwrap_or(3) as usize);
         }
+    }
+}
+
+/// What a checkbox should display this frame, and whether the optimistic
+/// entry backing it is now spent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CheckboxDisplay {
+    displayed: bool,
+    retire: bool,
+}
+
+/// Resolves a checkbox's displayed value from the document's value and any
+/// optimistic entry a not-yet-acknowledged click left behind.
+///
+/// A toggle round-trips through a facade operation, so the document still
+/// carries the old value for a frame or two and the control must show the
+/// click meanwhile. The question is when to stop showing it.
+///
+/// **Any newer revision retires the guess**, not only one whose value
+/// matches the click. A plugin may legitimately *reject* a toggle and
+/// answer with the value it already had -- a licence checkbox that stays
+/// off until a key is entered, one option of a mutually-exclusive set.
+/// Keyed on value-match, that reply would never clear the entry: the
+/// control would show the user's click forever while the plugin believed
+/// the opposite, and every subsequent click would report the inverse of
+/// what the plugin actually holds. Keyed on revision, "the plugin has
+/// answered" is what retires it, which is the condition that actually
+/// matters.
+///
+/// Extracted as a pure function because the widget it feeds
+/// (`arclain_widgets::ToggleSwitch`) publishes no accessibility label, so
+/// a headless render harness cannot reach it to assert this at the
+/// widget level.
+fn optimistic_checkbox_state(
+    document_value: bool,
+    document_revision: u64,
+    optimistic: Option<(u64, bool)>,
+) -> CheckboxDisplay {
+    match optimistic {
+        // Still unacknowledged: the click was made against this revision
+        // (or, defensively, a later one) and no reply has arrived.
+        Some((clicked_at, value)) if clicked_at >= document_revision => CheckboxDisplay {
+            displayed: value,
+            retire: false,
+        },
+        // A newer document exists, whatever it says. The plugin has
+        // answered; the guess is spent.
+        Some(_) => CheckboxDisplay {
+            displayed: document_value,
+            retire: true,
+        },
+        None => CheckboxDisplay {
+            displayed: document_value,
+            retire: false,
+        },
     }
 }
 
@@ -871,4 +994,62 @@ fn render_metadata_grid(
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With no click outstanding the document is the only source of truth.
+    #[test]
+    fn a_checkbox_with_no_outstanding_click_shows_the_documents_value() {
+        assert_eq!(
+            optimistic_checkbox_state(true, 3, None),
+            CheckboxDisplay {
+                displayed: true,
+                retire: false,
+            }
+        );
+    }
+
+    /// A click made against the current revision is still unacknowledged,
+    /// so the control keeps showing it rather than snapping back.
+    #[test]
+    fn an_unacknowledged_click_is_shown_over_the_stale_document_value() {
+        assert_eq!(
+            optimistic_checkbox_state(false, 3, Some((3, true))),
+            CheckboxDisplay {
+                displayed: true,
+                retire: false,
+            }
+        );
+    }
+
+    /// The M4 case: the plugin rejected the toggle and replied with the
+    /// value it already had. A value-match rule would leave the optimistic
+    /// entry in place forever; a revision rule retires it.
+    #[test]
+    fn a_rejected_toggle_reverts_when_the_plugin_answers_with_the_same_value() {
+        assert_eq!(
+            optimistic_checkbox_state(false, 4, Some((3, true))),
+            CheckboxDisplay {
+                displayed: false,
+                retire: true,
+            },
+            "a newer revision retires the guess even though the plugin's value did not change"
+        );
+    }
+
+    /// An accepted toggle retires the same way -- the two cases are
+    /// deliberately indistinguishable to this function.
+    #[test]
+    fn an_accepted_toggle_also_retires_on_the_next_revision() {
+        assert_eq!(
+            optimistic_checkbox_state(true, 4, Some((3, true))),
+            CheckboxDisplay {
+                displayed: true,
+                retire: true,
+            }
+        );
+    }
 }
