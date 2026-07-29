@@ -40,8 +40,10 @@
 //! 2. `repoint_vault_paths`, only when the security patch touches
 //!    `secrets_database_path`/`key_file_path`: persists the path override
 //!    then re-opens the vault at the new location.
-//! 3. `persist_encrypted_crc_policy`, only when the security patch sets
-//!    that field: a separate `app_config` key/value write.
+//! 3. `persist_app_config_policies`: one `app_config` key/value write
+//!    covering both the encrypted-CRC policy and the pipeline collision
+//!    default (see that function's own doc comment for why it writes
+//!    both every time).
 //!
 //! **What is guaranteed**: if step 1 fails, nothing changes -- the
 //! in-memory `mutable` state (and therefore every subsequent `settings()`
@@ -109,7 +111,7 @@ pub(super) async fn run_settings(
     };
     Ok(SettingsSnapshot {
         revision: mutable.revision,
-        archive: settings::archive_dto(&mutable.user_config),
+        archive: settings::archive_dto(&mutable.user_config, &mutable.default_collision_policy),
         network: settings::network_dto(
             &mutable.user_config,
             socks5_password_configured,
@@ -150,18 +152,20 @@ pub(super) async fn run_update_settings(
     // be in effect afterward (see that function's own doc comment).
     // Nothing is ever written, and the vault is never re-opened, until
     // every check below has passed.
-    let (current_crc_policy, current_db_paths, current_dbs) = {
+    let (current_crc_policy, current_collision_policy, current_db_paths, current_dbs) = {
         let mutable = inner.session.mutable.read();
         if patch.expected_revision != mutable.revision {
             return Err(conflict_error(mutable.revision));
         }
         (
             mutable.encrypted_crc_policy.clone(),
+            mutable.default_collision_policy.clone(),
             mutable.db_paths.clone(),
             mutable.dbs.clone(),
         )
     };
     let mut proposed_crc_policy = current_crc_policy;
+    let mut proposed_collision_policy = current_collision_policy;
 
     let config_service = inner
         .core_services()
@@ -246,7 +250,11 @@ pub(super) async fn run_update_settings(
     };
 
     if let Some(archive_patch) = patch.archive {
-        settings::apply_archive_patch(&mut proposed_user_config, archive_patch)?;
+        settings::apply_archive_patch(
+            &mut proposed_user_config,
+            &mut proposed_collision_policy,
+            archive_patch,
+        )?;
     }
     if let Some(network_patch) = patch.network {
         settings::apply_network_patch(&mut proposed_user_config, network_patch)?;
@@ -343,7 +351,13 @@ pub(super) async fn run_update_settings(
         None
     };
 
-    persist_encrypted_crc_policy(inner, &current_db_paths, &proposed_crc_policy).await?;
+    persist_app_config_policies(
+        inner,
+        &current_db_paths,
+        &proposed_crc_policy,
+        &proposed_collision_policy,
+    )
+    .await?;
 
     // Phase 3: commit. Re-checks the revision so a second mutation that
     // committed while this one was performing I/O (phase 2) is caught
@@ -358,6 +372,7 @@ pub(super) async fn run_update_settings(
     }
     mutable.user_config = proposed_user_config;
     mutable.encrypted_crc_policy = proposed_crc_policy;
+    mutable.default_collision_policy = proposed_collision_policy;
     if let Some((db_paths, dbs, pass_rules)) = vault_repoint {
         mutable.db_paths = Some(db_paths);
         mutable.dbs = Some(dbs);
@@ -375,7 +390,7 @@ pub(super) async fn run_update_settings(
     };
     Ok(SettingsSnapshot {
         revision: mutable.revision,
-        archive: settings::archive_dto(&mutable.user_config),
+        archive: settings::archive_dto(&mutable.user_config, &mutable.default_collision_policy),
         network: settings::network_dto(
             &mutable.user_config,
             socks5_password_configured,
@@ -1112,15 +1127,27 @@ async fn persist_pass_rules(
         .map_err(internal_join_error)?
 }
 
-async fn persist_encrypted_crc_policy(
+/// Writes the two `app_config` key/value policies `update_settings` owns
+/// -- the encrypted-CRC policy (security) and the pipeline collision
+/// default (archive) -- in one connection, so a call that changes both
+/// cannot land one and lose the other.
+///
+/// Writes both unconditionally, whether or not this patch changed either:
+/// the value written is always the one the caller is about to commit
+/// in-memory, so an unchanged field's write is a no-op re-write of what
+/// is already stored. This is the behavior the CRC policy has had since
+/// this surface existed; the collision policy simply joined it.
+async fn persist_app_config_policies(
     inner: &Arc<AppRuntime>,
     db_paths: &Option<DbPaths>,
     encrypted_crc_policy: &str,
+    default_collision_policy: &str,
 ) -> Result<(), ApplicationError> {
     let Some(db_paths) = db_paths.clone() else {
         return Ok(());
     };
-    let policy = encrypted_crc_policy.to_string();
+    let crc_policy = encrypted_crc_policy.to_string();
+    let collision_policy = default_collision_policy.to_string();
     let handle = inner
         .tokio_handle()
         .ok_or_else(shutdown_mid_request_error)?;
@@ -1131,9 +1158,14 @@ async fn persist_encrypted_crc_policy(
                 .into_sqlite_db();
             cfg_conn
                 .with_connection(|conn| {
-                    arclain_core::set_config(conn, "encrypted_crc_policy", &policy)
+                    arclain_core::set_config(conn, "encrypted_crc_policy", &crc_policy)?;
+                    arclain_core::set_config(
+                        conn,
+                        arclain_core::COLLISION_POLICY_CONFIG_KEY,
+                        &collision_policy,
+                    )
                 })
-                .map_err(|error| persistence_error("saving CRC policy", error))
+                .map_err(|error| persistence_error("saving configuration policies", error))
         })
         .await
         .map_err(internal_join_error)?

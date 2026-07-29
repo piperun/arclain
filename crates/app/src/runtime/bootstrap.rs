@@ -201,19 +201,30 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
     let (secrets_path, key_path, crc_policy) =
         ConfigService::load_startup_config(&db_paths.config_db).unwrap_or((None, None, None));
 
-    let user_config = if let Ok(cfg_db) = arclain_core::config::ConfigDb::open(&db_paths.config_db)
-    {
-        let cfg_conn = cfg_db.into_sqlite_db();
-        cfg_conn
-            .with_connection(|conn| {
-                UserConfig::ensure_table(conn)?;
-                Ok(UserConfig::load(conn)?.unwrap_or_default())
-            })
-            .unwrap_or_default()
-    } else {
-        UserConfig::default()
-    };
+    // `default_collision_policy` rides along with the `user_config` load
+    // rather than joining `load_startup_config` above: it is an
+    // `app_config` key/value read like the CRC policy, but unlike the
+    // vault paths it is not needed to decide *which* databases to open,
+    // so it belongs with the ordinary settings read rather than with the
+    // three values that steer bootstrap itself.
+    let (user_config, stored_collision_policy) =
+        if let Ok(cfg_db) = arclain_core::config::ConfigDb::open(&db_paths.config_db) {
+            let cfg_conn = cfg_db.into_sqlite_db();
+            cfg_conn
+                .with_connection(|conn| {
+                    UserConfig::ensure_table(conn)?;
+                    let user_config = UserConfig::load(conn)?.unwrap_or_default();
+                    let collision_policy =
+                        arclain_core::get_config(conn, arclain_core::COLLISION_POLICY_CONFIG_KEY)?;
+                    Ok((user_config, collision_policy))
+                })
+                .unwrap_or_default()
+        } else {
+            (UserConfig::default(), None)
+        };
     let encrypted_crc_policy = crc_policy.unwrap_or_else(|| "on_access".to_string());
+    let default_collision_policy =
+        stored_collision_policy.unwrap_or_else(crate::settings::default_collision_policy_token);
 
     if let Some(secrets_path) = secrets_path {
         db_paths.secrets_db = secrets_path;
@@ -505,6 +516,7 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
             user_config,
             pass_rules,
             encrypted_crc_policy,
+            default_collision_policy,
             Some(db_paths),
             dbs,
         )),

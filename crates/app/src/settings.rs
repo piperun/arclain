@@ -21,7 +21,8 @@
 //! this task's whole job is exactly that. [`MutableSettings`] is the
 //! fix: `SessionStore` now retains its own live, mutable copy of
 //! everything this task's facade surface can change (`user_config`,
-//! `pass_rules`, `encrypted_crc_policy`, `db_paths`, `dbs`), behind one
+//! `pass_rules`, `encrypted_crc_policy`, `default_collision_policy`,
+//! `db_paths`, `dbs`), behind one
 //! lock so a vault move/rekey -- which changes `dbs`, `db_paths`, and
 //! `pass_rules` together -- can never be observed half-updated.
 //! `take_legacy_composition` now *clones* out of this store instead of
@@ -124,8 +125,33 @@ pub struct ArchiveSettingsDto {
     pub temp_directory: Option<PathBuf>,
     pub transfer_directory: Option<PathBuf>,
     pub sevenzip_path: Option<PathBuf>,
+    /// What a batch pipeline does when a producing step is about to
+    /// write over an existing path, unless the pipeline itself overrides
+    /// it. Stored as the same string token `arclain_core::
+    /// OutputCollisionPolicy::to_settings_str`/`from_settings_str` use
+    /// ("fail" | "skip" | "overwrite" | "smart").
+    ///
+    /// Unlike every other field here this one does *not* live on the
+    /// `user_config` row -- it is an `app_config` key/value entry
+    /// (`COLLISION_POLICY_CONFIG_KEY`), the same storage
+    /// [`SecuritySettingsDto::encrypted_crc_policy`] uses. It is grouped
+    /// with the archive settings anyway because that is the page a user
+    /// changes it on and the concern it belongs to; where the bytes land
+    /// is a persistence detail, not a grouping criterion.
+    pub default_collision_policy: String,
 }
 
+/// See [`ArchiveSettingsDto`]. Every field's `Clear` is rejected as
+/// `InvalidInput` except the four directory/path overrides, matching
+/// [`PatchValue`]'s general rule.
+///
+/// `default_collision_policy` is additionally *validated* on `Set`: an
+/// unrecognized token is rejected rather than stored, because
+/// `arclain_core::OutputCollisionPolicy::from_settings_str` silently maps
+/// anything it does not recognize to "no app default at all", which would
+/// turn a typo into a quietly different pipeline behavior instead of an
+/// error the caller can see. `Keep` never validates, so an already-stored
+/// unrecognized value round-trips untouched.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ArchiveSettingsPatch {
     pub backend_mode: PatchValue<BackendModeDto>,
@@ -133,6 +159,7 @@ pub struct ArchiveSettingsPatch {
     pub temp_directory: PatchValue<PathBuf>,
     pub transfer_directory: PatchValue<PathBuf>,
     pub sevenzip_path: PatchValue<PathBuf>,
+    pub default_collision_policy: PatchValue<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -462,6 +489,10 @@ pub(crate) struct MutableSettings {
     pub(crate) user_config: UserConfig,
     pub(crate) pass_rules: Vec<PassRule>,
     pub(crate) encrypted_crc_policy: String,
+    /// The `app_config`-stored pipeline collision default -- see
+    /// [`ArchiveSettingsDto::default_collision_policy`] for why an
+    /// archive-settings field lives outside `user_config`.
+    pub(crate) default_collision_policy: String,
     pub(crate) db_paths: Option<DbPaths>,
     pub(crate) dbs: Option<ConfigDbs>,
 }
@@ -471,6 +502,7 @@ impl MutableSettings {
         user_config: UserConfig,
         pass_rules: Vec<PassRule>,
         encrypted_crc_policy: String,
+        default_collision_policy: String,
         db_paths: Option<DbPaths>,
         dbs: Option<ConfigDbs>,
     ) -> Self {
@@ -479,6 +511,7 @@ impl MutableSettings {
             user_config,
             pass_rules,
             encrypted_crc_policy,
+            default_collision_policy,
             db_paths,
             dbs,
         }
@@ -489,14 +522,28 @@ impl MutableSettings {
 // Pure DTO <-> domain conversions.
 // ============================================================================
 
-pub(crate) fn archive_dto(user_config: &UserConfig) -> ArchiveSettingsDto {
+pub(crate) fn archive_dto(
+    user_config: &UserConfig,
+    default_collision_policy: &str,
+) -> ArchiveSettingsDto {
     ArchiveSettingsDto {
         backend_mode: BackendModeDto::from_user_config(&user_config.backend_mode),
         cache_directory: user_config.cache_directory.clone().map(PathBuf::from),
         temp_directory: user_config.temp_dir.clone().map(PathBuf::from),
         transfer_directory: user_config.transfer_dir.clone().map(PathBuf::from),
         sevenzip_path: user_config.sevenzip_path.clone().map(PathBuf::from),
+        default_collision_policy: default_collision_policy.to_string(),
     }
+}
+
+/// The token stored when nothing has ever set the pipeline collision
+/// default -- `arclain_core::OutputCollisionPolicy`'s own `Default`,
+/// spelled the way settings storage spells it, so this crate never
+/// hardcodes the word.
+pub(crate) fn default_collision_policy_token() -> String {
+    arclain_core::OutputCollisionPolicy::default()
+        .to_settings_str()
+        .to_string()
 }
 
 pub(crate) fn network_dto(
@@ -611,10 +658,38 @@ fn clear_not_supported_error(field: &'static str) -> ApplicationError {
 /// `MutableSettings` -- `settings_ops::run_update_settings` only commits
 /// the working copy after every patch in the whole request validates and
 /// every disk write succeeds).
+///
+/// Takes `default_collision_policy` alongside `user_config` because the
+/// archive settings surface deliberately spans two storage locations (see
+/// [`ArchiveSettingsDto::default_collision_policy`]); keeping one patch
+/// applier for the whole group means a caller can never apply half of an
+/// archive patch by forgetting the other function.
 pub(crate) fn apply_archive_patch(
     user_config: &mut UserConfig,
+    default_collision_policy: &mut String,
     patch: ArchiveSettingsPatch,
 ) -> Result<(), ApplicationError> {
+    let mut proposed_policy = default_collision_policy.clone();
+    apply_required(
+        &mut proposed_policy,
+        patch.default_collision_policy,
+        "archive.default_collision_policy",
+    )?;
+    if proposed_policy != *default_collision_policy
+        && arclain_core::OutputCollisionPolicy::from_settings_str(&proposed_policy).is_none()
+    {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "unrecognized pipeline collision policy",
+        )
+        .with_diagnostic(format!(
+            "{proposed_policy:?} is not one of \"fail\", \"skip\", \"overwrite\", \"smart\""
+        ))
+        .with_recoverability(Recoverability::UserAction)
+        .with_field("archive.default_collision_policy"));
+    }
+    *default_collision_policy = proposed_policy;
+
     let mut backend_mode = BackendModeDto::from_user_config(&user_config.backend_mode);
     apply_required(
         &mut backend_mode,
@@ -905,28 +980,53 @@ mod tests {
         assert_eq!(BackendModeDto::Cli.as_user_config_str(), "cli");
     }
 
+    /// An archive patch that changes nothing, for tests that only care
+    /// about one field.
+    fn keep_archive_patch() -> ArchiveSettingsPatch {
+        ArchiveSettingsPatch {
+            backend_mode: PatchValue::Keep,
+            cache_directory: PatchValue::Keep,
+            temp_directory: PatchValue::Keep,
+            transfer_directory: PatchValue::Keep,
+            sevenzip_path: PatchValue::Keep,
+            default_collision_policy: PatchValue::Keep,
+        }
+    }
+
     #[test]
     fn archive_dto_reflects_first_run_defaults() {
-        let dto = archive_dto(&default_user_config());
+        let dto = archive_dto(&default_user_config(), &default_collision_policy_token());
         assert_eq!(dto.backend_mode, BackendModeDto::Native);
         assert!(dto.cache_directory.is_none());
         assert!(dto.temp_directory.is_none());
         assert!(dto.transfer_directory.is_none());
         assert!(dto.sevenzip_path.is_none());
+        assert_eq!(dto.default_collision_policy, "smart");
+    }
+
+    /// The DTO carries the stored token through verbatim -- including one
+    /// nothing recognizes, so a hand-edited `app_config` row is reported
+    /// as it actually is rather than silently normalized on read.
+    #[test]
+    fn archive_dto_reports_the_stored_collision_policy_verbatim() {
+        let dto = archive_dto(&default_user_config(), "overwrite");
+        assert_eq!(dto.default_collision_policy, "overwrite");
+
+        let dto = archive_dto(&default_user_config(), "hand-edited-nonsense");
+        assert_eq!(dto.default_collision_policy, "hand-edited-nonsense");
     }
 
     #[test]
     fn clear_is_rejected_for_scalar_fields_without_an_empty_state() {
         let mut user_config = default_user_config();
+        let mut collision_policy = default_collision_policy_token();
         let patch = ArchiveSettingsPatch {
             backend_mode: PatchValue::Clear,
-            cache_directory: PatchValue::Keep,
-            temp_directory: PatchValue::Keep,
-            transfer_directory: PatchValue::Keep,
-            sevenzip_path: PatchValue::Keep,
+            ..keep_archive_patch()
         };
 
-        let error = apply_archive_patch(&mut user_config, patch).unwrap_err();
+        let error =
+            apply_archive_patch(&mut user_config, &mut collision_policy, patch).unwrap_err();
 
         assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
         assert_eq!(error.field.as_deref(), Some("archive.backend_mode"));
@@ -935,16 +1035,14 @@ mod tests {
     #[test]
     fn clear_resets_an_optional_directory_override_to_none() {
         let mut user_config = default_user_config();
+        let mut collision_policy = default_collision_policy_token();
         user_config.cache_directory = Some("/old/cache".to_string());
         let patch = ArchiveSettingsPatch {
-            backend_mode: PatchValue::Keep,
             cache_directory: PatchValue::Clear,
-            temp_directory: PatchValue::Keep,
-            transfer_directory: PatchValue::Keep,
-            sevenzip_path: PatchValue::Keep,
+            ..keep_archive_patch()
         };
 
-        apply_archive_patch(&mut user_config, patch).unwrap();
+        apply_archive_patch(&mut user_config, &mut collision_policy, patch).unwrap();
 
         assert!(user_config.cache_directory.is_none());
     }
@@ -952,19 +1050,113 @@ mod tests {
     #[test]
     fn set_overrides_a_directory_and_keep_leaves_others_untouched() {
         let mut user_config = default_user_config();
+        let mut collision_policy = default_collision_policy_token();
         user_config.temp_dir = Some("/old/temp".to_string());
         let patch = ArchiveSettingsPatch {
-            backend_mode: PatchValue::Keep,
             cache_directory: PatchValue::Set(PathBuf::from("/new/cache")),
-            temp_directory: PatchValue::Keep,
-            transfer_directory: PatchValue::Keep,
-            sevenzip_path: PatchValue::Keep,
+            ..keep_archive_patch()
         };
 
-        apply_archive_patch(&mut user_config, patch).unwrap();
+        apply_archive_patch(&mut user_config, &mut collision_policy, patch).unwrap();
 
         assert_eq!(user_config.cache_directory.as_deref(), Some("/new/cache"));
         assert_eq!(user_config.temp_dir.as_deref(), Some("/old/temp"));
+    }
+
+    /// Every token `arclain_core::OutputCollisionPolicy` round-trips is
+    /// accepted, and the applied value is the token itself -- the facade
+    /// stores what the settings page stores, not a re-spelling of it.
+    #[test]
+    fn every_known_collision_policy_token_is_accepted() {
+        for policy in [
+            arclain_core::OutputCollisionPolicy::Fail,
+            arclain_core::OutputCollisionPolicy::Skip,
+            arclain_core::OutputCollisionPolicy::Overwrite,
+            arclain_core::OutputCollisionPolicy::Smart,
+        ] {
+            let token = policy.to_settings_str();
+            let mut user_config = default_user_config();
+            let mut collision_policy = "fail".to_string();
+            let patch = ArchiveSettingsPatch {
+                default_collision_policy: PatchValue::Set(token.to_string()),
+                ..keep_archive_patch()
+            };
+
+            apply_archive_patch(&mut user_config, &mut collision_policy, patch).unwrap();
+
+            assert_eq!(collision_policy, token);
+            assert_eq!(
+                archive_dto(&user_config, &collision_policy).default_collision_policy,
+                token
+            );
+        }
+    }
+
+    /// A typo would otherwise be stored and then read back by
+    /// `from_settings_str` as "no app default at all", silently changing
+    /// which policy pipelines run under. Rejecting it makes the mistake
+    /// visible at the call that made it.
+    #[test]
+    fn setting_an_unrecognized_collision_policy_is_rejected() {
+        let mut user_config = default_user_config();
+        let mut collision_policy = default_collision_policy_token();
+        let patch = ArchiveSettingsPatch {
+            default_collision_policy: PatchValue::Set("smrt".to_string()),
+            ..keep_archive_patch()
+        };
+
+        let error =
+            apply_archive_patch(&mut user_config, &mut collision_policy, patch).unwrap_err();
+
+        assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(
+            error.field.as_deref(),
+            Some("archive.default_collision_policy")
+        );
+        assert_eq!(
+            collision_policy,
+            default_collision_policy_token(),
+            "a rejected policy must leave the working copy untouched"
+        );
+    }
+
+    /// `Keep` never validates: an unrecognized value already on disk
+    /// survives an unrelated archive patch instead of blocking it.
+    #[test]
+    fn keeping_an_already_unrecognized_collision_policy_does_not_fail() {
+        let mut user_config = default_user_config();
+        let mut collision_policy = "hand-edited-nonsense".to_string();
+        let patch = ArchiveSettingsPatch {
+            cache_directory: PatchValue::Set(PathBuf::from("/new/cache")),
+            ..keep_archive_patch()
+        };
+
+        apply_archive_patch(&mut user_config, &mut collision_policy, patch).unwrap();
+
+        assert_eq!(collision_policy, "hand-edited-nonsense");
+    }
+
+    /// The collision policy has no "unset" state to fall back to -- the
+    /// pipeline always resolves *some* policy -- so it follows
+    /// `PatchValue`'s plain-scalar rule rather than the `Option`-shaped
+    /// one, even though the other archive fields around it are optional.
+    #[test]
+    fn clear_on_the_collision_policy_is_rejected() {
+        let mut user_config = default_user_config();
+        let mut collision_policy = default_collision_policy_token();
+        let patch = ArchiveSettingsPatch {
+            default_collision_policy: PatchValue::Clear,
+            ..keep_archive_patch()
+        };
+
+        let error =
+            apply_archive_patch(&mut user_config, &mut collision_policy, patch).unwrap_err();
+
+        assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(
+            error.field.as_deref(),
+            Some("archive.default_collision_policy")
+        );
     }
 
     #[test]

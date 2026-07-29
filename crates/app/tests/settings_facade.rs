@@ -156,6 +156,7 @@ fn keep_archive_patch() -> ArchiveSettingsPatch {
         temp_directory: PatchValue::Keep,
         transfer_directory: PatchValue::Keep,
         sevenzip_path: PatchValue::Keep,
+        default_collision_policy: PatchValue::Keep,
     }
 }
 
@@ -291,6 +292,11 @@ fn first_run_defaults_reflect_a_fresh_bootstrap() {
     assert!(!snapshot.network.gameta_server_enabled);
     assert!(snapshot.network.gameta_server_url.is_none());
     assert!(!snapshot.network.gameta_api_key_configured);
+
+    // Nothing has ever written the `app_config` key, so the snapshot
+    // reports `OutputCollisionPolicy`'s own default rather than an empty
+    // string a frontend would have to interpret.
+    assert_eq!(snapshot.archive.default_collision_policy, "smart");
 
     assert_eq!(snapshot.security.encrypted_crc_policy, "on_access");
     assert!(snapshot.security.vault_available);
@@ -1012,6 +1018,125 @@ fn update_settings_changes_directories_and_network_fields_together() {
         .expect("settings must succeed");
     assert_eq!(reread.archive.backend_mode, BackendModeDto::Cli);
     assert!(reread.network.socks5_enabled);
+}
+
+/// The pipeline collision default is an archive setting stored outside
+/// the `user_config` row (in `app_config`), so it needs its own
+/// round-trip proof: patch it, read it back through `settings()`, and
+/// confirm it survived a fresh bootstrap against the same profile --
+/// i.e. that it actually reached disk rather than only the in-memory
+/// mirror.
+#[test]
+fn the_pipeline_collision_default_round_trips_and_persists() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    let snapshot = runtime
+        .block_on(app.update_settings(SettingsPatch {
+            expected_revision: 0,
+            archive: Some(ArchiveSettingsPatch {
+                default_collision_policy: PatchValue::Set("overwrite".to_string()),
+                ..keep_archive_patch()
+            }),
+            network: None,
+            security: None,
+            general: None,
+        }))
+        .expect("update must succeed");
+    assert_eq!(snapshot.archive.default_collision_policy, "overwrite");
+
+    let reread = runtime
+        .block_on(app.settings())
+        .expect("settings must succeed");
+    assert_eq!(reread.archive.default_collision_policy, "overwrite");
+
+    runtime.block_on(app.shutdown()).expect("shutdown");
+    drop(app);
+
+    let reopened = bootstrap_app(&temp);
+    let after_restart = runtime
+        .block_on(reopened.settings())
+        .expect("settings must succeed");
+    assert_eq!(
+        after_restart.archive.default_collision_policy, "overwrite",
+        "the collision default must be read back from app_config at bootstrap"
+    );
+}
+
+/// The patch surface refuses a token `OutputCollisionPolicy` cannot
+/// parse, and nothing is written -- otherwise the stored typo would read
+/// back as "no app default", quietly changing which policy pipelines run
+/// under.
+#[test]
+fn an_unrecognized_collision_policy_is_rejected_and_nothing_is_stored() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    let error = runtime
+        .block_on(app.update_settings(SettingsPatch {
+            expected_revision: 0,
+            archive: Some(ArchiveSettingsPatch {
+                default_collision_policy: PatchValue::Set("overwrit".to_string()),
+                ..keep_archive_patch()
+            }),
+            network: None,
+            security: None,
+            general: None,
+        }))
+        .expect_err("an unrecognized collision policy must be rejected");
+
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(
+        error.field.as_deref(),
+        Some("archive.default_collision_policy")
+    );
+
+    let snapshot = runtime
+        .block_on(app.settings())
+        .expect("settings must succeed");
+    assert_eq!(snapshot.revision, 0, "a rejected patch must not commit");
+    assert_eq!(snapshot.archive.default_collision_policy, "smart");
+}
+
+/// A patch that leaves the collision default alone must not disturb it,
+/// even though the `app_config` write step runs on every call -- the
+/// value it writes is the one already in effect.
+#[test]
+fn an_unrelated_patch_leaves_the_collision_default_alone() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    runtime
+        .block_on(app.update_settings(SettingsPatch {
+            expected_revision: 0,
+            archive: Some(ArchiveSettingsPatch {
+                default_collision_policy: PatchValue::Set("skip".to_string()),
+                ..keep_archive_patch()
+            }),
+            network: None,
+            security: None,
+            general: None,
+        }))
+        .expect("update must succeed");
+
+    let snapshot = runtime
+        .block_on(app.update_settings(SettingsPatch {
+            expected_revision: 1,
+            archive: None,
+            network: None,
+            security: Some(SecuritySettingsPatch {
+                encrypted_crc_policy: PatchValue::Set("always".to_string()),
+                ..keep_security_patch()
+            }),
+            general: None,
+        }))
+        .expect("update must succeed");
+
+    assert_eq!(snapshot.security.encrypted_crc_policy, "always");
+    assert_eq!(snapshot.archive.default_collision_policy, "skip");
 }
 
 #[test]
@@ -1794,6 +1919,7 @@ fn constructs_every_public_settings_dto() {
         temp_directory: None,
         transfer_directory: None,
         sevenzip_path: None,
+        default_collision_policy: "smart".to_string(),
     };
     let mut plugin_proxy_enabled = std::collections::BTreeMap::new();
     plugin_proxy_enabled.insert("dlsite".to_string(), true);
