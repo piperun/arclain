@@ -1236,8 +1236,17 @@ fn matching_rule_ids_report_only_the_rules_whose_trigger_applies() {
         // Names a file this archive does not contain.
         let mut by_missing_file = base_rule_input("By Missing File");
         by_missing_file.trigger.has_file = Some("installer.msi".to_string());
+        app.upsert_organization_rule(by_missing_file)
+            .await
+            .expect("creating a rule must succeed");
+
+        // Names one it does: the only trigger that reads the entry list
+        // at all, so this is what proves the list is there when it is
+        // needed.
+        let mut by_present_file = base_rule_input("By Present File");
+        by_present_file.trigger.has_file = Some("Game.exe".to_string());
         let rules = app
-            .upsert_organization_rule(by_missing_file)
+            .upsert_organization_rule(by_present_file)
             .await
             .expect("creating a rule must succeed");
 
@@ -1250,6 +1259,10 @@ fn matching_rule_ids_report_only_the_rules_whose_trigger_applies() {
         let id_of = |name: &str| find_rule(&rules, name).expect("rule must exist").id.clone();
         assert!(matching.contains(&id_of("Anything")));
         assert!(matching.contains(&id_of("By Name")));
+        assert!(
+            matching.contains(&id_of("By Present File")),
+            "a trigger naming a file the archive holds must match"
+        );
         assert!(
             !matching.contains(&id_of("By Missing File")),
             "a trigger naming an absent file must not match"

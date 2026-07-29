@@ -456,7 +456,19 @@ pub(super) async fn run_matching_organization_rule_ids(
     // `run_preview_organize_plan`'s own treatment of the same work.
     handle_for(inner)?
         .spawn_blocking(move || {
-            let (_revision, entries) = session.organization_entries();
+            // `matches_trigger` reads the entry list for exactly one
+            // thing: a `has_file` trigger's substring search. Building
+            // it means reconstituting every indexed entry, with a
+            // cloned path and crc apiece, so it is materialized only
+            // when some rule actually carries that trigger -- otherwise
+            // the rules provably never look at it, and a panel opening
+            // on a large archive pays for one full rebuild instead of
+            // two.
+            let entries = if rules.iter().any(|rule| rule.trigger.has_file.is_some()) {
+                session.organization_entries().1
+            } else {
+                Vec::new()
+            };
             let archive_name = session
                 .source_path()
                 .file_name()
