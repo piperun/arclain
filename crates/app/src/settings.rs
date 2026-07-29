@@ -141,6 +141,14 @@ pub struct ArchiveSettingsDto {
     pub default_collision_policy: String,
 }
 
+/// See [`GeneralSettingsDto::default`] -- same rationale, same
+/// derived-not-restated construction.
+impl Default for ArchiveSettingsDto {
+    fn default() -> Self {
+        archive_dto(&UserConfig::default(), &default_collision_policy_token())
+    }
+}
+
 /// See [`ArchiveSettingsDto`]. Every field's `Clear` is rejected as
 /// `InvalidInput` except the four directory/path overrides, matching
 /// [`PatchValue`]'s general rule.
@@ -310,6 +318,17 @@ pub struct NetworkSettingsPatch {
 pub struct SecuritySettingsDto {
     pub secrets_database_path: Option<PathBuf>,
     pub key_file_path: Option<PathBuf>,
+    /// Where a `Clear` on [`SecuritySettingsPatch::secrets_database_path`]
+    /// would put the vault -- this install's computed default location.
+    /// Reported so a frontend can show it (as a placeholder for an empty
+    /// override field, say) without resolving OS config directories of
+    /// its own. Resolved once at bootstrap, so it never changes for the
+    /// life of an application instance. `None` if it could not be
+    /// resolved at all, which is the same condition that makes `Clear`
+    /// fail.
+    pub default_secrets_database_path: Option<PathBuf>,
+    /// See [`Self::default_secrets_database_path`], for the key file.
+    pub default_key_file_path: Option<PathBuf>,
     pub encrypted_crc_policy: String,
     pub vault_available: bool,
 }
@@ -386,6 +405,23 @@ impl Default for GeneralSettingsDto {
 impl Default for NetworkSettingsDto {
     fn default() -> Self {
         network_dto(&UserConfig::default(), false, false)
+    }
+}
+
+/// See [`GeneralSettingsDto::default`]. Every path is `None` and the
+/// vault reads as unavailable: nothing has been resolved yet, which is
+/// exactly what a placeholder should claim.
+impl Default for SecuritySettingsDto {
+    fn default() -> Self {
+        security_dto(&MutableSettings::new(
+            UserConfig::default(),
+            Vec::new(),
+            DEFAULT_ENCRYPTED_CRC_POLICY.to_string(),
+            default_collision_policy_token(),
+            None,
+            None,
+            None,
+        ))
     }
 }
 
@@ -565,6 +601,13 @@ pub(crate) struct MutableSettings {
     /// archive-settings field lives outside `user_config`.
     pub(crate) default_collision_policy: String,
     pub(crate) db_paths: Option<DbPaths>,
+    /// This install's computed default vault locations, resolved once at
+    /// bootstrap. Immutable for the life of the application: it is where
+    /// a `Clear` on either vault-path patch field resets *to*, not a
+    /// setting in its own right. Held here (rather than recomputed per
+    /// read) because resolving it touches OS config directories and
+    /// environment variables, which this module's conversions never do.
+    pub(crate) default_db_paths: Option<DbPaths>,
     pub(crate) dbs: Option<ConfigDbs>,
 }
 
@@ -575,6 +618,7 @@ impl MutableSettings {
         encrypted_crc_policy: String,
         default_collision_policy: String,
         db_paths: Option<DbPaths>,
+        default_db_paths: Option<DbPaths>,
         dbs: Option<ConfigDbs>,
     ) -> Self {
         Self {
@@ -584,6 +628,7 @@ impl MutableSettings {
             encrypted_crc_policy,
             default_collision_policy,
             db_paths,
+            default_db_paths,
             dbs,
         }
     }
@@ -606,6 +651,11 @@ pub(crate) fn archive_dto(
         default_collision_policy: default_collision_policy.to_string(),
     }
 }
+
+/// The encrypted-CRC policy a profile that has never stored one runs
+/// under. Named here so `bootstrap`'s fallback and this module's
+/// placeholder cannot disagree.
+pub(crate) const DEFAULT_ENCRYPTED_CRC_POLICY: &str = "on_access";
 
 /// The token stored when nothing has ever set the pipeline collision
 /// default -- `arclain_core::OutputCollisionPolicy`'s own `Default`,
@@ -653,6 +703,14 @@ pub(crate) fn security_dto(mutable: &MutableSettings) -> SecuritySettingsDto {
     SecuritySettingsDto {
         secrets_database_path: mutable.db_paths.as_ref().map(|p| p.secrets_db.clone()),
         key_file_path: mutable.db_paths.as_ref().and_then(|p| p.key_file.clone()),
+        default_secrets_database_path: mutable
+            .default_db_paths
+            .as_ref()
+            .map(|p| p.secrets_db.clone()),
+        default_key_file_path: mutable
+            .default_db_paths
+            .as_ref()
+            .and_then(|p| p.key_file.clone()),
         encrypted_crc_policy: mutable.encrypted_crc_policy.clone(),
         vault_available: mutable.dbs.is_some(),
     }

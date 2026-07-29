@@ -300,6 +300,25 @@ fn first_run_defaults_reflect_a_fresh_bootstrap() {
 
     assert_eq!(snapshot.security.encrypted_crc_policy, "on_access");
     assert!(snapshot.security.vault_available);
+
+    // The computed default vault locations are reported independently of
+    // where this (temp-profile) instance actually put its vault, so a
+    // frontend can show what a `Clear` would reset to.
+    let computed_defaults =
+        arclain_core::DbPaths::calculate_defaults("arclain").expect("resolve default db paths");
+    assert_eq!(
+        snapshot.security.default_secrets_database_path.as_deref(),
+        Some(computed_defaults.secrets_db.as_path())
+    );
+    assert_eq!(
+        snapshot.security.default_key_file_path,
+        computed_defaults.key_file
+    );
+    assert_ne!(
+        snapshot.security.secrets_database_path, snapshot.security.default_secrets_database_path,
+        "this test profile is deliberately not at the computed default location, so the two \
+         must be distinguishable"
+    );
     assert_eq!(
         snapshot
             .security
@@ -2042,6 +2061,8 @@ fn constructs_every_public_settings_dto() {
     let security = SecuritySettingsDto {
         secrets_database_path: None,
         key_file_path: None,
+        default_secrets_database_path: None,
+        default_key_file_path: None,
         encrypted_crc_policy: "on_access".to_string(),
         vault_available: false,
     };

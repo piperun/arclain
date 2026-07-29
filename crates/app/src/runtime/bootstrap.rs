@@ -274,7 +274,8 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         } else {
             (UserConfig::default(), None)
         };
-    let encrypted_crc_policy = crc_policy.unwrap_or_else(|| "on_access".to_string());
+    let encrypted_crc_policy =
+        crc_policy.unwrap_or_else(|| crate::settings::DEFAULT_ENCRYPTED_CRC_POLICY.to_string());
     let default_collision_policy =
         stored_collision_policy.unwrap_or_else(crate::settings::default_collision_policy_token);
 
@@ -573,6 +574,7 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
             encrypted_crc_policy,
             default_collision_policy,
             Some(db_paths),
+            DbPaths::calculate_defaults("arclain").ok(),
             dbs,
         )),
     };

@@ -140,6 +140,7 @@ async fn run_set_archive_field(
         temp_directory: PatchValue::Keep,
         transfer_directory: PatchValue::Keep,
         sevenzip_path: PatchValue::Keep,
+        default_collision_policy: PatchValue::Keep,
     };
     mutate(&mut patch);
 
