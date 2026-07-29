@@ -50,6 +50,8 @@ class TestOwnedFormatting(unittest.TestCase):
         "--package",
         "arclain_checksum",
         "--package",
+        "arclain_cli",
+        "--package",
         "arclain_core",
         "--package",
         "arclain_data",
