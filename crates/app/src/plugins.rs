@@ -14,6 +14,15 @@
 //! plugin host functions to this application's own archive-session
 //! store instead of a UI signal tree.
 //!
+//! It also owns the plugin *domain-access* read model -- the per-plugin
+//! network whitelist ([`DomainWhitelistEntryDto`]) and the URL security
+//! analysis a frontend renders beside it ([`analyze_url`],
+//! [`DomainAnalysisDto`], [`DomainWarningDto`]). Both live here rather
+//! than in a module of their own because both answer one question about
+//! one plugin -- which domains may this plugin reach, and do any of them
+//! look dangerous -- and both mirror `arclain-network` shapes so that no
+//! frontend needs that crate to ask it.
+//!
 //! ## What this task ports faithfully, and what it does not (yet)
 //!
 //! Moved into this module, and fully tested here:
