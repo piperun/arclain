@@ -77,11 +77,12 @@ use std::sync::Arc;
 
 use arclain_core::services::SecretsService;
 use arclain_core::DbPaths;
+use arclain_network::features::proxy::ConnectionTestResult;
 
 use crate::challenge::SecretInput;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::settings::{
-    self, PasswordRuleInput, PasswordRuleSummary, SettingsPatch, SettingsSnapshot,
+    self, GametaServerInfo, PasswordRuleInput, PasswordRuleSummary, SettingsPatch, SettingsSnapshot,
 };
 
 use super::AppRuntime;
@@ -424,11 +425,15 @@ pub(super) async fn run_set_gameta_api_key(
 /// pool rather than inline, so a caller awaiting this from a
 /// `current_thread` runtime never has its executor stalled for the
 /// duration of the probe.
+///
+/// `api_key` is accepted but **not transmitted** -- see the facade
+/// method's own doc comment for the full explanation and why that is
+/// deliberately left as is here.
 pub(super) async fn run_test_gameta_connection(
     inner: &Arc<AppRuntime>,
     server_url: String,
-    api_key: Option<String>,
-) -> Result<(), ApplicationError> {
+    api_key: Option<SecretInput>,
+) -> Result<GametaServerInfo, ApplicationError> {
     let server_url = server_url.trim().to_string();
     if server_url.is_empty() {
         return Err(ApplicationError::new(
@@ -442,20 +447,99 @@ pub(super) async fn run_test_gameta_connection(
         .tokio_handle()
         .ok_or_else(shutdown_mid_request_error)?;
     let probe_url = server_url.clone();
-    handle
+    // Exposed here and nowhere else: `ServerConfig` needs an owned
+    // `String`, and this is the single grep-able point where the
+    // candidate key leaves its zeroizing container. The copy lives only
+    // as long as the client inside the closure below.
+    let probe_key = api_key.map(|key| key.expose_secret().to_string());
+    let health = handle
         .spawn_blocking(move || {
             arclain_network::features::gameta_client::GametaClient::new(
                 arclain_network::features::gameta_client::ServerConfig {
                     url: probe_url,
-                    api_key,
+                    api_key: probe_key,
                 },
             )
             .health()
         })
         .await
         .map_err(internal_join_error)?
-        .map(|_health| ())
-        .map_err(|error| gameta_unreachable_error(&server_url, error))
+        .map_err(|error| gameta_unreachable_error(&server_url, error))?;
+    Ok(GametaServerInfo {
+        status: health.status,
+        version: health.version,
+    })
+}
+
+/// Probes a *candidate* SOCKS5 proxy configuration -- see
+/// [`crate::ArclainApp::test_socks5_proxy`] for the surface contract.
+///
+/// Takes no `settings_write_lock` and persists nothing, for the same
+/// reasons [`run_test_gameta_connection`] does not.
+///
+/// `ProxyConfig::test_connection` is already `async` (it does its own
+/// DNS, TCP, and HTTP steps through Tokio), so unlike the gameta probe
+/// there is no blocking client to hand to `spawn_blocking`; the caller's
+/// `dispatch_async` has already put this future on the application's own
+/// runtime.
+pub(super) async fn run_test_socks5_proxy(
+    inner: &Arc<AppRuntime>,
+    host: String,
+    port: u16,
+    username: Option<String>,
+    password: Option<SecretInput>,
+) -> Result<(), ApplicationError> {
+    let host = host.trim().to_string();
+    if host.is_empty() {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "a proxy host is required",
+        )
+        .with_recoverability(Recoverability::UserAction)
+        .with_field("host"));
+    }
+    if port == 0 {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "a proxy port is required",
+        )
+        .with_diagnostic("port 0 is not a connectable destination")
+        .with_recoverability(Recoverability::UserAction)
+        .with_field("port"));
+    }
+    // `enabled: true` is what makes this a *proxy* probe rather than
+    // `ProxyConfig::test_connection`'s direct-connection mode: the
+    // candidate values only mean anything routed through.
+    let candidate = arclain_network::features::proxy::ProxyConfig {
+        enabled: true,
+        address: format!("{host}:{port}"),
+        username,
+        // Same single exposure point as the gameta key above.
+        password: password.map(|value| value.expose_secret().to_string()),
+    };
+    // Rejects a malformed authority (embedded userinfo, a path, a bad
+    // host) before any packet leaves, and with a better message than the
+    // probe's own first failed step would carry.
+    if let Err(reason) = candidate.validate() {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "the proxy address is not usable",
+        )
+        .with_diagnostic(reason)
+        .with_recoverability(Recoverability::UserAction)
+        .with_field("host"));
+    }
+    let Some(handle) = inner.tokio_handle() else {
+        return Err(shutdown_mid_request_error());
+    };
+    let result = handle
+        .spawn(async move { candidate.test_connection().await })
+        .await
+        .map_err(internal_join_error)?;
+    if result.success {
+        return Ok(());
+    }
+    Err(socks5_probe_failed_error(&result))
 }
 
 /// Sets or clears the SOCKS5 password.
@@ -1150,40 +1234,67 @@ fn backend_error(context: &str, error: impl std::fmt::Display) -> ApplicationErr
 /// guesswork about a shape this field never has, and `with_diagnostic`'s
 /// own path-like-token redaction already removes the full URL from the
 /// diagnostic channel regardless.
+///
+/// # Why a real parser, and not string splitting
+///
+/// Deciding where userinfo ends is a parsing problem, and the field this
+/// runs on holds arbitrary typed text, not a validated URL. Splitting on
+/// the first `://` and then on the last `@` gets every *well-formed* URL
+/// right and still leaks on input like `user:pa://ss@host`, where the
+/// leading `user:pa` is not a scheme at all but survives into the
+/// message. So: only a string with no `@` anywhere is passed through
+/// untouched (nothing to hide, provably), and anything else has to earn
+/// its way out through `url::Url`. Input that does not parse, or parses
+/// with no host to attribute the `@` to, is replaced wholesale --
+/// over-redacting an unusable URL is cheaper than echoing a credential,
+/// the same trade-off `ApplicationError::with_diagnostic`'s own
+/// path-token pass already makes.
 fn redact_url_userinfo(url: &str) -> String {
-    let (scheme, rest) = match url.split_once("://") {
-        Some((scheme, rest)) => (Some(scheme), rest),
-        None => (None, url),
-    };
-    let (authority, tail) = match rest.find(|c| c == '/' || c == '?' || c == '#') {
-        Some(index) => rest.split_at(index),
-        None => (rest, ""),
-    };
-    // `rsplit_once`: a password may itself contain '@', and only the last
-    // one separates userinfo from the host.
-    let Some((_userinfo, host)) = authority.rsplit_once('@') else {
+    // No '@' means no userinfo, whatever else the string is. This is the
+    // overwhelmingly common case (including every ordinary typo), and it
+    // keeps the message showing exactly what the user typed.
+    if !url.contains('@') {
         return url.to_string();
-    };
-    match scheme {
-        Some(scheme) => format!("{scheme}://<redacted>@{host}{tail}"),
-        None => format!("<redacted>@{host}{tail}"),
     }
+    let Ok(mut parsed) = url::Url::parse(url) else {
+        return REDACTED_URL.to_string();
+    };
+    // No host means no authority, so nothing here can identify which side
+    // of the '@' is a credential -- `user:pa://ss@host` parses as scheme
+    // `user` plus an opaque path, with the whole credential inside it.
+    if parsed.host().is_none() {
+        return REDACTED_URL.to_string();
+    }
+    if parsed.username().is_empty() && parsed.password().is_none() {
+        // The '@' is in the path or query, not the authority. Return the
+        // original rather than `parsed.to_string()` so normalization
+        // (an added trailing slash, for instance) does not silently
+        // reword what the user typed.
+        return url.to_string();
+    }
+    if parsed.set_username("").is_err() || parsed.set_password(None).is_err() {
+        return REDACTED_URL.to_string();
+    }
+    parsed.to_string()
 }
+
+/// What [`redact_url_userinfo`] returns in place of a URL it cannot
+/// safely take apart.
+const REDACTED_URL: &str = "<redacted>";
 
 /// The one failure shape [`run_test_gameta_connection`] reports: the
 /// server named by `server_url` could not be reached, or answered its
 /// health endpoint with something other than success.
 ///
-/// The API key is never an input here, so it cannot appear in either
-/// channel: the summary is built from `server_url` alone, and
-/// `with_diagnostic` receives only the client's own error text (which
-/// carries the request URL at most -- redacted by that method's
-/// path-like-token pass -- never a header value).
+/// The API key cannot appear in either channel: the summary is built from
+/// `server_url` alone, and `with_diagnostic` receives only the client's
+/// own error text (which carries the request URL at most -- redacted by
+/// that method's path-like-token pass -- never a header value).
 fn gameta_unreachable_error(server_url: &str, error: impl std::fmt::Display) -> ApplicationError {
     ApplicationError::new(
         ApplicationErrorKind::Backend,
         format!(
-            "gameta server at {} did not pass a health check",
+            "gameta server at {} did not answer a health check",
             redact_url_userinfo(server_url)
         ),
     )
@@ -1192,6 +1303,42 @@ fn gameta_unreachable_error(server_url: &str, error: impl std::fmt::Display) -> 
     .with_retryable(true)
     .with_suggested_action(SuggestedAction::Retry)
     .with_field("server_url")
+}
+
+/// The one failure shape [`run_test_socks5_proxy`] reports, built from the
+/// probe's own step list.
+///
+/// Every piece of text this reads is already credential-free at its
+/// source: `ConnectionTestStep::message` carries either an `io::Error`
+/// (a DNS or TCP failure) or `ProxyConfig::log_summary`, which reports
+/// only enablement, the host:port authority, and whether credentials were
+/// *present* -- never their values. The candidate password therefore has
+/// no path into this error at all, which is what the probe's own
+/// redaction test pins.
+fn socks5_probe_failed_error(result: &ConnectionTestResult) -> ApplicationError {
+    let failed = result.steps.iter().find(|step| !step.passed);
+    let summary = match failed {
+        Some(step) => format!("the SOCKS5 proxy failed the {} check", step.name),
+        None => "the SOCKS5 proxy probe did not complete".to_string(),
+    };
+    let diagnostic = result
+        .steps
+        .iter()
+        .map(|step| {
+            let outcome = if step.passed { "ok" } else { "failed" };
+            match &step.message {
+                Some(message) => format!("{}: {outcome} ({message})", step.name),
+                None => format!("{}: {outcome}", step.name),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    ApplicationError::new(ApplicationErrorKind::Backend, summary)
+        .with_diagnostic(diagnostic)
+        .with_recoverability(Recoverability::Retry)
+        .with_retryable(true)
+        .with_suggested_action(SuggestedAction::Retry)
+        .with_field("host")
 }
 
 fn persistence_error(context: &str, error: impl std::fmt::Display) -> ApplicationError {
@@ -1290,11 +1437,11 @@ mod tests {
     fn userinfo_redaction_strips_credentials_from_the_authority() {
         assert_eq!(
             redact_url_userinfo("https://user:hunter2@gameta.example/api"),
-            "https://<redacted>@gameta.example/api",
+            "https://gameta.example/api",
         );
         assert_eq!(
             redact_url_userinfo("http://token@gameta.example:8443"),
-            "http://<redacted>@gameta.example:8443",
+            "http://gameta.example:8443/",
         );
     }
 
@@ -1304,7 +1451,7 @@ mod tests {
     fn userinfo_redaction_splits_on_the_last_at_sign() {
         assert_eq!(
             redact_url_userinfo("https://user:p@ss@gameta.example/api"),
-            "https://<redacted>@gameta.example/api",
+            "https://gameta.example/api",
         );
     }
 
@@ -1314,6 +1461,35 @@ mod tests {
     fn userinfo_redaction_ignores_an_at_sign_outside_the_authority() {
         let url = "https://gameta.example/mail@example/inbox";
         assert_eq!(redact_url_userinfo(url), url);
+    }
+
+    /// Regression: userinfo containing `://` used to be read as a scheme,
+    /// so the leading half of the credential (`user:pa`) was rebuilt into
+    /// the summary as if it were `https`. Nothing here parses as a URL
+    /// with a host, so nothing is echoed.
+    #[test]
+    fn userinfo_redaction_does_not_echo_a_credential_that_contains_a_scheme_separator() {
+        for url in [
+            "user:pa://ss@gameta.example",
+            "https://user:pa://ss@gameta.example",
+            "user:pa://ss@gameta.example/api?token=x",
+        ] {
+            let redacted = redact_url_userinfo(url);
+            assert!(
+                !redacted.contains("user:pa") && !redacted.contains("ss"),
+                "{url} redacted to {redacted}",
+            );
+        }
+    }
+
+    /// A string that is not a URL at all, but does carry an `@`, cannot be
+    /// taken apart safely -- so none of it is echoed.
+    #[test]
+    fn userinfo_redaction_replaces_an_unparsable_url_carrying_an_at_sign() {
+        assert_eq!(
+            redact_url_userinfo("not a url user:secret@host"),
+            REDACTED_URL,
+        );
     }
 
     #[test]

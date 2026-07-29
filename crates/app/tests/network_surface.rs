@@ -24,9 +24,88 @@ mod support;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
+use std::time::Duration;
 
+use arclain_app::challenge::SecretInput;
 use arclain_app::error::ApplicationErrorKind;
 use arclain_app::{ArclainApp, BootstrapConfig};
+
+/// Captures `tracing` output from **every** thread for the lifetime of
+/// this test binary, so a redaction test can prove a secret reached
+/// neither an `ApplicationError` nor a log line.
+///
+/// A global subscriber, not `tracing-test`'s `#[traced_test]`: that macro
+/// installs a *thread-local* scoped default, and every facade method does
+/// its real work on the application's own runtime worker threads. A
+/// thread-local capture therefore sees nothing a facade method logs --
+/// verified by injecting a `tracing::error!` leak into
+/// `run_test_gameta_connection` and watching a `#[traced_test]` version of
+/// the guard below stay green. A test that cannot fail is worse than no
+/// test, so this captures globally instead.
+mod tracing_capture {
+    use std::io;
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    /// The shared sink every captured event is written into. Cloneable so
+    /// the subscriber and the assertions share one buffer.
+    #[derive(Clone, Default)]
+    pub struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl Captured {
+        /// Whether `needle` appears anywhere in what has been logged so
+        /// far. Process-wide by construction (one global subscriber, tests
+        /// running in parallel), which is exactly right for a
+        /// "this marker must never appear anywhere" assertion and is why
+        /// every caller uses a unique marker string.
+        pub fn contains(&self, needle: &str) -> bool {
+            let buffer = self.0.lock().expect("captured log buffer poisoned");
+            String::from_utf8_lossy(&buffer).contains(needle)
+        }
+    }
+
+    impl io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let mut buffer = self.0.lock().expect("captured log buffer poisoned");
+            buffer.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Installs the global subscriber the first time it is called and
+    /// returns the shared buffer. Idempotent: a second call reuses the
+    /// same buffer rather than fighting over the global default.
+    pub fn install() -> Captured {
+        static CAPTURED: OnceLock<Captured> = OnceLock::new();
+        CAPTURED
+            .get_or_init(|| {
+                let captured = Captured::default();
+                let subscriber = tracing_subscriber::fmt()
+                    .with_writer(captured.clone())
+                    .with_max_level(tracing::Level::TRACE)
+                    .with_ansi(false)
+                    .finish();
+                // Ignored on failure: another test binary component may
+                // legitimately have installed one first, and the
+                // assertions below are "must not contain", which a
+                // narrower capture can only make stricter.
+                let _ = tracing::subscriber::set_global_default(subscriber);
+                captured
+            })
+            .clone()
+    }
+}
 
 fn foreign_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -177,6 +256,10 @@ fn plugin_domain_whitelist_rejects_a_blank_plugin_id() {
 // test_gameta_connection
 // ---------------------------------------------------------------------------
 
+/// The version a [`HealthStub`] reports, so a test can assert the probe
+/// returns the server's own words rather than something invented.
+const STUB_VERSION: &str = "9.9.9";
+
 /// A single-request HTTP stub answering `GET /api/v1/health` with the
 /// body `GametaClient::health` expects, then closing the connection.
 ///
@@ -185,9 +268,15 @@ fn plugin_domain_whitelist_rejects_a_blank_plugin_id() {
 /// SOCKS5 sentinel: this crate's tests are synchronous `#[test]`s with no
 /// ambient async runtime, and the surface under test needs exactly one
 /// well-formed response.
+///
+/// The join handle is returned rather than joined from a `Drop` impl: an
+/// untimed `accept()` joined during unwind turns any probe failure into a
+/// hung test binary instead of a red test. A test that wants to confirm
+/// the stub served its request joins explicitly; a panicking test just
+/// detaches the thread and lets the process reap it.
 struct HealthStub {
     address: SocketAddr,
-    server: Option<std::thread::JoinHandle<()>>,
+    server: std::thread::JoinHandle<()>,
 }
 
 impl HealthStub {
@@ -198,6 +287,7 @@ impl HealthStub {
             let Ok((mut socket, _)) = listener.accept() else {
                 return;
             };
+            let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
             // Read just far enough to see the end of the request headers;
             // the client sends no body for a GET.
             let mut request = Vec::new();
@@ -208,53 +298,63 @@ impl HealthStub {
                     Ok(read) => request.extend_from_slice(&chunk[..read]),
                 }
             }
-            const BODY: &str = r#"{"status":"ok","version":"9.9.9"}"#;
+            let body = format!(r#"{{"status":"ok","version":"{STUB_VERSION}"}}"#);
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                 Content-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
-                BODY.len(),
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
             );
             let _ = socket.write_all(response.as_bytes());
             let _ = socket.flush();
         });
-        Self {
-            address,
-            server: Some(server),
-        }
+        Self { address, server }
     }
 
     fn url(&self) -> String {
         format!("http://{}", self.address)
     }
-}
 
-impl Drop for HealthStub {
-    fn drop(&mut self) {
-        if let Some(server) = self.server.take() {
-            let _ = server.join();
-        }
+    fn join(self) {
+        self.server.join().expect("health stub thread panicked");
     }
 }
 
 /// Reserves a port and immediately releases it, so a connection to the
 /// returned address is refused rather than hanging until
 /// `arclain_network::PROBE_TIMEOUT`.
-fn unused_local_url() -> String {
+fn unused_local_address() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").expect("reserve a port");
     let address = listener.local_addr().expect("read the reserved address");
     drop(listener);
-    format!("http://{address}")
+    address
 }
 
+fn unused_local_url() -> String {
+    format!("http://{}", unused_local_address())
+}
+
+/// A throwaway candidate key for probes whose assertions are not about
+/// the key itself.
+fn probe_key() -> SecretInput {
+    SecretInput::new("probe-key".to_string())
+}
+
+/// Success carries the server's own health-body facts back verbatim --
+/// the settings page displays the version, so losing it would change what
+/// the user reads.
 #[test]
-fn test_gameta_connection_succeeds_against_a_healthy_server() {
+fn test_gameta_connection_returns_the_servers_own_health_facts() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
     let stub = HealthStub::start();
 
-    foreign_runtime()
-        .block_on(app.test_gameta_connection(stub.url(), Some("probe-key".to_string())))
+    let info = foreign_runtime()
+        .block_on(app.test_gameta_connection(stub.url(), Some(probe_key())))
         .expect("a healthy server must report Ok");
+
+    assert_eq!(info.version, STUB_VERSION);
+    assert_eq!(info.status, "ok");
+    stub.join();
 }
 
 /// The candidate values are a *probe*, not a save: nothing about them may
@@ -268,8 +368,9 @@ fn test_gameta_connection_persists_nothing() {
 
     let before = runtime.block_on(app.settings()).expect("read settings");
     runtime
-        .block_on(app.test_gameta_connection(stub.url(), Some("probe-key".to_string())))
+        .block_on(app.test_gameta_connection(stub.url(), Some(probe_key())))
         .expect("a healthy server must report Ok");
+    stub.join();
     let after = runtime.block_on(app.settings()).expect("re-read settings");
 
     assert_eq!(before.revision, after.revision);
@@ -291,21 +392,31 @@ fn test_gameta_connection_persists_nothing() {
     );
 }
 
+/// Covers **both** sinks a secret can escape through: the returned error
+/// and anything this crate logged while producing it. `crates/ui`'s
+/// traced tests cannot stand in for the second half -- they capture only
+/// events their own test binary's thread emits, so an `arclain_app` leak
+/// on a runtime worker thread is invisible to them.
 #[test]
 fn test_gameta_connection_reports_an_unreachable_server_without_leaking_the_api_key() {
     const API_KEY: &str = "gameta-probe-api-key-7b3e";
+    let logs = tracing_capture::install();
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
     let url = unused_local_url();
 
     let error = foreign_runtime()
-        .block_on(app.test_gameta_connection(url, Some(API_KEY.to_string())))
+        .block_on(app.test_gameta_connection(url, Some(SecretInput::new(API_KEY.to_string()))))
         .expect_err("an unreachable server must not report Ok");
 
     let rendered = format!("{error:?}");
     assert!(
         !rendered.contains(API_KEY),
         "the API key reached the error surface: {rendered}",
+    );
+    assert!(
+        !logs.contains(API_KEY),
+        "the API key reached this crate's own tracing output",
     );
     assert_eq!(error.kind, ApplicationErrorKind::Backend);
     assert!(error.retryable);
@@ -323,6 +434,146 @@ fn test_gameta_connection_rejects_a_blank_url_before_any_request() {
 
     assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
     assert_eq!(error.field.as_deref(), Some("server_url"));
+}
+
+// ---------------------------------------------------------------------------
+// test_socks5_proxy
+// ---------------------------------------------------------------------------
+
+/// Accepts one connection and answers the SOCKS5 greeting with "no
+/// acceptable methods" (`0x05 0xFF`), which is enough to prove the probe
+/// reached the proxy and to make the handshake fail deterministically
+/// without implementing a real SOCKS5 server. Mirrors
+/// `settings_facade.rs`'s own `serve_proxy_sentinel` in spirit.
+fn serve_rejecting_socks5(listener: TcpListener) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let Ok((mut socket, _)) = listener.accept() else {
+            return;
+        };
+        let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut greeting = [0_u8; 32];
+        let _ = socket.read(&mut greeting);
+        let _ = socket.write_all(&[0x05, 0xFF]);
+        let _ = socket.flush();
+    })
+}
+
+/// The failure path, and the guard that the candidate password reaches
+/// neither the error nor this crate's tracing. Global capture for the
+/// same reason the gameta twin above uses it: `ProxyConfig::
+/// test_connection` logs from a runtime worker thread.
+#[test]
+fn test_socks5_proxy_reports_a_rejecting_proxy_without_leaking_the_password() {
+    const PASSWORD: &str = "socks5-probe-password-5c1b";
+    const USERNAME: &str = "socks5-probe-user-2e9f";
+    let logs = tracing_capture::install();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the proxy sentinel");
+    let address = listener.local_addr().expect("read the sentinel address");
+    let sentinel = serve_rejecting_socks5(listener);
+
+    let error = foreign_runtime()
+        .block_on(app.test_socks5_proxy(
+            address.ip().to_string(),
+            address.port(),
+            Some(USERNAME.to_string()),
+            Some(SecretInput::new(PASSWORD.to_string())),
+        ))
+        .expect_err("a proxy that refuses every auth method must not report Ok");
+
+    let rendered = format!("{error:?}");
+    assert!(
+        !rendered.contains(PASSWORD),
+        "the proxy password reached the error surface: {rendered}",
+    );
+    assert!(
+        !logs.contains(PASSWORD),
+        "the proxy password reached this crate's own tracing output",
+    );
+    assert_eq!(error.kind, ApplicationErrorKind::Backend);
+    assert!(error.retryable);
+    let _ = sentinel.join();
+}
+
+/// A refused TCP connection fails at the `TCP` step, and the step list
+/// reaches the diagnostic so a user can see how far the probe got.
+#[test]
+fn test_socks5_proxy_reports_the_step_that_failed() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let address = unused_local_address();
+
+    let error = foreign_runtime()
+        .block_on(app.test_socks5_proxy(address.ip().to_string(), address.port(), None, None))
+        .expect_err("a closed port must not report Ok");
+
+    assert_eq!(error.kind, ApplicationErrorKind::Backend);
+    assert!(
+        error.summary.contains("TCP"),
+        "the summary should name the failed step: {}",
+        error.summary,
+    );
+    let diagnostic = error.diagnostic.unwrap_or_default();
+    assert!(
+        diagnostic.contains("DNS: ok"),
+        "the step list should show how far the probe got: {diagnostic}",
+    );
+}
+
+#[test]
+fn test_socks5_proxy_persists_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let address = unused_local_address();
+    let runtime = foreign_runtime();
+
+    let before = runtime.block_on(app.settings()).expect("read settings");
+    let _ = runtime.block_on(app.test_socks5_proxy(
+        address.ip().to_string(),
+        address.port(),
+        Some("candidate-user".to_string()),
+        Some(SecretInput::new("candidate-password".to_string())),
+    ));
+    let after = runtime.block_on(app.settings()).expect("re-read settings");
+
+    assert_eq!(before.revision, after.revision);
+    assert_eq!(before.network.socks5_enabled, after.network.socks5_enabled);
+    assert_eq!(before.network.socks5_address, after.network.socks5_address);
+    assert_eq!(
+        before.network.socks5_username,
+        after.network.socks5_username
+    );
+    assert!(
+        !after.network.socks5_password_configured,
+        "the candidate password was stored as if it had been saved",
+    );
+}
+
+#[test]
+fn test_socks5_proxy_rejects_an_unusable_host_and_port_before_any_packet() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let runtime = foreign_runtime();
+
+    let blank = runtime
+        .block_on(app.test_socks5_proxy(String::new(), 1080, None, None))
+        .expect_err("a blank host must be rejected");
+    assert_eq!(blank.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(blank.field.as_deref(), Some("host"));
+
+    let zero_port = runtime
+        .block_on(app.test_socks5_proxy("127.0.0.1".to_string(), 0, None, None))
+        .expect_err("port 0 must be rejected");
+    assert_eq!(zero_port.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(zero_port.field.as_deref(), Some("port"));
+
+    // An authority the network crate itself refuses (embedded userinfo)
+    // must not reach the wire either.
+    let malformed = runtime
+        .block_on(app.test_socks5_proxy("user@proxy.invalid".to_string(), 1080, None, None))
+        .expect_err("a host carrying userinfo must be rejected");
+    assert_eq!(malformed.kind, ApplicationErrorKind::InvalidInput);
 }
 
 // ---------------------------------------------------------------------------

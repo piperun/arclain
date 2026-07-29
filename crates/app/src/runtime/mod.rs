@@ -1689,8 +1689,8 @@ impl ArclainApp {
     // ==================== Task 11: plugin sessions (end) ====================
 
     // ============ Task 14n: boundary-zero network surface (start) ===========
-    // The two application-owned halves of the network surface a frontend
-    // used to reach `arclain-network` directly for. The third
+    // The application-owned halves of the network surface a frontend used
+    // to reach `arclain-network` directly for. The remaining piece
     // (`crate::plugins::analyze_url`) needs no application state at all
     // and is a free function rather than a method here.
 
@@ -1716,25 +1716,79 @@ impl ArclainApp {
 
     /// Health-checks a *candidate* gameta server configuration -- the
     /// values a settings form currently holds, before the user has saved
-    /// them -- and reports whether that server is reachable and healthy.
+    /// them -- and reports what the server said about itself.
     ///
     /// Persists nothing: neither `server_url` nor `api_key` touches the
     /// configuration database, the encrypted vault, or this instance's
     /// live `gameta_client`. Use [`Self::update_settings`] plus
     /// [`Self::set_gameta_api_key`] to actually save a configuration.
     ///
-    /// `Ok(())` means the server answered its health endpoint
-    /// successfully. Failures carry a redaction-safe summary: the
-    /// user-typed `server_url` may appear in it (with any embedded
-    /// userinfo stripped -- see `settings_ops::redact_url_userinfo`), the
-    /// `api_key` never does.
+    /// `Ok` means the server is reachable and speaking the gameta
+    /// protocol: it answered `/api/v1/health` with a success status and a
+    /// body that parsed into the expected `{status, version}` shape. The
+    /// returned [`crate::settings::GametaServerInfo`] carries both of
+    /// those fields verbatim. The `status` **value** is not interpreted --
+    /// a server reporting `"degraded"` still returns `Ok` here, and a
+    /// frontend that wants to react to that reads the field itself.
+    ///
+    /// # `api_key` is accepted but not currently transmitted
+    ///
+    /// `/api/v1/health` is an unauthenticated endpoint, and
+    /// `arclain_network`'s client sends no `Authorization` header for it
+    /// -- so **a wrong or expired key still reports success here**. This
+    /// probe validates reachability and protocol, not credentials. The
+    /// parameter is taken now (and as a zeroizing
+    /// [`crate::challenge::SecretInput`], matching
+    /// [`Self::set_gameta_api_key`]) so that the day an authenticated
+    /// probe endpoint exists, wiring it changes only this method's body
+    /// and not every caller. Long-standing behavior, not a regression:
+    /// the settings page worked exactly this way before this surface
+    /// existed.
+    ///
+    /// Failures carry a redaction-safe summary: the user-typed
+    /// `server_url` may appear in it (with any embedded userinfo stripped
+    /// -- see `settings_ops::redact_url_userinfo`), the `api_key` never
+    /// does.
     pub async fn test_gameta_connection(
         &self,
         server_url: String,
-        api_key: Option<String>,
-    ) -> Result<(), ApplicationError> {
+        api_key: Option<SecretInput>,
+    ) -> Result<crate::settings::GametaServerInfo, ApplicationError> {
         self.dispatch_async(move |inner| async move {
             settings_ops::run_test_gameta_connection(&inner, server_url, api_key).await
+        })
+        .await?
+    }
+
+    /// Probes a *candidate* SOCKS5 proxy -- the values a settings form
+    /// currently holds, before the user has saved them -- by routing a
+    /// real request through it.
+    ///
+    /// Persists nothing and touches no live routing: none of the four
+    /// arguments reaches the configuration database, the encrypted vault,
+    /// or this instance's `AsyncHttpClient`. Use [`Self::update_settings`]
+    /// plus [`Self::set_socks5_password`] to actually save a proxy.
+    ///
+    /// `Ok(())` means the proxy resolved, accepted a TCP connection, and
+    /// carried an outbound HTTP request end to end. Failures name the
+    /// step that failed and carry the whole step list as a diagnostic.
+    /// Neither channel can contain the candidate `password`: every string
+    /// the error is built from is already credential-free at its source
+    /// (see `settings_ops::socks5_probe_failed_error`).
+    ///
+    /// `host` is the proxy host exactly as it must appear in an authority
+    /// -- an IPv6 literal is bracketed (`[::1]`). A `host`/`port` pair
+    /// that cannot form a valid authority is rejected as `InvalidInput`
+    /// before any packet leaves.
+    pub async fn test_socks5_proxy(
+        &self,
+        host: String,
+        port: u16,
+        username: Option<String>,
+        password: Option<SecretInput>,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_test_socks5_proxy(&inner, host, port, username, password).await
         })
         .await?
     }

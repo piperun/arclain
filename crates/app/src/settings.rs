@@ -147,6 +147,24 @@ pub struct NetworkSettingsDto {
     pub gameta_api_key_configured: bool,
 }
 
+/// What a gameta server reported about itself when
+/// [`crate::ArclainApp::test_gameta_connection`] probed it: the health
+/// body's fields, verbatim and uninterpreted.
+///
+/// Both fields are the server's own words. In particular `status` is
+/// **not** inspected by the probe -- a server answering
+/// `{"status":"degraded", ...}` still returns `Ok`, exactly as it did
+/// before this surface existed. The value is carried here so a frontend
+/// that wants to react to it can, without the probe silently inventing a
+/// failure mode the settings page never had.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GametaServerInfo {
+    /// The server's self-reported status string (typically `"ok"`).
+    pub status: String,
+    /// The server's version string, as the settings page displays it.
+    pub version: String,
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct NetworkSettingsPatch {
     pub socks5_enabled: PatchValue<bool>,
@@ -763,6 +781,23 @@ mod tests {
 
     fn default_user_config() -> UserConfig {
         UserConfig::new()
+    }
+
+    /// The probe hands this straight to a frontend, so its wire shape is
+    /// part of the surface -- both fields must survive a round trip
+    /// verbatim, since both are the server's own words.
+    #[test]
+    fn gameta_server_info_round_trips_through_serde() {
+        let info = GametaServerInfo {
+            status: "degraded".to_string(),
+            version: "1.2.3-rc.4".to_string(),
+        };
+
+        let json = serde_json::to_string(&info).expect("serialize server info");
+        let restored: GametaServerInfo =
+            serde_json::from_str(&json).expect("deserialize server info");
+
+        assert_eq!(restored, info);
     }
 
     #[test]

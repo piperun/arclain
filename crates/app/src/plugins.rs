@@ -620,40 +620,45 @@ impl From<arclain_network::features::security::DomainWarning> for DomainWarningD
     }
 }
 
-impl From<&DomainWarningDto> for arclain_network::features::security::DomainWarning {
-    fn from(warning: &DomainWarningDto) -> Self {
-        match warning {
-            DomainWarningDto::HomographDetected {
+impl DomainWarningDto {
+    /// Rebuilds the network crate's own warning value, so
+    /// [`Self::description`] and [`Self::is_critical`] can delegate to it.
+    ///
+    /// A private method rather than a `From` impl on purpose: a trait impl
+    /// cannot be `pub(crate)`, so `impl From<&DomainWarningDto> for
+    /// arclain_network::…::DomainWarning` would put an `arclain-network`
+    /// type back on this crate's *public* API -- exactly the coupling the
+    /// mirrored DTO exists to keep away from frontends.
+    fn to_source(&self) -> arclain_network::features::security::DomainWarning {
+        use arclain_network::features::security::DomainWarning as Target;
+        match self {
+            Self::HomographDetected {
                 suspicious_char,
                 position,
                 looks_like,
-            } => Self::HomographDetected {
+            } => Target::HomographDetected {
                 suspicious_char: *suspicious_char,
                 position: *position,
                 looks_like: *looks_like,
             },
-            DomainWarningDto::SuspiciousSubdomain {
+            Self::SuspiciousSubdomain {
                 subdomain,
                 looks_like,
-            } => Self::SuspiciousSubdomain {
+            } => Target::SuspiciousSubdomain {
                 subdomain: subdomain.clone(),
                 looks_like: looks_like.clone(),
             },
-            DomainWarningDto::UnusualTld { tld } => Self::UnusualTld { tld: tld.clone() },
-            DomainWarningDto::IpAddress { ip } => Self::IpAddress { ip: ip.clone() },
-            DomainWarningDto::LocalhostOrPrivate => Self::LocalhostOrPrivate,
-            DomainWarningDto::SuspiciousEncoding => Self::SuspiciousEncoding,
-            DomainWarningDto::ExcessiveSubdomains { count } => {
-                Self::ExcessiveSubdomains { count: *count }
-            }
-            DomainWarningDto::SuspiciousKeywords { keywords } => Self::SuspiciousKeywords {
+            Self::UnusualTld { tld } => Target::UnusualTld { tld: tld.clone() },
+            Self::IpAddress { ip } => Target::IpAddress { ip: ip.clone() },
+            Self::LocalhostOrPrivate => Target::LocalhostOrPrivate,
+            Self::SuspiciousEncoding => Target::SuspiciousEncoding,
+            Self::ExcessiveSubdomains { count } => Target::ExcessiveSubdomains { count: *count },
+            Self::SuspiciousKeywords { keywords } => Target::SuspiciousKeywords {
                 keywords: keywords.clone(),
             },
         }
     }
-}
 
-impl DomainWarningDto {
     /// A human-readable sentence describing this warning, suitable for
     /// rendering next to the domain it was raised for.
     ///
@@ -663,14 +668,14 @@ impl DomainWarningDto {
     /// mirrored DTO whose text silently disagrees with the analysis it
     /// mirrors is worse than no mirror at all.
     pub fn description(&self) -> String {
-        arclain_network::features::security::DomainWarning::from(self).description()
+        self.to_source().description()
     }
 
     /// Whether this warning is severe enough that a request to the domain
     /// should be blocked rather than merely flagged. Delegates for the
     /// same single-source-of-truth reason [`Self::description`] does.
     pub fn is_critical(&self) -> bool {
-        arclain_network::features::security::DomainWarning::from(self).is_critical()
+        self.to_source().is_critical()
     }
 }
 

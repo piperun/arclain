@@ -16,6 +16,14 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 tracing.workspace = true
+# `settings_ops::redact_url_userinfo` strips credentials out of a
+# user-typed server URL before it reaches an error summary. Hand-rolled
+# string splitting cannot do that safely -- a malformed authority hides
+# userinfo in places a `split_once` pass will happily echo back -- so the
+# real parser decides where the userinfo ends. Same crate/major version
+# `arclain-network` (and reqwest) already depend on, so this adds nothing
+# to the dependency tree.
+url = "2"
 zeroize.workspace = true
 
 # Runtime composition (Task 4) pulls in the headless crates whose
@@ -45,6 +53,14 @@ arclain_signals = { path = "../signals" }
 [dev-dependencies]
 tempfile.workspace = true
 trybuild = "1.0.118"
+# Captures this crate's own tracing output, from every thread, so a
+# secret-redaction test can assert nothing leaked into it. Deliberately
+# *not* `tracing-test`: that crate installs a thread-local scoped
+# subscriber, and every facade method runs its real work on the
+# application's own runtime worker threads -- so a `#[traced_test]` here
+# would assert against an empty buffer and could never fail. See
+# `tests/network_surface.rs::tracing_capture`.
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # `crates/src/plugins.rs`'s own tests build a real `arclain_data::
 # ContentCache` against an in-memory `CacheIndex`, which needs
 # `arclain_db`'s `CacheEntry`/`CacheType` directly -- `arclain_data`

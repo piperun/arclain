@@ -392,7 +392,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "trybuild",
+ "url",
  "zeroize",
  "zip",
 ]
