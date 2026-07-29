@@ -8,9 +8,11 @@
 //! `AppState`/`Services` shapes -- unmigrated call sites elsewhere in
 //! this crate keep reading `shared_state.app_state`/`shared_state.services`
 //! exactly as before. What's left here is genuinely UI-only: `AppSignals`
-//! construction, wiring the live per-tab plugin bridge (which needs
-//! `AppSignals`, so `arclain_app` cannot build it), and loading persisted
-//! UI state into signals.
+//! construction, installing the plugin manager's active-tab bridge (the
+//! facade builds the bridge itself; this only supplies the one
+//! `AppSignals`-shaped fallback closure it cannot build on its own -- see
+//! the install call's own comment), and loading persisted UI state into
+//! signals.
 
 use super::AppState;
 use crate::core::signals::AppSignals;
@@ -47,16 +49,23 @@ impl AppState {
         me.signals.user_config.set(me.user_config.clone());
         me.signals.pass_rules.set(me.pass_rules.clone());
 
-        // Active context: the one composition step that must happen
-        // here rather than inside `ArclainApp::bootstrap`, because it
-        // needs `AppSignals` -- an egui-integration type `arclain_app`
-        // must never depend on. Resolves through `AppSignals` at call
-        // time so plugins always see the currently active tab; see
-        // `arclain_plugins::active_tab` for the design rationale.
+        // Active context: `ArclainApp::active_tab_bridge` resolves
+        // everything through this application's own archive-session
+        // state (kept in sync with egui's active tab via
+        // `crate::core::app_lifecycle::sync_active_archive_session`,
+        // called once per frame). The one piece that state cannot
+        // resolve on its own -- a panel-driven metadata emit with no
+        // archive session active at all -- is supplied here as a plain
+        // closure over `AppSignals`, since "which UI element is the
+        // active tab, and how do I write to it" is exactly the one thing
+        // `arclain_app` must never know about directly. See
+        // `arclain_app::plugins::ProductionActiveTabBridge`'s own doc
+        // comment for why the split is drawn exactly here.
         if let Some(ref plugin_manager) = legacy.plugin_manager {
-            let bridge = std::sync::Arc::new(
-                crate::shared::active_tab_bridge::AppSignalsBridge::new(me.signals.clone()),
-            );
+            let fallback_signals = me.signals.clone();
+            let bridge = facade.active_tab_bridge(move |metadata| {
+                fallback_signals.tabs.get().active().metadata.set(metadata);
+            });
             plugin_manager.lock().set_active_tab_bridge(bridge);
         }
 

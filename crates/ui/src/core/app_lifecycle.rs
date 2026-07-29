@@ -26,10 +26,10 @@ pub fn process_refresh_requests(shared_state: &SharedState, ctx: &egui::Context)
 /// Reports the active tab's archive session to `ArclainApp::
 /// set_active_archive_session` whenever it has changed since the last
 /// frame, so plugin host functions that resolve "which archive is
-/// active" through the facade (once `arclain_app::plugins::
-/// ArchiveContextBridge` becomes `PluginManager`'s installed bridge --
-/// see that module's own doc comment for what remains before that
-/// swap) see the same tab egui does.
+/// active" through the facade's installed `ActiveTabBridge`
+/// (`arclain_app::plugins::ArchiveContextBridge`, wrapped by
+/// `ProductionActiveTabBridge` -- see `crate::core::state::init`'s own
+/// installation comment) see the same tab egui does.
 ///
 /// Checked once per frame rather than hooked into every individual
 /// tab-activation call site (switch/open/close/replace/restore, spread

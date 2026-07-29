@@ -30,10 +30,13 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     //
     // The per-frame plugin "context sync" that used to live here is
     // gone — plugins now read the active tab's archive_path /
-    // current_password / metadata_signal through the
-    // `ActiveTabBridge` installed at startup, which resolves through
-    // `AppSignals` on each call. See `arclain_plugins::active_tab`
-    // and `crate::shared::active_tab_bridge`.
+    // current_password / metadata through the `ActiveTabBridge`
+    // installed at startup, which resolves through this application's
+    // own archive-session state (kept in sync with egui's active tab by
+    // `sync_active_archive_session` below), falling back to `AppSignals`
+    // only for a panel-driven metadata emit with no session active at
+    // all. See `arclain_plugins::active_tab` and
+    // `crate::core::state::init`'s own installation comment.
     app_lifecycle::process_refresh_requests(&app.shared_state, ctx);
     app_lifecycle::bind_signals_once(&app.shared_state, ctx, &mut app._signals_bound);
     app_lifecycle::sync_active_archive_session(&app.shared_state);

@@ -55,7 +55,7 @@ use arclain_app::challenge::{Challenge, ChallengeResponse};
 use arclain_app::event::{
     OperationEvent, OperationKind, OperationResult, OperationState, SessionEvent,
 };
-use arclain_app::ids::{ArchiveSessionId, MaterializationLeaseId, OperationId};
+use arclain_app::ids::{MaterializationLeaseId, OperationId};
 use arclain_app::materialization::MaterializationLease;
 use arclain_app::ArclainApp;
 
@@ -1444,21 +1444,19 @@ pub async fn reconcile_after_lag(
 
 /// Applies `metadata` to whichever tab currently holds `session_id` open,
 /// or buffers it in `AppSignals::pending_session_metadata` if no tab is
-/// stamped with that session id yet -- mirrors the pre-facade-swap
-/// `AppSignalsBridge::set_session_metadata`'s own buffering exactly (see
+/// stamped with that session id yet -- see
 /// [`apply_buffered_session_metadata`]'s doc comment for the race this
-/// exists to close), just triggered by a [`SessionEvent`] instead of a
-/// direct trait-method call from a plugin host function -- the write
-/// itself now lands in `arclain_app::plugins::ArchiveContextBridge`'s own
-/// session store, entirely independent of whether any tab has been
-/// stamped with the session id yet.
+/// buffering exists to close. The write itself already landed in
+/// `arclain_app::plugins::ArchiveContextBridge`'s own session store
+/// (this function only reacts to the [`SessionEvent`] announcing it),
+/// entirely independent of whether any tab has been stamped with the
+/// session id yet.
 ///
 /// No match can mean the tab's session was already closed (nothing left
 /// to update, the write is simply lost) or that `handle_open_archive_
 /// completed` has not yet stamped the originating tab -- this function
 /// cannot tell which case it's in, so it always buffers alongside
-/// applying wherever a match already exists, exactly like the bridge
-/// method it replaces.
+/// applying wherever a match already exists.
 fn buffer_or_apply_session_metadata(
     signals: &crate::core::signals::AppSignals,
     session_id: arclain_app::ids::ArchiveSessionId,
@@ -1745,7 +1743,7 @@ mod tests {
         let metadata = Some(serde_json::json!({"game": "test"}));
 
         // No tab known yet for this session -- mirrors
-        // `AppSignalsBridge::set_session_metadata`'s own no-match branch
+        // `buffer_or_apply_session_metadata`'s own no-match branch
         // buffering rather than dropping.
         signals
             .pending_session_metadata
