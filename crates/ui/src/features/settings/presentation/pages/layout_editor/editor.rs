@@ -10,9 +10,10 @@
 //! to render the picker) lives behind the trait so the editor itself
 //! is generic over both toolbar and info panel.
 
+use crate::features::settings::application::facade;
 use crate::shared::SharedState;
+use arclain_app::layout::{UiItemDto, UiRegionDto};
 use arclain_app::Signal;
-use arclain_core::{UiItem, UiRegion, UiService};
 use std::marker::PhantomData;
 
 /// Orientation of the preview + selection-area arrow buttons.
@@ -32,8 +33,8 @@ pub enum Axis {
 /// right axis, sync plugin-contributed items, decide which items
 /// belong in the user-facing picker, and resolve item icons.
 pub trait Region: Sized + 'static {
-    /// The `UiRegion` enum value used by `UiService` queries.
-    const REGION: UiRegion;
+    /// Which region of the application's chrome this editor arranges.
+    const REGION: UiRegionDto;
     /// Whether the editor renders horizontally (toolbar) or vertically
     /// (info panel). Drives preview layout and selection-area arrows.
     const AXIS: Axis;
@@ -46,7 +47,11 @@ pub trait Region: Sized + 'static {
     /// Filter rule for items shown in the user-facing picker. Used to
     /// hide internal items (e.g. `info.plugin_metadata` in the info
     /// panel). Default: every loaded item is user-visible.
-    fn user_visible(_item: &UiItem) -> bool {
+    ///
+    /// A filtered item is also absent from what [`LayoutEditorState::save`]
+    /// submits, which is safe precisely because `ArclainApp::save_ui_items`
+    /// upserts rather than replaces -- see its own doc comment.
+    fn user_visible(_item: &UiItemDto) -> bool {
         true
     }
 
@@ -74,9 +79,9 @@ pub trait Region: Sized + 'static {
 pub struct LayoutEditorState<R: Region> {
     /// All items loaded for this region, including hidden ones (the
     /// picker filters with `R::user_visible`).
-    pub items: Vec<UiItem>,
-    /// First-load flag. `false` until the dispatcher loads from the
-    /// `UiService` for the first time.
+    pub items: Vec<UiItemDto>,
+    /// First-load flag. `false` until the dispatcher has consulted the
+    /// canonical signal for the first time.
     pub loaded: bool,
     /// `true` when local edits diverge from the persisted state. The
     /// settings header's Save button reads this to decide whether the
@@ -105,12 +110,22 @@ impl<R: Region> LayoutEditorState<R> {
         Self::default()
     }
 
-    /// Persist items to the `UiService`. Called from outside render
-    /// (the settings header's Save button), so this stays a direct
-    /// service call — it's already in a dispatcher context.
-    pub fn save_to_service(&mut self, service: &UiService) {
-        let _ = service.upsert_items(&self.items);
+    /// Persist this region's arrangement through the application.
+    /// Called from outside render (the settings header's Save button),
+    /// so this stays a direct call — it's already in a dispatcher
+    /// context.
+    ///
+    /// `dirty` is cleared only on success: a failed save leaves the
+    /// page dirty so the user can retry rather than having their edits
+    /// silently swallowed. The pre-facade version discarded the result
+    /// entirely and always cleared it.
+    pub fn save(&mut self, shared: &SharedState) -> Result<(), String> {
+        let (app, runtime) = facade::handles(shared).ok_or_else(facade::unavailable)?;
+        runtime
+            .block_on(app.save_ui_items(R::REGION, self.items.clone()))
+            .map_err(|error| facade::describe("Failed to save the layout", &error))?;
         self.dirty = false;
+        Ok(())
     }
 }
 
@@ -153,7 +168,7 @@ pub fn handle_layout_editor_action<R: Region>(
             // local changes survive until Save / Reset.
             if !state.loaded || !state.dirty {
                 if let Some(signal_items) = signal_for_region::<R>(shared) {
-                    let mut filtered: Vec<UiItem> = signal_items
+                    let mut filtered: Vec<UiItemDto> = signal_items
                         .into_iter()
                         .filter(|i| R::user_visible(i))
                         .collect();
@@ -182,12 +197,16 @@ pub fn handle_layout_editor_action<R: Region>(
 /// Read the canonical signal value for `R::REGION`. Returns `None` if
 /// the region doesn't have a dedicated signal — caller falls back to
 /// whatever items the state already holds.
-fn signal_for_region<R: Region>(shared: &SharedState) -> Option<Vec<UiItem>> {
-    let signal: &Signal<Vec<UiItem>> = match R::REGION {
-        UiRegion::Toolbar => &shared.signals().toolbar_items,
-        UiRegion::InfoPanel => &shared.signals().info_panel_items,
-        UiRegion::ContextMenu => &shared.signals().context_menu_items,
-        _ => return None,
+fn signal_for_region<R: Region>(shared: &SharedState) -> Option<Vec<UiItemDto>> {
+    let signal: &Signal<Vec<UiItemDto>> = match R::REGION {
+        UiRegionDto::Toolbar => &shared.signals().toolbar_items,
+        UiRegionDto::InfoPanel => &shared.signals().info_panel_items,
+        UiRegionDto::ContextMenu => &shared.signals().context_menu_items,
+        // No editor targets the tools dialog, so no signal mirrors it.
+        // Named rather than matched by wildcard: a region added to the
+        // application fails to compile here until it is decided whether
+        // this crate mirrors it.
+        UiRegionDto::ToolsDialog => return None,
     };
     Some(signal.get())
 }

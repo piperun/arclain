@@ -1,5 +1,5 @@
 use crate::shared::theme::AppTheme;
-use arclain_core::{UiItem, UiRegion};
+use arclain_app::layout::{UiItemDto, UiRegionDto};
 use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
 use std::collections::HashMap;
@@ -27,9 +27,9 @@ pub type PluginToolbarRenderer<'a> = &'a mut dyn FnMut(
 /// Args: plugin_id, event_id, optional value.
 pub type PluginEventDispatcher<'a> = &'a mut dyn FnMut(String, String, Option<String>);
 
-/// Configuration for toolbar items loaded from database
+/// Configuration for toolbar items as the application reports them
 pub struct ToolbarConfig {
-    items: Vec<UiItem>,
+    items: Vec<UiItemDto>,
 }
 
 impl Default for ToolbarConfig {
@@ -39,20 +39,20 @@ impl Default for ToolbarConfig {
 }
 
 impl ToolbarConfig {
-    pub fn new(items: Vec<UiItem>) -> Self {
+    pub fn new(items: Vec<UiItemDto>) -> Self {
         // Filter to only toolbar items and sort by sort_order
-        let mut items: Vec<UiItem> = items
+        let mut items: Vec<UiItemDto> = items
             .into_iter()
-            .filter(|i| i.region == UiRegion::Toolbar)
+            .filter(|i| i.region == UiRegionDto::Toolbar)
             .collect();
         items.sort_by_key(|i| i.sort_order);
         Self { items }
     }
 
     /// Get visible items grouped by group_id, in sort order
-    pub fn items_by_group(&self) -> Vec<(Option<String>, Vec<&UiItem>)> {
+    pub fn items_by_group(&self) -> Vec<(Option<String>, Vec<&UiItemDto>)> {
         use std::collections::BTreeMap;
-        let mut groups: BTreeMap<Option<String>, Vec<&UiItem>> = BTreeMap::new();
+        let mut groups: BTreeMap<Option<String>, Vec<&UiItemDto>> = BTreeMap::new();
 
         for item in self.items.iter().filter(|i| i.visible) {
             groups.entry(item.group_id.clone()).or_default().push(item);

@@ -9,8 +9,8 @@ use crate::core::tabs::TabsCollection;
 use crate::shared::dialogs::archive_error_dialog::ArchiveErrorDialogState;
 use crate::shared::dialogs::ask_each_time_drop::AskEachTimeDropState;
 use crate::shared::dialogs::close_tab_confirm::CloseTabConfirmState;
+use arclain_app::layout::UiItemDto;
 use arclain_app::Signal;
-use arclain_core::UiItem;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -108,16 +108,19 @@ pub struct AppSignals {
     /// Search text from header - used to filter entries in archive or settings
     pub search_text: Signal<String>,
 
-    /// Toolbar items from DB - reactive for layout editor changes
-    pub toolbar_items: Signal<Vec<UiItem>>,
+    /// Toolbar items as the application reports them - reactive for
+    /// layout editor changes.
+    pub toolbar_items: Signal<Vec<UiItemDto>>,
 
-    /// Info panel items from DB - reactive for layout editor changes
-    pub info_panel_items: Signal<Vec<UiItem>>,
+    /// Info panel items as the application reports them - reactive for
+    /// layout editor changes.
+    pub info_panel_items: Signal<Vec<UiItemDto>>,
 
-    /// Context menu items from DB - reactive for interface visibility
-    /// toggles (the Interface settings page mutates these and they
-    /// drive what appears in the right-click menus around the app).
-    pub context_menu_items: Signal<Vec<UiItem>>,
+    /// Context menu items as the application reports them - reactive for
+    /// interface visibility toggles (the Interface settings page mutates
+    /// these and they drive what appears in the right-click menus around
+    /// the app).
+    pub context_menu_items: Signal<Vec<UiItemDto>>,
 
     /// UI display preferences - reactive for settings changes
     pub ui_preferences: Signal<UiPreferences>,

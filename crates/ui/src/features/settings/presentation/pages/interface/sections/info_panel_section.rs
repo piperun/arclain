@@ -8,13 +8,13 @@
 
 use crate::shared::components::settings_form::{SectionHeader, SettingsRow};
 use crate::shared::theme::AppTheme;
-use arclain_core::UiItem;
+use arclain_app::layout::UiItemDto;
 use arclain_widgets::ToggleSwitch;
 use eframe::egui;
 
 /// Render the info panel configuration section. Returns
 /// `Some((item_id, new_visible))` if the user toggled a row this frame.
-pub fn render(ui: &mut egui::Ui, theme: &AppTheme, items: &[UiItem]) -> Option<(String, bool)> {
+pub fn render(ui: &mut egui::Ui, theme: &AppTheme, items: &[UiItemDto]) -> Option<(String, bool)> {
     SectionHeader::new("Property Groups").show(ui, &theme.colors);
 
     ui.label(
@@ -24,7 +24,7 @@ pub fn render(ui: &mut egui::Ui, theme: &AppTheme, items: &[UiItem]) -> Option<(
     );
     ui.add_space(8.0);
 
-    let mut sorted_items: Vec<&UiItem> = items.iter().collect();
+    let mut sorted_items: Vec<&UiItemDto> = items.iter().collect();
     sorted_items.sort_by_key(|i| i.sort_order);
 
     let mut emitted: Option<(String, bool)> = None;

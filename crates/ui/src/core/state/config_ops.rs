@@ -34,18 +34,45 @@ pub(super) fn describe_facade_error(
 }
 
 impl AppState {
-    /// Refresh UI configuration (toolbar/info panel/context menu items)
-    /// from UiService. Called from the settings header save handlers
-    /// after a layout-editor save lands.
-    pub fn reload_ui_config(&mut self, ui_service: &arclain_core::UiService) {
-        if let Ok(items) = ui_service.list_toolbar_items() {
-            self.signals.toolbar_items.set(items);
-        }
-        if let Ok(items) = ui_service.list_info_panel_items() {
-            self.signals.info_panel_items.set(items);
-        }
-        if let Ok(items) = ui_service.list_items(arclain_core::UiRegion::ContextMenu) {
-            self.signals.context_menu_items.set(items);
+    /// Refresh the canonical chrome-item signals (toolbar, info panel,
+    /// context menu) from the application. Called from the settings
+    /// header save handlers after a layout-editor save lands.
+    ///
+    /// A region that cannot be read keeps its previous signal value
+    /// rather than being emptied: the arrangement already on screen is a
+    /// better answer than no chrome at all, and the save that triggered
+    /// this has already reported its own outcome. Unlike the settings
+    /// mirrors, nothing acts destructively on a stale item list.
+    ///
+    /// Blocks briefly on `runtime` -- see `vault_ops.rs`'s own module doc
+    /// comment for why that's the right choice from a synchronous egui
+    /// action handler.
+    pub fn reload_ui_config(
+        &self,
+        facade: &arclain_app::ArclainApp,
+        runtime: &tokio::runtime::Runtime,
+    ) {
+        for (region, signal) in [
+            (
+                arclain_app::layout::UiRegionDto::Toolbar,
+                &self.signals.toolbar_items,
+            ),
+            (
+                arclain_app::layout::UiRegionDto::InfoPanel,
+                &self.signals.info_panel_items,
+            ),
+            (
+                arclain_app::layout::UiRegionDto::ContextMenu,
+                &self.signals.context_menu_items,
+            ),
+        ] {
+            match runtime.block_on(facade.list_ui_items(region)) {
+                Ok(items) => signal.set(items),
+                Err(error) => tracing::warn!(
+                    "{}",
+                    describe_facade_error(&format!("reloading the {region:?} layout"), error)
+                ),
+            }
         }
     }
 

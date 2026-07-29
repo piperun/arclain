@@ -12,7 +12,7 @@
 
 use super::editor::{Axis, LayoutEditorAction, LayoutEditorState, Region};
 use crate::shared::theme::AppTheme;
-use arclain_core::{DisplayMode, UiItem};
+use arclain_app::layout::{UiDisplayModeDto, UiItemDto};
 use arclain_theme::spacing;
 use arclain_widgets::SelectableChip;
 use eframe::egui;
@@ -81,7 +81,7 @@ pub fn render_layout_editor<R: Region>(
 fn render_preview<R: Region>(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    items: &mut [UiItem],
+    items: &mut [UiItemDto],
     selected_id: &mut Option<String>,
 ) {
     match R::AXIS {
@@ -93,7 +93,7 @@ fn render_preview<R: Region>(
 fn render_horizontal_preview<R: Region>(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    items: &mut [UiItem],
+    items: &mut [UiItemDto],
     selected_id: &mut Option<String>,
 ) {
     egui::Frame::NONE
@@ -132,9 +132,9 @@ fn render_horizontal_preview<R: Region>(
                         .unwrap_or("");
 
                     let btn_text = match item.display_mode {
-                        DisplayMode::IconOnly => icon.to_string(),
-                        DisplayMode::TextOnly => item.label.clone(),
-                        DisplayMode::IconAndText => format!("{} {}", icon, item.label),
+                        UiDisplayModeDto::IconOnly => icon.to_string(),
+                        UiDisplayModeDto::TextOnly => item.label.clone(),
+                        UiDisplayModeDto::IconAndText => format!("{} {}", icon, item.label),
                     };
 
                     let fill = if is_selected {
@@ -170,7 +170,7 @@ fn render_horizontal_preview<R: Region>(
 fn render_vertical_preview(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    items: &mut [UiItem],
+    items: &mut [UiItemDto],
     selected_id: &mut Option<String>,
 ) {
     let mut visible_items: Vec<(usize, i32)> = items
@@ -260,7 +260,7 @@ fn render_vertical_preview(
 fn render_selection_area<R: Region>(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    items: &mut [UiItem],
+    items: &mut [UiItemDto],
     selected_id: &mut Option<String>,
     dirty: &mut bool,
 ) {
@@ -395,7 +395,7 @@ fn render_selection_area<R: Region>(
 fn render_picker<R: Region>(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    items: &mut [UiItem],
+    items: &mut [UiItemDto],
     selected_id: &mut Option<String>,
     dirty: &mut bool,
 ) {
@@ -410,7 +410,7 @@ fn render_picker<R: Region>(
 fn render_flat_picker<R: Region>(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    items: &mut [UiItem],
+    items: &mut [UiItemDto],
     selected_id: &mut Option<String>,
     dirty: &mut bool,
 ) {
@@ -449,7 +449,7 @@ fn render_flat_picker<R: Region>(
         // Matches the pre-MVU info-panel behavior; toolbars use sparse
         // sort_order values so this only takes effect for flat pickers.
         if *dirty {
-            let mut visible_items: Vec<&mut UiItem> =
+            let mut visible_items: Vec<&mut UiItemDto> =
                 items.iter_mut().filter(|i| i.visible).collect();
             visible_items.sort_by_key(|i| i.sort_order);
             for (idx, item) in visible_items.iter_mut().enumerate() {
@@ -462,7 +462,7 @@ fn render_flat_picker<R: Region>(
 fn render_grouped_picker<R: Region>(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    items: &mut [UiItem],
+    items: &mut [UiItemDto],
     selected_id: &mut Option<String>,
     dirty: &mut bool,
     groups: &'static [(&'static str, &'static str)],

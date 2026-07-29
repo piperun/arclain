@@ -212,6 +212,66 @@ mod interface_settings {
             "dirty state with no higher-priority action must auto-emit SaveDisplayOptions"
         );
     }
+
+    /// Both intents auto-fire every frame, so a failure that leaves
+    /// `loaded` false or `dirty` true would retry sixty times a second
+    /// and report itself each time. Holding the failure is what stops
+    /// that, and it is the whole reason `error` is on the page state.
+    #[test]
+    fn a_held_failure_stops_the_load_from_re_firing_every_frame() {
+        let mut state = InterfaceSettingsState::default();
+        state.error = Some("Failed to load interface settings: no backend".to_string());
+
+        let mut harness = Harness::new_ui_state(
+            |ui, s: &mut Stage| {
+                if let Some(a) = render_interface_settings(ui, &s.theme, &s.shared, &mut s.state) {
+                    s.last_action = Some(a);
+                }
+            },
+            Stage {
+                shared: common::create_test_shared_state(),
+                state,
+                theme: AppTheme::new(false),
+                last_action: None,
+            },
+        );
+        harness.run();
+        assert!(
+            harness.state().last_action.is_none(),
+            "an unloaded page holding a failure must not keep asking"
+        );
+    }
+
+    #[test]
+    fn a_held_failure_stops_the_save_from_re_firing_every_frame() {
+        let mut state = InterfaceSettingsState::default();
+        state.loaded = true;
+        state.dirty = true;
+        state.error = Some("Failed to save interface settings: no backend".to_string());
+
+        let mut harness = Harness::new_ui_state(
+            |ui, s: &mut Stage| {
+                if let Some(a) = render_interface_settings(ui, &s.theme, &s.shared, &mut s.state) {
+                    s.last_action = Some(a);
+                }
+            },
+            Stage {
+                shared: common::create_test_shared_state(),
+                state,
+                theme: AppTheme::new(false),
+                last_action: None,
+            },
+        );
+        harness.run();
+        assert!(
+            harness.state().last_action.is_none(),
+            "a dirty page holding a failure must wait for the next edit, not retry every frame"
+        );
+        assert!(
+            harness.state().state.dirty,
+            "and must still be dirty -- the edit was never stored"
+        );
+    }
 }
 
 // ============================================================================

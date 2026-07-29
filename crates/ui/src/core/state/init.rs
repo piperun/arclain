@@ -14,6 +14,7 @@
 //! the install call's own comment), and loading persisted UI state into
 //! signals.
 
+use super::config_ops::describe_facade_error;
 use super::AppState;
 use crate::core::signals::AppSignals;
 use anyhow::Result;
@@ -112,45 +113,37 @@ impl AppState {
         }
         // If gameta_server_enabled is false, server_status stays Offline (default)
 
-        // Load UI items via UiService now that services are ready
-        if let Some(ref svc) = services.ui_service {
-            if let Ok(items) = svc.list_toolbar_items() {
-                me.signals.toolbar_items.set(items);
-            }
-            if let Ok(items) = svc.list_info_panel_items() {
-                me.signals.info_panel_items.set(items);
-            }
-            if let Ok(items) = svc.list_items(arclain_core::UiRegion::ContextMenu) {
-                me.signals.context_menu_items.set(items);
-            }
+        // Seed the canonical chrome-item signals from the application.
+        me.reload_ui_config(&facade, &services.tokio_runtime);
 
-            // Load UI preferences from database
-            if let Ok(Some(show_labels_str)) = svc.get_display_option("show_button_labels") {
-                let show_labels = show_labels_str == "true";
+        // Seed the chrome display options the rest of the app reads
+        // through signals rather than by asking again.
+        //
+        // Best-effort, unlike the settings mirrors above: the placeholder
+        // these two consumers hold is `UiPreferences`/`ToolbarState`'s own
+        // default (labels off, both panels open), which is the same answer
+        // a fresh profile gives and which nothing acts on destructively.
+        // A failed read costs the user their panel-visibility preference
+        // for this session, not their data -- so it is logged rather than
+        // fatal.
+        match services.tokio_runtime.block_on(facade.ui_display_options()) {
+            Ok(options) => {
                 let mut prefs = me.signals.ui_preferences.get();
-                prefs.show_button_labels = show_labels;
+                prefs.show_button_labels = options.show_button_labels;
                 me.signals.ui_preferences.set(prefs);
+
+                let tab = me.signals.tabs.get().active().clone();
+                let mut view_state = tab.browser_view_state.get();
+                view_state.toolbar_state.show_tree_panel = options.tree_panel_visible;
+                view_state.toolbar_state.show_properties_panel = options.properties_panel_visible;
+                tab.browser_view_state.set(view_state);
             }
-
-            // Load panel defaults from database and set them in browser view state
-            let tree_visible = svc
-                .get_display_option("tree_panel_visible")
-                .ok()
-                .flatten()
-                .map(|v| v == "true")
-                .unwrap_or(true);
-            let properties_visible = svc
-                .get_display_option("properties_panel_visible")
-                .ok()
-                .flatten()
-                .map(|v| v == "true")
-                .unwrap_or(true);
-
-            let tab = me.signals.tabs.get().active().clone();
-            let mut view_state = tab.browser_view_state.get();
-            view_state.toolbar_state.show_tree_panel = tree_visible;
-            view_state.toolbar_state.show_properties_panel = properties_visible;
-            tab.browser_view_state.set(view_state);
+            Err(error) => {
+                tracing::warn!(
+                    "{}",
+                    describe_facade_error("reading the interface display options", error)
+                );
+            }
         }
 
         Ok((me, services, facade))

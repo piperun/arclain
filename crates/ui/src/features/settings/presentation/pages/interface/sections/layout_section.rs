@@ -1,83 +1,32 @@
 //! Layout settings section - configure default view mode and panel visibility.
+//!
+//! Renders the five layout fields of the application's own
+//! `UiDisplayOptionsDto` in place. It deliberately does not own a
+//! separate copy of them: this section used to hold a `LayoutOptions`
+//! struct that parsed and re-serialized the stored key/value text
+//! itself, which made the frontend a second authority on what an unset
+//! or unparseable option means. The application answers that now.
+//!
+//! `show_button_labels` is the one field of that value this section does
+//! not touch — the Interface page's own Header section renders it.
 
 use crate::shared::components::settings_form::{SectionHeader, SettingsRow};
 use crate::shared::theme::AppTheme;
+use arclain_app::layout::{UiDisplayOptionsDto, UiViewModeDto};
 use arclain_widgets::{SegmentedControl, ThemedSlider, ToggleSwitch};
 use eframe::egui;
-use std::collections::HashMap;
-
-/// Display options from database (key-value pairs)
-pub struct LayoutOptions {
-    pub default_view_mode: String, // "list" or "grid"
-    pub tree_panel_visible: bool,
-    pub tree_panel_width: f32,
-    pub properties_panel_visible: bool,
-    pub properties_panel_width: f32,
-}
-
-impl LayoutOptions {
-    pub fn from_map(map: &HashMap<String, String>) -> Self {
-        Self {
-            default_view_mode: map
-                .get("default_view_mode")
-                .cloned()
-                .unwrap_or_else(|| "list".to_string()),
-            tree_panel_visible: map
-                .get("tree_panel_visible")
-                .map(|s| s == "true")
-                .unwrap_or(true),
-            tree_panel_width: map
-                .get("tree_panel_width")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(200.0),
-            properties_panel_visible: map
-                .get("properties_panel_visible")
-                .map(|s| s == "true")
-                .unwrap_or(true),
-            properties_panel_width: map
-                .get("properties_panel_width")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(280.0),
-        }
-    }
-
-    pub fn to_map(&self) -> HashMap<String, String> {
-        let mut map = HashMap::new();
-        map.insert(
-            "default_view_mode".to_string(),
-            self.default_view_mode.clone(),
-        );
-        map.insert(
-            "tree_panel_visible".to_string(),
-            self.tree_panel_visible.to_string(),
-        );
-        map.insert(
-            "tree_panel_width".to_string(),
-            self.tree_panel_width.to_string(),
-        );
-        map.insert(
-            "properties_panel_visible".to_string(),
-            self.properties_panel_visible.to_string(),
-        );
-        map.insert(
-            "properties_panel_width".to_string(),
-            self.properties_panel_width.to_string(),
-        );
-        map
-    }
-}
 
 /// Render the layout configuration section
 pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    options: &mut LayoutOptions,
+    options: &mut UiDisplayOptionsDto,
     on_change: &mut bool,
 ) {
     // Default view mode
     SectionHeader::new("View Mode").show(ui, &theme.colors);
 
-    let mut is_list = options.default_view_mode == "list";
+    let mut is_list = options.default_view_mode == UiViewModeDto::List;
     SettingsRow::new("Default View")
         .description("Choose how files are displayed by default")
         .action(|ui| {
@@ -89,7 +38,11 @@ pub fn render(
                 )
                 .changed()
             {
-                options.default_view_mode = if is_list { "list" } else { "grid" }.to_string();
+                options.default_view_mode = if is_list {
+                    UiViewModeDto::List
+                } else {
+                    UiViewModeDto::Grid
+                };
                 *on_change = true;
             }
         })

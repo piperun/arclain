@@ -4,43 +4,54 @@
 //! `Option<InterfaceSettingsAction>` describing intent — either a
 //! display-options load, a display-options save, a per-item
 //! visibility toggle, or a navigation request. The sibling
-//! `handle_interface_settings_action` function owns all UiService
-//! calls and signal mutations so the render path itself stays a
+//! `handle_interface_settings_action` function owns every application
+//! call and signal mutation so the render path itself stays a
 //! pure intent-emitter.
 //!
 //! **Item state lives in signals, not on the page.** Toolbar /
 //! info-panel / context-menu items are read from
 //! `shared.signals().toolbar_items`, `info_panel_items`, and
 //! `context_menu_items` respectively. Each toggle emits a
-//! `ToggleItemVisibility` action; the dispatcher upserts the item
-//! to the DB and updates the signal. The page itself no longer
-//! holds an `items: Vec<UiItem>` cache — that used to mirror the
-//! same data the LayoutEditor's state already owned, and the two
+//! `ToggleItemVisibility` action; the dispatcher saves the item
+//! through the application and updates the signal. The page itself no
+//! longer holds an `items: Vec<UiItemDto>` cache — that used to mirror
+//! the same data the LayoutEditor's state already owned, and the two
 //! could drift after a save in one without the other knowing.
 
 use crate::shared::components::Form;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_core::{UiItem, UiRegion};
+use arclain_app::layout::{UiDisplayOptionsDto, UiRegionDto};
 use arclain_theme::spacing;
 use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 
 use super::sections;
+use crate::features::settings::application::facade;
 
-/// State for interface settings loaded from database.
+/// State for interface settings as the application reports them.
 ///
 /// Holds *display-option* state only. Item state (toolbar buttons,
 /// info-panel sections, context-menu entries) lives on the canonical
 /// `AppSignals` and is consumed via `shared.signals()`.
 pub struct InterfaceSettingsState {
-    pub layout_options: sections::layout_section::LayoutOptions,
-    pub show_button_labels: bool,
+    /// Every display option in one value, which is also the shape the
+    /// application reads and writes — so nothing here re-parses stored
+    /// text or decides what an unset option means.
+    pub display_options: UiDisplayOptionsDto,
     /// Display-options changes since last save. Item toggles persist
     /// immediately and do not affect this flag.
     pub dirty: bool,
     /// `false` until the first LoadDisplayOptions dispatch completes.
     pub loaded: bool,
+    /// The last load or save failure, shown on the page.
+    ///
+    /// Also a latch: the page auto-fires its load and save intents every
+    /// frame, so a failure that left `loaded` false or `dirty` true would
+    /// otherwise retry sixty times a second and report itself each time.
+    /// While this is set, neither intent fires again; the next edit
+    /// clears it and the retry resumes.
+    pub error: Option<String>,
     /// Show the layout type selection dialog
     pub layout_dialog_open: bool,
 }
@@ -48,69 +59,55 @@ pub struct InterfaceSettingsState {
 impl Default for InterfaceSettingsState {
     fn default() -> Self {
         Self {
-            layout_options: sections::layout_section::LayoutOptions {
-                default_view_mode: "list".to_string(),
-                tree_panel_visible: true,
-                tree_panel_width: 200.0,
-                properties_panel_visible: true,
-                properties_panel_width: 280.0,
-            },
-            show_button_labels: false,
+            // The application's own fresh-profile answer, so an
+            // un-loaded page shows what a first-run load would.
+            display_options: UiDisplayOptionsDto::default(),
             dirty: false,
             loaded: false,
+            error: None,
             layout_dialog_open: false,
         }
     }
 }
 
 impl InterfaceSettingsState {
-    /// Load display options from the UiService. Items are loaded
-    /// elsewhere (state/init.rs at startup, state/config_ops.rs on
-    /// reload) and live in signals — this method only touches the
+    /// Read the display options through the application. Items are
+    /// loaded elsewhere (state/init.rs at startup, state/config_ops.rs
+    /// on reload) and live in signals — this method only touches the
     /// page-local display-option fields.
-    pub fn load_from_service(&mut self, service: &arclain_core::UiService) {
+    ///
+    /// `loaded` flips only on success, so a failed read leaves the page
+    /// on its "Loading…" state rather than presenting placeholder values
+    /// as if the user had chosen them.
+    pub fn load(&mut self, shared: &SharedState) -> Result<(), String> {
         if self.loaded {
-            return;
+            return Ok(());
         }
-
-        let mut opts_map = std::collections::HashMap::new();
-        for key in [
-            "default_view_mode",
-            "tree_panel_visible",
-            "tree_panel_width",
-            "properties_panel_visible",
-            "properties_panel_width",
-            "show_button_labels",
-        ] {
-            if let Ok(Some(val)) = service.get_display_option(key) {
-                opts_map.insert(key.to_string(), val);
-            }
-        }
-        self.layout_options = sections::layout_section::LayoutOptions::from_map(&opts_map);
-        self.show_button_labels = opts_map
-            .get("show_button_labels")
-            .map(|s| s == "true")
-            .unwrap_or(false);
-
+        let (app, runtime) = facade::handles(shared).ok_or_else(facade::unavailable)?;
+        self.display_options = runtime
+            .block_on(app.ui_display_options())
+            .map_err(|error| facade::describe("Failed to load interface settings", &error))?;
         self.loaded = true;
         self.dirty = false;
+        Ok(())
     }
 
-    /// Persist display options to the UiService. Item toggles are not
-    /// handled here — they persist per-toggle via the
+    /// Persist the display options through the application. Item toggles
+    /// are not handled here — they persist per-toggle via the
     /// `ToggleItemVisibility` action.
-    pub fn save_to_service(&mut self, service: &arclain_core::UiService) {
+    ///
+    /// `dirty` is cleared only on success, so a failed save leaves the
+    /// page pending rather than dropping the user's edit.
+    pub fn save(&mut self, shared: &SharedState) -> Result<(), String> {
         if !self.dirty {
-            return;
+            return Ok(());
         }
-
-        for (key, value) in self.layout_options.to_map() {
-            let _ = service.set_display_option(&key, &value);
-        }
-        let _ =
-            service.set_display_option("show_button_labels", &self.show_button_labels.to_string());
-
+        let (app, runtime) = facade::handles(shared).ok_or_else(facade::unavailable)?;
+        runtime
+            .block_on(app.save_ui_display_options(self.display_options))
+            .map_err(|error| facade::describe("Failed to save interface settings", &error))?;
         self.dirty = false;
+        Ok(())
     }
 }
 
@@ -119,23 +116,23 @@ impl InterfaceSettingsState {
 /// remaining variants through `handle_interface_settings_action`.
 #[derive(Debug, Clone)]
 pub enum InterfaceSettingsAction {
-    /// First-render load: fetch display options from the UiService
-    /// and populate `state`. Auto-fired when `state.loaded` is false.
+    /// First-render load: fetch the display options through the
+    /// application and populate `state`. Auto-fired when `state.loaded`
+    /// is false.
     LoadDisplayOptions,
-    /// User mutated a display option (`state.dirty` is true). Save
-    /// layout options + show_button_labels to the UiService, then
-    /// push the visible-effects-of-those-options into the
-    /// `ui_preferences` signal and the active tab's
-    /// `browser_view_state`.
+    /// User mutated a display option (`state.dirty` is true). Save them
+    /// through the application, then push the
+    /// visible-effects-of-those-options into the `ui_preferences` signal
+    /// and the active tab's `browser_view_state`.
     SaveDisplayOptions,
     /// User picked a layout target in the dialog — navigate to its
     /// editor page.
     Navigate(crate::core::navigation::SettingsPage),
     /// User toggled a single item's visibility in the context-menu or
-    /// info-panel section. The dispatcher upserts the item to the DB
-    /// and updates the corresponding signal.
+    /// info-panel section. The dispatcher saves the item through the
+    /// application and updates the corresponding signal.
     ToggleItemVisibility {
-        region: UiRegion,
+        region: UiRegionDto,
         item_id: String,
         visible: bool,
     },
@@ -149,15 +146,39 @@ pub fn render_interface_settings(
     interface_state: &mut InterfaceSettingsState,
 ) -> Option<InterfaceSettingsAction> {
     if !interface_state.loaded {
-        ui.label(
-            egui::RichText::new("Loading interface settings…")
-                .size(12.0)
-                .color(theme.colors.on_surface_variant),
-        );
-        return Some(InterfaceSettingsAction::LoadDisplayOptions);
+        let Some(error) = interface_state.error.clone() else {
+            ui.label(
+                egui::RichText::new("Loading interface settings…")
+                    .size(12.0)
+                    .color(theme.colors.on_surface_variant),
+            );
+            return Some(InterfaceSettingsAction::LoadDisplayOptions);
+        };
+        // The load is held, not abandoned: clearing the failure is what
+        // lets the auto-fire above run again, so Retry needs no action of
+        // its own.
+        render_error(ui, theme, &error);
+        ui.add_space(8.0);
+        if ui
+            .add(TextButton::new("Retry", ButtonSize::Small).with_theme_colors(&theme.colors))
+            .clicked()
+        {
+            interface_state.error = None;
+        }
+        return None;
     }
 
     let mut emitted: Option<InterfaceSettingsAction> = None;
+    // Set by whichever display-option control the user touched this
+    // frame. Kept separate from `dirty` so a *new* edit is
+    // distinguishable from one that is merely still unsaved -- only the
+    // former clears a previous failure and re-arms the auto-save.
+    let mut edited_this_frame = false;
+
+    if let Some(error) = interface_state.error.clone() {
+        render_error(ui, theme, &error);
+        ui.add_space(8.0);
+    }
 
     Form::new().id("interface_settings").show(ui, theme, |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
@@ -193,7 +214,7 @@ pub fn render_interface_settings(
             if let Some((item_id, visible)) =
                 sections::context_menu_section::render(ui, theme, &items)
             {
-                capture_toggle(&mut emitted, UiRegion::ContextMenu, item_id, visible);
+                capture_toggle(&mut emitted, UiRegionDto::ContextMenu, item_id, visible);
             }
         });
 
@@ -204,7 +225,7 @@ pub fn render_interface_settings(
             if let Some((item_id, visible)) =
                 sections::info_panel_section::render(ui, theme, &items)
             {
-                capture_toggle(&mut emitted, UiRegion::InfoPanel, item_id, visible);
+                capture_toggle(&mut emitted, UiRegionDto::InfoPanel, item_id, visible);
             }
         });
 
@@ -213,8 +234,8 @@ pub fn render_interface_settings(
             sections::layout_section::render(
                 ui,
                 theme,
-                &mut interface_state.layout_options,
-                &mut interface_state.dirty,
+                &mut interface_state.display_options,
+                &mut edited_this_frame,
             );
         });
 
@@ -229,13 +250,13 @@ pub fn render_interface_settings(
 
             if ui
                 .checkbox(
-                    &mut interface_state.show_button_labels,
+                    &mut interface_state.display_options.show_button_labels,
                     "Show button labels in header",
                 )
                 .on_hover_text("Display text labels next to icons in header buttons")
                 .changed()
             {
-                interface_state.dirty = true;
+                edited_this_frame = true;
             }
         });
 
@@ -311,20 +332,39 @@ pub fn render_interface_settings(
             });
     }
 
+    // A fresh edit deserves a fresh attempt: it marks the page dirty and
+    // clears any previous failure, which is what re-arms the auto-save
+    // below.
+    if edited_this_frame {
+        interface_state.dirty = true;
+        interface_state.error = None;
+    }
+
     // Auto-save display options when dirty and no higher-priority
-    // action is already in flight this frame.
-    if emitted.is_none() && interface_state.dirty {
+    // action is already in flight this frame. A page holding a failure
+    // waits for the next edit instead of retrying every frame.
+    if emitted.is_none() && interface_state.dirty && interface_state.error.is_none() {
         emitted = Some(InterfaceSettingsAction::SaveDisplayOptions);
     }
 
     emitted
 }
 
+/// The page's failure banner: a load that could not be served, or a save
+/// the application refused.
+fn render_error(ui: &mut egui::Ui, theme: &AppTheme, error: &str) {
+    ui.label(
+        egui::RichText::new(error)
+            .size(12.0)
+            .color(theme.colors.error),
+    );
+}
+
 /// Helper to wrap a section's toggle event into a ToggleItemVisibility
 /// action without clobbering a higher-priority emit (Navigate, etc.).
 fn capture_toggle(
     emitted: &mut Option<InterfaceSettingsAction>,
-    region: UiRegion,
+    region: UiRegionDto,
     item_id: String,
     visible: bool,
 ) {
@@ -337,10 +377,10 @@ fn capture_toggle(
     }
 }
 
-/// Dispatch an `InterfaceSettingsAction` against the UiService and
+/// Dispatch an `InterfaceSettingsAction` against the application and
 /// the shared signal graph. Called by the parent view after
 /// `render_interface_settings` returns an action. All side effects on
-/// the DB and on canonical signals live here.
+/// stored state and on canonical signals live here.
 pub fn handle_interface_settings_action(
     state: &mut InterfaceSettingsState,
     action: InterfaceSettingsAction,
@@ -357,20 +397,31 @@ pub fn handle_interface_settings_action(
             );
         }
         InterfaceSettingsAction::LoadDisplayOptions => {
-            if let Some(service) = shared.services.ui_service.as_deref() {
-                state.load_from_service(service);
+            match state.load(shared) {
+                Ok(()) => state.error = None,
+                Err(error) => {
+                    tracing::warn!("{error}");
+                    // Shown on the page, and stops the per-frame retry
+                    // until the user acts again.
+                    state.error = Some(error);
+                }
             }
         }
         InterfaceSettingsAction::SaveDisplayOptions => {
-            let Some(service) = shared.services.ui_service.as_deref() else {
+            if let Err(error) = state.save(shared) {
+                tracing::warn!("{error}");
+                shared.toaster.lock().error(error.clone());
+                state.error = Some(error);
+                // The page keeps `dirty`, so nothing below may push a
+                // preference the application refused to store.
                 return;
-            };
-            state.save_to_service(service);
+            }
+            state.error = None;
 
             // Push label preference into ui_preferences signal so the
             // header (which reads from it) repaints with new labels.
             let mut prefs = shared.signals().ui_preferences.get();
-            prefs.show_button_labels = state.show_button_labels;
+            prefs.show_button_labels = state.display_options.show_button_labels;
             shared.signals().ui_preferences.set(prefs);
 
             // Apply panel-visibility settings to the active tab's
@@ -383,9 +434,9 @@ pub fn handle_interface_settings_action(
                 .active()
                 .browser_view_state
                 .update(|s| {
-                    s.toolbar_state.show_tree_panel = state.layout_options.tree_panel_visible;
+                    s.toolbar_state.show_tree_panel = state.display_options.tree_panel_visible;
                     s.toolbar_state.show_properties_panel =
-                        state.layout_options.properties_panel_visible;
+                        state.display_options.properties_panel_visible;
                 });
         }
         InterfaceSettingsAction::ToggleItemVisibility {
@@ -393,27 +444,25 @@ pub fn handle_interface_settings_action(
             item_id,
             visible,
         } => {
-            let Some(service) = shared.services.ui_service.as_deref() else {
+            let Some((app, runtime)) = facade::handles(shared) else {
+                tracing::warn!("{}", facade::unavailable());
                 return;
             };
 
             let signal = match region {
-                UiRegion::Toolbar => &shared.signals().toolbar_items,
-                UiRegion::InfoPanel => &shared.signals().info_panel_items,
-                UiRegion::ContextMenu => &shared.signals().context_menu_items,
-                // Other regions don't have a dedicated signal — fall back
-                // to a single-item upsert and let the next reload_ui_config
-                // pick it up.
-                _ => {
-                    let mut updated: Option<UiItem> = None;
-                    if let Ok(items) = service.list_items(region) {
-                        if let Some(item) = items.into_iter().find(|i| i.id == item_id) {
-                            updated = Some(UiItem { visible, ..item });
-                        }
-                    }
-                    if let Some(item) = updated {
-                        let _ = service.upsert_item(&item);
-                    }
+                UiRegionDto::Toolbar => &shared.signals().toolbar_items,
+                UiRegionDto::InfoPanel => &shared.signals().info_panel_items,
+                UiRegionDto::ContextMenu => &shared.signals().context_menu_items,
+                // No signal mirrors the tools dialog, and no section of
+                // this page renders it either, so a toggle for it cannot
+                // be emitted. Named rather than matched by wildcard so a
+                // region added to the application forces this decision to
+                // be revisited.
+                UiRegionDto::ToolsDialog => {
+                    debug_assert!(
+                        false,
+                        "no Interface section renders the tools dialog, so nothing can toggle it"
+                    );
                     return;
                 }
             };
@@ -424,12 +473,15 @@ pub fn handle_interface_settings_action(
             };
             item.visible = visible;
             let updated = item.clone();
-            // Persist the single item.
-            if let Err(e) = service.upsert_item(&updated) {
+            // Persist the single item. Upsert semantics mean naming one
+            // item leaves the rest of the region alone.
+            if let Err(error) = runtime.block_on(app.save_ui_items(region, vec![updated])) {
                 tracing::warn!(
-                    "ToggleItemVisibility upsert failed for {}: {}",
-                    updated.id,
-                    e
+                    "{}",
+                    facade::describe(
+                        &format!("Failed to save the visibility of {item_id:?}"),
+                        &error
+                    )
                 );
                 return;
             }

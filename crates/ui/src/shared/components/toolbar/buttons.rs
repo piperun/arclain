@@ -1,5 +1,5 @@
 use super::types::{ButtonContext, PluginToolbarRenderer, ToolbarActions, ToolbarState};
-use arclain_core::{ActionType, UiItem};
+use arclain_app::layout::{UiActionTypeDto, UiItemDto};
 use arclain_plugins::types::PluginUiElement;
 use arclain_theme::ButtonVariant;
 use eframe::egui;
@@ -7,20 +7,21 @@ use egui::Widget;
 
 /// Render a single toolbar button by ID, returns true if action triggered.
 ///
-/// `plugin_renderer` is called when the item dispatches an
-/// `ActionType::Plugin` without a specific button id (legacy multi-button
-/// branch). The closure is constructed in `core/arclain_app/` where it
-/// can reach into `features::plugins::presentation::rendering` — keeping
-/// this `shared/` module free of feature-layer dependencies.
+/// `plugin_renderer` is called when the item dispatches a
+/// `UiActionTypeDto::Plugin` without a specific button id (legacy
+/// multi-button branch). The closure is constructed in
+/// `core/arclain_app/` where it can reach into
+/// `features::plugins::presentation::rendering` — keeping this `shared/`
+/// module free of feature-layer dependencies.
 pub fn render_button(
     ui: &mut egui::Ui,
-    item: &UiItem,
+    item: &UiItemDto,
     ctx: &ButtonContext,
     state: &mut ToolbarState,
     actions: &mut ToolbarActions,
     plugin_renderer: PluginToolbarRenderer<'_>,
 ) {
-    if item.action_type == ActionType::Plugin {
+    if item.action_type == UiActionTypeDto::Plugin {
         if let Some(action_data) = &item.action_data {
             // format: "plugin_id:button_id"
             if let Some((plugin_id, btn_id)) = action_data.split_once(':') {

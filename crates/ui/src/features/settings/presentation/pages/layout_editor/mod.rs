@@ -2,7 +2,7 @@
 //!
 //! One shared `LayoutEditor<R>` (in `editor.rs`) plus shared render
 //! helpers (in `render.rs`) cover both pages; the per-region
-//! differences (which `UiRegion` to persist, how to inject plugin
+//! differences (which region to persist into, how to inject plugin
 //! items, axis direction, picker grouping, icon resolution) live in
 //! the two small `Region` impls below.
 //!
@@ -17,7 +17,7 @@ mod render;
 
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion};
+use arclain_app::layout::{UiActionTypeDto, UiDisplayModeDto, UiItemDto, UiRegionDto};
 use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
 
@@ -38,7 +38,7 @@ pub type InfoPanelLayoutState = LayoutEditorState<InfoPanelRegion>;
 pub struct ToolbarRegion;
 
 impl Region for ToolbarRegion {
-    const REGION: UiRegion = UiRegion::Toolbar;
+    const REGION: UiRegionDto = UiRegionDto::Toolbar;
     const AXIS: Axis = Axis::Horizontal;
 
     fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool {
@@ -94,17 +94,17 @@ impl Region for ToolbarRegion {
 
                     let max_sort = state.items.iter().map(|i| i.sort_order).max().unwrap_or(0);
 
-                    state.items.push(UiItem {
+                    state.items.push(UiItemDto {
                         id: unique_id,
-                        region: UiRegion::Toolbar,
+                        region: UiRegionDto::Toolbar,
                         group_id: Some("plugins".to_string()),
                         label: format!("{} - {}", plugin_name, label),
                         icon: Some("PUZZLE_PIECE".to_string()),
-                        action_type: ActionType::Plugin,
+                        action_type: UiActionTypeDto::Plugin,
                         action_data: Some(action_data),
                         visible: true,
                         sort_order: max_sort + 10,
-                        display_mode: DisplayMode::IconAndText,
+                        display_mode: UiDisplayModeDto::IconAndText,
                     });
                     changed = true;
                 }
@@ -158,7 +158,7 @@ pub struct InfoPanelRegion;
 const INFO_PANEL_INTERNAL_IDS: &[&str] = &["info.plugin_metadata"];
 
 impl Region for InfoPanelRegion {
-    const REGION: UiRegion = UiRegion::InfoPanel;
+    const REGION: UiRegionDto = UiRegionDto::InfoPanel;
     const AXIS: Axis = Axis::Vertical;
 
     fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool {
@@ -202,7 +202,7 @@ impl Region for InfoPanelRegion {
             }
 
             let exists = state.items.iter().any(|item| {
-                item.action_type == ActionType::Plugin
+                item.action_type == UiActionTypeDto::Plugin
                     && item.action_data.as_ref() == Some(&plugin_id)
             });
             if exists {
@@ -211,17 +211,17 @@ impl Region for InfoPanelRegion {
 
             let max_sort = state.items.iter().map(|i| i.sort_order).max().unwrap_or(0);
 
-            state.items.push(UiItem {
+            state.items.push(UiItemDto {
                 id: format!("plugin_{}", plugin_id),
-                region: UiRegion::InfoPanel,
+                region: UiRegionDto::InfoPanel,
                 group_id: Some("plugins".to_string()),
                 label: plugin_name,
                 icon: Some("PUZZLE_PIECE".to_string()),
-                action_type: ActionType::Plugin,
+                action_type: UiActionTypeDto::Plugin,
                 action_data: Some(plugin_id),
                 visible: true,
                 sort_order: max_sort + 10,
-                display_mode: DisplayMode::default(),
+                display_mode: UiDisplayModeDto::default(),
             });
             changed = true;
         }
@@ -229,7 +229,7 @@ impl Region for InfoPanelRegion {
         changed
     }
 
-    fn user_visible(item: &UiItem) -> bool {
+    fn user_visible(item: &UiItemDto) -> bool {
         !INFO_PANEL_INTERNAL_IDS.contains(&item.id.as_str())
     }
 }

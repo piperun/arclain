@@ -8,8 +8,8 @@ use crate::features::archive_browser::domain::Action;
 use crate::features::archive_browser::presentation::components::{file_list, properties_panel};
 use crate::shared::components::tree_panel::{self, FolderTree, TreeRowProjectionCache};
 use crate::shared::SharedState;
+use arclain_app::layout::UiActionTypeDto;
 use arclain_app::Signal;
-use arclain_core::ActionType;
 use eframe::egui;
 
 /// Run cache-update work against a borrowed signal value, releasing the signal
@@ -262,7 +262,7 @@ fn render_properties_panel(
                             }
                         }
                         _ => {
-                            if item.action_type == ActionType::Plugin {
+                            if item.action_type == UiActionTypeDto::Plugin {
                                 if let Some(plugin_id) = &item.action_data {
                                     if let Some(section) = plugin_panel_section(shared, plugin_id) {
                                         sections.push(section);

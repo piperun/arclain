@@ -360,11 +360,10 @@ mod layout_editor {
         LayoutEditorAction, ToolbarLayoutState,
     };
 
-    // Post-refactor (2faf532 → follow-up): the dispatcher reads
-    // canonical item signals instead of hitting the UiService
-    // directly. `create_test_shared_state()` starts with empty
-    // signals, so these tests assert the "signal exists but empty"
-    // branch.
+    // The dispatcher reads the canonical item signals rather than
+    // asking the application itself. `create_test_shared_state()` starts
+    // with empty signals, so these tests assert the "signal exists but
+    // empty" branch.
 
     #[test]
     fn toolbar_sync_against_empty_signal_loads_empty_items() {
@@ -431,7 +430,7 @@ mod interface_settings {
     };
 
     #[test]
-    fn load_display_options_with_no_service_is_noop() {
+    fn load_display_options_with_no_application_is_noop() {
         let shared = create_test_shared_state();
         let mut state = InterfaceSettingsState::default();
         assert!(!state.loaded);
@@ -442,17 +441,17 @@ mod interface_settings {
             &shared,
         );
 
-        // With ui_service=None the dispatcher's early-return path
-        // fires; load_from_service is never called and `loaded`
-        // stays false.
-        assert!(!state.loaded, "no ui_service → loader must short-circuit");
+        // With no facade the read fails, so `loaded` stays false and the
+        // page keeps showing "Loading…" rather than presenting
+        // placeholder values as if the user had chosen them.
+        assert!(!state.loaded, "no application → loader must short-circuit");
     }
 
     #[test]
-    fn save_display_options_with_no_service_does_not_panic_and_does_not_clear_dirty() {
+    fn save_display_options_with_no_application_does_not_panic_and_does_not_clear_dirty() {
         let shared = create_test_shared_state();
         let mut state = InterfaceSettingsState::default();
-        state.show_button_labels = true;
+        state.display_options.show_button_labels = true;
         state.dirty = true;
 
         handle_interface_settings_action(
@@ -461,29 +460,51 @@ mod interface_settings {
             &shared,
         );
 
-        // With ui_service=None the dispatcher returns before
-        // save_to_service can clear dirty. The user-visible state
-        // remains pending-save until a service is wired up.
+        // With no facade nothing was stored, so the page stays
+        // pending-save rather than dropping the user's edit.
         assert!(
             state.dirty,
-            "no ui_service → SaveDisplayOptions early-returns and dirty stays true"
+            "no application → SaveDisplayOptions early-returns and dirty stays true"
+        );
+    }
+
+    /// A refused save must not push its unstored values onward either:
+    /// `ui_preferences` drives the header's own rendering, so letting it
+    /// take a value the application never accepted would show the user a
+    /// preference that vanishes on restart.
+    #[test]
+    fn a_refused_display_option_save_does_not_touch_the_preference_signal() {
+        let shared = create_test_shared_state();
+        let mut state = InterfaceSettingsState::default();
+        state.display_options.show_button_labels = true;
+        state.dirty = true;
+
+        handle_interface_settings_action(
+            &mut state,
+            InterfaceSettingsAction::SaveDisplayOptions,
+            &shared,
+        );
+
+        assert!(
+            !shared.signals().ui_preferences.get().show_button_labels,
+            "a save that never landed must not repaint the header as if it had"
         );
     }
 
     #[test]
-    fn toggle_item_visibility_with_no_service_is_noop() {
-        use arclain_core::UiRegion;
+    fn toggle_item_visibility_with_no_application_is_noop() {
+        use arclain_app::layout::UiRegionDto;
 
         let shared = create_test_shared_state();
         let mut state = InterfaceSettingsState::default();
 
-        // No ui_service in test shared → dispatcher early-returns
-        // without panic. Signal value unchanged.
+        // No facade in test shared → dispatcher early-returns without
+        // panic. Signal value unchanged.
         let before = shared.signals().context_menu_items.get();
         handle_interface_settings_action(
             &mut state,
             InterfaceSettingsAction::ToggleItemVisibility {
-                region: UiRegion::ContextMenu,
+                region: UiRegionDto::ContextMenu,
                 item_id: "anything".into(),
                 visible: false,
             },
@@ -777,13 +798,13 @@ mod layout_editor_happy {
 
     #[test]
     fn toolbar_sync_against_populated_signal_loads_seeded_defaults() {
-        // The `with_dbs` helper primes signals from the freshly-init'd
-        // DB the same way `state/init.rs` does in production, so
-        // `signals.toolbar_items` carries the canonical seeded entries
-        // (navigation group, file-actions, view, etc.). Assert
-        // non-empty rather than a hardcoded count so the test
+        // The `with_facade` helper primes signals from the freshly
+        // bootstrapped application the same way `state/init.rs` does in
+        // production, so `signals.toolbar_items` carries the canonical
+        // seeded entries (navigation group, file-actions, view, etc.).
+        // Assert non-empty rather than a hardcoded count so the test
         // doesn't break every time defaults are tweaked.
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut state = ToolbarLayoutState::default();
 
         handle_toolbar_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
@@ -801,7 +822,7 @@ mod layout_editor_happy {
 
     #[test]
     fn info_panel_sync_against_populated_signal_loads_seeded_defaults() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut state = InfoPanelLayoutState::default();
 
         handle_info_panel_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
@@ -819,7 +840,7 @@ mod layout_editor_happy {
         // toggled visibility in the editor), a later SyncItems must
         // NOT pull a fresh signal value over state.items — that
         // would silently throw away the in-flight edit.
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut state = ToolbarLayoutState::default();
 
         // First sync to populate from signal.
@@ -847,7 +868,7 @@ mod layout_editor_happy {
         // dispatcher), a SyncItems with dirty=false must reflect the
         // new value. This is the bug the refactor fixes — Interface
         // edits now propagate into a stale LayoutEditor cache.
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut state = ToolbarLayoutState::default();
 
         handle_toolbar_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
@@ -873,14 +894,41 @@ mod layout_editor_happy {
 
 mod interface_settings_happy {
     use super::*;
-    use arclain_core::UiRegion;
+    use arclain_app::layout::{UiRegionDto, UiViewModeDto};
     use arclain_ui::features::settings::presentation::pages::{
         handle_interface_settings_action, InterfaceSettingsAction, InterfaceSettingsState,
     };
 
+    /// Everything stored for `region`, read the way the rest of the app
+    /// reads it -- so a persistence assertion below is checking the
+    /// store, not the signal it just watched being set.
+    fn stored_items(
+        shared: &arclain_ui::shared::SharedState,
+        region: UiRegionDto,
+    ) -> Vec<arclain_app::layout::UiItemDto> {
+        let app = shared.facade.as_ref().expect("the fixture has a facade");
+        shared
+            .services
+            .tokio_runtime
+            .block_on(app.list_ui_items(region))
+            .expect("list the stored items")
+    }
+
+    fn stored_visibility(
+        shared: &arclain_ui::shared::SharedState,
+        region: UiRegionDto,
+        item_id: &str,
+    ) -> bool {
+        stored_items(shared, region)
+            .into_iter()
+            .find(|item| item.id == item_id)
+            .expect("the item is still stored")
+            .visible
+    }
+
     #[test]
-    fn load_display_options_against_empty_db_marks_loaded() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+    fn load_display_options_against_a_fresh_profile_marks_loaded() {
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut state = InterfaceSettingsState::default();
         assert!(!state.loaded);
 
@@ -890,17 +938,27 @@ mod interface_settings_happy {
             &shared,
         );
 
-        assert!(state.loaded, "real UiService must flip loaded=true");
+        assert!(state.loaded, "a real application must flip loaded=true");
         assert!(!state.dirty, "fresh load shouldn't be dirty");
+        assert_eq!(
+            state.display_options.default_view_mode,
+            UiViewModeDto::List,
+            "and must carry the seeded values, not a placeholder"
+        );
+        assert!(state.display_options.tree_panel_visible);
     }
 
     #[test]
-    fn save_display_options_clears_dirty_against_real_db() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+    fn save_display_options_clears_dirty_and_round_trips() {
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         let mut state = InterfaceSettingsState::default();
-        // Pretend the user toggled something.
-        state.show_button_labels = true;
+        // Pretend the user toggled several things.
+        state.display_options.show_button_labels = true;
+        state.display_options.default_view_mode = UiViewModeDto::Grid;
+        state.display_options.tree_panel_visible = false;
+        state.display_options.properties_panel_width = 333.0;
         state.dirty = true;
+        let edited = state.display_options;
 
         handle_interface_settings_action(
             &mut state,
@@ -912,49 +970,48 @@ mod interface_settings_happy {
             !state.dirty,
             "SaveDisplayOptions must clear dirty once the write completes"
         );
+
+        // A second page instance loading fresh must see the same values,
+        // which is what makes the save a real round trip rather than an
+        // in-memory edit.
+        let mut reloaded = InterfaceSettingsState::default();
+        handle_interface_settings_action(
+            &mut reloaded,
+            InterfaceSettingsAction::LoadDisplayOptions,
+            &shared,
+        );
+        assert_eq!(reloaded.display_options, edited);
     }
 
     #[test]
     fn toggle_item_visibility_updates_signal_and_persists() {
-        // Pre-seed the info_panel_items signal with a row, then toggle
-        // its visibility via the dispatcher. Verify the signal reflects
-        // the new value AND the DB persists the change (re-list and check).
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
-        let ui_service = shared
-            .services
-            .ui_service
-            .as_ref()
-            .expect("ui_service present in with-dbs helper")
-            .clone();
+        // Toggle a seeded info-panel row via the dispatcher. Verify the
+        // signal reflects the new value AND the application persists the
+        // change (re-list and check).
+        let (_tmp, shared) = create_test_shared_state_with_facade();
 
-        // Pull seeded info-panel items and use the first as our victim.
-        let initial = ui_service.list_info_panel_items().expect("list");
-        let victim = initial
+        let victim = stored_items(&shared, UiRegionDto::InfoPanel)
             .into_iter()
             .next()
             .expect("seeded info-panel items present");
         let target_id = victim.id.clone();
         let started_visible = victim.visible;
-        // Push the live list into the signal so the dispatcher's
-        // signal->mutate->signal round-trip has something to find.
-        shared
-            .signals()
-            .info_panel_items
-            .set(ui_service.list_info_panel_items().unwrap());
 
         let mut state = InterfaceSettingsState::default();
         handle_interface_settings_action(
             &mut state,
             InterfaceSettingsAction::ToggleItemVisibility {
-                region: UiRegion::InfoPanel,
+                region: UiRegionDto::InfoPanel,
                 item_id: target_id.clone(),
                 visible: !started_visible,
             },
             &shared,
         );
 
-        let after_signal = shared.signals().info_panel_items.get();
-        let signal_visible = after_signal
+        let signal_visible = shared
+            .signals()
+            .info_panel_items
+            .get()
             .iter()
             .find(|i| i.id == target_id)
             .expect("item still in signal")
@@ -963,42 +1020,63 @@ mod interface_settings_happy {
             signal_visible, !started_visible,
             "signal must reflect the toggle"
         );
+        assert_eq!(
+            stored_visibility(&shared, UiRegionDto::InfoPanel, &target_id),
+            !started_visible,
+            "the application must persist the toggle"
+        );
+    }
 
-        let after_db = ui_service.list_info_panel_items().expect("list");
-        let db_visible = after_db
-            .iter()
-            .find(|i| i.id == target_id)
-            .expect("item still in DB")
-            .visible;
-        assert_eq!(db_visible, !started_visible, "DB must persist the toggle");
+    /// One toggle names one item, and upsert semantics mean the rest of
+    /// the region must be left exactly as it was.
+    #[test]
+    fn toggle_item_visibility_leaves_every_other_item_alone() {
+        let (_tmp, shared) = create_test_shared_state_with_facade();
+
+        let before = stored_items(&shared, UiRegionDto::InfoPanel);
+        let victim = before.first().expect("seeded info-panel items").clone();
+
+        let mut state = InterfaceSettingsState::default();
+        handle_interface_settings_action(
+            &mut state,
+            InterfaceSettingsAction::ToggleItemVisibility {
+                region: UiRegionDto::InfoPanel,
+                item_id: victim.id.clone(),
+                visible: !victim.visible,
+            },
+            &shared,
+        );
+
+        let after = stored_items(&shared, UiRegionDto::InfoPanel);
+        assert_eq!(after.len(), before.len(), "no row appeared or vanished");
+        for (before, after) in before.iter().zip(after.iter()) {
+            if before.id == victim.id {
+                continue;
+            }
+            assert_eq!(before, after, "an untouched row must be byte-identical");
+        }
     }
 
     #[test]
-    fn toggle_item_visibility_for_toolbar_persists_to_signal_and_db() {
+    fn toggle_item_visibility_for_toolbar_persists_to_signal_and_store() {
         // Symmetric to the InfoPanel test above; covers the
-        // UiRegion::Toolbar arm of the dispatcher's ToggleItemVisibility
-        // match. Catches the case where Toolbar was accidentally routed
-        // to the wrong signal (or to the no-signal fallback).
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
-        let ui_service = shared.services.ui_service.as_ref().unwrap().clone();
+        // UiRegionDto::Toolbar arm of the dispatcher's
+        // ToggleItemVisibility match. Catches the case where Toolbar was
+        // accidentally routed to the wrong signal.
+        let (_tmp, shared) = create_test_shared_state_with_facade();
 
-        let initial = ui_service.list_toolbar_items().expect("list");
-        let victim = initial
+        let victim = stored_items(&shared, UiRegionDto::Toolbar)
             .into_iter()
             .next()
             .expect("seeded toolbar items present");
         let target_id = victim.id.clone();
         let started_visible = victim.visible;
-        shared
-            .signals()
-            .toolbar_items
-            .set(ui_service.list_toolbar_items().unwrap());
 
         let mut state = InterfaceSettingsState::default();
         handle_interface_settings_action(
             &mut state,
             InterfaceSettingsAction::ToggleItemVisibility {
-                region: UiRegion::Toolbar,
+                region: UiRegionDto::Toolbar,
                 item_id: target_id.clone(),
                 visible: !started_visible,
             },
@@ -1014,43 +1092,32 @@ mod interface_settings_happy {
             .expect("item still in signal")
             .visible;
         assert_eq!(signal_visible, !started_visible);
-
-        let db_visible = ui_service
-            .list_toolbar_items()
-            .expect("list")
-            .iter()
-            .find(|i| i.id == target_id)
-            .expect("item still in DB")
-            .visible;
-        assert_eq!(db_visible, !started_visible);
+        assert_eq!(
+            stored_visibility(&shared, UiRegionDto::Toolbar, &target_id),
+            !started_visible
+        );
     }
 
     #[test]
-    fn toggle_item_visibility_for_context_menu_persists_to_signal_and_db() {
-        // Same symmetry check for UiRegion::ContextMenu. Interface
+    fn toggle_item_visibility_for_context_menu_persists_to_signal_and_store() {
+        // Same symmetry check for UiRegionDto::ContextMenu. Interface
         // page's context-menu section is the most likely consumer of
         // this arm — the symmetry test guards against silent breakage
         // there if the dispatcher's region match drifts.
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
-        let ui_service = shared.services.ui_service.as_ref().unwrap().clone();
+        let (_tmp, shared) = create_test_shared_state_with_facade();
 
-        let initial = ui_service.list_items(UiRegion::ContextMenu).expect("list");
-        let victim = initial
+        let victim = stored_items(&shared, UiRegionDto::ContextMenu)
             .into_iter()
             .next()
             .expect("seeded context-menu items present");
         let target_id = victim.id.clone();
         let started_visible = victim.visible;
-        shared
-            .signals()
-            .context_menu_items
-            .set(ui_service.list_items(UiRegion::ContextMenu).unwrap());
 
         let mut state = InterfaceSettingsState::default();
         handle_interface_settings_action(
             &mut state,
             InterfaceSettingsAction::ToggleItemVisibility {
-                region: UiRegion::ContextMenu,
+                region: UiRegionDto::ContextMenu,
                 item_id: target_id.clone(),
                 visible: !started_visible,
             },
@@ -1066,25 +1133,20 @@ mod interface_settings_happy {
             .expect("item still in signal")
             .visible;
         assert_eq!(signal_visible, !started_visible);
-
-        let db_visible = ui_service
-            .list_items(UiRegion::ContextMenu)
-            .expect("list")
-            .iter()
-            .find(|i| i.id == target_id)
-            .expect("item still in DB")
-            .visible;
-        assert_eq!(db_visible, !started_visible);
+        assert_eq!(
+            stored_visibility(&shared, UiRegionDto::ContextMenu, &target_id),
+            !started_visible
+        );
     }
 
     #[test]
     fn save_display_options_pushes_show_button_labels_into_ui_preferences_signal() {
-        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let (_tmp, shared) = create_test_shared_state_with_facade();
         // Confirm baseline.
         assert!(!shared.signals().ui_preferences.get().show_button_labels);
 
         let mut state = InterfaceSettingsState::default();
-        state.show_button_labels = true;
+        state.display_options.show_button_labels = true;
         state.dirty = true;
 
         handle_interface_settings_action(

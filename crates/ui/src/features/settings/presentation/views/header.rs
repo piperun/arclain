@@ -1,7 +1,9 @@
 //! Settings Page Header Rendering
 
 use crate::core::SettingsPage;
+use crate::features::settings::application::facade;
 use crate::features::settings::domain::types::SettingsAction;
+use crate::features::settings::presentation::pages::layout_editor;
 
 use crate::features::settings::presentation::SettingsFeature;
 
@@ -337,13 +339,7 @@ SettingsHeaderConfig::new(page.display_name())
     }
 
     if toolbar_save_clicked.get() {
-        if let Some(ui_service) = shared.services.ui_service.as_ref() {
-            feature.toolbar_layout_state.save_to_service(ui_service);
-            if let Ok(items) = ui_service.list_toolbar_items() {
-                let state_guard = shared.app_state.lock();
-                state_guard.signals.toolbar_items.set(items);
-            }
-        }
+        save_layout_editor(&mut feature.toolbar_layout_state, shared);
     }
 
     if toolbar_reset_clicked.get() {
@@ -352,10 +348,7 @@ SettingsHeaderConfig::new(page.display_name())
     }
 
     if info_panel_save_clicked.get() {
-        if let Some(ui_service) = shared.services.ui_service.as_ref() {
-            feature.info_panel_layout_state.save_to_service(ui_service);
-            shared.app_state.lock().reload_ui_config(ui_service);
-        }
+        save_layout_editor(&mut feature.info_panel_layout_state, shared);
     }
 
     if info_panel_reset_clicked.get() {
@@ -372,4 +365,33 @@ SettingsHeaderConfig::new(page.display_name())
     }
 
     action
+}
+
+/// Saves one layout editor's arrangement and refreshes the canonical item
+/// signals from the application, so the toolbar, info panel and context
+/// menus around the app pick the change up on the next frame.
+///
+/// Both editors go through this rather than each refreshing only its own
+/// region: they write into one store, the refresh is three cheap reads,
+/// and the alternative -- the pre-facade split where the toolbar refreshed
+/// one signal and the info panel refreshed all three -- was an asymmetry
+/// with no reason behind it.
+///
+/// A failed save is reported rather than swallowed, and leaves the editor
+/// dirty so the user can retry. The pre-facade version discarded the
+/// result: a failed write cleared the dirty flag anyway and the user's
+/// arrangement was silently lost.
+fn save_layout_editor<R: layout_editor::Region>(
+    state: &mut layout_editor::LayoutEditorState<R>,
+    shared: &SharedState,
+) {
+    if let Err(error) = state.save(shared) {
+        tracing::warn!("{error}");
+        shared.toaster.lock().error(error);
+        return;
+    }
+    let Some((app, runtime)) = facade::handles(shared) else {
+        return;
+    };
+    shared.app_state.lock().reload_ui_config(app, runtime);
 }
