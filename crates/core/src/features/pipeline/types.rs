@@ -176,19 +176,25 @@ impl PipelineOutput {
 ///   3. Raw input file stem (last resort, also covers archives that
 ///      don't match any product-code regex).
 fn stem_from(input: &Path, metadata: Option<&GameMetadata>) -> OsString {
+    // Every derived candidate is proven to be a single plain file-name
+    // component before it is used, so a name coming from metadata this
+    // process does not control cannot address anything but a file in
+    // the directory it is joined onto -- see
+    // `title_filter::plain_file_component`. A candidate that fails falls
+    // through to the next one; the last is the input's own stem, which
+    // `Path::file_stem` already guarantees is a component.
     if let Some(meta) = metadata {
-        let title = meta.title.trim();
-        if !title.is_empty() {
-            let sanitized = crate::utilities::title_filter::sanitize_title(title);
-            if !sanitized.is_empty() {
-                return OsString::from(sanitized);
-            }
+        let sanitized = crate::utilities::title_filter::sanitize_title(meta.title.trim());
+        if let Some(safe) = crate::utilities::title_filter::plain_file_component(&sanitized) {
+            return OsString::from(safe);
         }
     }
 
     if let Some(name) = input.file_name().and_then(|n| n.to_str()) {
         if let Some(code) = crate::utilities::detect_dlsite_code(name) {
-            return OsString::from(code);
+            if let Some(safe) = crate::utilities::title_filter::plain_file_component(&code) {
+                return OsString::from(safe);
+            }
         }
     }
 

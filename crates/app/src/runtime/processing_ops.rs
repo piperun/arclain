@@ -690,18 +690,26 @@ fn resolve_metadata(
 /// a sanitized metadata title, else a detected product code, else the
 /// input's own file stem.
 fn stem_from(input: &Path, metadata: Option<&GameMetadata>) -> std::ffi::OsString {
+    // The organized output's file name is joined onto a caller-chosen
+    // destination directory, and its first candidate comes from metadata
+    // a *plugin* reported. `sanitize_title` cannot be the check that
+    // keeps it there -- its character set is user configuration -- so
+    // every candidate is proven to be a single plain component first
+    // (`title_filter::plain_file_component`), falling through to the
+    // next candidate when it is not. The last, the input's own stem, is
+    // a component by construction.
     if let Some(meta) = metadata {
-        let title = meta.title.trim();
-        if !title.is_empty() {
-            let sanitized = arclain_core::utilities::title_filter::sanitize_title(title);
-            if !sanitized.is_empty() {
-                return std::ffi::OsString::from(sanitized);
-            }
+        let sanitized = arclain_core::utilities::title_filter::sanitize_title(meta.title.trim());
+        if let Some(safe) = arclain_core::utilities::title_filter::plain_file_component(&sanitized)
+        {
+            return std::ffi::OsString::from(safe);
         }
     }
     if let Some(name) = input.file_name().and_then(|n| n.to_str()) {
         if let Some(code) = arclain_core::utilities::detect_dlsite_code(name) {
-            return std::ffi::OsString::from(code);
+            if let Some(safe) = arclain_core::utilities::title_filter::plain_file_component(&code) {
+                return std::ffi::OsString::from(safe);
+            }
         }
     }
     input.file_stem().unwrap_or_default().to_os_string()

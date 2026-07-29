@@ -321,11 +321,23 @@ fn seed_zero_step_preset(paths: &AppPaths, preset_name: &str) {
 /// processing operations under test never call them.
 struct FakeExtractBackend {
     gate: Option<(PathBuf, Mutex<Option<mpsc::Receiver<()>>>)>,
+    /// The same mechanism one step earlier: blocks `list` rather than
+    /// `extract_all`, so a test can act while the worker has started but
+    /// has not yet built any plan. Armed separately, because opening the
+    /// archive session lists it too and that call must not be caught.
+    listing_gate: Option<(
+        PathBuf,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        Mutex<Option<mpsc::Receiver<()>>>,
+    )>,
 }
 
 impl FakeExtractBackend {
     fn always_succeeds() -> std::sync::Arc<dyn ArchiveBackend> {
-        std::sync::Arc::new(Self { gate: None })
+        std::sync::Arc::new(Self {
+            gate: None,
+            listing_gate: None,
+        })
     }
 
     /// Returns the backend plus the sender a test uses to release the
@@ -334,8 +346,27 @@ impl FakeExtractBackend {
         let (tx, rx) = mpsc::channel();
         let backend = Self {
             gate: Some((gated_path, Mutex::new(Some(rx)))),
+            listing_gate: None,
         };
         (std::sync::Arc::new(backend), tx)
+    }
+
+    /// Returns the backend, the flag that arms its listing gate, and the
+    /// sender that releases it once armed.
+    fn listing_gated(
+        gated_path: PathBuf,
+    ) -> (
+        std::sync::Arc<dyn ArchiveBackend>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        mpsc::Sender<()>,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let backend = Self {
+            gate: None,
+            listing_gate: Some((gated_path, armed.clone(), Mutex::new(Some(rx)))),
+        };
+        (std::sync::Arc::new(backend), armed, tx)
     }
 }
 
@@ -349,7 +380,14 @@ impl ArchiveBackend for FakeExtractBackend {
     fn identify(&self, _path: &Path) -> anyhow::Result<ArchiveKind> {
         Ok(ArchiveKind::Zip)
     }
-    fn list(&self, _path: &Path, _password: Option<&str>) -> anyhow::Result<ArchiveInfo> {
+    fn list(&self, path: &Path, _password: Option<&str>) -> anyhow::Result<ArchiveInfo> {
+        if let Some((gated_path, armed, receiver)) = &self.listing_gate {
+            if path == gated_path && armed.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Some(receiver) = receiver.lock().unwrap().take() {
+                    let _ = receiver.recv();
+                }
+            }
+        }
         Ok(ArchiveInfo {
             archive_path: PathBuf::new(),
             archive_kind: ArchiveKind::Zip,
@@ -2766,4 +2804,304 @@ fn start_organize_rejects_an_unknown_archive_session_id() {
 
     assert_eq!(err.kind, ApplicationErrorKind::NotFound);
     assert_no_operation_was_registered(&app, &runtime);
+}
+
+/// Organizes `input` with `title` reported as this session's plugin
+/// metadata, into its own destination, and reports what the run
+/// produced there.
+fn organize_with_reported_title(
+    runtime: &tokio::runtime::Runtime,
+    app: &ArclainApp,
+    input: &Path,
+    destination: &Path,
+    rule_id: i64,
+    profile_id: i64,
+    title: &str,
+) -> Vec<PathBuf> {
+    runtime.block_on(async {
+        let session_id = open_session(app, input).await;
+        let bridge = app.active_tab_bridge(|_| panic!("fallback must not run: the session exists"));
+        bridge.set_session_metadata(
+            session_id.into_raw(),
+            Some(serde_json::json!({
+                "product_id": "RJ123456",
+                "source": "dlsite",
+                "title": title,
+            })),
+        );
+
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![],
+                destination: destination.to_path_buf(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+                archive_session_id: Some(session_id),
+            })
+            .await
+            .expect("a session-bound start_organize must be accepted");
+        let (_, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            },
+            "title {title:?} must not fail the operation"
+        );
+        app.close_archive(session_id).await.expect("close session");
+    });
+
+    std::fs::read_dir(destination)
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default()
+}
+
+/// A plugin writes the title an organized output is named from, and that
+/// name is joined onto a directory the operation packs into with no
+/// transaction behind it. Titles that are not usable as a file name at
+/// all must therefore fall back to the source stem rather than being
+/// spliced into a path.
+///
+/// These are the forms `sanitize_title`'s *default* filter leaves
+/// completely intact, so this measures the component check on its own:
+/// before it, `".."` produced `"...zip"`, `"trailing."` produced a name
+/// whose trailing dot Windows silently rewrites, and `"NUL"` named a
+/// device -- on Windows the run would fail outright rather than write
+/// an archive.
+#[test]
+fn a_plugin_title_that_cannot_name_a_file_falls_back_to_the_source_stem() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+
+    for (index, unusable_title) in ["..", ".", "trailing.", "NUL", "lpt9"]
+        .into_iter()
+        .enumerate()
+    {
+        // Deliberately carries no detectable product code, so a refused
+        // title falls all the way through to the input's own stem -- the
+        // arm whose safety comes from `Path::file_stem` itself.
+        let input = temp.path().join(format!("unusable-{index}.zip"));
+        std::fs::write(&input, b"placeholder content for hashing").unwrap();
+        let destination = temp.path().join(format!("out-unusable-{index}"));
+
+        let produced = organize_with_reported_title(
+            &runtime,
+            &app,
+            &input,
+            &destination,
+            rule_id,
+            profile_id,
+            unusable_title,
+        );
+
+        assert_eq!(
+            produced,
+            vec![destination.join(format!("unusable-{index}.zip"))],
+            "title {unusable_title:?} must fall back to the source stem"
+        );
+    }
+}
+
+/// The containment property, over every shape a hostile title can take:
+/// whatever the run writes, it writes inside its own destination, and
+/// the sibling directory a traversal would have reached is untouched.
+///
+/// Two layers hold this up and the test covers both without depending on
+/// which one fires. `sanitize_title` neutralizes the separator forms
+/// under its default character set -- but that set is *user
+/// configuration*, so the guarantee cannot rest on it; the derivation
+/// therefore proves every candidate is a single plain component first
+/// (`title_filter::plain_file_component`, whose own tests pin what a
+/// narrowed filter leaves for it to catch). An end-to-end narrowed-filter
+/// case is deliberately absent: the filter cache is process-global, so
+/// narrowing it here would leak into every other test in this binary.
+#[test]
+fn no_hostile_plugin_title_writes_outside_the_organize_destination() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+
+    // A sibling of every destination: what a traversal would reach.
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let guarded = outside.join("do-not-touch.zip");
+    std::fs::write(&guarded, b"a file an escape would overwrite").unwrap();
+
+    for (index, hostile_title) in [
+        "../outside/do-not-touch",
+        "..\\outside\\do-not-touch",
+        "../../..",
+        "..",
+        "C:\\Windows\\System32\\evil",
+        "\\\\server\\share\\evil",
+        "name:stream",
+        "NUL",
+        "   ",
+        "trailing.",
+        "nul\u{0}byte",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input = temp.path().join(format!("hostile-{index}.zip"));
+        std::fs::write(&input, b"placeholder content for hashing").unwrap();
+        let destination = temp.path().join(format!("out-hostile-{index}"));
+
+        let produced = organize_with_reported_title(
+            &runtime,
+            &app,
+            &input,
+            &destination,
+            rule_id,
+            profile_id,
+            hostile_title,
+        );
+
+        assert_eq!(
+            produced.len(),
+            1,
+            "title {hostile_title:?} must produce exactly one output, got {produced:?}"
+        );
+        let output = &produced[0];
+        assert_eq!(
+            output.parent(),
+            Some(destination.as_path()),
+            "title {hostile_title:?} must write inside its destination"
+        );
+        let name = output
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("the output must have a plain name");
+        assert!(
+            !name.contains('/') && !name.contains('\\') && !name.contains(':'),
+            "title {hostile_title:?} produced a name that is not a plain component: {name:?}"
+        );
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(&guarded).unwrap(),
+        "a file an escape would overwrite",
+        "no hostile title may reach a file outside its destination"
+    );
+    assert_eq!(
+        std::fs::read_dir(&outside).unwrap().flatten().count(),
+        1,
+        "and none may create one there either"
+    );
+}
+
+/// The product-code arm is checked the same way. A code is regex-derived
+/// and cannot normally carry a separator, so this pins the guarantee
+/// rather than a reachable bug: a title that is refused falls through to
+/// the code, and the code is proven a plain component before it is used.
+#[test]
+fn a_refused_title_falls_through_to_a_checked_product_code() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+
+    let input = temp.path().join("[RJ123456] Placeholder.zip");
+    std::fs::write(&input, b"placeholder content for hashing").unwrap();
+    let destination = temp.path().join("out");
+
+    let produced = organize_with_reported_title(
+        &runtime,
+        &app,
+        &input,
+        &destination,
+        rule_id,
+        profile_id,
+        // Unusable whatever the configured filter set does with it.
+        "..",
+    );
+
+    assert_eq!(
+        produced,
+        vec![destination.join("RJ123456.zip")],
+        "the refused title must fall through to the detected code"
+    );
+}
+
+/// The binding is a *snapshot*: metadata written after the operation has
+/// been registered cannot change the plan it executes. The guarantee is
+/// structural (`SessionBinding` owns cloned values and nothing re-reads
+/// the session), so this test exists to make a future refactor that
+/// re-reads it fail loudly.
+///
+/// The write lands while the worker is blocked inside its archive
+/// listing -- before any plan is built -- so a re-reading implementation
+/// would genuinely pick the new title up.
+#[test]
+fn metadata_written_after_registration_does_not_change_the_executed_plan() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let input = temp.path().join("[RJ123456] Placeholder.zip");
+    std::fs::write(&input, b"placeholder content for hashing").unwrap();
+
+    let (backend, arm_listing_gate, release_listing) =
+        FakeExtractBackend::listing_gated(input.clone());
+    let app = bootstrap_app_ex(&temp, Some(backend));
+    let (rule_id, profile_id) = seed_metadata_driven_rule_and_profile(&app);
+    let destination = temp.path().join("out");
+
+    runtime.block_on(async {
+        let session_id = open_session(&app, &input).await;
+        report_plugin_title(&app, session_id, "Before Registration");
+        // Opening the session listed the archive too; only the organize
+        // worker's own listing is gated.
+        arm_listing_gate.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![],
+                destination: destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+                archive_session_id: Some(session_id),
+            })
+            .await
+            .expect("a session-bound start_organize must be accepted");
+
+        // Wait until the worker is actually inside the gated listing, so
+        // the write below is genuinely mid-run rather than racing the
+        // spawn.
+        wait_for_message_containing(&mut receiver, operation_id, "Processing").await;
+
+        // A plugin re-fetches and reports a different title while the
+        // operation is in flight.
+        report_plugin_title(&app, session_id, "After Registration");
+        release_listing.send(()).expect("release the gated listing");
+
+        let (_, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            }
+        );
+    });
+
+    let produced = destination.join("Before Registration.zip");
+    assert!(
+        produced.exists(),
+        "the executed plan must use the metadata snapshotted at registration, found: {:?}",
+        std::fs::read_dir(&destination).map(|entries| entries
+            .flatten()
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>())
+    );
+    assert!(
+        std::fs::read_to_string(&produced)
+            .unwrap()
+            .contains("[RJ123456] Before Registration"),
+        "and so must the layout it packed"
+    );
 }
