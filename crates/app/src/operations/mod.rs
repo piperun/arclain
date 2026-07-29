@@ -22,6 +22,7 @@ pub mod extract;
 pub(crate) mod registry;
 
 pub mod convert;
+pub mod merge;
 pub mod organize;
 pub mod pipeline;
 
@@ -31,5 +32,6 @@ pub use extract::{CollisionPolicy, ExtractRequest};
 pub(crate) use registry::OperationRegistry;
 
 pub use convert::ConvertRequest;
+pub use merge::{MergeCompressionLevel, MergeOutputFormat, MergeRequest};
 pub use organize::OrganizeRequest;
 pub use pipeline::PipelineRequest;

@@ -43,12 +43,14 @@ use super::AppRuntime;
 /// would remove that cross-crate duplication, but moving it touches
 /// extraction's call site too, which is out of scope here.
 ///
-/// `pub(super)`, reused by `processing_ops::list_attempt_initial`/
-/// `list_attempt_with_password`: unlike the cross-crate case above,
-/// `archive_ops` and `processing_ops` are both `arclain_app` modules, so
-/// there is no reason to *duplicate* this classifier a second time
-/// within one crate -- only to share it.
-pub(super) fn is_password_error(err_msg: &str) -> bool {
+/// `pub(crate)`, reused by `processing_ops::list_attempt_initial`/
+/// `list_attempt_with_password` and by `crate::operations::merge`: unlike
+/// the cross-crate case above, all three live in `arclain_app`, so there
+/// is no reason to *duplicate* this classifier again within one crate --
+/// only to share it. (Merge reads exactly the same text: its extraction
+/// step reaches the same `SevenZipCli::run_status` this classifier was
+/// written against.)
+pub(crate) fn is_password_error(err_msg: &str) -> bool {
     err_msg.contains("Wrong password")
         || err_msg.contains("Incorrect password")
         || err_msg.contains("Password for encrypted archive not specified")

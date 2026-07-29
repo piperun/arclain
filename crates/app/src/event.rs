@@ -24,6 +24,13 @@ pub enum OperationKind {
     Convert,
     Extract,
     Materialize,
+    /// Combining a split multi-part archive set into a single archive --
+    /// `crate::ArclainApp::start_merge`. Deliberately its own kind rather
+    /// than folded into `ArchiveModify` (which mutates one already-open
+    /// session in place) or `Convert` (which reformats whole archives
+    /// one-to-one): a merge reads a set of files nothing has open and
+    /// writes one new archive beside them.
+    Merge,
     OpenArchive,
     Organize,
     Pipeline,
@@ -41,9 +48,23 @@ pub enum OperationKind {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum OperationResult {
     None,
-    ArchiveOpened { snapshot: ArchiveSnapshot },
-    Materialized { lease: MaterializationLease },
-    PluginUiUpdated { update: PluginUiUpdate },
+    ArchiveOpened {
+        snapshot: ArchiveSnapshot,
+    },
+    Materialized {
+        lease: MaterializationLease,
+    },
+    PluginUiUpdated {
+        update: PluginUiUpdate,
+    },
+    /// The single archive `crate::ArclainApp::start_merge` wrote. Carried
+    /// as a payload rather than left for the caller to re-derive: the
+    /// output name depends on the request's format and on whether it
+    /// named an explicit `output_path`, so only the operation itself
+    /// knows which file now exists.
+    Merged {
+        output_path: std::path::PathBuf,
+    },
 }
 
 /// The lifecycle state of one in-flight (or finished) operation. Carried,

@@ -2,9 +2,11 @@
 //! and display the contents of an open archive, independent of which
 //! archive format or which UI toolkit is on the other end.
 
+pub mod multipart;
 mod session;
 mod store;
 
+pub use multipart::{detect_multipart, MultiPartArchiveDto, MultiPartFormat};
 pub(crate) use session::ArchiveSession;
 pub(crate) use store::ArchiveSessionStore;
 

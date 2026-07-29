@@ -47,6 +47,12 @@
 //! re-exports from the storage layer, so a frontend draws its chrome from
 //! this crate's vocabulary rather than the database's.
 //!
+//! [`archive::multipart`] and [`operations::merge`] between them own the
+//! split-archive feature: [`archive::detect_multipart`] answers "is this
+//! file part of a multi-part set?" for a frontend's drop/file-picker
+//! branch, and `ArclainApp::start_merge` combines a detected set into one
+//! archive as a registered operation.
+//!
 //! [`organization`] owns the organization feature's own surface:
 //! archive-profile and organization-rule CRUD, the output formats a
 //! profile may name ([`organization::archive_format_options`]), plus the

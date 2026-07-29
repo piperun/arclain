@@ -22,7 +22,12 @@
 //! simply `.await` it directly; nothing in this crate creates a nested
 //! Tokio runtime from inside an async context either way.
 
-mod archive_ops;
+/// `pub(crate)` rather than private only so `crate::operations::merge`
+/// can reuse [`archive_ops::is_password_error`]: a merge reads back the
+/// very same `SevenZipCli::run_status` error text an archive open does,
+/// so it classifies a password failure with the same predicate instead of
+/// keeping a fourth copy of that string list.
+pub(crate) mod archive_ops;
 mod bootstrap;
 mod layout_ops;
 mod organization_ops;
@@ -714,6 +719,57 @@ impl ArclainApp {
     }
 
     // ========== Task 8: archive mutation operation (end) ===========
+
+    // ============ Task c9: multi-part archive merge (start) ===========
+    // Kept in its own clearly-delimited section for the same reason as
+    // every other section in this file: concurrent worktrees edit it too.
+
+    /// Merges a split multi-part archive set into one archive, as a
+    /// cancellable, event-broadcasting operation. Returns as soon as the
+    /// operation is recorded `Accepted`; re-confirming the set on disk,
+    /// extraction, recompression, and any password-challenge retry all
+    /// happen on tasks spawned through this app's own runtime handle (see
+    /// [`crate::operations::merge`]). Subscribe via
+    /// [`Self::subscribe_operations`] to observe `Started` / `Progress`
+    /// (percent out of 100, with core's own phase message) / `Challenge`
+    /// (a password retry for an encrypted set) / `Completed { Merged }` /
+    /// `Cancelled` / `Failed`.
+    ///
+    /// The set itself comes from [`crate::archive::detect_multipart`], a
+    /// free function rather than a method here -- see its own module doc
+    /// comment for why.
+    ///
+    /// Read [`crate::operations::merge::run_merge`]'s doc comment before
+    /// treating `Cancelled` as "nothing was written": cancellation is
+    /// checkpoint-based, and one of core's checkpoints sits *after* the
+    /// output archive is complete.
+    pub async fn start_merge(
+        &self,
+        request: crate::operations::MergeRequest,
+    ) -> Result<OperationId, ApplicationError> {
+        // Structural validation before the operation is registered, so a
+        // malformed request never leaves a phantom `OperationId` behind
+        // -- exactly `start_convert`/`start_organize`'s own ordering.
+        request.validate()?;
+        self.dispatch_async(move |inner| async move {
+            let (operation_id, cancel) = inner.operations().begin(OperationKind::Merge).await;
+            // See `start_extract`'s identical comment above -- the same
+            // theoretical, non-reachable-in-practice race.
+            if let Some(handle) = inner.tokio_handle() {
+                let worker_inner = inner.clone();
+                handle.spawn(crate::operations::merge::run_merge(
+                    worker_inner,
+                    operation_id,
+                    cancel,
+                    request,
+                ));
+            }
+            operation_id
+        })
+        .await
+    }
+
+    // ============= Task c9: multi-part archive merge (end) ============
 
     // ============= Task 7: materialization leases (start) =============
 
