@@ -325,11 +325,19 @@ struct FakeExtractBackend {
     /// `extract_all`, so a test can act while the worker has started but
     /// has not yet built any plan. Armed separately, because opening the
     /// archive session lists it too and that call must not be caught.
-    listing_gate: Option<(
-        PathBuf,
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
-        Mutex<Option<mpsc::Receiver<()>>>,
-    )>,
+    listing_gate: Option<ListingGate>,
+}
+
+/// A `list` gate: `armed` is flipped by the test once the setup that
+/// also lists the archive is done, and `fired` records that a call
+/// actually blocked here — without it a test whose gated path stops
+/// matching would still pass, having silently exercised no window at
+/// all.
+struct ListingGate {
+    path: PathBuf,
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fired: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    receiver: Mutex<Option<mpsc::Receiver<()>>>,
 }
 
 impl FakeExtractBackend {
@@ -351,22 +359,30 @@ impl FakeExtractBackend {
         (std::sync::Arc::new(backend), tx)
     }
 
-    /// Returns the backend, the flag that arms its listing gate, and the
-    /// sender that releases it once armed.
+    /// Returns the backend, the flag that arms its listing gate, the
+    /// flag that records the gate firing, and the sender that releases
+    /// it once armed.
     fn listing_gated(
         gated_path: PathBuf,
     ) -> (
         std::sync::Arc<dyn ArchiveBackend>,
         std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
         mpsc::Sender<()>,
     ) {
         let (tx, rx) = mpsc::channel();
         let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let backend = Self {
             gate: None,
-            listing_gate: Some((gated_path, armed.clone(), Mutex::new(Some(rx)))),
+            listing_gate: Some(ListingGate {
+                path: gated_path,
+                armed: armed.clone(),
+                fired: fired.clone(),
+                receiver: Mutex::new(Some(rx)),
+            }),
         };
-        (std::sync::Arc::new(backend), armed, tx)
+        (std::sync::Arc::new(backend), armed, fired, tx)
     }
 }
 
@@ -381,9 +397,10 @@ impl ArchiveBackend for FakeExtractBackend {
         Ok(ArchiveKind::Zip)
     }
     fn list(&self, path: &Path, _password: Option<&str>) -> anyhow::Result<ArchiveInfo> {
-        if let Some((gated_path, armed, receiver)) = &self.listing_gate {
-            if path == gated_path && armed.load(std::sync::atomic::Ordering::SeqCst) {
-                if let Some(receiver) = receiver.lock().unwrap().take() {
+        if let Some(gate) = &self.listing_gate {
+            if path == gate.path && gate.armed.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Some(receiver) = gate.receiver.lock().unwrap().take() {
+                    gate.fired.store(true, std::sync::atomic::Ordering::SeqCst);
                     let _ = receiver.recv();
                 }
             }
@@ -3116,7 +3133,7 @@ fn metadata_written_after_registration_does_not_change_the_executed_plan() {
     let input = temp.path().join("[RJ123456] Placeholder.zip");
     std::fs::write(&input, b"placeholder content for hashing").unwrap();
 
-    let (backend, arm_listing_gate, release_listing) =
+    let (backend, arm_listing_gate, listing_gate_fired, release_listing) =
         FakeExtractBackend::listing_gated(input.clone());
     let app = bootstrap_app_ex(&temp, Some(backend));
     let (rule_id, profile_id) = seed_metadata_driven_rule_and_profile(&app);
@@ -3161,6 +3178,12 @@ fn metadata_written_after_registration_does_not_change_the_executed_plan() {
         );
     });
 
+    assert!(
+        listing_gate_fired.load(std::sync::atomic::Ordering::SeqCst),
+        "the gate must actually have caught the worker's listing -- otherwise \
+         the write below it landed at no particular moment and this test \
+         proves nothing"
+    );
     let produced = destination.join("Before Registration.zip");
     assert!(
         produced.exists(),

@@ -152,6 +152,21 @@ impl OrganizeRequest {
             None if self.inputs.is_empty() => return Err(empty_inputs_error()),
             None => {}
         }
+        // An empty destination is not "the current directory" here: the
+        // output name would become the whole path, resolved against
+        // whatever the process working directory happens to be, and
+        // then handed to the packer as a bare argument. Every shipped
+        // frontend passes a real directory; this is the boundary the
+        // next one comes through too.
+        if self.destination.as_os_str().is_empty() {
+            return Err(ApplicationError::new(
+                ApplicationErrorKind::InvalidInput,
+                "no destination directory was supplied",
+            )
+            .with_recoverability(Recoverability::UserAction)
+            .with_suggested_action(SuggestedAction::ChooseDestination)
+            .with_field("destination"));
+        }
         Ok(ParsedIds {
             profile_id: parse_id(&self.profile_id, "profile_id")?,
             rule_id: parse_id(&self.rule_id, "rule_id")?,
@@ -192,6 +207,15 @@ mod tests {
         let err = request(vec![], "1", "2").validate().unwrap_err();
         assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
         assert_eq!(err.field.as_deref(), Some("inputs"));
+    }
+
+    #[test]
+    fn an_empty_destination_is_rejected() {
+        let mut request = request(vec![PathBuf::from("a.zip")], "1", "2");
+        request.destination = PathBuf::new();
+        let err = request.validate().unwrap_err();
+        assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(err.field.as_deref(), Some("destination"));
     }
 
     #[test]
