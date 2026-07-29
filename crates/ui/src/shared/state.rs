@@ -140,40 +140,18 @@ impl SharedState {
         // `SharedState`'s signals -- see `crate::core::operation_bridge`.
         crate::core::operation_bridge::spawn(&shared);
 
-        // One-shot upgrade of legacy auto-saved password rules.
-        //
-        // Rules auto-saved before the smart-pattern heuristic carry a
-        // `regex::escape(filename)` pattern that matches exactly one
-        // archive, so siblings sharing the same DLsite code / maker
-        // bracket would re-prompt for a password. `upgrade_auto_saved_rules`
-        // re-derives the broader pattern for ONLY those provably-narrow
-        // auto-saved rules (fingerprint: `"Auto-saved: <file>"` name +
-        // literal-escape pattern), leaving hand-edited rules untouched.
-        // Runs before tab restore so any archive reopened below benefits
-        // from the broadened patterns immediately. Idempotent — a no-op
-        // on every launch after the first.
+        // Bootstrap broadens legacy auto-saved password rules that still
+        // match exactly one archive (see `ArclainApp::
+        // startup_password_rule_upgrades`). It happens behind the facade,
+        // before anything can read a rule; all that is left here is
+        // telling the user their saved rules changed under them.
         if let Some(ref facade) = shared.facade {
-            let mut st = app_state.lock();
-            if let Some(upgraded) =
-                arclain_core::utilities::password_matcher::upgrade_auto_saved_rules(&st.pass_rules)
-            {
-                let changed = upgraded
-                    .iter()
-                    .zip(&st.pass_rules)
-                    .filter(|(new, old)| new.pattern != old.pattern)
-                    .count();
-                // Persists through the facade (re-encrypts the whole set
-                // into the secrets DB) and updates the in-memory cache;
-                // `save_password_rules` itself refreshes the signal
-                // mirror via `refresh_settings_from_facade`.
-                let _ = st.save_password_rules(facade, &shared.services.tokio_runtime, upgraded);
-                drop(st);
-                if changed > 0 {
-                    shared.toaster.lock().success(format!(
-                        "Upgraded {changed} saved password rule{} to match sibling archives",
-                        if changed == 1 { "" } else { "s" }
-                    ));
-                }
+            let changed = facade.startup_password_rule_upgrades();
+            if changed > 0 {
+                shared.toaster.lock().success(format!(
+                    "Upgraded {changed} saved password rule{} to match sibling archives",
+                    if changed == 1 { "" } else { "s" }
+                ));
             }
         }
 
