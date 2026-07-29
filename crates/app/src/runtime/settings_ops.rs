@@ -1216,8 +1216,7 @@ fn backend_error(context: &str, error: impl std::fmt::Display) -> ApplicationErr
     .with_recoverability(Recoverability::Retry)
 }
 
-/// Replaces a URL's `user:password@` userinfo with a fixed marker,
-/// leaving everything else byte-for-byte intact.
+/// Strips a URL's `user:password@` userinfo, leaving the rest intact.
 ///
 /// A gameta server URL is user-typed configuration, not a secret, so
 /// naming it in an error summary is what makes the failure actionable
@@ -1229,11 +1228,11 @@ fn backend_error(context: &str, error: impl std::fmt::Display) -> ApplicationErr
 /// form into a credential leak the moment a user pastes a URL from a
 /// password manager.
 ///
-/// Only userinfo is scrubbed. A query string is left alone: a gameta base
-/// URL has no legitimate query component, so redacting one would be
-/// guesswork about a shape this field never has, and `with_diagnostic`'s
-/// own path-like-token redaction already removes the full URL from the
-/// diagnostic channel regardless.
+/// Only userinfo is scrubbed out of a URL that parses. A query string is
+/// left alone: a gameta base URL has no legitimate query component, so
+/// redacting one would be guesswork about a shape this field never has,
+/// and `with_diagnostic`'s own path-like-token redaction already removes
+/// the full URL from the diagnostic channel regardless.
 ///
 /// # Why a real parser, and not string splitting
 ///
@@ -1333,12 +1332,18 @@ fn socks5_probe_failed_error(result: &ConnectionTestResult) -> ApplicationError 
         })
         .collect::<Vec<_>>()
         .join("; ");
-    ApplicationError::new(ApplicationErrorKind::Backend, summary)
-        .with_diagnostic(diagnostic)
+    let mut error = ApplicationError::new(ApplicationErrorKind::Backend, summary)
         .with_recoverability(Recoverability::Retry)
         .with_retryable(true)
         .with_suggested_action(SuggestedAction::Retry)
-        .with_field("host")
+        .with_field("host");
+    // A failed probe always records the step it failed on, so an empty
+    // list is defensive rather than reachable -- but `Some("")` is a
+    // worse diagnostic than none at all, so it stays unset.
+    if !diagnostic.is_empty() {
+        error = error.with_diagnostic(diagnostic);
+    }
+    error
 }
 
 fn persistence_error(context: &str, error: impl std::fmt::Display) -> ApplicationError {
