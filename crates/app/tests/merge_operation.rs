@@ -701,6 +701,126 @@ fn an_encrypted_set_raises_a_password_challenge_and_completes_once_answered() {
     assert!(sets.join("rj123456.7z").exists());
 }
 
+/// A *wrong* seeded password is the only path where a real secret ever
+/// reaches the failing 7-Zip invocation, so it is the only path that
+/// could leak one back out through an error diagnostic. It must not: the
+/// wrong password is rejected into a fresh challenge, and nothing on the
+/// event stream carries either secret.
+#[test]
+fn a_wrong_seeded_password_reprompts_without_leaking_either_secret() {
+    let Some(sevenzip) = detect_real_sevenzip() else {
+        eprintln!(
+            "skipping a_wrong_seeded_password_reprompts_without_leaking_either_secret: \
+             no real 7-Zip CLI on this machine"
+        );
+        return;
+    };
+    const WRONG_PASSWORD: &str = "definitely-not-the-right-one";
+
+    let temp = scratch_dir("merge-wrongpass-");
+    let sets = build_split_set(&sevenzip, temp.path(), "rj123456", Some(TEST_PASSWORD));
+    let first_part = sets.join("rj123456.7z.001");
+
+    let paths = support::temp_paths(&temp.path().join("profile"));
+    support::seed_working_sevenzip_config(&paths, &sevenzip);
+    let app = bootstrap_app(paths);
+    let runtime = foreign_runtime();
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let archive = detect_multipart(&first_part).expect("the set is detected");
+        let mut merge = request(archive);
+        merge.password = Some(SecretInput::new(WRONG_PASSWORD.to_string()));
+
+        let operation_id = app
+            .start_merge(merge)
+            .await
+            .expect("the request is structurally valid");
+
+        let (challenge_id, before) = wait_for_password_challenge(&mut receiver, operation_id).await;
+        app.respond_to_challenge(
+            operation_id,
+            ChallengeResponse::Password {
+                id: challenge_id,
+                value: SecretInput::new(TEST_PASSWORD.to_string()),
+            },
+        )
+        .await
+        .expect("answering the merge's own pending challenge must be accepted");
+
+        let after = collect_until_terminal(&mut receiver, operation_id).await;
+        let rendered = format!(
+            "{:?}",
+            before.iter().chain(after.iter()).collect::<Vec<_>>()
+        );
+        assert!(
+            !rendered.contains(WRONG_PASSWORD),
+            "a rejected password must never reach the event stream"
+        );
+        assert!(
+            !rendered.contains(TEST_PASSWORD),
+            "nor may the accepted one"
+        );
+        match after.last().map(|event| &event.state) {
+            Some(OperationState::Completed {
+                result: OperationResult::Merged { .. },
+            }) => {}
+            other => panic!("expected the corrected merge to complete, got {other:?}"),
+        }
+    });
+}
+
+/// Pins a preserved `arclain_core` behavior with real confidentiality
+/// consequences: the password unlocks the *source* parts and is never
+/// applied to the archive the merge writes, so merging an encrypted set
+/// leaves a plaintext archive beside it. See
+/// `arclain_app::operations::merge`'s own module doc comment for why this
+/// operation preserves that rather than silently changing it.
+#[test]
+fn merging_an_encrypted_set_writes_an_unencrypted_archive() {
+    let Some(sevenzip) = detect_real_sevenzip() else {
+        eprintln!(
+            "skipping merging_an_encrypted_set_writes_an_unencrypted_archive: \
+             no real 7-Zip CLI on this machine"
+        );
+        return;
+    };
+    let temp = scratch_dir("merge-plaintext-");
+    let sets = build_split_set(&sevenzip, temp.path(), "rj123456", Some(TEST_PASSWORD));
+    let first_part = sets.join("rj123456.7z.001");
+
+    let paths = support::temp_paths(&temp.path().join("profile"));
+    support::seed_working_sevenzip_config(&paths, &sevenzip);
+    let app = bootstrap_app(paths);
+    let runtime = foreign_runtime();
+
+    let output_path = runtime.block_on(async {
+        let archive = detect_multipart(&first_part).expect("the set is detected");
+        let mut merge = request(archive);
+        merge.password = Some(SecretInput::new(TEST_PASSWORD.to_string()));
+        let operation_id = app
+            .start_merge(merge)
+            .await
+            .expect("the request is structurally valid");
+        match wait_for_terminal(&app, operation_id).await {
+            OperationState::Completed {
+                result: OperationResult::Merged { output_path },
+            } => output_path,
+            other => panic!("expected the merge to complete, got {other:?}"),
+        }
+    });
+
+    // Listing without a password succeeds and shows real entry names --
+    // neither the contents nor the headers of the merged archive are
+    // encrypted, even though every source part was.
+    let listed = entry_paths(&output_path, None);
+    assert_eq!(listed.len(), 3);
+    assert!(
+        listed.iter().all(|path| !path.is_empty()),
+        "the merged archive lists in the clear: {listed:?}"
+    );
+}
+
 #[test]
 fn a_seeded_password_merges_an_encrypted_set_without_prompting() {
     let Some(sevenzip) = detect_real_sevenzip() else {

@@ -56,6 +56,23 @@
 //!   from disk. That matters because `delete_originals` removes exactly
 //!   the enumerated list: honoring a caller-supplied list would turn a
 //!   request field into an arbitrary-file-deletion primitive.
+//!
+//! # Preserved: merging an encrypted set produces an *unencrypted* archive
+//!
+//! `arclain_core::services::MergeService` uses the request's password to
+//! *extract* the parts and never passes one to the compression step that
+//! writes the result (`create_archive_with_options` builds its `7z a`
+//! command with no `-p` at all). Merging an encrypted split set therefore
+//! writes a plaintext archive beside it, and with `delete_originals` set,
+//! deletes the encrypted parts afterwards.
+//!
+//! This operation preserves that unchanged and pins it with a test
+//! (`crates/app/tests/merge_operation.rs`), rather than quietly starting
+//! to encrypt outputs: which password to use, and whether a merged
+//! archive should be encrypted at all, are product decisions this
+//! extraction has no mandate to make. It is called out here because it is
+//! a confidentiality downgrade a caller cannot see from the request
+//! shape.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
