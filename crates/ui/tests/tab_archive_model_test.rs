@@ -1,29 +1,27 @@
 //! End-to-end coverage for a tab's facade-typed archive model: the
 //! session id and [`ArchiveSnapshot`] an open stamps onto the tab, the
-//! [`TabListing`] cursor it browses with, and the browser rows a
-//! session's own [`EntryPage`] converts into.
+//! [`TabListing`] cursor it browses with, and the browser rows the
+//! session's own entries convert into.
 //!
-//! The load-bearing assertion is a *parity* one. The archive browser
-//! still renders rows produced by the legacy flat-listing projection
-//! (`crate::core::operations::navigation_view::rows_in_directory`, now
-//! over the tab's session-fed `TabInventory::legacy_rows`); the direct
-//! facade path (`ArclainApp::list_entries` +
-//! `crate::core::utils::file_entry_from_dto`) is what replaces it when
-//! the renderer migrates. Every test below drives *both* against the
-//! same real archive and asserts the rows match field for field -- that
-//! is what makes swapping the render-side producer a safe change rather
-//! than a hopeful one, and what would catch a silent display regression
-//! (a lost Modified date, a folder whose recursive size stopped
-//! aggregating) the moment the legacy projection drifted from the pages
-//! the session serves.
+//! The load-bearing assertion is an *equivalence* one, and it is what
+//! licenses the render path's whole design. The browser draws a folder
+//! by scoping the tab's whole-archive inventory to it
+//! (`crate::core::operations::browser_rows::rows_in_directory`), because
+//! that repaints instantly on navigation; the session's own answer to
+//! the same question is `ArclainApp::list_entries` for that directory.
+//! Every test below drives *both* against the same real archive and
+//! asserts the rows match field for field -- that is what makes the
+//! render path a scoping of the session's answer rather than a second
+//! listing pipeline reconstructing one, and what would catch a silent
+//! display regression (a lost Modified date, a folder whose recursive
+//! size stopped aggregating) the moment the two drifted.
 //!
 //! A real, on-disk ZIP fixture rather than a fake backend: the rows both
 //! producers consume are the ones a real backend listed and the facade's
-//! session indexed, so the parity covers the whole conversion chain
+//! session indexed, so the equivalence covers the whole conversion chain
 //! (backend string shapes included), not a fixture's idealized values.
 //!
 //! [`ArchiveSnapshot`]: arclain_app::archive::ArchiveSnapshot
-//! [`EntryPage`]: arclain_app::archive::EntryPage
 //! [`TabListing`]: arclain_ui::core::tabs::TabListing
 
 mod common;
@@ -31,7 +29,7 @@ use common::create_test_shared_state;
 
 use arclain_app::archive::{ArchivePath, EntryPage, ListEntriesRequest};
 use arclain_app::ids::EntryId;
-use arclain_ui::core::operations::navigation_view::rows_in_directory;
+use arclain_ui::core::operations::browser_rows::{folder_paths, rows_in_directory};
 use arclain_ui::core::tabs::{TabListing, TabState};
 use arclain_ui::core::utils::file_entry_from_dto;
 use arclain_ui::shared::models::file_entry::FileEntry;
@@ -251,20 +249,21 @@ fn list(fixture: &OpenedFixture, request: &ListEntriesRequest) -> EntryPage {
         .expect("list_entries must succeed for the tab's own session")
 }
 
-/// The two row producers order ties differently -- the flat filter keys
-/// on the display-relative path (so `Zebra.txt` sorts before
-/// `readme.txt`, uppercase first), the session on the lowercased name --
-/// and neither order is what the user sees, because the file list
-/// re-sorts every row itself before rendering. Comparing sorted by the
-/// stable archive-root path takes that difference out of the assertion
-/// without weakening it: every row, and every field of every row, still
-/// has to match.
+/// The two producers order ties differently -- a page is sorted by the
+/// lowercased name, the inventory is in depth-first tree order -- and
+/// neither order is what the user sees, because the file list re-sorts
+/// every row itself before rendering. Comparing sorted by the stable
+/// archive-root path takes that difference out of the assertion without
+/// weakening it: every row, and every field of every row, still has to
+/// match.
 fn sorted_by_archive_path(mut rows: Vec<FileEntry>) -> Vec<FileEntry> {
     rows.sort_by(|left, right| left.archive_path.cmp(&right.archive_path));
     rows
 }
 
-fn facade_rows(fixture: &OpenedFixture, listing: &TabListing) -> Vec<FileEntry> {
+/// What the session answers for the browsed directory: one
+/// `list_entries` call, converted row by row.
+fn page_rows(fixture: &OpenedFixture, listing: &TabListing) -> Vec<FileEntry> {
     sorted_by_archive_path(
         list(fixture, listing.request())
             .entries
@@ -274,10 +273,12 @@ fn facade_rows(fixture: &OpenedFixture, listing: &TabListing) -> Vec<FileEntry> 
     )
 }
 
-fn flat_listing_rows(fixture: &OpenedFixture, listing: &TabListing) -> Vec<FileEntry> {
+/// What the renderer actually draws: the tab's whole-archive inventory
+/// scoped to the browsed directory.
+fn rendered_rows(fixture: &OpenedFixture, listing: &TabListing) -> Vec<FileEntry> {
     sorted_by_archive_path(rows_in_directory(
-        &fixture.tab.inventory.get().legacy_rows(),
-        listing.current_path(),
+        fixture.tab.inventory.get().entries(),
+        listing.directory(),
     ))
 }
 
@@ -332,29 +333,29 @@ fn a_fresh_tab_browses_the_archive_root_with_nothing_listed_yet() {
     assert!(tab.archive_session_id.get().is_none());
 }
 
-/// The parity assertion this whole module exists for, at the root.
+/// The equivalence assertion this whole module exists for, at the root.
 #[test]
-fn a_root_page_converts_to_the_same_rows_the_flat_listing_produced() {
+fn the_rendered_root_matches_the_page_the_session_answers_with() {
     let fixture = open_fixture();
     let listing = TabListing::default();
 
-    let from_facade = facade_rows(&fixture, &listing);
-    let from_flat_listing = flat_listing_rows(&fixture, &listing);
+    let from_page = page_rows(&fixture, &listing);
+    let rendered = rendered_rows(&fixture, &listing);
 
     assert_eq!(
-        from_facade, from_flat_listing,
+        from_page, rendered,
         "the session's own listing must render the archive root identically \
          to the flat filter the browser reads today"
     );
     assert_eq!(
-        from_facade
+        from_page
             .iter()
             .map(|row| row.archive_path.as_str())
             .collect::<Vec<_>>(),
         vec!["Zebra.txt", "game", "readme.txt"],
         "the root must show its two files plus the implied `game` folder"
     );
-    let game = from_facade
+    let game = from_page
         .iter()
         .find(|row| row.archive_path == "game")
         .unwrap();
@@ -365,9 +366,8 @@ fn a_root_page_converts_to_the_same_rows_the_flat_listing_produced() {
     );
 }
 
-/// Same parity assertion one and two levels down, where folder
-/// aggregation and directory synthesis actually have something to get
-/// wrong.
+/// Same equivalence one and two levels down, where folder aggregation
+/// and directory synthesis actually have something to get wrong.
 #[test]
 fn descending_lists_the_directory_the_cursor_moved_to() {
     let fixture = open_fixture();
@@ -376,10 +376,10 @@ fn descending_lists_the_directory_the_cursor_moved_to() {
     assert!(listing.descend("game"));
     assert_eq!(listing.request().directory.as_str(), "game");
     assert_eq!(
-        facade_rows(&fixture, &listing),
-        flat_listing_rows(&fixture, &listing)
+        page_rows(&fixture, &listing),
+        rendered_rows(&fixture, &listing)
     );
-    let game_rows = facade_rows(&fixture, &listing);
+    let game_rows = page_rows(&fixture, &listing);
     assert_eq!(
         game_rows
             .iter()
@@ -399,11 +399,11 @@ fn descending_lists_the_directory_the_cursor_moved_to() {
     assert!(listing.descend("data"));
     assert_eq!(listing.request().directory.as_str(), "game/data");
     assert_eq!(
-        facade_rows(&fixture, &listing),
-        flat_listing_rows(&fixture, &listing)
+        page_rows(&fixture, &listing),
+        rendered_rows(&fixture, &listing)
     );
     assert_eq!(
-        facade_rows(&fixture, &listing)
+        page_rows(&fixture, &listing)
             .iter()
             .map(|row| row.archive_path.as_str())
             .collect::<Vec<_>>(),
@@ -420,15 +420,15 @@ fn ascending_restores_the_parent_directorys_listing() {
     assert!(listing.up());
     assert_eq!(listing.request().directory.as_str(), "game");
     assert_eq!(
-        facade_rows(&fixture, &listing),
-        flat_listing_rows(&fixture, &listing)
+        page_rows(&fixture, &listing),
+        rendered_rows(&fixture, &listing)
     );
 
     assert!(listing.up());
     assert_eq!(listing.request().directory, ArchivePath::root());
     assert_eq!(
-        facade_rows(&fixture, &listing),
-        flat_listing_rows(&fixture, &listing)
+        page_rows(&fixture, &listing),
+        rendered_rows(&fixture, &listing)
     );
     assert!(!listing.can_go_up());
 }
@@ -442,7 +442,7 @@ fn a_zip_entrys_modified_date_survives_the_trip_through_the_dto() {
     let fixture = open_fixture();
     let listing = TabListing::default();
 
-    let readme = facade_rows(&fixture, &listing)
+    let readme = page_rows(&fixture, &listing)
         .into_iter()
         .find(|row| row.archive_path == "readme.txt")
         .expect("the root listing must contain readme.txt");
@@ -453,7 +453,7 @@ fn a_zip_entrys_modified_date_survives_the_trip_through_the_dto() {
     );
     assert_eq!(
         readme.modified,
-        flat_listing_rows(&fixture, &listing)
+        rendered_rows(&fixture, &listing)
             .into_iter()
             .find(|row| row.archive_path == "readme.txt")
             .unwrap()
@@ -462,10 +462,10 @@ fn a_zip_entrys_modified_date_survives_the_trip_through_the_dto() {
     );
 }
 
-/// A tab holding a page answers "what is in the folder on screen?" from
-/// that page -- the same question the pre-facade flat filter answered.
+/// The tab's listing is bound to the session the open stamped, and the
+/// page it seats answers the directory the cursor names.
 #[test]
-fn a_tab_holding_a_page_reports_that_page_as_its_current_directory() {
+fn a_tabs_listing_is_bound_to_its_session_and_answers_its_own_directory() {
     let fixture = open_fixture();
 
     let mut listing = fixture.tab.listing.get();
@@ -478,21 +478,33 @@ fn a_tab_holding_a_page_reports_that_page_as_its_current_directory() {
     let generation = listing.begin_loading();
     let page = list(&fixture, listing.request());
     assert!(listing.adopt_page(generation, page));
-    fixture.tab.listing.set(listing);
 
-    let current = fixture.shared.app_state.lock().get_current_entries();
-    let mut paths: Vec<&str> = current.iter().map(|entry| entry.path.as_str()).collect();
+    let seated = listing.page().expect("the adopted page must be held");
+    assert_eq!(seated.directory.as_str(), "game");
+    let mut paths: Vec<&str> = seated
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
     paths.sort_unstable();
     assert_eq!(
         paths,
         vec!["game/Game.exe", "game/data", "game/licence.key"]
     );
-    assert!(
-        current
-            .iter()
-            .find(|entry| entry.path == "game/data")
-            .unwrap()
-            .is_dir
+}
+
+/// The tree panel's folder set is every directory the session indexed --
+/// including the ones no archive entry names, which it synthesized from
+/// the paths beneath them. Nothing re-derives ancestors from file paths
+/// on the render side.
+#[test]
+fn the_tree_folder_set_is_every_directory_the_session_indexed() {
+    let fixture = open_fixture();
+
+    assert_eq!(
+        folder_paths(fixture.tab.inventory.get().entries()),
+        vec!["game".to_string(), "game/data".to_string()],
+        "both folders are implied by file paths -- neither is a named entry          in the fixture"
     );
 }
 
@@ -551,36 +563,35 @@ fn entry_ids_survive_a_refresh_within_the_same_session() {
 /// deliberately changed what the user sees.
 ///
 /// When an archive *names* a directory (rather than only implying it
-/// from its files' paths), the old flat filter over raw backend rows
-/// never trimmed the trailing `/` the directory entry carried, so
+/// from its files' paths), the pre-facade flat filter over raw backend
+/// rows never trimmed the trailing `/` the directory entry carried, so
 /// `"docs/"` looked like a nested path and it synthesized a dateless
 /// `docs` folder row. The session's index normalizes the slash away,
 /// recognizes the row as the directory itself, and keeps the timestamp
-/// the archive recorded. Now that *both* row producers read the
-/// session's rows, the explicitly listed folder shows its own Modified
-/// date on both -- the sanctioned "folder rows gain Modified dates"
-/// change, and the divergence the pre-cutover characterization pinned is
-/// closed by construction rather than merely tolerated.
+/// the archive recorded -- so a named folder now shows its own Modified
+/// date, the sanctioned "folder rows gain Modified dates" change. Both
+/// of today's producers read the session's rows, so they agree on it by
+/// construction.
 #[test]
-fn an_explicitly_listed_directorys_date_reaches_both_row_producers() {
+fn an_explicitly_listed_directory_shows_the_date_the_archive_recorded() {
     let fixture = open_entries(&[
         FixtureEntry::Directory("docs/"),
         FixtureEntry::file("docs/manual.txt", b"manual"),
     ]);
     let listing = TabListing::default();
 
-    let from_facade = facade_rows(&fixture, &listing);
-    let from_flat_listing = flat_listing_rows(&fixture, &listing);
+    let from_page = page_rows(&fixture, &listing);
+    let rendered = rendered_rows(&fixture, &listing);
 
-    assert_eq!(from_facade.len(), 1);
-    assert_eq!(from_facade[0].archive_path, "docs");
-    assert!(from_facade[0].is_folder);
+    assert_eq!(from_page.len(), 1);
+    assert_eq!(from_page[0].archive_path, "docs");
+    assert!(from_page[0].is_folder);
     assert!(
-        !from_facade[0].modified.is_empty(),
+        !from_page[0].modified.is_empty(),
         "the session keeps the date the archive recorded for the directory it named"
     );
     assert_eq!(
-        from_facade, from_flat_listing,
+        from_page, rendered,
         "both producers now read the session's rows, so the folder's date -- and \
          every other field -- must agree"
     );

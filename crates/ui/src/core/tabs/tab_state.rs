@@ -42,11 +42,15 @@ pub struct TabState {
     ///
     /// The whole-archive counterpart to [`Self::listing`] (which holds
     /// one directory's page), and the replacement for the pre-facade
-    /// flat `entries` list: rows here carry the session's own
-    /// `EntryId`s and folder aggregates, and the not-yet-migrated
-    /// core-typed consumers read the memoized `legacy_rows` projection
-    /// instead of a separately-listed copy that could drift from what
-    /// id-consuming operations resolve against.
+    /// flat `entries` list: rows here carry the session's own `EntryId`s
+    /// and folder aggregates, so nothing the browser draws or the plugin
+    /// bridge hands out can drift from what id-consuming operations
+    /// resolve against.
+    ///
+    /// The browser reads it directly -- the folder on screen is these
+    /// rows scoped to the browsed directory (see
+    /// `crate::core::operations::browser_rows`), and the tree panel's
+    /// folder set is their `Directory` rows.
     pub inventory: Signal<TabInventory>,
     pub metadata: Signal<Option<serde_json::Value>>,
     // Note: `loading` and `status_message` signals were removed in the

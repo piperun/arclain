@@ -246,9 +246,9 @@ fn a_mutation_relists_the_navigated_directory_and_selection_survives() {
     assert!(
         tab.inventory
             .get()
-            .legacy_rows()
+            .entries()
             .iter()
-            .any(|entry| entry.path == "added.txt"),
+            .any(|entry| entry.path.as_str() == "added.txt"),
         "the inventory must reflect the mutation"
     );
 }
@@ -421,10 +421,11 @@ fn a_rule_protected_archive_opens_and_reads_without_the_ui_holding_its_password(
         !tab.password_dialog.get().show,
         "no password dialog: the stored rule answered before any challenge"
     );
-    let rows = tab.inventory.get().legacy_rows();
-    let payload = rows
+    let inventory = tab.inventory.get();
+    let payload = inventory
+        .entries()
         .iter()
-        .find(|entry| entry.path == "payload.txt")
+        .find(|entry| entry.path.as_str() == "payload.txt")
         .expect("the unlocked listing's real entries reached the tab");
     assert!(
         payload.encrypted,

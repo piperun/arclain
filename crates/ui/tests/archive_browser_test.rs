@@ -26,24 +26,42 @@ use common::TestContext;
 /// never hand them back to a facade, they only feed the render-side
 /// projections.
 fn seed_inventory(tab: &arclain_ui::core::tabs::TabState, paths: &[String]) {
-    use arclain_app::archive::{ArchiveEntryDto, ArchiveInventory, ArchivePath, EntryKind};
+    let rows: Vec<(String, arclain_app::archive::EntryKind)> = paths
+        .iter()
+        .map(|path| (path.clone(), arclain_app::archive::EntryKind::File))
+        .collect();
+    seed_inventory_rows(tab, 1, &rows);
+}
+
+/// [`seed_inventory`] with an explicit revision and per-row kind, so a
+/// test can seat a *refreshed* inventory (a higher revision) and can
+/// include the directory rows the session's index synthesizes.
+fn seed_inventory_rows(
+    tab: &arclain_ui::core::tabs::TabState,
+    revision: u64,
+    rows: &[(String, arclain_app::archive::EntryKind)],
+) {
+    use arclain_app::archive::{ArchiveEntryDto, ArchiveInventory, ArchivePath};
     use arclain_ui::core::tabs::{AdoptedInventory, TabInventory};
 
     let session_id = arclain_app::ids::ArchiveSessionId::from_raw(1);
     let inventory = ArchiveInventory {
         session_id,
-        revision: 1,
-        entries: paths
+        revision,
+        entries: rows
             .iter()
             .enumerate()
-            .map(|(index, path)| ArchiveEntryDto {
+            .map(|(index, (path, kind))| ArchiveEntryDto {
                 id: arclain_app::ids::EntryId::from_raw(index as u64 + 1),
                 path: ArchivePath::parse(path.clone()).unwrap(),
                 name: path.rsplit('/').next().unwrap_or(path).to_string(),
-                kind: EntryKind::File,
+                kind: kind.clone(),
                 compressed_size: Some(0),
                 uncompressed_size: 0,
-                modified_at_unix_ms: None,
+                // 2024-01-15 10:30:00 UTC. Only the DTO carries a real
+                // timestamp; a row showing it can only have come from
+                // one.
+                modified_at_unix_ms: Some(1_705_314_600_000),
                 encrypted: false,
                 crc32: None,
             })
@@ -51,7 +69,9 @@ fn seed_inventory(tab: &arclain_ui::core::tabs::TabState, paths: &[String]) {
     };
     let prepared = AdoptedInventory::prepare(inventory);
     tab.inventory.update(|held| {
-        *held = TabInventory::for_session(Some(session_id));
+        if held.session() != Some(session_id) {
+            *held = TabInventory::for_session(Some(session_id));
+        }
         held.adopt(prepared.clone());
     });
 }
@@ -717,4 +737,123 @@ fn production_toolbar_uses_change_gated_browser_view_publication() {
     let source = include_str!("../src/core/arclain_app/toolbar_handler.rs");
     assert!(source.contains("tab.browser_view_state.set_if_changed(view_state);"));
     assert!(!source.contains("tab.browser_view_state.set(view_state);"));
+}
+
+/// The render layer's own pin for the browser-model cutover: the rows
+/// the file list draws are produced from the session's `ArchiveEntryDto`
+/// rows, and both pieces of per-entry view state that must outlive a
+/// refresh -- the selection and the tree's folder expansion -- do.
+///
+/// Parts 1 and 2 pinned survival at the listing and relist layers; this
+/// pins it where the user actually experiences it, through a real render
+/// of the real `ArchiveBrowser` between the two inventories.
+#[test]
+fn the_rendered_browser_draws_dto_rows_and_keeps_selection_and_expansion_across_a_refresh() {
+    use arclain_app::archive::EntryKind;
+    use arclain_ui::features::archive_browser::ArchiveBrowser;
+    use egui_kittest::Harness;
+
+    let ctx = TestContext::new();
+    let shared = ctx.shared.clone();
+    let tab = shared.signals().tabs.get().active().clone();
+    tab.archive_path.set(Some(PathBuf::from("fixture.zip")));
+
+    let rows = |extra: bool| {
+        let mut rows = vec![
+            ("game".to_string(), EntryKind::Directory),
+            ("game/Game.exe".to_string(), EntryKind::File),
+            ("game/data".to_string(), EntryKind::Directory),
+            ("game/data/save.dat".to_string(), EntryKind::File),
+            ("readme.txt".to_string(), EntryKind::File),
+        ];
+        if extra {
+            rows.push(("game/added.txt".to_string(), EntryKind::File));
+        }
+        rows
+    };
+
+    // The user is browsing `game`, has a row selected there, and has the
+    // tree expanded to it.
+    seed_inventory_rows(&tab, 1, &rows(false));
+    tab.listing.update(|listing| {
+        assert!(listing.go_to("game"));
+    });
+    arclain_ui::core::operations::browser_rows::publish_browsed_directory(shared.signals());
+    {
+        let mut view_state = tab.browser_view_state.get();
+        view_state.toolbar_state.show_tree_panel = true;
+        view_state.selection.insert("game/Game.exe".to_string());
+        tab.browser_view_state.set(view_state);
+    }
+
+    let browser = Rc::new(RefCell::new(ArchiveBrowser::new(&shared)));
+    let render_browser = browser.clone();
+    let render_shared = shared.clone();
+    let mut harness = Harness::new(move |ctx| {
+        let _ = render_browser.borrow_mut().render(ctx, &render_shared);
+    });
+    harness.run();
+
+    let drawn = tab.browser_entries.get();
+    let paths: Vec<&str> = drawn
+        .entries
+        .iter()
+        .map(|row| row.archive_path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        ["game/Game.exe", "game/data"],
+        "the file list must draw the browsed directory's own entries"
+    );
+    assert_eq!(
+        drawn.entries[0].modified, "2024-01-15 10:30:00",
+        "a rendered row's Modified cell comes from the DTO's own timestamp"
+    );
+    assert!(
+        drawn.entries[1].is_folder,
+        "the synthesized directory row must still render as a folder"
+    );
+
+    // The first render expanded the tree down to the browsed folder.
+    // `TreePanelState`'s equality is its selected path plus its
+    // expansion generation, so a re-expansion after the refresh (which
+    // is what losing the expansion would force) shows up as inequality.
+    let tree_state_before = tab.browser_view_state.get().tree_state.clone();
+
+    // A refresh: the session answers with a higher revision carrying one
+    // more file, exactly as a mutation relist would.
+    seed_inventory_rows(&tab, 2, &rows(true));
+    arclain_ui::core::operations::browser_rows::publish_browsed_directory(shared.signals());
+    harness.run();
+
+    let refreshed = tab.browser_entries.get();
+    let refreshed_paths: Vec<&str> = refreshed
+        .entries
+        .iter()
+        .map(|row| row.archive_path.as_str())
+        .collect();
+    assert_eq!(
+        refreshed_paths,
+        ["game/Game.exe", "game/data", "game/added.txt"],
+        "the refresh must reach the rendered rows"
+    );
+
+    let view_state = tab.browser_view_state.get();
+    assert!(
+        view_state.selection.contains("game/Game.exe"),
+        "the selection did not survive the refresh"
+    );
+    assert_eq!(
+        view_state.tree_state, tree_state_before,
+        "the tree's folder expansion did not survive the refresh"
+    );
+    assert_eq!(
+        view_state.tree_state.selected_path, "game",
+        "the tree must still be pointing at the browsed folder"
+    );
+    assert_eq!(
+        tab.selection_count.get(),
+        1,
+        "the surviving selection must still be counted for the toolbar"
+    );
 }

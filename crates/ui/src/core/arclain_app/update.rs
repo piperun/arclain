@@ -100,7 +100,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 let mut handled = false;
                 if is_on_main && archive_loaded {
                     if operations::navigation_signals::navigate_back(signals) {
-                        operations::navigation_view::refresh_view_entries(signals);
+                        operations::browser_rows::publish_browsed_directory(signals);
                         tracing::info!("Archive folder back navigation");
                         handled = true;
                     }
@@ -130,7 +130,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 let mut handled = false;
                 if is_on_main && archive_loaded {
                     if operations::navigation_signals::navigate_forward(signals) {
-                        operations::navigation_view::refresh_view_entries(signals);
+                        operations::browser_rows::publish_browsed_directory(signals);
                         tracing::info!("Archive folder forward navigation");
                         handled = true;
                     }
@@ -149,7 +149,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 // `navigate_up` itself does.
                 if operations::navigation_signals::navigate_up(app.shared_state.signals()) {
                     // Re-filter view entries to match new path
-                    operations::navigation_view::refresh_view_entries(app.shared_state.signals());
+                    operations::browser_rows::publish_browsed_directory(app.shared_state.signals());
                 }
             }
             HotkeyAction::NavigateToRoot => {
@@ -160,7 +160,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                     "",
                 ) {
                     // Re-filter view entries to match new path
-                    operations::navigation_view::refresh_view_entries(app.shared_state.signals());
+                    operations::browser_rows::publish_browsed_directory(app.shared_state.signals());
                 }
             }
             HotkeyAction::OpenSettings => {
@@ -440,7 +440,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 let parent = path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
                 let signals = app.shared_state.signals();
                 crate::core::operations::navigation_signals::navigate_to_absolute(signals, parent);
-                crate::core::operations::navigation_view::refresh_view_entries(signals);
+                crate::core::operations::browser_rows::publish_browsed_directory(signals);
             }
         }
     }

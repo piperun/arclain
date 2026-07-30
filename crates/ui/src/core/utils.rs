@@ -116,32 +116,6 @@ pub fn file_entry_from_dto(dto: &ArchiveEntryDto) -> FileEntry {
     }
 }
 
-/// TRANSITIONAL(4c): one pre-facade flat entry rebuilt from a facade
-/// listing row, for the consumers that still speak the
-/// `arclain_core::ArchiveEntry` shape -- the legacy browser projections
-/// in `crate::core::operations::navigation_view`, and the plugin ABI's
-/// `EventContext.entries` (whose blast radius is a different crate, so
-/// it may outlive the projections).
-///
-/// Three deliberate differences from a raw backend row, shared with
-/// `AppState::get_current_entries`'s identical conversion: `modified` is
-/// re-rendered from the parsed timestamp (byte-identical for backends
-/// whose own string the facade could parse, empty for the rest); a
-/// directory's `size`/`packed_size` are the session index's recursive
-/// aggregates; and a directory's `crc32` is the index's aggregate CRC.
-pub fn core_entry_from_dto(dto: &ArchiveEntryDto) -> arclain_core::ArchiveEntry {
-    let modified = format_modified_unix_ms(dto.modified_at_unix_ms);
-    arclain_core::ArchiveEntry {
-        path: dto.path.as_str().to_string(),
-        size: dto.uncompressed_size,
-        packed_size: dto.compressed_size.unwrap_or(0),
-        modified: (!modified.is_empty()).then_some(modified),
-        is_dir: matches!(dto.kind, EntryKind::Directory),
-        encrypted: dto.encrypted,
-        crc32: dto.crc32.clone(),
-    }
-}
-
 /// Log an error in a consistent format for failure cases.
 /// This keeps our tests simple and ensures a single message shape.
 pub fn log_failure(context: &str, message: impl std::fmt::Display) {

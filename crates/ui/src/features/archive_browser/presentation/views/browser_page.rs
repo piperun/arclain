@@ -26,8 +26,7 @@ pub fn render_archive_browser(
     shared: &SharedState,
     tab: &TabState,
     projection: &mut BrowserProjectionCache,
-    // TRANSITIONAL(4c): see `ArchiveTabProjectionCache::tree`.
-    tree_projection: &mut ArchiveTreeProjectionCache<arclain_core::ArchiveEntry>,
+    tree_projection: &mut ArchiveTreeProjectionCache<arclain_app::archive::ArchiveEntryDto>,
     tree_rows: &mut TreeRowProjectionCache,
 ) -> Action {
     let mut action = Action::None;
@@ -59,11 +58,10 @@ pub fn render_archive_browser(
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy())
             .unwrap_or_else(|| std::borrow::Cow::Borrowed("archive"));
-        let archive_entries = tab.inventory.get().legacy_rows();
+        let archive_entries = tab.inventory.get().entries_arc();
         let listing = tab.listing.get();
         let tree = tree_projection.projection(&archive_entries, |entries| {
-            // TRANSITIONAL(4c): see `crate::core::operations::navigation_view`.
-            FolderTree::from_folders(&crate::core::operations::navigation_view::all_folders(
+            FolderTree::from_folders(&crate::core::operations::browser_rows::folder_paths(
                 entries,
             ))
         });

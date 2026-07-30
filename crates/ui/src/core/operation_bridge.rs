@@ -452,7 +452,7 @@ pub async fn relist_for_browser_signals(
 
     fetch_and_adopt_listing(&app, tab, session_id).await?;
 
-    crate::core::operations::navigation_view::refresh_view_entries_for_tab(
+    crate::core::operations::browser_rows::publish_browsed_directory_for_tab(
         shared.signals(),
         tab.id,
     );
@@ -912,7 +912,7 @@ pub async fn refresh_entries_after_mutation(
         }
     }
 
-    crate::core::operations::navigation_view::refresh_view_entries_for_tab(
+    crate::core::operations::browser_rows::publish_browsed_directory_for_tab(
         shared.signals(),
         tab.id,
     );

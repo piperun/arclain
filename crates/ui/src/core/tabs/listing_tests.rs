@@ -5,13 +5,13 @@
 // pins so a future change to `ArchiveNavigation` cannot quietly alter
 // the breadcrumb/history UX.
 //
-// `NavigationState` itself is still alive in `arclain_core`, still tested
-// there, and still called by the `TRANSITIONAL(4c)` projections in
-// `crate::core::operations::navigation_view` -- these tests do not
-// replace its tests, they pin that the tab's own cursor behaves the same
-// way. That the original tests still run is what let the rule-by-rule
-// parity be checked rather than asserted; both sets go when the
-// render-side migration removes the last caller.
+// `NavigationState` itself is still compiled and tested in
+// `arclain_core`, but nothing calls it anymore: the browser's last
+// caller went with the render path's move onto the session's own rows.
+// These tests do not replace its tests -- they pin that the tab's own
+// cursor behaves the way that type did, which is what a rule-by-rule
+// port has to prove. The original tests running alongside them is what
+// let that be checked rather than asserted.
 
 use super::*;
 use arclain_app::archive::{EntrySortKey, SortDirection, ALL_ENTRIES_IN_ONE_DIRECTORY};

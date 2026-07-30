@@ -3,12 +3,10 @@
 //! This module contains the core AppState struct and related types.
 //! The implementation is split across multiple files for maintainability:
 //! - `init` - State initialization (`AppState::new()`)
-//! - `archive_ops` - Archive listing and file operations
 //! - `vault_ops` - Vault and preferences management
 //! - `password_ops` - Password rules management
 //! - `config_ops` - Configuration sync and reload
 
-mod archive_ops;
 mod config_ops;
 mod init;
 mod password_ops;

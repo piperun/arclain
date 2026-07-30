@@ -190,9 +190,9 @@ fn start_add_files_reaches_a_real_backend_and_the_bridge_refreshes_the_tabs_entr
         || {
             tab.inventory
                 .get()
-                .legacy_rows()
+                .entries()
                 .iter()
-                .any(|entry| entry.path == "new_file.txt")
+                .any(|entry| entry.path.as_str() == "new_file.txt")
         },
     );
 
@@ -264,9 +264,9 @@ fn delete_files_from_a_subdirectory_resolves_through_the_navigated_directory_and
         || {
             tab.inventory
                 .get()
-                .legacy_rows()
+                .entries()
                 .iter()
-                .filter(|entry| !entry.is_dir)
+                .filter(|entry| entry.kind != arclain_app::archive::EntryKind::Directory)
                 .count()
                 == 3
         },
@@ -289,16 +289,22 @@ fn delete_files_from_a_subdirectory_resolves_through_the_navigated_directory_and
         "delete_files from a subdirectory never reached a real backend or the bridge never \
          refreshed the tab",
         || {
-            let entries = tab.inventory.get().legacy_rows();
-            entries.iter().filter(|entry| !entry.is_dir).count() == 2
+            let inventory = tab.inventory.get();
+            let entries = inventory.entries();
+            entries
+                .iter()
+                .filter(|entry| entry.kind != arclain_app::archive::EntryKind::Directory)
+                .count()
+                == 2
                 && !entries
                     .iter()
-                    .any(|entry| entry.path == "subdir/nested.txt")
+                    .any(|entry| entry.path.as_str() == "subdir/nested.txt")
         },
     );
 
-    let final_entries = tab.inventory.get().legacy_rows();
-    let remaining: std::collections::HashSet<&str> = final_entries
+    let final_inventory = tab.inventory.get();
+    let remaining: std::collections::HashSet<&str> = final_inventory
+        .entries()
         .iter()
         .map(|entry| entry.path.as_str())
         .collect();

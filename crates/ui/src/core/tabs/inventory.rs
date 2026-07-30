@@ -3,64 +3,55 @@
 //!
 //! Where [`super::listing::TabListing`] holds the one *directory* a tab
 //! is browsing, this holds the archive's whole entry tree -- the
-//! [`ArchiveInventory`] `ArclainApp::list_all_entries` answers with --
-//! for the consumers that genuinely need every entry at every depth: the
-//! tree panel's folder set, the derived archive-info totals, drag-out's
-//! recursive folder expansion, the plugin bridge's event snapshot, the
-//! tab bar's entry count, and the command palette's file search.
+//! [`ArchiveInventory`] `ArclainApp::list_all_entries` answers with.
+//! Everything the browser draws reads it: the folder on screen is these
+//! rows scoped to the browsed directory
+//! (`crate::core::operations::browser_rows`), the tree panel's folder
+//! set is their `Directory` rows, and the derived archive-info totals,
+//! the tab bar's entry count, the command palette's file search and the
+//! plugin bridge's event snapshot all come from here too.
 //!
-//! It replaces `TabState::entries`, the flat
-//! `Vec<arclain_core::ArchiveEntry>` the operation bridge's own duplicate
-//! `backend.list()` used to write. The rows here are the session's own --
-//! `EntryId`s minted and validated server-side, folder rows carrying the
-//! index's aggregates -- so the browser's whole-archive reads can no
-//! longer drift from what the facade's id-consuming operations resolve
-//! against. (Drag-out, once on this list, resolves its selection through
-//! `list_entries` and the facade's drag-stage surface instead -- it
-//! reads nothing here.)
+//! It replaces `TabState::entries`, the flat pre-facade listing the
+//! operation bridge's own duplicate `backend.list()` used to write. The
+//! rows here are the session's own -- `EntryId`s minted and validated
+//! server-side, folder rows carrying the index's aggregates -- so
+//! nothing the browser shows can drift from what the facade's
+//! id-consuming operations resolve against. (Drag-out, once on this
+//! list, resolves its selection through `list_entries` and the facade's
+//! drag-stage surface instead -- it reads nothing here.)
 
-use crate::core::utils::core_entry_from_dto;
 use arclain_app::archive::{ArchiveEntryDto, ArchiveInventory};
 use arclain_app::ids::ArchiveSessionId;
 use std::sync::{Arc, OnceLock};
 
-/// The shared "no archive open" projection, allocated once so per-frame
+/// The shared "no archive open" row list, allocated once so per-frame
 /// readers of an empty tab hand out the same `Arc` every time -- the
 /// tree-projection cache keys on `Arc::ptr_eq`, and a fresh empty
 /// allocation per frame would defeat it.
-fn empty_legacy_rows() -> Arc<Vec<arclain_core::ArchiveEntry>> {
-    static EMPTY: OnceLock<Arc<Vec<arclain_core::ArchiveEntry>>> = OnceLock::new();
+fn empty_entries() -> Arc<Vec<ArchiveEntryDto>> {
+    static EMPTY: OnceLock<Arc<Vec<ArchiveEntryDto>>> = OnceLock::new();
     EMPTY.get_or_init(|| Arc::new(Vec::new())).clone()
 }
 
 /// The "no archive open" path list, shared for the same reason
-/// [`empty_legacy_rows`] is.
+/// [`empty_entries`] is.
 fn empty_entry_paths() -> Arc<Vec<String>> {
     static EMPTY: OnceLock<Arc<Vec<String>>> = OnceLock::new();
     EMPTY.get_or_init(|| Arc::new(Vec::new())).clone()
 }
 
 /// One adopted whole-archive answer: the facade's rows plus the derived
-/// legacy projection, prepared *outside* any signal lock (see
-/// [`Self::prepare`]) and swapped in as one `Arc`.
+/// path list, prepared *outside* any signal lock (see [`Self::prepare`])
+/// and swapped in as one `Arc`.
 #[derive(Debug)]
 pub struct AdoptedInventory {
     session_id: ArchiveSessionId,
     revision: u64,
-    entries: Vec<ArchiveEntryDto>,
-    /// TRANSITIONAL(4c): the same rows converted down to the pre-facade
-    /// flat shape, memoized here (once per adoption, never per read) for
-    /// the consumers that still speak it -- the legacy browser
-    /// projections in `crate::core::operations::navigation_view`, and
-    /// the plugin ABI's `EventContext.entries`
-    /// (`Arc<Vec<arclain_core::ArchiveEntry>>` by contract in another
-    /// crate, which is why this is an `Arc`: the bridge hands it out
-    /// verbatim, zero-copy). A derived, immutable
-    /// projection of the facade rows above -- never a store anything
-    /// writes into; the encrypted-CRC backfill that used to mutate the
-    /// flat list now writes into the session and arrives here as a
-    /// fresh, higher-revision inventory.
-    legacy_rows: Arc<Vec<arclain_core::ArchiveEntry>>,
+    /// Behind an `Arc` so the whole list has a stable identity a
+    /// renderer-side cache can key on: the tree projection rebuilds only
+    /// when this allocation is replaced, which is exactly when a relist
+    /// seated new rows.
+    entries: Arc<Vec<ArchiveEntryDto>>,
     /// Every entry's archive-relative path, in the same depth-first
     /// order as [`Self::entries`] -- what the plugin bridge's
     /// `EventContext` carries, and the only shape of this list a plugin
@@ -71,14 +62,13 @@ pub struct AdoptedInventory {
 
 impl AdoptedInventory {
     /// Converts one fetched [`ArchiveInventory`] into its adopted form,
-    /// building the derived projections row by row.
+    /// building the derived path list row by row.
     ///
     /// `O(entries)` with a string allocation per row -- deliberately a
     /// free function a producer runs on its own task *before* taking the
     /// tab's signal lock, so a large archive's conversion never stalls a
     /// concurrent render-thread read of the same signal.
     pub fn prepare(inventory: ArchiveInventory) -> Arc<Self> {
-        let legacy_rows = Arc::new(inventory.entries.iter().map(core_entry_from_dto).collect());
         let entry_paths = Arc::new(
             inventory
                 .entries
@@ -89,8 +79,7 @@ impl AdoptedInventory {
         Arc::new(Self {
             session_id: inventory.session_id,
             revision: inventory.revision,
-            entries: inventory.entries,
-            legacy_rows,
+            entries: Arc::new(inventory.entries),
             entry_paths,
         })
     }
@@ -107,10 +96,10 @@ impl AdoptedInventory {
 /// is already the whole correctness condition. Two racing refreshes
 /// converge on the higher revision regardless of reply order, and a
 /// same-revision refetch re-seats identical rows.
-// No `PartialEq`: `arclain_core::ArchiveEntry` (inside the legacy
-// projection) has none, and nothing calls `set_if_changed` on the
-// inventory signal -- producers always `update` it through the guarded
-// `adopt`.
+// No `PartialEq`: nothing calls `set_if_changed` on the inventory
+// signal -- producers always `update` it through the guarded `adopt` --
+// and comparing two whole entry trees per write would cost more than
+// the write it might elide.
 #[derive(Clone, Debug, Default)]
 pub struct TabInventory {
     /// The archive session these rows must come from, `None` before the
@@ -161,14 +150,15 @@ impl TabInventory {
         self.rows.as_ref().map_or(0, |rows| rows.entries.len())
     }
 
-    /// TRANSITIONAL(4c): the held rows in the pre-facade flat shape --
-    /// see [`AdoptedInventory::legacy_rows`]. The shared empty list when
-    /// no rows are held, so an empty tab's per-frame readers keep a
-    /// stable `Arc` identity.
-    pub fn legacy_rows(&self) -> Arc<Vec<arclain_core::ArchiveEntry>> {
+    /// The held rows behind their own `Arc`, for a renderer-side cache
+    /// that keys on allocation identity (see
+    /// [`AdoptedInventory::entries`]). The shared empty list when no
+    /// rows are held, so an empty tab's per-frame readers keep a stable
+    /// identity too.
+    pub fn entries_arc(&self) -> Arc<Vec<ArchiveEntryDto>> {
         match &self.rows {
-            Some(rows) => rows.legacy_rows.clone(),
-            None => empty_legacy_rows(),
+            Some(rows) => rows.entries.clone(),
+            None => empty_entries(),
         }
     }
 

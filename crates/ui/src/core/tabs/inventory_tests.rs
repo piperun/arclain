@@ -38,48 +38,45 @@ fn a_fresh_inventory_has_no_rows_and_a_zero_count() {
     assert_eq!(inventory.revision(), None);
     assert!(inventory.entries().is_empty());
     assert_eq!(inventory.entry_count(), 0);
-    assert!(inventory.legacy_rows().is_empty());
+    assert!(inventory.entries_arc().is_empty());
 }
 
-/// An empty tab's legacy projection keeps one shared identity across
-/// reads -- the tree-projection cache keys on `Arc::ptr_eq`, so a fresh
-/// allocation per frame would rebuild the tree every frame.
+/// An empty tab's row list keeps one shared identity across reads -- the
+/// tree-projection cache keys on `Arc::ptr_eq`, so a fresh allocation
+/// per frame would rebuild the tree every frame.
 #[test]
-fn an_empty_inventorys_legacy_rows_keep_a_stable_arc_identity() {
+fn an_empty_inventorys_rows_keep_a_stable_arc_identity() {
     let inventory = bound_inventory();
     assert!(Arc::ptr_eq(
-        &inventory.legacy_rows(),
-        &TabInventory::default().legacy_rows()
+        &inventory.entries_arc(),
+        &TabInventory::default().entries_arc()
     ));
 }
 
 #[test]
-fn adopting_seats_the_rows_and_the_derived_legacy_projection_together() {
+fn adopting_seats_the_sessions_rows_verbatim() {
     let mut inventory = bound_inventory();
-    assert!(inventory.adopt(AdoptedInventory::prepare(inventory_of(
-        1,
-        1,
-        &["readme.txt", "game/data.bin"],
-    ))));
+    let fetched = inventory_of(1, 1, &["readme.txt", "game/data.bin"]);
+    let expected = fetched.entries.clone();
+    assert!(inventory.adopt(AdoptedInventory::prepare(fetched)));
 
     assert_eq!(inventory.revision(), Some(1));
     assert_eq!(inventory.entry_count(), 2);
-    let legacy = inventory.legacy_rows();
-    assert_eq!(legacy.len(), 2);
+    assert_eq!(inventory.entries(), expected.as_slice());
+}
 
-    // The projection is `core_entry_from_dto` row for row -- the same
-    // conversion every remaining core-typed consumer reads through.
-    // (`ArchiveEntry` has no `PartialEq`, so the comparison is per field.)
-    for (dto, converted) in inventory.entries().iter().zip(legacy.iter()) {
-        let expected = crate::core::utils::core_entry_from_dto(dto);
-        assert_eq!(converted.path, expected.path);
-        assert_eq!(converted.size, expected.size);
-        assert_eq!(converted.packed_size, expected.packed_size);
-        assert_eq!(converted.modified, expected.modified);
-        assert_eq!(converted.is_dir, expected.is_dir);
-        assert_eq!(converted.encrypted, expected.encrypted);
-        assert_eq!(converted.crc32, expected.crc32);
-    }
+/// Two reads of the same adopted inventory hand out the same allocation,
+/// so the renderer's tree projection sees "unchanged" rather than
+/// rebuilding the folder tree every frame.
+#[test]
+fn reading_the_rows_twice_hands_out_the_same_allocation() {
+    let mut inventory = bound_inventory();
+    assert!(inventory.adopt(AdoptedInventory::prepare(inventory_of(1, 1, &["a.txt"]))));
+
+    assert!(Arc::ptr_eq(
+        &inventory.entries_arc(),
+        &inventory.entries_arc()
+    ));
 }
 
 /// The plugin bridge hands its event context this list verbatim, so its
@@ -107,7 +104,7 @@ fn adopting_seats_the_entry_paths_in_the_facades_own_order() {
 }
 
 /// An empty tab's path list keeps one shared identity across reads, for
-/// the same per-frame-allocation reason the legacy projection does.
+/// the same per-frame-allocation reason the row list does.
 #[test]
 fn an_empty_inventorys_entry_paths_keep_a_stable_arc_identity() {
     let inventory = bound_inventory();
@@ -189,10 +186,10 @@ fn rebinding_to_a_new_session_lets_its_first_inventory_seat() {
     assert_eq!(inventory.entries()[0].path.as_str(), "new.txt");
 }
 
-/// A directory row's conversion keeps the folder-defining fields the
-/// legacy consumers key on.
+/// A directory row arrives with the index's own recursive aggregates,
+/// which is what the tree panel and the browser's folder rows draw.
 #[test]
-fn the_legacy_projection_preserves_the_directory_flag_and_aggregates() {
+fn a_directory_row_keeps_its_flag_and_the_indexs_aggregates() {
     let mut inventory = bound_inventory();
     let mut fetched = inventory_of(1, 1, &["game/data.bin"]);
     fetched.entries.insert(
@@ -205,10 +202,16 @@ fn the_legacy_projection_preserves_the_directory_flag_and_aggregates() {
     );
     assert!(inventory.adopt(AdoptedInventory::prepare(fetched)));
 
-    let legacy = inventory.legacy_rows();
-    let game = legacy.iter().find(|entry| entry.path == "game").unwrap();
-    assert!(game.is_dir);
-    assert_eq!(game.size, 10, "the index's recursive aggregate rides along");
-    assert_eq!(game.packed_size, 5);
+    let game = inventory
+        .entries()
+        .iter()
+        .find(|entry| entry.path.as_str() == "game")
+        .unwrap();
+    assert_eq!(game.kind, EntryKind::Directory);
+    assert_eq!(
+        game.uncompressed_size, 10,
+        "the index's recursive aggregate rides along"
+    );
+    assert_eq!(game.compressed_size, Some(5));
     assert_eq!(game.crc32.as_deref(), Some("DEADBEEF"));
 }
