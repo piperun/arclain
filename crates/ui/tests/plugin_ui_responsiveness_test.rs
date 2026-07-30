@@ -222,7 +222,6 @@ fn plugin_settings_selection_change_releases_the_previous_image_owner() {
                 &shared.theme,
                 &mut state,
                 Some(&shared),
-                None,
             );
         });
     });

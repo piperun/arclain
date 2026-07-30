@@ -74,8 +74,6 @@ impl AppState {
         let services = crate::core::services::Services {
             core: (*legacy.core_services).clone(),
             plugin_manager: legacy.plugin_manager,
-            content_cache: legacy.content_cache,
-            resource_manager: legacy.resource_manager,
         };
 
         // Seed the reactive settings mirrors before anything can read

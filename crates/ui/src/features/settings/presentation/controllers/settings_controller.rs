@@ -885,8 +885,6 @@ mod tests {
         let services = Arc::new(Services {
             core: (*legacy.core_services).clone(),
             plugin_manager: legacy.plugin_manager,
-            content_cache: legacy.content_cache,
-            resource_manager: legacy.resource_manager,
         });
         let app_state = app_state_from_facade(&facade);
         let signals = app_state.signals.clone();
@@ -898,7 +896,7 @@ mod tests {
             services.plugin_manager.clone(),
             services.tokio_runtime.clone(),
         );
-        let image_assets = crate::shared::image_assets::ImageAssetStore::without_cache(
+        let image_assets = crate::shared::image_assets::ImageAssetStore::without_source(
             services.tokio_runtime.clone(),
         );
         SharedState {

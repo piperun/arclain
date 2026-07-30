@@ -436,34 +436,136 @@ fn reconcile_after_lag_recovers_a_plugin_action_whose_terminal_event_was_dropped
     });
 }
 
-/// The image recovery loop through this frontend's own store, which is
-/// the half `arclain_app`'s round-trip test cannot cover: that
-/// `ImageAssetStore` routes a plugin key's *write* to the same namespace
-/// its *read* resolves.
+/// A single-URL HTTP stub serving one PNG, so a URL-fallback fetch has
+/// something real to fetch.
+///
+/// The application's *plugin* request path refuses loopback addresses
+/// (special-address validation on the resolved IPs), so only the host
+/// namespace can be exercised against a local stub -- which is exactly the
+/// namespace `arclain_app`'s own tests cannot reach through this
+/// frontend's store.
+struct ImageStub {
+    address: std::net::SocketAddr,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ImageStub {
+    fn start(body: Vec<u8>) -> Self {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the image stub");
+        let address = listener.local_addr().expect("read the stub address");
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = stop.clone();
+        std::thread::spawn(move || {
+            while let Ok((mut socket, _)) = listener.accept() {
+                if stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 512];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match socket.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                // Answer only a complete request head. Loopback ephemeral
+                // ports are shared with every test binary running in
+                // parallel, so a connect that sends nothing is somebody
+                // else's port probe, not a fetch.
+                if !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    continue;
+                }
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len(),
+                );
+                let _ = socket.write_all(header.as_bytes());
+                let _ = socket.write_all(&body);
+                let _ = socket.flush();
+            }
+        });
+        Self { address, stop }
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}/cover.png", self.address)
+    }
+}
+
+impl Drop for ImageStub {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(self.address);
+    }
+}
+
+/// A decodable PNG large enough to clear the fetch path's "real images are
+/// >1KB" floor. The size assertion is not decoration: a smaller payload
+/// would make the fetch fail for a reason this test is not about.
+fn fetchable_png() -> Vec<u8> {
+    let image = image::RgbaImage::from_fn(64, 64, |x, y| {
+        image::Rgba([
+            (x * 7 + y * 13) as u8,
+            (x * 29 + 11) as u8,
+            (y * 31 + 5) as u8,
+            255,
+        ])
+    });
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("encode PNG");
+    let bytes = bytes.into_inner();
+    assert!(
+        bytes.len() > 1000,
+        "the fixture PNG must clear the fetch path's minimum size"
+    );
+    bytes
+}
+
+fn wait_until(mut predicate: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !predicate() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the image worker"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The URL-fallback loop through this frontend's own store: that
+/// `ImageAssetStore` fetches a key into the same namespace its *read*
+/// resolves, so the read that asked for the fetch can find the bytes
+/// afterwards.
 ///
 /// **Driven from inside a task on the store's own runtime**, which is the
-/// production shape (`image_fetcher::trigger_image_fetch` stores from
+/// production shape (`image_fetcher::trigger_image_fetch` fetches from
 /// exactly there) and the condition that distinguishes a working fix from
-/// an inert one. The first attempt at this fix did the blocking write on
-/// the calling thread; from a runtime worker that panics with "Cannot
+/// an inert one. An earlier version of this path blocked on the runtime
+/// from the calling thread; from a runtime worker that panics with "Cannot
 /// start a runtime from within a runtime", so the recovery never ran in
 /// production while a test calling it from a plain thread passed.
 #[test]
-fn the_image_store_writes_plugin_keys_where_it_reads_them_from_inside_a_runtime_task() {
+fn the_image_store_fetches_host_keys_where_it_reads_them_from_inside_a_runtime_task() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_with_plugin(&temp, "ui-demo");
     let runtime = runtime();
     // Built exactly as production does (`SharedState::new`), so this
     // exercises the real routing rather than a test-only source.
-    let store = ImageAssetStore::with_plugin_images(None, app.clone(), runtime.clone());
-    let key = "plugin-image:ui-demo:cover:RJ000002".to_string();
-    let bytes = vec![0x89, 0x50, 0x4E, 0x47, 1, 2, 3, 4];
+    let store = ImageAssetStore::new(app.clone(), runtime.clone());
+    let png = fetchable_png();
+    let stub = ImageStub::start(png.clone());
+    let key = "dlsite:image:RJ000002".to_string();
 
     runtime.block_on({
         let store = store.clone();
         let app = app.clone();
         let key = key.clone();
-        let bytes = bytes.clone();
+        let url = stub.url();
         let runtime = runtime.clone();
         async move {
             // `spawn` + `await`, not a direct call: the future must be
@@ -472,31 +574,88 @@ fn the_image_store_writes_plugin_keys_where_it_reads_them_from_inside_a_runtime_
             runtime
                 .spawn(async move {
                     store
-                        .store_fetched(
+                        .fetch_into_cache(None, key, url, egui::Context::default())
+                        .await
+                })
+                .await
+                .expect("the store task must not panic")
+                .expect("a URL-fallback fetch must succeed for a host key");
+
+            assert_eq!(
+                app.read_host_image(key_for_read())
+                    .await
+                    .expect("the read that triggered the fetch must now find the bytes"),
+                png
+            );
+        }
+    });
+
+    // ...and the store's own read resolves the same namespace, which is
+    // what makes the asset render rather than re-fetch every 30 s.
+    let owner = ImageOwner::plugin_panel("ui-demo", "properties", TabId(1));
+    assert!(matches!(
+        store.request(owner, &key, egui::Context::default()),
+        ImageAssetState::Loading
+    ));
+    wait_until(|| store.is_decoded(&key));
+
+    fn key_for_read() -> String {
+        "dlsite:image:RJ000002".to_string()
+    }
+}
+
+/// The plugin half of the same routing question, without a network hop:
+/// a key already present in the *plugin's* namespace resolves through the
+/// store's fetch path untouched.
+///
+/// This is what proves the fetch takes the plugin route rather than the
+/// host one. A host-routed fetch would be refused outright (a plugin-scoped
+/// key is `PermissionDenied` on every host method), so "succeeds, from
+/// cache, and the store then decodes it" can only happen if the fetch and
+/// the read agree on the namespace.
+#[test]
+fn the_image_store_resolves_plugin_keys_through_the_plugins_own_namespace() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let runtime = runtime();
+    let store = ImageAssetStore::new(app.clone(), runtime.clone());
+    let key = "plugin-image:ui-demo:cover:RJ000002".to_string();
+    let png = fetchable_png();
+
+    runtime.block_on({
+        let store = store.clone();
+        let app = app.clone();
+        let key = key.clone();
+        let png = png.clone();
+        let runtime = runtime.clone();
+        async move {
+            app.write_plugin_image("ui-demo".to_string(), key.clone(), png, None)
+                .await
+                .expect("the owning plugin's namespace accepts its own key");
+
+            runtime
+                .spawn(async move {
+                    store
+                        .fetch_into_cache(
                             Some("ui-demo".to_string()),
                             key,
-                            bytes,
-                            Some("https://example.invalid/c.png".to_string()),
+                            "https://example.invalid/c.png".to_string(),
                             egui::Context::default(),
                         )
                         .await
                 })
                 .await
                 .expect("the store task must not panic")
-                .expect("a URL-fallback store must succeed for a plugin key");
-
-            assert_eq!(
-                app.read_plugin_image(key_for_read())
-                    .await
-                    .expect("the read that triggered the fetch must now find the bytes"),
-                vec![0x89, 0x50, 0x4E, 0x47, 1, 2, 3, 4]
-            );
+                .expect("a warm plugin key must resolve without reaching the network");
         }
     });
 
-    fn key_for_read() -> String {
-        "plugin-image:ui-demo:cover:RJ000002".to_string()
-    }
+    let owner = ImageOwner::plugin_panel("ui-demo", "properties", TabId(1));
+    assert!(matches!(
+        store.request(owner, &key, egui::Context::default()),
+        ImageAssetState::Loading
+    ));
+    wait_until(|| store.is_decoded(&key));
 }
 
 /// A plugin cannot write into another plugin's cache namespace by
@@ -806,7 +965,7 @@ fn the_image_store_refuses_a_read_for_another_plugins_key() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_with_plugin(&temp, "ui-demo");
     let runtime = runtime();
-    let store = ImageAssetStore::with_plugin_images(None, app.clone(), runtime.clone());
+    let store = ImageAssetStore::new(app.clone(), runtime.clone());
     let victim_key = "plugin-image:ui-demo:cover";
     let ctx = egui::Context::default();
 
@@ -840,7 +999,7 @@ fn the_image_store_refuses_a_lightbox_read_for_another_plugins_key() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_with_plugin(&temp, "ui-demo");
     let runtime = runtime();
-    let store = ImageAssetStore::with_plugin_images(None, app.clone(), runtime.clone());
+    let store = ImageAssetStore::new(app.clone(), runtime.clone());
 
     let refused = store.request(
         ImageOwner::Lightbox {
@@ -869,7 +1028,7 @@ fn triggering_an_image_fetch_refuses_another_plugins_key() {
     shared.facade = Some(app.clone());
     // The production image source, so `can_store` answers as it does in a
     // real app rather than short-circuiting this test for the wrong reason.
-    shared.image_assets = ImageAssetStore::with_plugin_images(None, app, runtime);
+    shared.image_assets = ImageAssetStore::new(app, runtime);
     let ctx = egui::Context::default();
 
     assert!(

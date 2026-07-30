@@ -1,5 +1,4 @@
 use arclain_core::services::Services as CoreServices;
-use arclain_core::{ContentCache, ResourceManager};
 use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
 use std::ops::Deref;
@@ -7,8 +6,16 @@ use std::sync::Arc;
 
 /// UI-layer Services container
 /// Wraps CoreServices and adds UI-specific services (PluginManager).
-/// Cache + ResourceManager live here too because they aren't part of
-/// the headless `arclain_core::services::Services` bag.
+/// `PluginManager` lives here because it isn't part of the headless
+/// `arclain_core::services::Services` bag.
+///
+/// The content cache and resource manager used to live here too. Neither
+/// does now: cached images resolve through `arclain_app`'s image surface
+/// (see `crate::shared::image_assets`), and the one resource value this
+/// frontend read off a `ResourceManager` handle is
+/// `ArclainApp::materialized_resource_limit`. A frontend holding a storage
+/// handle it only used to derive a byte ceiling and a cache key lookup was
+/// the coupling those surfaces exist to remove.
 ///
 /// At real startup, every field here is populated from
 /// `arclain_app::ArclainApp::take_legacy_composition` (see
@@ -20,8 +27,6 @@ pub struct Services {
     pub core: CoreServices,
 
     pub plugin_manager: Option<Arc<Mutex<PluginManager>>>,
-    pub content_cache: Option<Arc<ContentCache>>,
-    pub resource_manager: Option<Arc<ResourceManager>>,
 }
 
 impl Default for Services {
@@ -37,8 +42,6 @@ impl Services {
         Self {
             core: CoreServices::new(Arc::new(runtime)),
             plugin_manager: None,
-            content_cache: None,
-            resource_manager: None,
         }
     }
 }

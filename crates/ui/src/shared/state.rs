@@ -110,19 +110,14 @@ impl SharedState {
                 })
             }
         });
-        // A plugin document's image references are facade-encoded
-        // (`plugin-image:{plugin_id}:{key}`) rather than bare content-cache
-        // keys, because a plugin's cache entries are namespaced to it and a
-        // bare key is ambiguous once it leaves its session. Resolving those
-        // through `ArclainApp::read_plugin_image` (which decodes the owner
-        // and enforces the facade's own 16 MiB per-asset cap) is what lets
-        // a facade-rendered document show images at all; every other key
-        // still resolves straight through the content cache.
-        let image_assets = ImageAssetStore::with_plugin_images(
-            services.content_cache.clone(),
-            facade.clone(),
-            services.tokio_runtime.clone(),
-        );
+        // Every image reference resolves through the application: a plugin
+        // document's keys are facade-encoded and namespaced to the owning
+        // plugin (a bare key is ambiguous once it leaves its session), and
+        // every other key belongs to the host namespace. The facade decodes
+        // which is which, enforces its own per-asset cap on both, and owns
+        // the URL-fallback fetch -- so this frontend holds no cache handle
+        // and no HTTP client of its own.
+        let image_assets = ImageAssetStore::new(facade.clone(), services.tokio_runtime.clone());
         let shared = Self {
             app_state: app_state.clone(),
             services,

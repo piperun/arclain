@@ -5,19 +5,11 @@
 //! clone the resulting shared texture handle.
 
 use crate::core::tabs::TabId;
-use arclain_core::{CacheType, ContentCache};
 use eframe::egui;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-
-/// Prefix `arclain_app`'s normalizer stamps onto every image reference a
-/// plugin document carries. Matched here rather than imported because the
-/// facade deliberately keeps the codec private -- `read_plugin_image` /
-/// `write_plugin_image` are the only supported ways to resolve one, and
-/// this module's whole job is to route those keys to them.
-const PLUGIN_IMAGE_KEY_PREFIX: &str = "plugin-image:";
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ImageOwner {
@@ -106,40 +98,51 @@ impl ImageOwner {
     }
 }
 
-/// Whether `key` is one the application facade stamped with an owning
-/// plugin (`plugin-image:{owner}:{key}`), reserving it to the host.
+/// Whether `key` addresses the **plugin-scoped** image namespace rather
+/// than the host-owned one -- i.e. whether the application stamped it with
+/// an owning plugin when it normalized that plugin's document.
+///
+/// This is the frontend's namespace-routing decision, so its name states
+/// which namespace it selects. (It was `is_host_owned_image_key`, meaning
+/// "host-*stamped*"; once it started choosing between
+/// `read_plugin_image` and `read_host_image`, that name read as the exact
+/// opposite of the branch it guards, which is a dangerous thing for a
+/// reader to "correct".)
 ///
 /// A plugin's cache namespace is an isolation boundary this codebase
-/// enforces deliberately, and a key encodes its own owner -- so an
+/// enforces deliberately, and such a key encodes its own owner -- so an
 /// unvalidated key is a bearer token for whatever namespace it names.
-/// Only the host ever produces this prefix (during normalization, from a
-/// plugin id it already knows); a value carrying it that did *not* come
+/// Only the host ever produces one (during normalization, from a plugin id
+/// it already knows); a value carrying that shape which did *not* come
 /// from there is a forgery attempt.
-pub fn is_host_owned_image_key(key: &str) -> bool {
-    key.starts_with(PLUGIN_IMAGE_KEY_PREFIX)
+///
+/// Delegates to the application's own predicate rather than re-deriving
+/// the encoding: this frontend and the application must agree on which
+/// namespace a key belongs to, and two copies of one prefix literal is
+/// precisely how they would stop agreeing.
+pub fn is_plugin_scoped_image_key(key: &str) -> bool {
+    arclain_app::plugins::is_plugin_image_key(key)
 }
 
-/// The plugin a host-stamped key names as its owner, or `None` for any
-/// other key.
-pub fn host_owned_image_key_owner(key: &str) -> Option<&str> {
-    key.strip_prefix(PLUGIN_IMAGE_KEY_PREFIX)?
-        .split_once(':')
-        .map(|(plugin_id, _)| plugin_id)
+/// The plugin a plugin-scoped key names as its owner, or `None` for a
+/// host-owned key.
+pub fn plugin_scoped_image_key_owner(key: &str) -> Option<&str> {
+    arclain_app::plugins::plugin_image_key_owner(key)
 }
 
 /// Whether a surface belonging to `acting_plugin_id` may address `key`.
 ///
 /// The single rule behind both choke points below
 /// ([`ImageAssetStore::request`] for reads,
-/// `crate::shared::image_fetcher::trigger_image_fetch` for writes): a
-/// host-stamped key may only be used by the plugin it names. Unstamped
-/// keys are host-namespace and unrestricted, exactly as before.
+/// `crate::shared::image_fetcher::trigger_image_fetch` for fetches): a
+/// plugin-scoped key may only be used by the plugin it names. Host-owned
+/// keys are unrestricted, exactly as before.
 ///
 /// `acting_plugin_id` is `None` only for a surface with no owning plugin
 /// at all -- a host-opened lightbox, which carries no plugin-authored
 /// keys, so there is nothing to compare against.
 pub fn image_key_is_addressable_by(key: &str, acting_plugin_id: Option<&str>) -> bool {
-    match (host_owned_image_key_owner(key), acting_plugin_id) {
+    match (plugin_scoped_image_key_owner(key), acting_plugin_id) {
         (None, _) => true,
         (Some(owner), Some(acting)) => owner == acting,
         (Some(_), None) => true,
@@ -155,98 +158,80 @@ pub enum ImageAssetState {
 }
 
 /// Where this store reads image bytes from, removes them from, and --
-/// critically -- writes them back to.
+/// critically -- fills them from a URL.
 ///
-/// `put` is on the *same* trait as `get` deliberately. A URL-fallback
-/// fetch and the read that asked for it must agree on which cache
+/// [`Self::fetch`] is on the *same* trait as [`Self::get`] deliberately. A
+/// URL fallback and the read that asked for it must agree on which cache
 /// namespace the key belongs to; when they were separate code paths (a
-/// `ContentCache::put` at the fetch site, a namespace-decoding read here)
+/// content-cache write at the fetch site, a namespace-decoding read here)
 /// they silently disagreed for plugin-owned keys, producing an entry the
 /// read could never find and a recovery loop that could never succeed.
 /// Routing both through one implementation makes that class of mismatch
 /// unrepresentable.
-trait ImageBytes: Send + Sync {
+///
+/// Public so this crate's integration tests can drive the asset lifecycle
+/// against an instrumented source. Production has exactly one
+/// implementation -- [`FacadeImageBytes`], installed by
+/// [`ImageAssetStore::new`].
+pub trait ImageBytes: Send + Sync {
     fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>>;
+    /// Fetch `url` and cache it under `key`, in the same namespace
+    /// [`Self::get`] reads `key` from.
+    ///
     /// `plugin_id` is the plugin whose document referenced `key`, as the
-    /// *host* knows it -- never anything the plugin supplied. Sources that
-    /// can write into a per-plugin namespace check the key's own claimed
-    /// owner against it; see `FacadeImageBytes::put`.
-    fn put(
-        &self,
-        plugin_id: Option<&str>,
-        key: &str,
-        bytes: &[u8],
-        source_url: Option<&str>,
-    ) -> anyhow::Result<()>;
+    /// *host* knows it -- never anything the plugin supplied. It decides
+    /// whose network budget pays for the request, and for a plugin-scoped
+    /// key it must match the owner the key encodes.
+    ///
+    /// The fetched bytes are not returned: this store publishes an asset
+    /// by re-reading it through [`Self::get`] (see
+    /// [`ImageAssetStore::cache_ready`]), which is what keeps a fetch
+    /// completing mid-load from racing the load already in flight.
+    fn fetch(&self, plugin_id: Option<&str>, key: &str, url: &str) -> anyhow::Result<()>;
     fn remove(&self, key: &str);
-    /// Whether a successful [`Self::put`] for `key` would actually retain
-    /// anything. `false` lets callers skip work whose result has nowhere
-    /// to land -- see `crate::shared::image_fetcher::trigger_image_fetch`.
+    /// Whether a successful [`Self::fetch`] for `key` would actually
+    /// retain anything. `false` lets callers skip work whose result has
+    /// nowhere to land -- see
+    /// `crate::shared::image_fetcher::trigger_image_fetch`.
     fn can_store(&self, key: &str) -> bool;
 }
 
-struct ContentCacheBytes(Arc<ContentCache>);
-
-impl ImageBytes for ContentCacheBytes {
-    fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        self.0.get(key)
-    }
-
-    fn put(
-        &self,
-        _plugin_id: Option<&str>,
-        key: &str,
-        bytes: &[u8],
-        source_url: Option<&str>,
-    ) -> anyhow::Result<()> {
-        self.0
-            .put(key, bytes, CacheType::Screenshot, None, source_url)
-            .map(|_| ())
-    }
-
-    fn remove(&self, key: &str) {
-        if let Err(error) = self.0.remove(key) {
-            tracing::warn!(%error, %key, "failed to remove corrupt cached image");
-        }
-    }
-
-    fn can_store(&self, _key: &str) -> bool {
-        true
-    }
-}
-
-/// Resolves plugin-document image references through the application
-/// facade and everything else through the content cache.
+/// Resolves every image reference through the application facade: plugin
+/// document keys through the plugin-scoped namespace, everything else
+/// through the host-owned one.
 ///
-/// `read_plugin_image` decodes the owning plugin out of the key and reads
-/// the bytes from that plugin's own cache namespace under the facade's
-/// per-asset size cap. A bare content-cache read cannot do either: the
-/// namespace is not recoverable from the key, and the cap is the facade's
-/// to enforce.
+/// The facade decides which namespace a key belongs to and enforces the
+/// per-asset size cap on both; this frontend holds no cache handle and no
+/// HTTP client of its own. The branch below is the same predicate the
+/// facade itself uses ([`is_plugin_scoped_image_key`]), so read, fetch and
+/// eviction always land in one namespace per key.
 struct FacadeImageBytes {
     facade: arclain_app::ArclainApp,
     runtime: Arc<tokio::runtime::Runtime>,
-    fallback: Option<Arc<ContentCache>>,
+}
+
+impl FacadeImageBytes {
+    /// Awaits a facade future from this store's own runtime.
+    ///
+    /// Every caller runs on [`ImageAssetStore`]'s blocking pool (see
+    /// [`ImageAssetStore::spawn_load_inner`] and
+    /// [`ImageAssetStore::fetch_into_cache`]), never on a worker thread,
+    /// so blocking here cannot stall the runtime. The facade's futures are
+    /// executor-agnostic by contract, so awaiting one from this crate's
+    /// runtime rather than the application's own is supported.
+    fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
+        self.runtime.block_on(future)
+    }
 }
 
 impl ImageBytes for FacadeImageBytes {
     fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        if !key.starts_with(PLUGIN_IMAGE_KEY_PREFIX) {
-            return match &self.fallback {
-                Some(cache) => cache.get(key),
-                None => Ok(None),
-            };
-        }
-        // Runs on `ImageAssetStore`'s own blocking pool (see
-        // `spawn_load_inner`), never on a worker thread, so blocking on
-        // the facade future here cannot stall the runtime. The facade's
-        // futures are executor-agnostic by contract, so awaiting one from
-        // this crate's runtime rather than the application's own is
-        // supported.
-        match self
-            .runtime
-            .block_on(self.facade.read_plugin_image(key.to_string()))
-        {
+        let read = if is_plugin_scoped_image_key(key) {
+            self.block_on(self.facade.read_plugin_image(key.to_string()))
+        } else {
+            self.block_on(self.facade.read_host_image(key.to_string()))
+        };
+        match read {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind == arclain_app::error::ApplicationErrorKind::NotFound => {
                 Ok(None)
@@ -255,75 +240,67 @@ impl ImageBytes for FacadeImageBytes {
         }
     }
 
-    /// Writes a URL-fallback fetch back into the *plugin's* namespace,
-    /// the only namespace [`Self::get`] reads plugin keys from. A
-    /// host-namespace write here would be invisible to that read, so the
-    /// asset would render broken and re-fetch every 30 s forever, leaving
-    /// one orphaned host cache entry per attempt.
+    /// Fills a missing asset from its URL fallback, into the one namespace
+    /// [`Self::get`] reads that key from. A host-namespace write for a
+    /// plugin key would be invisible to that read, so the asset would
+    /// render broken and re-fetch every 30 s forever, leaving one orphaned
+    /// cache entry per attempt.
     ///
     /// `plugin_id` is the host's own knowledge of which plugin's document
-    /// referenced this key, and is passed to the facade so it can refuse a
-    /// key claiming a *different* owner. Without it, a key is a bearer
-    /// token for a cache namespace: any caller holding a
+    /// referenced this key. The facade refuses a plugin-scoped key
+    /// claiming a *different* owner: without that, a key is a bearer token
+    /// for a cache namespace, and any caller holding a
     /// `plugin-image:victim:k` string could write into `victim`'s
     /// namespace and have `victim` later render those bytes as its own.
-    /// The frontend-side half of this guard is the two choke points every
-    /// image path funnels through -- [`ImageAssetStore::request`] for
-    /// reads and `crate::shared::image_fetcher::trigger_image_fetch` for
-    /// fetches. This is the facade-side half, so neither alone has to be
-    /// perfect.
-    fn put(
-        &self,
-        plugin_id: Option<&str>,
-        key: &str,
-        bytes: &[u8],
-        source_url: Option<&str>,
-    ) -> anyhow::Result<()> {
-        if !key.starts_with(PLUGIN_IMAGE_KEY_PREFIX) {
-            return match &self.fallback {
-                Some(cache) => cache
-                    .put(key, bytes, CacheType::Screenshot, None, source_url)
-                    .map(|_| ()),
-                None => Ok(()),
+    /// The frontend-side half of the guard is the two choke points every
+    /// image path funnels through -- [`ImageAssetStore::request`] for reads
+    /// and `crate::shared::image_fetcher::trigger_image_fetch` for fetches
+    /// -- so neither half alone has to be perfect.
+    fn fetch(&self, plugin_id: Option<&str>, key: &str, url: &str) -> anyhow::Result<()> {
+        let fetched = if is_plugin_scoped_image_key(key) {
+            let Some(plugin_id) = plugin_id else {
+                anyhow::bail!(
+                    "refusing to fetch a plugin-namespaced image with no owning plugin known"
+                );
             };
-        }
-        let Some(plugin_id) = plugin_id else {
-            anyhow::bail!(
-                "refusing to write a plugin-namespaced image with no owning plugin known"
-            );
-        };
-        self.runtime
-            .block_on(self.facade.write_plugin_image(
+            self.block_on(self.facade.fetch_plugin_image(
                 plugin_id.to_string(),
                 key.to_string(),
-                bytes.to_vec(),
-                source_url.map(str::to_string),
+                url.to_string(),
             ))
+        } else {
+            self.block_on(self.facade.fetch_host_image(
+                key.to_string(),
+                url.to_string(),
+                plugin_id.map(str::to_string),
+            ))
+        };
+        fetched
+            .map(|_| ())
             .map_err(|error| anyhow::anyhow!(error.summary))
     }
 
     fn remove(&self, key: &str) {
-        // A plugin-owned entry is not this frontend's to evict: the
-        // facade owns that namespace, and a corrupt entry there is
-        // re-fetched by the plugin, not by us. Only fall-through keys
-        // (host-owned cache entries) are evictable here, matching
-        // `ContentCacheBytes`'s behavior for exactly those keys.
-        if key.starts_with(PLUGIN_IMAGE_KEY_PREFIX) {
+        // A plugin-owned entry is not this frontend's to evict: that
+        // namespace belongs to the plugin, and a corrupt entry there is
+        // re-fetched by the plugin, not dropped by us. The facade refuses
+        // such a key here anyway; returning early keeps the refusal out of
+        // the logs for a case that is expected rather than exceptional.
+        if is_plugin_scoped_image_key(key) {
             return;
         }
-        let Some(cache) = &self.fallback else {
-            return;
-        };
-        if let Err(error) = cache.remove(key) {
-            tracing::warn!(%error, %key, "failed to remove corrupt cached image");
+        if let Err(error) = self.block_on(self.facade.discard_host_image(key.to_string())) {
+            tracing::warn!(
+                summary = %error.summary,
+                "failed to remove a corrupt cached image"
+            );
         }
     }
 
-    /// A plugin key always has somewhere to go (the facade owns that
-    /// namespace, independent of this frontend's own cache); anything else
-    /// needs the host cache to exist.
-    fn can_store(&self, key: &str) -> bool {
-        key.starts_with(PLUGIN_IMAGE_KEY_PREFIX) || self.fallback.is_some()
+    /// The application owns both image namespaces, so every key has
+    /// somewhere to go.
+    fn can_store(&self, _key: &str) -> bool {
+        true
     }
 }
 
@@ -335,18 +312,13 @@ impl ImageBytes for EmptyImageBytes {
     }
 
     /// Silently discarded rather than an error: this source exists for
-    /// contexts with no cache at all (early init, hand-built test
-    /// fixtures), where a fetch having nowhere to land is expected, not a
-    /// failure the caller should surface. Callers avoid reaching here at
-    /// all -- see `crate::shared::image_fetcher::trigger_image_fetch`'s
-    /// storability guard.
-    fn put(
-        &self,
-        _plugin_id: Option<&str>,
-        _key: &str,
-        _bytes: &[u8],
-        _source_url: Option<&str>,
-    ) -> anyhow::Result<()> {
+    /// contexts with no application behind them (early init, hand-built
+    /// test fixtures), where a fetch having nowhere to land is expected,
+    /// not a failure the caller should surface. Callers avoid reaching
+    /// here at all -- see
+    /// `crate::shared::image_fetcher::trigger_image_fetch`'s storability
+    /// guard.
+    fn fetch(&self, _plugin_id: Option<&str>, _key: &str, _url: &str) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -421,33 +393,31 @@ pub struct ImageAssetStore {
 }
 
 impl ImageAssetStore {
-    pub fn new(cache: Arc<ContentCache>, runtime: Arc<tokio::runtime::Runtime>) -> Self {
-        Self::from_source(Arc::new(ContentCacheBytes(cache)), runtime)
-    }
-
-    pub fn without_cache(runtime: Arc<tokio::runtime::Runtime>) -> Self {
-        Self::from_source(Arc::new(EmptyImageBytes), runtime)
-    }
-
-    /// The production source: plugin-document image references resolve
-    /// through the facade, everything else through `cache` -- see
-    /// [`FacadeImageBytes`].
-    pub fn with_plugin_images(
-        cache: Option<Arc<ContentCache>>,
-        facade: arclain_app::ArclainApp,
-        runtime: Arc<tokio::runtime::Runtime>,
-    ) -> Self {
+    /// The production store: every image reference resolves through
+    /// `facade` -- see [`FacadeImageBytes`].
+    pub fn new(facade: arclain_app::ArclainApp, runtime: Arc<tokio::runtime::Runtime>) -> Self {
         Self::from_source(
             Arc::new(FacadeImageBytes {
                 facade,
                 runtime: runtime.clone(),
-                fallback: cache,
             }),
             runtime,
         )
     }
 
-    fn from_source(source: Arc<dyn ImageBytes>, runtime: Arc<tokio::runtime::Runtime>) -> Self {
+    /// A store with no byte source at all: every read misses and every
+    /// fetch is refused as unstorable. For contexts with no application
+    /// behind them -- early initialization and hand-built test fixtures.
+    pub fn without_source(runtime: Arc<tokio::runtime::Runtime>) -> Self {
+        Self::from_source(Arc::new(EmptyImageBytes), runtime)
+    }
+
+    /// Builds a store over an arbitrary byte source.
+    ///
+    /// Exists for this crate's own lifecycle tests, which need a source
+    /// they can count and stall; production always goes through
+    /// [`Self::new`].
+    pub fn from_source(source: Arc<dyn ImageBytes>, runtime: Arc<tokio::runtime::Runtime>) -> Self {
         Self {
             inner: Arc::new(ImageAssetStoreInner {
                 assets: Mutex::new(HashMap::new()),
@@ -507,58 +477,45 @@ impl ImageAssetStore {
         ImageAssetState::Loading
     }
 
-    /// Stores bytes a URL-fallback fetch produced for `key`, then retries
-    /// the key so the decode/upload pipeline picks them up.
+    /// Fills `key` from its URL fallback, then retries the key so the
+    /// decode/upload pipeline picks the bytes up.
     ///
-    /// The single write entry point, deliberately paired with the read on
-    /// [`ImageBytes`]: the caller supplies a key, bytes, and the id of the
+    /// The single fill entry point, deliberately paired with the read on
+    /// [`ImageBytes`]: the caller supplies a key, a URL, and the id of the
     /// plugin whose document referenced them, and does not get to decide
-    /// which cache namespace they land in -- that decision must match the
-    /// one the read makes for the same key. See [`ImageBytes`]'s own doc
-    /// comment for the failure this prevents.
+    /// which cache namespace the bytes land in -- that decision must match
+    /// the one the read makes for the same key. See [`ImageBytes`]'s own
+    /// doc comment for the failure this prevents.
     ///
-    /// **`async`, and the actual write runs on the blocking pool.** Both
+    /// **`async`, and the fetch itself runs on the blocking pool.** Both
     /// are load-bearing rather than stylistic:
     ///
-    /// - [`ImageBytes::put`] is synchronous and genuinely blocking (a
-    ///   `cacache` write, and for a plugin key a facade round trip that
-    ///   itself blocks on a future). Its only caller is
-    ///   `crate::shared::image_fetcher::trigger_image_fetch`, which runs
-    ///   inside a task *on this store's own runtime* -- and
+    /// - [`ImageBytes::fetch`] is synchronous and genuinely blocking (a
+    ///   facade round trip that awaits a future internally). Its only
+    ///   caller is `crate::shared::image_fetcher::trigger_image_fetch`,
+    ///   which runs inside a task *on this store's own runtime* -- and
     ///   `Runtime::block_on` from a thread that runtime is driving panics
     ///   with "Cannot start a runtime from within a runtime". Handing the
-    ///   write to `spawn_blocking` puts it on a blocking-pool thread,
+    ///   fetch to `spawn_blocking` puts it on a blocking-pool thread,
     ///   which is not an entered runtime context, exactly as the read half
     ///   ([`Self::spawn_load_inner`]) has always done.
     /// - Being `async` is what makes that safe by construction: a caller
     ///   must already be in an async context to await this, so the
     ///   blocking hop can never be skipped by a future call site the way
     ///   it was when this was a plain sync method.
-    ///
-    /// It also fixes a pre-existing smell the panic masked: the old code
-    /// called `ContentCache::put` (a synchronous disk write) directly on a
-    /// runtime worker thread.
-    pub async fn store_fetched(
+    pub async fn fetch_into_cache(
         &self,
         plugin_id: Option<String>,
         key: String,
-        bytes: Vec<u8>,
-        source_url: Option<String>,
+        url: String,
         ctx: egui::Context,
     ) -> anyhow::Result<()> {
         let inner = self.inner.clone();
-        let write_key = key.clone();
+        let fetch_key = key.clone();
         inner
             .runtime
             .clone()
-            .spawn_blocking(move || {
-                inner.source.put(
-                    plugin_id.as_deref(),
-                    &write_key,
-                    &bytes,
-                    source_url.as_deref(),
-                )
-            })
+            .spawn_blocking(move || inner.source.fetch(plugin_id.as_deref(), &fetch_key, &url))
             .await
             .map_err(|error| anyhow::anyhow!("image store worker failed: {error}"))??;
         self.cache_ready(&key, ctx);
@@ -782,7 +739,7 @@ mod key_ownership_tests {
     fn an_unstamped_key_is_addressable_by_anyone() {
         assert!(image_key_is_addressable_by("dlsite:image:RJ1", Some("a")));
         assert!(image_key_is_addressable_by("dlsite:image:RJ1", None));
-        assert!(!is_host_owned_image_key("dlsite:image:RJ1"));
+        assert!(!is_plugin_scoped_image_key("dlsite:image:RJ1"));
     }
 
     /// The whole point: a stamped key may only be used by the plugin it
@@ -791,7 +748,7 @@ mod key_ownership_tests {
     #[test]
     fn a_stamped_key_is_addressable_only_by_the_plugin_it_names() {
         let key = "plugin-image:victim:secret";
-        assert_eq!(host_owned_image_key_owner(key), Some("victim"));
+        assert_eq!(plugin_scoped_image_key_owner(key), Some("victim"));
         assert!(image_key_is_addressable_by(key, Some("victim")));
         assert!(!image_key_is_addressable_by(key, Some("attacker")));
     }
@@ -802,7 +759,10 @@ mod key_ownership_tests {
     #[test]
     fn a_forged_prefix_inside_a_stamped_key_still_resolves_to_the_stamping_plugin() {
         let doubly_stamped = "plugin-image:attacker:plugin-image:victim:secret";
-        assert_eq!(host_owned_image_key_owner(doubly_stamped), Some("attacker"));
+        assert_eq!(
+            plugin_scoped_image_key_owner(doubly_stamped),
+            Some("attacker")
+        );
         assert!(!image_key_is_addressable_by(doubly_stamped, Some("victim")));
     }
 

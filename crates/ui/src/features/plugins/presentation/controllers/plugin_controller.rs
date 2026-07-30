@@ -454,13 +454,17 @@ fn spawn_background_fetch(
     origin_tab: crate::core::tabs::TabId,
     origin_metadata: Option<Signal<Option<serde_json::Value>>>,
 ) {
+    // The application's own ceiling for a fully materialized body, clamped
+    // to what a plugin may receive as metadata. Read through the facade
+    // rather than off a `ResourceManager` handle this frontend used to
+    // hold: the ceiling was the only thing it ever read from that handle.
+    // Synchronous, so this render-path call needs no `block_on`.
     let materialization_limit = shared
-        .services
-        .resource_manager
+        .facade
         .as_ref()
         .map_or(
             arclain_plugins::types::MAX_PLUGIN_METADATA_BYTES,
-            |manager| manager.materialization_limit(),
+            |facade| facade.materialized_resource_limit(),
         )
         .min(arclain_plugins::types::MAX_PLUGIN_METADATA_BYTES);
     // Parse "source:id" format

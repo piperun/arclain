@@ -2102,11 +2102,25 @@ mod tests {
         }
     }
 
+    /// A cache whose disk-containment limits are the defaults except for
+    /// the free-space floor, which is zeroed.
+    ///
+    /// Every cache write reserves before committing, and the reservation
+    /// refuses to proceed unless the filesystem has `min_free_space_bytes`
+    /// (2 GiB by default) of headroom to spare. Temp directories here sit
+    /// on whatever the machine calls TEMP -- a small RAM disk on at least
+    /// one development machine -- so leaving the default in place makes
+    /// every write test fail or pass on free space rather than on the
+    /// behaviour it is asserting.
     fn test_content_cache() -> (tempfile::TempDir, arclain_data::ContentCache) {
         let root = tempfile::tempdir().unwrap();
-        let cache = arclain_data::ContentCache::new(
+        let cache = arclain_data::ContentCache::new_with_limits(
             root.path().join("cache"),
             Arc::new(InMemoryCacheIndex::default()),
+            arclain_data::CacheLimits {
+                min_free_space_bytes: 0,
+                ..Default::default()
+            },
         )
         .unwrap();
         (root, cache)

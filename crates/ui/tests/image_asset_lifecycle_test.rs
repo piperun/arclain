@@ -1,8 +1,26 @@
-use anyhow::Result;
-use arclain_core::{CacheIndex, CacheLimits, ContentCache};
-use arclain_db::{CacheEntry, CacheType};
+//! The image-asset lifecycle: read-once, decode-once, texture ownership,
+//! corrupt-entry eviction, and the cache-ready restart handshake.
+//!
+//! Driven against an instrumented [`ImageBytes`] source rather than a real
+//! `ContentCache`. That is deliberate on two counts:
+//!
+//! - What this file pins is the *store's* lifecycle -- how many reads a
+//!   given sequence of requests performs, which thread they run on, and how
+//!   a fetch completing mid-load is serialized. A counting source states
+//!   those directly; a real cache only let them be inferred from index
+//!   traffic.
+//! - Where the bytes actually come from is `arclain_app`'s business now
+//!   (see `crates/app/tests/display_images.rs` for the namespace and
+//!   fetch-once behaviour, and `plugin_session_facade_test.rs` for this
+//!   frontend's routing into it). This frontend holds no cache handle to
+//!   build a fixture from, and building one anyway would test a
+//!   composition production no longer has.
+//!
+//! A side effect worth naming: with no cache on disk there is no
+//! free-space probe, so nothing here depends on the machine's headroom.
+
 use arclain_ui::core::tabs::TabId;
-use arclain_ui::shared::image_assets::{ImageAssetState, ImageAssetStore, ImageOwner};
+use arclain_ui::shared::image_assets::{ImageAssetState, ImageAssetStore, ImageBytes, ImageOwner};
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
@@ -13,191 +31,108 @@ use std::sync::Arc;
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
+/// A byte source that records every read and eviction, and which thread it
+/// happened on.
 #[derive(Default)]
-struct CountingCacheIndex {
-    entries: Mutex<HashMap<String, CacheEntry>>,
+struct CountingImageBytes {
+    entries: Mutex<HashMap<String, Vec<u8>>>,
     gets: AtomicUsize,
-    deletes: AtomicUsize,
+    removes: AtomicUsize,
     get_threads: Mutex<Vec<ThreadId>>,
-    delete_threads: Mutex<Vec<ThreadId>>,
+    remove_threads: Mutex<Vec<ThreadId>>,
 }
 
-impl CountingCacheIndex {
+impl CountingImageBytes {
+    fn insert(&self, key: &str, bytes: Vec<u8>) {
+        self.entries.lock().insert(key.to_string(), bytes);
+    }
+
     fn get_count(&self) -> usize {
         self.gets.load(Ordering::SeqCst)
     }
 
-    fn delete_count(&self) -> usize {
-        self.deletes.load(Ordering::SeqCst)
+    fn remove_count(&self) -> usize {
+        self.removes.load(Ordering::SeqCst)
     }
 
     fn get_threads(&self) -> Vec<ThreadId> {
         self.get_threads.lock().clone()
     }
 
-    fn delete_threads(&self) -> Vec<ThreadId> {
-        self.delete_threads.lock().clone()
+    fn remove_threads(&self) -> Vec<ThreadId> {
+        self.remove_threads.lock().clone()
     }
 }
 
-impl CacheIndex for CountingCacheIndex {
-    fn upsert(
-        &self,
-        key: &str,
-        product_id: Option<&str>,
-        content_hash: &str,
-        source_url: Option<&str>,
-        cache_type: CacheType,
-        size_bytes: Option<i64>,
-    ) -> Result<i64> {
-        self.entries.lock().insert(
-            key.to_string(),
-            CacheEntry {
-                id: 1,
-                key: key.to_string(),
-                product_id: product_id.map(str::to_string),
-                content_hash: content_hash.to_string(),
-                source_url: source_url.map(str::to_string),
-                cache_type,
-                created_at: String::new(),
-                last_accessed: None,
-                size_bytes,
-            },
-        );
-        Ok(1)
-    }
-
-    fn get(&self, key: &str) -> Result<Option<CacheEntry>> {
+impl ImageBytes for CountingImageBytes {
+    fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         self.gets.fetch_add(1, Ordering::SeqCst);
         self.get_threads.lock().push(std::thread::current().id());
         Ok(self.entries.lock().get(key).cloned())
     }
 
-    fn has(&self, key: &str) -> Result<bool> {
-        Ok(self.entries.lock().contains_key(key))
-    }
-
-    fn delete(&self, key: &str) -> Result<bool> {
-        self.deletes.fetch_add(1, Ordering::SeqCst);
-        self.delete_threads.lock().push(std::thread::current().id());
-        Ok(self.entries.lock().remove(key).is_some())
-    }
-
-    fn delete_by_pattern(&self, pattern: &str) -> Result<usize> {
-        let mut entries = self.entries.lock();
-        let before = entries.len();
-        entries.retain(|key, _| !key.contains(pattern));
-        Ok(before - entries.len())
-    }
-
-    fn update_last_accessed(&self, _key: &str) -> Result<()> {
+    fn fetch(&self, _plugin_id: Option<&str>, _key: &str, _url: &str) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    fn remove(&self, key: &str) {
+        self.removes.fetch_add(1, Ordering::SeqCst);
+        self.remove_threads.lock().push(std::thread::current().id());
+        self.entries.lock().remove(key);
+    }
+
+    fn can_store(&self, _key: &str) -> bool {
+        true
     }
 }
 
-struct HeldFirstMissCacheIndex {
-    entries: Mutex<HashMap<String, CacheEntry>>,
+/// A source whose *first* read parks until released, so a test can make a
+/// cache-ready notification arrive while a stale load is still in flight.
+struct HeldFirstReadImageBytes {
+    entries: Mutex<HashMap<String, Vec<u8>>>,
     gets: AtomicUsize,
     first_get_entered: Sender<()>,
     release_first_get: Mutex<Receiver<()>>,
 }
 
-impl CacheIndex for HeldFirstMissCacheIndex {
-    fn upsert(
-        &self,
-        key: &str,
-        product_id: Option<&str>,
-        content_hash: &str,
-        source_url: Option<&str>,
-        cache_type: CacheType,
-        size_bytes: Option<i64>,
-    ) -> Result<i64> {
-        self.entries.lock().insert(
-            key.to_string(),
-            CacheEntry {
-                id: 1,
-                key: key.to_string(),
-                product_id: product_id.map(str::to_string),
-                content_hash: content_hash.to_string(),
-                source_url: source_url.map(str::to_string),
-                cache_type,
-                created_at: String::new(),
-                last_accessed: None,
-                size_bytes,
-            },
-        );
-        Ok(1)
-    }
-
-    fn get(&self, key: &str) -> Result<Option<CacheEntry>> {
+impl ImageBytes for HeldFirstReadImageBytes {
+    fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let snapshot = self.entries.lock().get(key).cloned();
         if self.gets.fetch_add(1, Ordering::SeqCst) == 0 {
             self.first_get_entered
                 .send(())
-                .expect("signal held cache read");
+                .expect("signal held image read");
             self.release_first_get
                 .lock()
                 .recv()
-                .expect("release held cache read");
+                .expect("release held image read");
         }
         Ok(snapshot)
     }
 
-    fn has(&self, key: &str) -> Result<bool> {
-        Ok(self.entries.lock().contains_key(key))
-    }
-
-    fn delete(&self, key: &str) -> Result<bool> {
-        Ok(self.entries.lock().remove(key).is_some())
-    }
-
-    fn delete_by_pattern(&self, pattern: &str) -> Result<usize> {
-        let mut entries = self.entries.lock();
-        let before = entries.len();
-        entries.retain(|key, _| !key.contains(pattern));
-        Ok(before - entries.len())
-    }
-
-    fn update_last_accessed(&self, _key: &str) -> Result<()> {
+    fn fetch(&self, _plugin_id: Option<&str>, _key: &str, _url: &str) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    fn remove(&self, key: &str) {
+        self.entries.lock().remove(key);
+    }
+
+    fn can_store(&self, _key: &str) -> bool {
+        true
     }
 }
 
 struct StoreFixture {
     store: ImageAssetStore,
-    source: Arc<CountingCacheIndex>,
-    cache: Arc<ContentCache>,
-    _temp: tempfile::TempDir,
-}
-
-// Tempdirs may sit on a small ramdisk; tests must not depend on the
-// machine's free-space headroom.
-fn test_cache_limits() -> CacheLimits {
-    CacheLimits {
-        min_free_space_bytes: 0,
-        ..Default::default()
-    }
+    source: Arc<CountingImageBytes>,
 }
 
 fn fixture() -> StoreFixture {
-    let temp = tempfile::tempdir().expect("create cache directory");
-    let source = Arc::new(CountingCacheIndex::default());
-    let cache = Arc::new(
-        ContentCache::new_with_limits(
-            temp.path().to_path_buf(),
-            source.clone(),
-            test_cache_limits(),
-        )
-        .expect("create content cache"),
-    );
+    let source = Arc::new(CountingImageBytes::default());
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
-    let store = ImageAssetStore::new(cache.clone(), runtime);
-    StoreFixture {
-        store,
-        source,
-        cache,
-        _temp: temp,
-    }
+    let store = ImageAssetStore::from_source(source.clone(), runtime);
+    StoreFixture { store, source }
 }
 
 fn png_1x1() -> Vec<u8> {
@@ -236,10 +171,7 @@ fn owner_identity_distinguishes_surface_kind_and_origin_tab() {
 #[test]
 fn uploaded_asset_is_read_and_decoded_once_and_releases_cpu_pixels() {
     let fixture = fixture();
-    fixture
-        .cache
-        .put("cover", &png_1x1(), CacheType::Screenshot, None, None)
-        .expect("seed image cache");
+    fixture.source.insert("cover", png_1x1());
     let owner = ImageOwner::plugin_page("plugin", "page", TabId(1));
     let ctx = eframe::egui::Context::default();
     let ui_caller_thread = std::thread::current().id();
@@ -291,10 +223,7 @@ fn uploaded_asset_is_read_and_decoded_once_and_releases_cpu_pixels() {
 #[test]
 fn texture_survives_until_every_owner_releases_it() {
     let fixture = fixture();
-    fixture
-        .cache
-        .put("shared", &png_1x1(), CacheType::Screenshot, None, None)
-        .expect("seed image cache");
+    fixture.source.insert("shared", png_1x1());
     let page = ImageOwner::plugin_page("plugin", "page", TabId(1));
     let lightbox = ImageOwner::Lightbox {
         tab: TabId(7),
@@ -331,10 +260,7 @@ fn texture_survives_until_every_owner_releases_it() {
 #[test]
 fn retaining_live_owners_evicts_abandoned_origins_only() {
     let fixture = fixture();
-    fixture
-        .cache
-        .put("retained", &png_1x1(), CacheType::Screenshot, None, None)
-        .expect("seed image cache");
+    fixture.source.insert("retained", png_1x1());
     let page = ImageOwner::plugin_page("plugin", "page", TabId(1));
     let settings = ImageOwner::plugin_settings("plugin");
     let ctx = eframe::egui::Context::default();
@@ -361,16 +287,7 @@ fn retaining_live_owners_evicts_abandoned_origins_only() {
 #[test]
 fn corrupt_cached_image_is_removed_off_thread() {
     let fixture = fixture();
-    fixture
-        .cache
-        .put(
-            "corrupt",
-            b"not an image",
-            CacheType::Screenshot,
-            None,
-            None,
-        )
-        .expect("seed corrupt cache entry");
+    fixture.source.insert("corrupt", b"not an image".to_vec());
     let owner = ImageOwner::plugin_settings("plugin");
     let ctx = eframe::egui::Context::default();
     let ui_caller_thread = std::thread::current().id();
@@ -384,7 +301,7 @@ fn corrupt_cached_image_is_removed_off_thread() {
     });
 
     assert_eq!(fixture.source.get_count(), 1);
-    assert_eq!(fixture.source.delete_count(), 1);
+    assert_eq!(fixture.source.remove_count(), 1);
     assert!(
         fixture
             .source
@@ -396,7 +313,7 @@ fn corrupt_cached_image_is_removed_off_thread() {
     assert!(
         fixture
             .source
-            .delete_threads()
+            .remove_threads()
             .iter()
             .all(|thread_id| *thread_id != ui_caller_thread),
         "corrupt cache removal must not run on the UI caller thread"
@@ -425,10 +342,7 @@ fn cache_ready_notification_retries_a_miss_without_render_polling() {
         "failed asset polled the cache without a cache-ready transition"
     );
 
-    fixture
-        .cache
-        .put("late", &png_1x1(), CacheType::Screenshot, None, None)
-        .expect("populate cache after miss");
+    fixture.source.insert("late", png_1x1());
     fixture.store.cache_ready("late", ctx);
     wait_until(|| fixture.store.is_decoded("late"));
 
@@ -437,25 +351,16 @@ fn cache_ready_notification_retries_a_miss_without_render_polling() {
 
 #[test]
 fn cache_ready_during_loading_serializes_a_restart_after_the_stale_miss() {
-    let temp = tempfile::tempdir().expect("create cache directory");
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
-    let source = Arc::new(HeldFirstMissCacheIndex {
+    let source = Arc::new(HeldFirstReadImageBytes {
         entries: Mutex::new(HashMap::new()),
         gets: AtomicUsize::new(0),
         first_get_entered: entered_tx,
         release_first_get: Mutex::new(release_rx),
     });
-    let cache = Arc::new(
-        ContentCache::new_with_limits(
-            temp.path().to_path_buf(),
-            source.clone(),
-            test_cache_limits(),
-        )
-        .expect("create content cache"),
-    );
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
-    let store = ImageAssetStore::new(cache.clone(), runtime);
+    let store = ImageAssetStore::from_source(source.clone(), runtime);
     let owner = ImageOwner::plugin_page("plugin", "page", TabId(1));
     let ctx = eframe::egui::Context::default();
 
@@ -465,10 +370,11 @@ fn cache_ready_during_loading_serializes_a_restart_after_the_stale_miss() {
     );
     entered_rx
         .recv_timeout(Duration::from_secs(2))
-        .expect("initial cache miss reaches the held read");
-    cache
-        .put("racing", &png_1x1(), CacheType::Screenshot, None, None)
-        .expect("populate cache while stale read is held");
+        .expect("initial read reaches the held source");
+    source
+        .entries
+        .lock()
+        .insert("racing".to_string(), png_1x1());
     store.cache_ready("racing", ctx);
     release_tx.send(()).expect("release stale cache miss");
 
@@ -506,6 +412,10 @@ fn image_render_paths_do_not_read_or_decode_cached_media() {
         for forbidden in [
             ".content_cache.get",
             "cache.get(",
+            // A per-frame block on the runtime from the egui thread is what
+            // the image pipeline exists to avoid: reads and fetches belong
+            // on the store's blocking pool, not in a render pass.
+            "block_on",
             "image::load_from_memory",
             "request_repaint()",
         ] {

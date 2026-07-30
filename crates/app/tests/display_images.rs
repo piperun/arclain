@@ -107,7 +107,6 @@ impl ImageStub {
                 if stopped.load(Ordering::SeqCst) {
                     return;
                 }
-                served.fetch_add(1, Ordering::SeqCst);
                 let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
                 let mut request = Vec::new();
                 let mut chunk = [0_u8; 512];
@@ -117,6 +116,20 @@ impl ImageStub {
                         Ok(read) => request.extend_from_slice(&chunk[..read]),
                     }
                 }
+                // Only a complete request head counts, and the count
+                // happens here rather than at accept time. Loopback
+                // ephemeral ports are shared with every other test binary
+                // running in parallel -- one of them reserves a port,
+                // frees it, and connects to prove the connection is
+                // refused. If that port has since been handed to this
+                // stub, the connect lands here instead, and counting it
+                // would inflate the fetch-count assertions this stub
+                // exists to make. A bare connect sends nothing, so it
+                // never completes a request head.
+                if !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    continue;
+                }
+                served.fetch_add(1, Ordering::SeqCst);
                 let header = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n\
                      Content-Length: {}\r\nConnection: close\r\n\r\n",
@@ -494,5 +507,30 @@ fn materialized_resource_limit_is_readable_without_a_runtime() {
             .join()
             .unwrap(),
         "the ceiling is a resolved constant, not per-caller state"
+    );
+}
+
+/// The stub's counter must mean "HTTP requests served", not "TCP
+/// connections accepted".
+///
+/// Not a test of production code, but the fetch-count assertions above are
+/// only as trustworthy as this: loopback ephemeral ports are shared with
+/// every concurrently running test binary, and one of them deliberately
+/// frees a port and connects to it to prove the connection is refused. If
+/// that lands on this stub and counts, "fetched exactly once" starts
+/// failing for a reason that has nothing to do with the code under test --
+/// which is precisely how this file first went red under a full parallel
+/// run.
+#[test]
+fn the_stub_counts_requests_rather_than_connections() {
+    let stub = ImageStub::start(png_body(2048), "image/png");
+
+    drop(TcpStream::connect(stub.address).expect("connect without sending a request"));
+    std::thread::sleep(Duration::from_millis(200));
+
+    assert_eq!(
+        stub.request_count(),
+        0,
+        "a bare connect must not count as a request"
     );
 }

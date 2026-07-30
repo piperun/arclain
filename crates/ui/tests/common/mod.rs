@@ -76,7 +76,7 @@ pub fn create_test_shared_state() -> SharedState {
         services.plugin_manager.clone(),
         services.tokio_runtime.clone(),
     );
-    let image_assets = ImageAssetStore::without_cache(services.tokio_runtime.clone());
+    let image_assets = ImageAssetStore::without_source(services.tokio_runtime.clone());
     SharedState {
         app_state: Arc::new(Mutex::new(app_state)),
         services,
@@ -223,7 +223,7 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         services.plugin_manager.clone(),
         services.tokio_runtime.clone(),
     );
-    let image_assets = ImageAssetStore::without_cache(services.tokio_runtime.clone());
+    let image_assets = ImageAssetStore::without_source(services.tokio_runtime.clone());
     let shared = SharedState {
         app_state: Arc::new(Mutex::new(app_state)),
         services,
