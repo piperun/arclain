@@ -502,19 +502,17 @@ fn start_plugin_action_fails_the_operation_for_an_unknown_session() {
         }))
         .expect("start_plugin_action itself accepts any well-formed request");
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let final_state = loop {
-        let snapshot = runtime.block_on(app.operation(operation_id)).unwrap();
-        match snapshot.state {
-            OperationState::Failed { .. } | OperationState::Completed { .. } => {
-                break snapshot.state
-            }
-            _ if std::time::Instant::now() < deadline => {
-                runtime.block_on(tokio::time::sleep(Duration::from_millis(10)));
-            }
-            _ => panic!("operation did not reach a terminal state within the test deadline"),
-        }
-    };
+    // Polls through `wait_for_terminal_state` rather than a loop of
+    // `runtime.block_on(tokio::time::sleep(..))` calls: `Sleep::
+    // new_timeout` resolves the ambient Tokio runtime handle when the
+    // future is *constructed*, and a `block_on` argument expression is
+    // evaluated before `block_on` establishes that context -- so the
+    // sleep panics with "there is no reactor running" (the same footgun
+    // `recv_operation_event` documents). That branch only runs when the
+    // first poll finds the operation still in flight, which is why it
+    // stayed invisible until parallel load made the operation lose the
+    // race to the first poll.
+    let final_state = runtime.block_on(wait_for_terminal_state(&app, operation_id));
 
     match final_state {
         OperationState::Failed { error } => assert_eq!(error.kind, ApplicationErrorKind::NotFound),
