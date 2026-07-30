@@ -690,6 +690,33 @@ impl ArclainApp {
         .await?
     }
 
+    /// TRANSITIONAL, tied to the legacy egui composition -- not part of
+    /// the frontend-neutral facade, exactly like [`Self::active_tab_bridge`].
+    /// A Flutter bridge must never call it.
+    ///
+    /// Hands out the session's own `arclain_core::Archive` handle -- the
+    /// backend plus the password the open resolved (typed, auto-matched,
+    /// or challenge-answered). The egui frontend's drag-out extraction
+    /// still performs its own lazy, OS-callback-driven extraction
+    /// through a raw backend handle (`platform::drag_source`), and its
+    /// synchronous file-edit read still needs the resolved password;
+    /// before this method, the frontend re-listed the archive itself
+    /// just to re-derive a handle and password the facade already held.
+    /// Dies when drag-out moves onto `start_materialization` and the
+    /// read path onto a facade read surface.
+    ///
+    /// `NotFound` for an unknown or already-closed session id.
+    pub async fn session_archive_handle(
+        &self,
+        session_id: ArchiveSessionId,
+    ) -> Result<Arc<parking_lot::Mutex<arclain_core::Archive>>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let session = inner.archive_sessions().get(session_id).await?;
+            Ok(session.archive_arc())
+        })
+        .await?
+    }
+
     /// Computes the CRC-32 of every encrypted file entry whose listing
     /// carried none, writes the results into the session's own index
     /// (bumping its revision so cached pages/inventories refetch), and
