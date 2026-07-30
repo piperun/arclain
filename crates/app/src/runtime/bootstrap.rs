@@ -521,29 +521,11 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         plugin_event_scheduler = Some(manager.event_scheduler());
 
         // -- persisted state --
-        let top_tabs = manager.get_all_top_tabs();
-        let mut ui_items = Vec::with_capacity(top_tabs.len());
-        for (plugin_id, tab) in top_tabs {
-            ui_items.push(UiItem {
-                id: format!("plugin:{}:{}", plugin_id, tab.id),
-                region: UiRegion::Toolbar,
-                group_id: Some("plugins".to_string()),
-                label: tab.label,
-                icon: Some(tab.icon),
-                visible: true,
-                sort_order: tab.priority as i32,
-                display_mode: DisplayMode::IconAndText,
-                action_type: ActionType::Plugin,
-                action_data: Some(format!("{}:{}", plugin_id, tab.id)),
-            });
-        }
         if let Some(ui_service) = core_services.ui_service.clone() {
-            if !ui_items.is_empty() {
-                if let Err(error) = ui_service.upsert_items(&ui_items) {
-                    warn!("Failed to sync plugin UI items: {}", error);
-                } else {
-                    info!("Synced {} plugin UI items to database", ui_items.len());
-                }
+            match sync_plugin_top_tab_items(&ui_service, manager.get_all_top_tabs()) {
+                Ok(0) => {}
+                Ok(count) => info!("Synced {} plugin UI items to database", count),
+                Err(error) => warn!("Failed to sync plugin UI items: {}", error),
             }
         }
 
@@ -611,6 +593,39 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         active_archive_session: crate::plugins::ActiveArchiveSession::new(),
         tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
     })
+}
+
+/// Refresh the plugin top-tab rows of `ui_items` from the plugins' own
+/// declarations, one row per enabled plugin's top tab
+/// (`plugin:{plugin_id}:{tab_id}`, toolbar region, `plugins` group).
+/// Returns how many rows were synced.
+///
+/// Deliberately not behind `settings_write_lock`: this runs during
+/// bootstrap, before any application handle (and therefore any
+/// concurrent facade writer) exists.
+fn sync_plugin_top_tab_items(
+    ui_service: &arclain_core::services::UiService,
+    top_tabs: Vec<(String, arclain_plugins::types::TopTabConfig)>,
+) -> anyhow::Result<usize> {
+    let mut ui_items = Vec::with_capacity(top_tabs.len());
+    for (plugin_id, tab) in top_tabs {
+        ui_items.push(UiItem {
+            id: format!("plugin:{}:{}", plugin_id, tab.id),
+            region: UiRegion::Toolbar,
+            group_id: Some("plugins".to_string()),
+            label: tab.label,
+            icon: Some(tab.icon),
+            visible: true,
+            sort_order: tab.priority as i32,
+            display_mode: DisplayMode::IconAndText,
+            action_type: ActionType::Plugin,
+            action_data: Some(format!("{}:{}", plugin_id, tab.id)),
+        });
+    }
+    if !ui_items.is_empty() {
+        ui_service.upsert_items(&ui_items)?;
+    }
+    Ok(ui_items.len())
 }
 
 #[cfg(test)]
