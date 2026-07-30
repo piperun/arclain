@@ -21,14 +21,20 @@ use std::cell::Cell;
 
 /// State for the merge dialog.
 ///
-/// Carries no password field: the facade raises its own
-/// `Challenge::Password` when a set turns out to be encrypted, answered
-/// through the shared per-tab password dialog every other operation
-/// already uses. (The pre-facade state had one, but no widget here ever
-/// wrote to it, so it was always empty and an encrypted set simply
-/// failed.) It carries no output-path field either -- the merge writes
-/// beside the set's first part, and nothing in this dialog ever offered
-/// to choose otherwise.
+/// Three fields the pre-facade state carried are gone, all of them dead:
+///
+/// - `password` -- no widget here ever wrote to it, so it was always
+///   empty and an encrypted set simply failed. The facade now raises its
+///   own `Challenge::Password`, answered through the shared per-tab
+///   password dialog every other operation already uses.
+/// - `output_path` -- always `None`; the merge writes beside the set's
+///   first part and nothing here ever offered to choose otherwise.
+/// - `error` -- only ever cleared and rendered, never assigned. Both the
+///   pre-facade path and this one report merge failures through the status
+///   bar (now via `crate::core::operation_bridge`'s terminal handler), so
+///   the in-dialog error line was unreachable. The dialog is also closed
+///   by the time a merge can fail, which is why the status bar is the
+///   right place for it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergeDialogState {
     pub show: bool,
@@ -36,7 +42,6 @@ pub struct MergeDialogState {
     pub output_format: MergeOutputFormat,
     pub compression_level: MergeCompressionLevel,
     pub delete_originals: bool,
-    pub error: Option<String>,
 }
 
 impl Default for MergeDialogState {
@@ -47,7 +52,6 @@ impl Default for MergeDialogState {
             output_format: MergeOutputFormat::SevenZip,
             compression_level: MergeCompressionLevel::Normal,
             delete_originals: false,
-            error: None,
         }
     }
 }
@@ -57,7 +61,6 @@ impl MergeDialogState {
     pub fn open(&mut self, multipart: MultiPartArchiveDto) {
         self.multipart = Some(multipart);
         self.show = true;
-        self.error = None;
         self.delete_originals = false;
     }
 
@@ -254,16 +257,6 @@ pub fn render_merge_dialog(
                         });
                     }
                 });
-
-                // Error display
-                if let Some(ref error) = state.error {
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(error)
-                            .color(theme.colors.error)
-                            .size(13.0),
-                    );
-                }
             } else {
                 ui.label(
                     egui::RichText::new("No multi-part archive detected")
@@ -331,9 +324,8 @@ mod tests {
     }
 
     #[test]
-    fn opening_shows_the_set_and_clears_any_previous_error() {
+    fn opening_shows_the_set_and_resets_the_destructive_opt_in() {
         let mut state = MergeDialogState {
-            error: Some("a previous merge failed".to_string()),
             delete_originals: true,
             ..Default::default()
         };
@@ -344,7 +336,6 @@ mod tests {
             Some(3),
             "the dialog reports the parts detection actually found"
         );
-        assert!(state.error.is_none());
         assert!(
             !state.delete_originals,
             "a fresh open must not inherit the previous run's destructive opt-in"

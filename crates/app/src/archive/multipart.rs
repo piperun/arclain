@@ -102,9 +102,10 @@ impl MultiPartFormat {
 /// start from, derived from the convention rather than from whichever
 /// member was passed in: `part1.rar` for [`MultiPartFormat::RarPart`],
 /// the plain `.rar`/`.zip` for the sequence conventions, `.7z.001`/`.001`
-/// for the numbered ones. It is not guaranteed to exist -- a set whose
-/// first member is missing is exactly the "incomplete set" case
-/// [`Self::parts`] reports as empty.
+/// for the numbered ones. It is not guaranteed to exist -- a set that
+/// cannot be read from its start is exactly the "incomplete set" case
+/// [`Self::parts`] reports as empty. Note that `first_part` is the entry
+/// point, *not* necessarily `parts[0]` -- see [`Self::parts`].
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct MultiPartArchiveDto {
     /// The set member a merge or extraction must start from. Carries a
@@ -119,11 +120,20 @@ pub struct MultiPartArchiveDto {
     /// output's default file name is built from this.
     pub base_name: String,
     pub format: MultiPartFormat,
-    /// Every member of the set found on disk, in part order, starting
-    /// from `first_part`. Enumeration stops at the first gap, so a set
-    /// missing an early member reports fewer parts than exist on disk --
-    /// and an empty list means the set's *first* member is missing, which
+    /// Every member of the set found on disk, in the order a merge reads
+    /// them. Enumeration stops at the first gap, so a set missing an
+    /// early member reports fewer parts than exist on disk -- and an
+    /// empty list means the set is unreadable from its start, which
     /// [`crate::ArclainApp::start_merge`] rejects rather than attempting.
+    ///
+    /// **`parts[0]` is not always `first_part`.** For
+    /// [`MultiPartFormat::ZipSplit`] the enumeration is `.z01, .z02, …`
+    /// followed by the `.zip` *last*, while `first_part` is the `.zip` --
+    /// so for that one convention `parts.last() == first_part`. That is
+    /// `arclain_core`'s own ordering (a split ZIP's central directory
+    /// lives in the final `.zip`, which is what an extractor is pointed
+    /// at), mirrored unchanged. Address the entry point through
+    /// `first_part`, never through `parts[0]`.
     pub parts: Vec<PathBuf>,
 }
 
@@ -360,12 +370,70 @@ mod tests {
         assert_eq!(dto.first_part, dir.join("rj123456.part1.rar"));
     }
 
-    /// Pins a pre-existing `arclain_core` behavior the facade passes
-    /// through unchanged: detection lowercases the whole file name before
-    /// matching, so every path it *reports* (`first_part`, and therefore
-    /// every enumerated part) is lowercased too, whatever the real
-    /// on-disk casing was. That resolves fine on a case-insensitive
-    /// filesystem and is why enumeration finds the parts at all here.
+    /// A split ZIP's enumeration ends, rather than begins, with its entry
+    /// point: `find_zip_split_files` collects `.z01, .z02, …` and appends
+    /// the `.zip` last, while `first_part` is the `.zip`. Pinned because
+    /// the DTO documents exactly this exception, and because a consumer
+    /// reaching for `parts[0]` as "the first part" would be wrong here
+    /// and only here.
+    #[test]
+    fn a_split_zips_entry_point_is_its_last_enumerated_part() {
+        let temp = tempfile::tempdir().expect("create tempdir");
+        let dir = temp.path();
+        touch(dir, "rj444444.z01");
+        touch(dir, "rj444444.z02");
+        touch(dir, "rj444444.zip");
+
+        let dto = detect_multipart(&dir.join("rj444444.z01")).expect("member is detected");
+        assert_eq!(dto.format, MultiPartFormat::ZipSplit);
+        assert_eq!(
+            dto.parts,
+            vec![
+                dir.join("rj444444.z01"),
+                dir.join("rj444444.z02"),
+                dir.join("rj444444.zip"),
+            ]
+        );
+        assert_eq!(dto.first_part, dir.join("rj444444.zip"));
+        assert_eq!(
+            dto.parts.last(),
+            Some(&dto.first_part),
+            "for a split ZIP the entry point is the last enumerated part"
+        );
+        assert_ne!(
+            dto.parts.first(),
+            Some(&dto.first_part),
+            "...and specifically not the first, which is the exception the DTO documents"
+        );
+    }
+
+    /// Writes `probe` and checks whether `PROBE` resolves to it, i.e.
+    /// whether this filesystem is case-insensitive. Probed at runtime
+    /// rather than keyed off `cfg!(windows)`: a case-sensitive volume on
+    /// Windows and a case-insensitive one on macOS both exist, and the
+    /// behaviour under test depends on the volume, not the OS.
+    fn filesystem_is_case_insensitive(dir: &Path) -> bool {
+        let lower = dir.join("case-probe");
+        std::fs::write(&lower, b"").expect("write case probe");
+        let resolved = dir.join("CASE-PROBE").exists();
+        std::fs::remove_file(&lower).expect("remove case probe");
+        resolved
+    }
+
+    /// Pins a pre-existing `arclain_core` behaviour the facade passes
+    /// through unchanged, **and its platform consequence**: detection
+    /// lowercases the whole file name before matching, so every path it
+    /// reports (`first_part`, and therefore every enumerated part) is
+    /// lowercased whatever the real on-disk casing was.
+    ///
+    /// That only round-trips back to the real files on a case-insensitive
+    /// filesystem. On a case-sensitive one, `rj123456.part1.rar` does not
+    /// resolve to `RJ123456.Part1.RAR`, enumeration finds nothing, and the
+    /// set is refused by `start_merge` as `NotFound`: **an
+    /// uppercase-named split archive is unmergeable there.** Both
+    /// outcomes are asserted rather than one of them being allowed to pass
+    /// vacuously through an `all()` over an empty list, so this test
+    /// states the limitation executably on every platform.
     #[test]
     fn reported_paths_carry_cores_lowercased_file_names() {
         let temp = tempfile::tempdir().expect("create tempdir");
@@ -385,6 +453,25 @@ mod tests {
             "every reported part path carries a lowercased file name: {:?}",
             dto.parts
         );
+
+        if filesystem_is_case_insensitive(dir) {
+            assert_eq!(
+                dto.parts,
+                vec![
+                    dir.join("rj123456.part1.rar"),
+                    dir.join("rj123456.part2.rar"),
+                ],
+                "a case-insensitive filesystem resolves the lowercased names, so both parts \
+                 are found"
+            );
+        } else {
+            assert!(
+                dto.parts.is_empty(),
+                "on a case-sensitive filesystem the lowercased names resolve to nothing, so an \
+                 uppercase-named set enumerates no parts and start_merge refuses it: {:?}",
+                dto.parts
+            );
+        }
     }
 
     /// Enumeration stops at the first gap, so a set entered from a member
