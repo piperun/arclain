@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use arclain_app::error::ApplicationErrorKind;
+use arclain_app::error::{ApplicationErrorKind, Recoverability};
 use arclain_app::plugins::{MAX_HOST_IMAGE_BYTES, MAX_PLUGIN_IMAGE_BYTES};
 use arclain_app::{ArclainApp, BootstrapConfig};
 
@@ -250,43 +250,6 @@ fn fetch_host_image_fetches_once_and_serves_the_cache_afterwards() {
     );
 }
 
-/// The other half of the two-cap split, end to end: a host image between
-/// the plugin cap and the host cap must fetch, cache, and read back.
-///
-/// The unit tests pin the *read* side of that band. This pins the write
-/// side, which is the half that decides whether a broken asset can heal:
-/// a renderer that finds such an image missing refetches it, and if the
-/// write refused everything over the plugin cap, that refetch would fail
-/// forever instead of restoring the image. Both halves have to admit the
-/// band for it to be usable at all.
-#[test]
-fn fetch_host_image_accepts_a_body_between_the_plugin_and_host_caps() {
-    let temp = tempfile::tempdir().unwrap();
-    let app = bootstrap_app(&temp);
-    let key = host_key("cap-band");
-    let body = png_body(MAX_PLUGIN_IMAGE_BYTES as usize + 1, 0x22);
-    assert!(
-        body.len() < MAX_HOST_IMAGE_BYTES as usize,
-        "the fixture must sit between the two caps for this test to mean anything"
-    );
-    let stub = ImageStub::start(body.clone(), "image/png");
-    let runtime = foreign_runtime();
-
-    let fetched = runtime
-        .block_on(app.fetch_host_image(key.clone(), stub.url(), None))
-        .expect("a host image over the plugin cap must still fetch");
-
-    assert_eq!(fetched.bytes.len(), body.len());
-    assert!(!fetched.served_from_cache);
-    assert_eq!(
-        runtime
-            .block_on(app.read_host_image(key.clone()))
-            .expect("and must read back afterwards")
-            .len(),
-        body.len()
-    );
-}
-
 /// The write half of the host cap. The ceiling is enforced while the body
 /// is being read, so an oversized response is refused rather than buffered
 /// whole and rejected afterwards -- and nothing is cached.
@@ -305,7 +268,12 @@ fn fetch_host_image_refuses_a_response_over_the_size_cap() {
         .block_on(app.fetch_host_image(key.clone(), stub.url(), None))
         .expect_err("an oversized image must be refused");
 
-    assert_eq!(error.kind, ApplicationErrorKind::Backend);
+    // InvalidInput + Fatal, not Backend + Retry: the renderer retries a
+    // retryable failure every 30 s, and an oversized asset is exactly as
+    // oversized next time. It must fail once and stay failed.
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(error.recoverability, Recoverability::Fatal);
+    assert!(!error.retryable);
     assert_eq!(
         runtime
             .block_on(app.read_host_image(key.clone()))

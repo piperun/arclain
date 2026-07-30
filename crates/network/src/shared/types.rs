@@ -83,6 +83,17 @@ pub enum HttpError {
     #[error("Request failed: {message}")]
     RequestFailed { message: String },
 
+    /// The response body exceeded the caller's buffered-read ceiling,
+    /// either by declaring too large a `Content-Length` or by crossing the
+    /// limit mid-stream.
+    ///
+    /// Distinct from [`Self::RequestFailed`] because it is not a transport
+    /// problem: retrying fetches the same oversized resource again, so a
+    /// caller that treats it as retryable loops forever. Callers map it to
+    /// a permanent refusal.
+    #[error("Response body exceeds the {limit}-byte buffered response limit")]
+    ResponseTooLarge { limit: usize },
+
     #[error("Request timed out")]
     Timeout,
 

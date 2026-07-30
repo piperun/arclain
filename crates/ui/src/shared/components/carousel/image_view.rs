@@ -46,8 +46,10 @@ impl<'a> ImageView<'a> {
         self
     }
 
-    /// SharedState gives access to AsyncHttpClient + tokio runtime for the
-    /// cache-miss fetch path. Must be set together with `image_url`.
+    /// SharedState gives access to the image-asset store and the tokio
+    /// runtime for the cache-miss fetch path -- the request itself belongs
+    /// to the application now, not to this frontend. Must be set together
+    /// with `image_url`.
     pub fn shared_state(mut self, shared: Option<&'a SharedState>) -> Self {
         self.shared_state = shared;
         self

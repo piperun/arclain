@@ -520,27 +520,64 @@ pub struct ImageBytesDto {
     pub served_from_cache: bool,
 }
 
-/// Resolves the host-namespace raw key `cache_key` addresses, refusing a
-/// plugin-scoped one.
+/// Resolves the host-namespace raw key `cache_key` addresses, refusing
+/// anything that could name a row outside the host namespace.
 ///
 /// The refusal is the host half of the namespace boundary, and it is a
 /// security property rather than tidiness: without it, every host image
 /// method would be a second, *unauthorized* door into a plugin's cache
-/// namespace -- `read_host_image("plugin-image:victim:secret")` would hand
-/// back the victim's bytes, and a host-context write would land where the
-/// victim's own document later reads. A host-owned key and a plugin-owned
-/// key are therefore never the same string.
+/// namespace. It has to close **two** doors, not one, because a key can
+/// name a plugin's row in two different vocabularies:
+///
+/// 1. **This module's encoding** (`plugin-image:{owner}:{key}`), which
+///    `read_host_image` would otherwise resolve straight into the owner's
+///    namespace.
+/// 2. **The storage layer's own scoped encoding**
+///    (`CacheOwner::scoped_key`). This one is not obvious and was a real
+///    leak: `ContentCache`'s *host* read, remove, and has all fall back to
+///    the unscoped keyspace for rows written before owner scoping existed
+///    (`cache.rs`'s `matches!(owner, CacheOwner::Host) && self.service.has(key)`
+///    branch) -- and every plugin row is indexed under exactly that scoped
+///    string. So a host key that *is* a plugin row's scoped string reached
+///    it: verified returning another plugin's bytes verbatim, and
+///    `discard_host_image` verified destroying that plugin's entry.
+///
+/// Both checks below are therefore load-bearing, and they are deliberately
+/// belt-and-braces: [`arclain_data::CacheOwner::from_scoped_key`] is the
+/// storage layer's own parser (so this stays correct if the encoding
+/// changes shape), while the sentinel check catches a *malformed* key
+/// wearing the same marker byte, which the parser rejects but a future
+/// fallback might not.
 fn host_image_key(cache_key: &str) -> Result<&str, ApplicationError> {
-    if is_plugin_image_key(cache_key) {
-        return Err(ApplicationError::new(
-            ApplicationErrorKind::PermissionDenied,
-            "cache key belongs to a plugin image namespace, not the host",
+    let refuse = |summary: &str| {
+        Err(
+            ApplicationError::new(ApplicationErrorKind::PermissionDenied, summary)
+                .with_recoverability(Recoverability::Fatal)
+                .with_field("cache_key"),
         )
-        .with_recoverability(Recoverability::Fatal)
-        .with_field("cache_key"));
+    };
+    if is_plugin_image_key(cache_key) {
+        return refuse("cache key belongs to a plugin image namespace, not the host");
+    }
+    if arclain_data::CacheOwner::from_scoped_key(cache_key).is_some()
+        || cache_key.starts_with(CACHE_SCOPED_KEY_SENTINEL)
+    {
+        return refuse("cache key names a storage-scoped cache row, not a host image");
     }
     Ok(cache_key)
 }
+
+/// First byte of [`arclain_data::CacheOwner::scoped_key`]'s output.
+///
+/// A control character precisely so it cannot occur in a key any caller
+/// legitimately authors; a key carrying it is addressing the storage
+/// layer's internal keyspace.
+///
+/// `scoped_key` allocates, so this cannot be a compile-time assertion --
+/// `the_scoped_key_sentinel_matches_the_storage_encoding` checks it
+/// against the real encoding instead, so a change there turns red rather
+/// than quietly reopening the hole [`host_image_key`] closes.
+const CACHE_SCOPED_KEY_SENTINEL: char = '\u{1}';
 
 fn oversized_image_error(summary: &str, actual: usize, limit: usize) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::InvalidInput, summary)
@@ -714,6 +751,14 @@ pub(crate) fn fetch_plugin_image(
 /// the half a frontend could not own -- it only ever saw a fully buffered
 /// body.
 ///
+/// Because the ceiling is enforced during the read, an oversized body
+/// never reaches the checks below -- it comes back as
+/// `HttpError::ResponseTooLarge`, which [`image_fetch_error`] maps to a
+/// *permanent* refusal. A post-hoc `body.len() > max_bytes` check here
+/// would be unreachable, and reporting a size refusal as a retryable
+/// transport failure is what made an oversized asset re-fetch every 30 s
+/// forever.
+///
 /// The three response checks are the pre-facade frontend's, moved here
 /// intact: a 200 status, a body over [`MIN_FETCHED_IMAGE_BYTES`], and an
 /// `image/*` content type. Anything else is `InvalidInput`, so a cached
@@ -727,14 +772,13 @@ fn fetch_display_image(
     url: &str,
     max_bytes: usize,
 ) -> Result<Vec<u8>, ApplicationError> {
-    let response = match on_behalf_of_plugin {
-        Some(plugin_id) => http
-            .blocking_get_response_for_plugin_with_limit(plugin_id, url, max_bytes)
-            .map_err(|error| image_fetch_error(error.to_string()))?,
-        None => http
-            .blocking_get_response_with_limit(url, false, max_bytes)
-            .map_err(image_fetch_error)?,
+    let fetched = match on_behalf_of_plugin {
+        Some(plugin_id) => {
+            http.blocking_get_response_for_plugin_with_limit(plugin_id, url, max_bytes)
+        }
+        None => http.blocking_get_response_with_limit(url, false, max_bytes),
     };
+    let response = fetched.map_err(image_fetch_error)?;
 
     if response.status_code != 200 {
         return Err(ApplicationError::new(
@@ -766,20 +810,29 @@ fn fetch_display_image(
         ))
         .with_recoverability(Recoverability::Retry));
     }
-    if response.body.len() > max_bytes {
-        return Err(oversized_image_error(
-            "image fetch exceeded the maximum size",
-            response.body.len(),
-            max_bytes,
-        ));
-    }
     Ok(response.body)
 }
 
-fn image_fetch_error(diagnostic: String) -> ApplicationError {
-    ApplicationError::new(ApplicationErrorKind::Backend, "image fetch failed")
-        .with_diagnostic(diagnostic)
-        .with_recoverability(Recoverability::Retry)
+/// Maps a network failure onto the envelope, keeping "too large" apart
+/// from "the network misbehaved".
+///
+/// The distinction is the difference between a broken image and a hot
+/// loop: a renderer retries a `Retry` failure every 30 s forever, and an
+/// oversized asset is exactly as oversized on the next attempt. Size
+/// refusals are therefore `InvalidInput` and `Fatal`, so the asset fails
+/// once and stays failed.
+fn image_fetch_error(error: arclain_network::HttpError) -> ApplicationError {
+    match error {
+        arclain_network::HttpError::ResponseTooLarge { limit } => ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "image fetch exceeded the maximum size",
+        )
+        .with_diagnostic(format!("response body exceeds the {limit}-byte limit"))
+        .with_recoverability(Recoverability::Fatal),
+        other => ApplicationError::new(ApplicationErrorKind::Backend, "image fetch failed")
+            .with_diagnostic(other.to_string())
+            .with_recoverability(Recoverability::Retry),
+    }
 }
 
 // ============================================================================
@@ -2985,6 +3038,76 @@ mod tests {
         );
     }
 
+    /// Crafted key, storage vocabulary: a host key that *is* a plugin row's
+    /// storage-scoped string must neither read nor delete that row.
+    ///
+    /// This is the second, non-obvious namespace door. `ContentCache`'s
+    /// host read/remove/has fall back to the unscoped keyspace for
+    /// pre-scoping rows, and every plugin row is indexed under its scoped
+    /// string -- so before `host_image_key` learned to refuse that
+    /// vocabulary, this exact key returned the victim's bytes verbatim and
+    /// then destroyed the victim's entry. Reachable in production: the flat
+    /// legacy renderer still hands plugin-authored, unstamped `cache_key`
+    /// strings to the host path.
+    #[test]
+    fn the_host_image_surface_refuses_a_storage_scoped_key_for_a_plugin_row() {
+        let (_root, cache) = test_content_cache();
+        let victim = vec![0x33_u8; 1024];
+        let victim_key = encode_plugin_image_cache_key("victim-plugin", "secret");
+        write_plugin_image(&cache, "victim-plugin", &victim_key, &victim, None).unwrap();
+        // The exact string the storage layer indexes the victim's row under.
+        let storage_key = arclain_data::CacheOwner::plugin("victim-plugin").scoped_key("secret");
+
+        let read_error = read_host_image(&cache, &storage_key).unwrap_err();
+        let discard_error = discard_host_image(&cache, &storage_key).unwrap_err();
+
+        for error in [&read_error, &discard_error] {
+            assert_eq!(error.kind, ApplicationErrorKind::PermissionDenied);
+            assert_eq!(error.field.as_deref(), Some("cache_key"));
+        }
+        assert_eq!(
+            read_plugin_image(&cache, &victim_key).unwrap(),
+            victim,
+            "the victim's row must survive both attempts intact"
+        );
+    }
+
+    /// The same door in the other direction and in its other shapes: a
+    /// host-scoped string, and a malformed key merely wearing the sentinel.
+    #[test]
+    fn the_host_image_surface_refuses_every_storage_scoped_shape() {
+        let (_root, cache) = test_content_cache();
+        let host_scoped = arclain_data::CacheOwner::host().scoped_key("dlsite:image:RJ1");
+        let malformed = format!("{CACHE_SCOPED_KEY_SENTINEL}arclain-cache:v9:nonsense");
+
+        for key in [host_scoped.as_str(), malformed.as_str()] {
+            assert_eq!(
+                read_host_image(&cache, key).unwrap_err().kind,
+                ApplicationErrorKind::PermissionDenied,
+                "{key:?}"
+            );
+            assert_eq!(
+                discard_host_image(&cache, key).unwrap_err().kind,
+                ApplicationErrorKind::PermissionDenied,
+                "{key:?}"
+            );
+        }
+    }
+
+    /// The sentinel must stay the byte the storage layer actually emits.
+    #[test]
+    fn the_scoped_key_sentinel_matches_the_storage_encoding() {
+        for scoped in [
+            arclain_data::CacheOwner::host().scoped_key("k"),
+            arclain_data::CacheOwner::plugin("demo").scoped_key("k"),
+        ] {
+            assert!(
+                scoped.starts_with(CACHE_SCOPED_KEY_SENTINEL),
+                "storage scoped keys must still carry the sentinel: {scoped:?}"
+            );
+        }
+    }
+
     /// Crafted key, plugin door: a host-owned key must not be writable
     /// through the plugin surface either. The refusal is what keeps a
     /// plugin-attributed write out of the shared host namespace that other
@@ -3057,6 +3180,107 @@ mod tests {
             read_host_image(&cache, "dlsite:image:huge-cover").unwrap(),
             oversized_for_a_plugin
         );
+    }
+
+    /// Serves one PNG over loopback so a fetch has something real to
+    /// fetch. Answers only a complete request head, so a stray connect
+    /// from a concurrent test binary is not mistaken for a request.
+    fn image_stub(body: Vec<u8>) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the image stub");
+        let address = listener.local_addr().expect("read the stub address");
+        let server = std::thread::spawn(move || {
+            let Ok((mut socket, _)) = listener.accept() else {
+                return;
+            };
+            let _ = socket.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 512];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match socket.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&chunk[..read]),
+                }
+            }
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len(),
+            );
+            let _ = socket.write_all(header.as_bytes());
+            let _ = socket.write_all(&body);
+            let _ = socket.flush();
+        });
+        (address, server)
+    }
+
+    /// The fetch-and-cache half of the two-cap split: a host image larger
+    /// than the plugin cap but within the host cap must fetch, cache, and
+    /// read back.
+    ///
+    /// This is the path that decides whether a broken asset can *heal* --
+    /// a renderer that finds such an image missing refetches it, and a
+    /// write refusing everything over the plugin cap would make that
+    /// refetch fail forever instead of restoring the image. The read half
+    /// is pinned by
+    /// `a_host_image_larger_than_the_plugin_cap_still_round_trips`.
+    ///
+    /// Deliberately a unit test against [`test_content_cache`] rather than
+    /// a bootstrapped application: `bootstrap` resolves the cache root from
+    /// the real per-user cache directory, ignoring `paths_override`, so
+    /// every bootstrapped test shares one physical blob store and a peer's
+    /// reconciliation can delete this blob between the write and the read.
+    /// That made the bootstrapped version of this test fail deterministically
+    /// at 2, 4 and 8 test threads. The property under test is the size cap,
+    /// which needs no bootstrap at all -- so it is tested where the cache
+    /// root is this test's own.
+    #[test]
+    fn fetch_host_image_accepts_a_body_between_the_plugin_and_host_caps() {
+        let (_root, cache) = test_content_cache();
+        let body = png_fixture(MAX_PLUGIN_IMAGE_BYTES as usize + 1);
+        assert!(
+            body.len() < MAX_HOST_IMAGE_BYTES as usize,
+            "the fixture must sit between the two caps for this test to mean anything"
+        );
+        let (address, server) = image_stub(body.clone());
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let http = arclain_network::AsyncHttpClient::new(
+            runtime.handle().clone(),
+            Arc::new(parking_lot::RwLock::new(
+                arclain_network::DomainWhitelist::default(),
+            )),
+            None,
+        );
+
+        let fetched = fetch_host_image(
+            &cache,
+            &http,
+            "dlsite:image:cap-band",
+            &format!("http://{address}/cover.png"),
+            None,
+        )
+        .expect("a host image over the plugin cap must still fetch");
+
+        assert_eq!(fetched.bytes.len(), body.len());
+        assert!(!fetched.served_from_cache);
+        assert_eq!(
+            read_host_image(&cache, "dlsite:image:cap-band")
+                .expect("and must read back afterwards")
+                .len(),
+            body.len()
+        );
+        server.join().expect("the stub thread must not panic");
+    }
+
+    /// A body that clears the fetch path's minimum-size floor.
+    fn png_fixture(len: usize) -> Vec<u8> {
+        let mut body = b"\x89PNG\r\n\x1a\n".to_vec();
+        body.resize(len, 0x5A);
+        body
     }
 
     /// The read half of the host cap: an entry already on disk that

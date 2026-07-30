@@ -2275,7 +2275,7 @@ impl ArclainApp {
     /// unrecognized or uncached key; `Internal` for a cached entry that
     /// exceeds the cap or any other cache read failure.
     pub async fn read_plugin_image(&self, cache_key: String) -> Result<Vec<u8>, ApplicationError> {
-        self.dispatch(move |inner| {
+        self.dispatch_blocking(move |inner| {
             crate::plugins::read_plugin_image(image_cache(inner)?, &cache_key)
         })
         .await?
@@ -2321,7 +2321,7 @@ impl ArclainApp {
         bytes: Vec<u8>,
         source_url: Option<String>,
     ) -> Result<(), ApplicationError> {
-        self.dispatch(move |inner| {
+        self.dispatch_blocking(move |inner| {
             crate::plugins::write_plugin_image(
                 image_cache(inner)?,
                 &plugin_id,
@@ -2349,8 +2349,10 @@ impl ArclainApp {
     /// [`Self::read_plugin_image`] and nothing else); `Internal` for an
     /// entry over the cap or any other cache read failure.
     pub async fn read_host_image(&self, cache_key: String) -> Result<Vec<u8>, ApplicationError> {
-        self.dispatch(move |inner| crate::plugins::read_host_image(image_cache(inner)?, &cache_key))
-            .await?
+        self.dispatch_blocking(move |inner| {
+            crate::plugins::read_host_image(image_cache(inner)?, &cache_key)
+        })
+        .await?
     }
 
     /// Drops a host-owned cached image, reporting whether anything was
@@ -2362,7 +2364,7 @@ impl ArclainApp {
     /// refused -- evicting a plugin's own cache entry is not a frontend's
     /// call.
     pub async fn discard_host_image(&self, cache_key: String) -> Result<bool, ApplicationError> {
-        self.dispatch(move |inner| {
+        self.dispatch_blocking(move |inner| {
             crate::plugins::discard_host_image(image_cache(inner)?, &cache_key)
         })
         .await?
@@ -2393,16 +2395,16 @@ impl ArclainApp {
         url: String,
         on_behalf_of_plugin: Option<String>,
     ) -> Result<crate::plugins::ImageBytesDto, ApplicationError> {
-        self.dispatch_image_fetch(move |cache, http| {
+        self.dispatch_blocking(move |inner| {
             crate::plugins::fetch_host_image(
-                &cache,
-                &http,
+                image_cache(inner)?,
+                &inner.core_services().async_http_client,
                 &cache_key,
                 &url,
                 on_behalf_of_plugin.as_deref(),
             )
         })
-        .await
+        .await?
     }
 
     /// Serves a **plugin-scoped** image cache key, fetching `url` into the
@@ -2422,46 +2424,55 @@ impl ArclainApp {
         cache_key: String,
         url: String,
     ) -> Result<crate::plugins::ImageBytesDto, ApplicationError> {
-        self.dispatch_image_fetch(move |cache, http| {
-            crate::plugins::fetch_plugin_image(&cache, &http, &plugin_id, &cache_key, &url)
-        })
-        .await
-    }
-
-    /// Runs one blocking fetch-and-cache on the application's blocking
-    /// pool.
-    ///
-    /// `spawn_blocking`, not [`Self::dispatch`]: the work both touches the
-    /// disk cache and drives an HTTP request whose client blocks on the
-    /// runtime internally, and doing either from a runtime task panics
-    /// ("Cannot block the current thread from within a runtime"). Handing
-    /// it to a blocking-pool thread is what makes the blocking hop
-    /// unskippable rather than something a future call site can forget.
-    async fn dispatch_image_fetch<F>(
-        &self,
-        work: F,
-    ) -> Result<crate::plugins::ImageBytesDto, ApplicationError>
-    where
-        F: FnOnce(
-                Arc<arclain_core::ContentCache>,
-                Arc<arclain_network::AsyncHttpClient>,
-            ) -> Result<crate::plugins::ImageBytesDto, ApplicationError>
-            + Send
-            + 'static,
-    {
-        self.dispatch_async(move |inner| async move {
-            let handle = inner.tokio_handle().ok_or_else(shutdown_error)?;
-            let cache = image_cache(&inner)?.clone();
-            let http = inner.core_services().async_http_client.clone();
-            handle
-                .spawn_blocking(move || work(cache, http))
-                .await
-                .map_err(|join_error| {
-                    ApplicationError::new(ApplicationErrorKind::Internal, "image fetch task failed")
-                        .with_diagnostic(join_error.to_string())
-                })?
+        self.dispatch_blocking(move |inner| {
+            crate::plugins::fetch_plugin_image(
+                image_cache(inner)?,
+                &inner.core_services().async_http_client,
+                &plugin_id,
+                &cache_key,
+                &url,
+            )
         })
         .await?
+    }
+
+    /// Runs `work` on the application's **blocking** pool.
+    ///
+    /// [`Self::dispatch`]'s counterpart for work that genuinely blocks.
+    /// `dispatch` spawns onto a runtime *worker*, which is right for a
+    /// cheap state read and wrong for anything touching a disk or an HTTP
+    /// client:
+    ///
+    /// - A cache read opens a content-addressed blob, streams up to 50 MiB
+    ///   out of it and updates an index row; a discard takes the cache's
+    ///   key and root locks. On a worker that does not panic, it *occupies*
+    ///   one -- and image traffic is the highest-volume caller this facade
+    ///   has, so enough of it starves the workers the operation registry
+    ///   and session-event bridge run on.
+    /// - A fetch additionally drives a client that calls `block_on`
+    ///   internally, which from a worker thread does panic.
+    ///
+    /// Being the only route these methods have to their work is what stops
+    /// the blocking hop from being something a future call site forgets.
+    async fn dispatch_blocking<T, F>(&self, work: F) -> Result<T, ApplicationError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&AppRuntime) -> T + Send + 'static,
+    {
+        if self.inner.shut_down.load(Ordering::SeqCst) {
+            return Err(shutdown_error());
+        }
+        let Some(handle) = self.inner.tokio_handle() else {
+            return Err(shutdown_error());
+        };
+        let inner = self.inner.clone();
+        handle
+            .spawn_blocking(move || work(&inner))
+            .await
+            .map_err(|join_error| {
+                ApplicationError::new(ApplicationErrorKind::Internal, "internal task failed")
+                    .with_diagnostic(join_error.to_string())
+            })
     }
 
     /// The byte ceiling this application applies to one fully materialized

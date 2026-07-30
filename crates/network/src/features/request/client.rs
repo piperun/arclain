@@ -1328,7 +1328,7 @@ impl AsyncHttpClient {
         url: &str,
         use_proxy: bool,
         limit: usize,
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, HttpError> {
         let client = if use_proxy {
             self.plugin_context
                 .proxy_runtime
@@ -1353,10 +1353,10 @@ impl AsyncHttpClient {
                 .timeout(crate::DEFAULT_REQUEST_TIMEOUT)
                 .send()
                 .await
-                .map_err(|error| format!("Request failed: {error}"))?;
-            buffered_response_with_limit(response, limit)
-                .await
-                .map_err(|error| error.to_string())
+                .map_err(|error| HttpError::RequestFailed {
+                    message: format!("Request failed: {error}"),
+                })?;
+            buffered_response_with_limit(response, limit).await
         })
     }
 
@@ -1411,9 +1411,7 @@ async fn buffered_response_with_limit(
 }
 
 fn buffered_response_limit_error(limit: usize) -> HttpError {
-    HttpError::RequestFailed {
-        message: format!("plugin response body exceeds the {limit}-byte buffered response limit"),
-    }
+    HttpError::ResponseTooLarge { limit }
 }
 
 fn reserve_buffered_response_capacity(

@@ -141,9 +141,18 @@ pub fn plugin_scoped_image_key_owner(key: &str) -> Option<&str> {
 /// `acting_plugin_id` is `None` only for a surface with no owning plugin
 /// at all -- a host-opened lightbox, which carries no plugin-authored
 /// keys, so there is nothing to compare against.
+///
+/// The first arm is why this asks two questions rather than one. A key
+/// that is plugin-scoped but whose owner will not decode
+/// (`"plugin-image:victim"`, no second colon) has no owner to compare
+/// against, yet it is not host-owned either -- and
+/// [`is_plugin_scoped_image_key`] routes it into the plugin family. Calling
+/// it "unrestricted" would leave this guard and that router disagreeing
+/// about which namespace one key belongs to, which is the disagreement
+/// class this whole surface exists to remove. It is addressable by nobody.
 pub fn image_key_is_addressable_by(key: &str, acting_plugin_id: Option<&str>) -> bool {
     match (plugin_scoped_image_key_owner(key), acting_plugin_id) {
-        (None, _) => true,
+        (None, _) => !is_plugin_scoped_image_key(key),
         (Some(owner), Some(acting)) => owner == acting,
         (Some(_), None) => true,
     }
@@ -751,6 +760,43 @@ mod key_ownership_tests {
         assert_eq!(plugin_scoped_image_key_owner(key), Some("victim"));
         assert!(image_key_is_addressable_by(key, Some("victim")));
         assert!(!image_key_is_addressable_by(key, Some("attacker")));
+    }
+
+    /// A key that looks plugin-scoped but carries no decodable owner is
+    /// addressable by nobody, so this guard and the namespace router agree
+    /// about it rather than one calling it host-owned and the other
+    /// routing it to the plugin family.
+    #[test]
+    fn a_stamped_key_with_no_decodable_owner_is_addressable_by_nobody() {
+        for key in ["plugin-image:victim", "plugin-image:", "plugin-image"] {
+            assert_eq!(
+                is_plugin_scoped_image_key(key),
+                plugin_scoped_image_key_owner(key).is_some()
+                    || !image_key_is_addressable_by(key, None),
+                "the router and the guard disagree about {key:?}"
+            );
+        }
+        assert!(!image_key_is_addressable_by("plugin-image:victim", None));
+        assert!(!image_key_is_addressable_by(
+            "plugin-image:victim",
+            Some("victim")
+        ));
+    }
+
+    /// Case and whitespace variants are *not* the stamped encoding, so they
+    /// are ordinary host keys -- byte-exact matching is what keeps the two
+    /// vocabularies from blurring into each other.
+    #[test]
+    fn near_miss_spellings_of_the_stamp_stay_host_owned() {
+        for key in [
+            "Plugin-Image:victim:secret",
+            " plugin-image:victim:secret",
+            "plugin-imag:victim:secret",
+        ] {
+            assert!(!is_plugin_scoped_image_key(key), "{key:?}");
+            assert_eq!(plugin_scoped_image_key_owner(key), None, "{key:?}");
+            assert!(image_key_is_addressable_by(key, Some("anyone")), "{key:?}");
+        }
     }
 
     /// The host stamps its own id in front, so a plugin that tries to
