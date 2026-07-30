@@ -374,6 +374,54 @@ fn an_occupied_output_path_is_a_conflict_and_the_existing_file_is_untouched() {
     );
 }
 
+/// The destructive path's failure invariant on the **pre-flight** branches
+/// (a request refused before any tool runs): `delete_originals: true` must
+/// not make them delete anything. Uses the occupied-output refusal because
+/// it needs no external tool, so this guard runs on every machine.
+///
+/// Its sibling `a_merge_that_fails_after_running_with_delete_originals_
+/// keeps_every_part` covers the *post-attempt* failure arm, which this one
+/// cannot reach — `run_merge` returns from the pre-flight checks before
+/// the attempt loop, so a regression in the failure arm would slip past
+/// this test alone.
+#[test]
+fn a_merge_refused_before_running_with_delete_originals_keeps_every_part() {
+    let temp = tempfile::tempdir().expect("create tempdir");
+    let app = bootstrap_without_a_real_tool(&temp);
+    let runtime = foreign_runtime();
+    let sets = temp.path().join("sets");
+    let part_names = ["rj123456.part1.rar", "rj123456.part2.rar"];
+    touch_parts(&sets, &part_names);
+    let output_path = sets.join("rj123456.7z");
+    std::fs::write(&output_path, b"occupied").expect("seed the occupied output path");
+
+    runtime.block_on(async {
+        let archive =
+            detect_multipart(&sets.join("rj123456.part1.rar")).expect("the set is detected");
+        assert_eq!(archive.parts.len(), 2);
+        let mut merge = request(archive);
+        merge.delete_originals = true;
+
+        let operation_id = app
+            .start_merge(merge)
+            .await
+            .expect("the request is structurally valid");
+        match wait_for_terminal(&app, operation_id).await {
+            OperationState::Failed { error } => {
+                assert_eq!(error.kind, ApplicationErrorKind::Conflict);
+            }
+            other => panic!("expected a Conflict failure, got {other:?}"),
+        }
+    });
+
+    for name in part_names {
+        assert!(
+            sets.join(name).exists(),
+            "a merge that failed must leave {name} in place even with delete_originals set"
+        );
+    }
+}
+
 // ========================== real 7-Zip merges ==========================
 
 /// Locates a real 7-Zip CLI, if any. `MergeService` reaches for one twice
@@ -399,28 +447,17 @@ fn scratch_dir(prefix: &str) -> tempfile::TempDir {
         .expect("create scratch tempdir")
 }
 
-/// Builds a real multi-part 7-Zip set from three small files, returning
-/// the directory holding it. `password` encrypts both contents and
-/// headers, so extracting without one fails the way a real encrypted set
-/// does.
-fn build_split_set(
+/// Runs 7-Zip to build a volumed archive of everything under `source`,
+/// writing `<base_name>.7z.NNN` into `root/sets` and returning that
+/// directory. `source` is removed afterwards so nothing but the set is
+/// left for the assertions to trip over.
+fn pack_split_set(
     sevenzip: &Path,
     root: &Path,
     base_name: &str,
+    source: &Path,
     password: Option<&str>,
 ) -> PathBuf {
-    let source = root.join("source");
-    std::fs::create_dir_all(&source).expect("create fixture source dir");
-    for index in 1..=3u8 {
-        // Stored uncompressed (`-mx=0`), so each file's byte count is
-        // exactly its volume footprint and three 128 KiB volumes really
-        // result. Distinct fill bytes keep the three files distinguishable
-        // if a round-trip ever swaps content between them.
-        let bytes = vec![b'a' + index; 120_000];
-        std::fs::write(source.join(format!("part-{index}.bin")), &bytes)
-            .expect("write fixture source file");
-    }
-
     let sets = root.join("sets");
     std::fs::create_dir_all(&sets).expect("create fixture sets dir");
 
@@ -451,10 +488,45 @@ fn build_split_set(
         .expect("run 7-Zip to build the fixture set");
     assert!(status.success(), "building the fixture split set failed");
 
-    // Remove the staging source so nothing but the set itself is left in
-    // `root` for the assertions to trip over.
-    std::fs::remove_dir_all(&source).expect("remove fixture source dir");
+    std::fs::remove_dir_all(source).expect("remove fixture source dir");
     sets
+}
+
+/// Builds a real multi-part 7-Zip set from three small files, returning
+/// the directory holding it. `password` encrypts both contents and
+/// headers, so extracting without one fails the way a real encrypted set
+/// does.
+fn build_split_set(
+    sevenzip: &Path,
+    root: &Path,
+    base_name: &str,
+    password: Option<&str>,
+) -> PathBuf {
+    let source = root.join("source");
+    std::fs::create_dir_all(&source).expect("create fixture source dir");
+    for index in 1..=3u8 {
+        // Stored uncompressed (`-mx=0`), so each file's byte count is
+        // exactly its volume footprint and three 128 KiB volumes really
+        // result. Distinct fill bytes keep the three files distinguishable
+        // if a round-trip ever swaps content between them.
+        let bytes = vec![b'a' + index; 120_000];
+        std::fs::write(source.join(format!("part-{index}.bin")), &bytes)
+            .expect("write fixture source file");
+    }
+
+    pack_split_set(sevenzip, root, base_name, &source, password)
+}
+
+/// Builds a real split set whose only member is an empty directory. Its
+/// extraction succeeds and yields no *files*, which is how
+/// `MergeService::merge` is made to fail on its own ("No files were
+/// extracted from the archive") without an exit code in the message —
+/// i.e. reaching the post-attempt failure arm rather than being
+/// misclassified as a password problem.
+fn build_fileless_split_set(sevenzip: &Path, root: &Path, base_name: &str) -> PathBuf {
+    let source = root.join("source");
+    std::fs::create_dir_all(source.join("empty")).expect("create fixture source dir");
+    pack_split_set(sevenzip, root, base_name, &source, None)
 }
 
 /// Every entry path in `archive`, sorted -- what a round-trip must
@@ -821,6 +893,68 @@ fn merging_an_encrypted_set_writes_an_unencrypted_archive() {
     );
 }
 
+/// The destructive path's failure invariant on the **post-attempt** arm:
+/// core ran, got far enough to extract, and then failed — and
+/// `delete_originals: true` must still leave every part in place. The
+/// pre-flight sibling cannot reach this arm (see its doc comment), so
+/// without this test a regression that deleted on a genuine merge failure
+/// would go unnoticed.
+///
+/// The failure is induced with a set whose only member is an empty
+/// directory: extraction succeeds, yields no files, and core bails with
+/// prose carrying no exit code — so it classifies as a real failure rather
+/// than as a password problem.
+#[test]
+fn a_merge_that_fails_after_running_with_delete_originals_keeps_every_part() {
+    let Some(sevenzip) = detect_real_sevenzip() else {
+        eprintln!(
+            "skipping a_merge_that_fails_after_running_with_delete_originals_keeps_every_part: \
+             no real 7-Zip CLI on this machine"
+        );
+        return;
+    };
+    let temp = scratch_dir("merge-failpath-");
+    let sets = build_fileless_split_set(&sevenzip, temp.path(), "rj123456");
+    let first_part = sets.join("rj123456.7z.001");
+
+    let paths = support::temp_paths(&temp.path().join("profile"));
+    support::seed_working_sevenzip_config(&paths, &sevenzip);
+    let app = bootstrap_app(paths);
+    let runtime = foreign_runtime();
+
+    let enumerated = runtime.block_on(async {
+        let archive = detect_multipart(&first_part).expect("the set is detected");
+        let enumerated = archive.parts.clone();
+        assert!(!enumerated.is_empty());
+        let mut merge = request(archive);
+        merge.delete_originals = true;
+
+        let operation_id = app
+            .start_merge(merge)
+            .await
+            .expect("the request is structurally valid");
+        match wait_for_terminal(&app, operation_id).await {
+            OperationState::Failed { error } => {
+                assert_eq!(error.kind, ApplicationErrorKind::Backend);
+            }
+            other => panic!("expected a Backend failure after the attempt ran, got {other:?}"),
+        }
+        enumerated
+    });
+
+    for part in enumerated {
+        assert!(
+            part.exists(),
+            "a merge that ran and then failed must leave every part in place even with \
+             delete_originals set"
+        );
+    }
+    assert!(
+        !sets.join("rj123456.7z").exists(),
+        "and it must not have left an output archive behind"
+    );
+}
+
 #[test]
 fn a_seeded_password_merges_an_encrypted_set_without_prompting() {
     let Some(sevenzip) = detect_real_sevenzip() else {
@@ -875,6 +1009,10 @@ fn a_seeded_password_merges_an_encrypted_set_without_prompting() {
 /// merge is parked on its password challenge, so extraction has already
 /// failed and nothing has been written. Cancelling there must leave the
 /// output path empty and every original part in place.
+///
+/// Runs with `delete_originals: true` on purpose -- with the flag unset,
+/// the surviving-parts assertion below could not fail no matter what the
+/// deletion path did.
 #[test]
 fn cancelling_a_merge_parked_on_its_password_challenge_leaves_nothing_behind() {
     let Some(sevenzip) = detect_real_sevenzip() else {
@@ -896,8 +1034,10 @@ fn cancelling_a_merge_parked_on_its_password_challenge_leaves_nothing_behind() {
     runtime.block_on(async {
         let mut receiver = app.subscribe_operations();
         let archive = detect_multipart(&first_part).expect("the set is detected");
+        let mut merge = request(archive);
+        merge.delete_originals = true;
         let operation_id = app
-            .start_merge(request(archive))
+            .start_merge(merge)
             .await
             .expect("the request is structurally valid");
 
@@ -922,5 +1062,118 @@ fn cancelling_a_merge_parked_on_its_password_challenge_leaves_nothing_behind() {
             sets.join(format!("rj123456.7z.{index:03}")).exists(),
             "a cancelled merge never deletes originals"
         );
+    }
+}
+
+/// The window a `MergeService`-owned deletion could not make safe: a
+/// cancellation arriving around the moment the merge finishes writing.
+///
+/// The cancel is issued the instant core reports its own final progress
+/// ("Merge complete", emitted immediately before `merge()` returns `Ok`),
+/// which is as close to that moment as a caller can aim from outside. Two
+/// interleavings are possible and **both are correct**:
+///
+/// - the cancellation transition wins the registry -> terminal
+///   `Cancelled`, and the parts must all survive (the facade sequences its
+///   own deletion after reading the terminal state back, so it never
+///   runs);
+/// - this operation's own `Completed { Merged }` wins -> the parts are
+///   deleted, exactly as a plain successful merge would.
+///
+/// So the assertion is the implication, not one fixed outcome, which is
+/// why this test can never flake. It is nonetheless the test that bites on
+/// the regression: with deletion delegated to core, the first interleaving
+/// reported `Cancelled` *with the parts already gone*, and the
+/// surviving-parts branch below fails.
+#[test]
+fn cancelling_a_merge_as_it_finishes_never_loses_the_parts_silently() {
+    let Some(sevenzip) = detect_real_sevenzip() else {
+        eprintln!(
+            "skipping cancelling_a_merge_as_it_finishes_never_loses_the_parts_silently: \
+             no real 7-Zip CLI on this machine"
+        );
+        return;
+    };
+    let temp = scratch_dir("merge-cancel-late-");
+    let sets = build_split_set(&sevenzip, temp.path(), "rj123456", None);
+    let first_part = sets.join("rj123456.7z.001");
+    let output_path = sets.join("rj123456.7z");
+
+    let paths = support::temp_paths(&temp.path().join("profile"));
+    support::seed_working_sevenzip_config(&paths, &sevenzip);
+    let app = bootstrap_app(paths);
+    let runtime = foreign_runtime();
+
+    let terminal = runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let archive = detect_multipart(&first_part).expect("the set is detected");
+        let mut merge = request(archive);
+        merge.delete_originals = true;
+        let operation_id = app
+            .start_merge(merge)
+            .await
+            .expect("the request is structurally valid");
+
+        // Race the cancel against the very end of the merge: core emits
+        // "Merge complete" after its own last cancellation check and
+        // immediately before returning.
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!remaining.is_zero(), "the merge never reported completion");
+            let event = match tokio::time::timeout(remaining, receiver.recv()).await {
+                Ok(Ok(event)) => event,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                    panic!("the operation event stream closed early")
+                }
+                Err(_) => panic!("the merge never reported completion"),
+            };
+            if event.operation_id != operation_id {
+                continue;
+            }
+            let reached_cores_last_report = matches!(
+                &event.state,
+                OperationState::Progress { message: Some(message), .. }
+                    if message == "Merge complete"
+            );
+            let already_terminal = matches!(
+                event.state,
+                OperationState::Completed { .. }
+                    | OperationState::Cancelled
+                    | OperationState::Failed { .. }
+            );
+            if reached_cores_last_report || already_terminal {
+                break;
+            }
+        }
+        let _ = app.cancel_operation(operation_id).await;
+        wait_for_terminal(&app, operation_id).await
+    });
+
+    let parts: Vec<PathBuf> = (1..=3)
+        .map(|index| sets.join(format!("rj123456.7z.{index:03}")))
+        .collect();
+    match terminal {
+        OperationState::Cancelled => {
+            assert!(
+                parts.iter().all(|part| part.exists()),
+                "a merge reported as Cancelled must never have deleted its parts -- that is the \
+                 whole reason this operation owns the deletion instead of delegating it"
+            );
+        }
+        OperationState::Completed {
+            result: OperationResult::Merged {
+                output_path: written,
+            },
+        } => {
+            assert_eq!(written, output_path);
+            assert!(written.exists());
+            assert!(
+                parts.iter().all(|part| !part.exists()),
+                "a merge reported as Completed with delete_originals must have removed the parts"
+            );
+        }
+        other => panic!("expected Cancelled or Completed{{Merged}}, got {other:?}"),
     }
 }

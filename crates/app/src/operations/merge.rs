@@ -50,12 +50,16 @@
 //!   `archive.first_part` and must agree on the set's identity, so a set
 //!   that changed underneath the dialog is a structured error rather than
 //!   a merge of something else.
-//! - **The caller's part list cannot direct file deletion.** The core
-//!   `MultiPartArchive` this hands to `MergeService` is always built with
-//!   an *empty* `all_parts`, which forces `validate()` to re-enumerate
-//!   from disk. That matters because `delete_originals` removes exactly
-//!   the enumerated list: honoring a caller-supplied list would turn a
+//! - **The caller's part list cannot direct file deletion.** Neither the
+//!   core `MultiPartArchive` handed to `MergeService` (always built with
+//!   an *empty* `all_parts`, forcing `validate()` to re-enumerate from
+//!   disk) nor this operation's own cleanup step ever reads
+//!   `MergeRequest::archive::parts`. Both work from a disk-derived
+//!   enumeration, because honoring a caller-supplied list would turn a
 //!   request field into an arbitrary-file-deletion primitive.
+//! - **`delete_originals` is sequenced against the terminal state**, not
+//!   against core's own last cancellation check -- so a cancelled merge
+//!   provably keeps its parts. See [`run_merge`]'s doc comment.
 //!
 //! # Preserved: merging an encrypted set produces an *unencrypted* archive
 //!
@@ -196,9 +200,12 @@ pub struct MergeRequest {
     /// when given none.
     pub output_path: Option<PathBuf>,
     /// Deletes every part the merge enumerated, after the output archive
-    /// has been written successfully. A part that cannot be removed is
-    /// logged and skipped (core's own behavior), not treated as a merge
-    /// failure.
+    /// has been written *and* this operation's terminal state has been
+    /// observed to be `Completed { Merged }` -- so a cancelled or failed
+    /// merge never deletes anything (see [`run_merge`]'s doc comment for
+    /// why that sequencing is enforced here rather than delegated). A part
+    /// that cannot be removed is logged and skipped (core's own
+    /// behaviour), not treated as a merge failure.
     pub delete_originals: bool,
     /// A password to try first, for a set whose contents are encrypted.
     /// `None` starts with no password and lets the operation raise
@@ -316,15 +323,21 @@ fn set_changed_error(first_part: &Path) -> ApplicationError {
     .with_path(first_part.to_path_buf())
 }
 
-/// No member of the set was found starting from its first part.
-/// Distinct from [`set_no_longer_detected_error`]: the naming convention
-/// still matches (so this *is* a member of some set), but the run of
-/// parts a merge must read does not start where it has to.
+/// Enumerating the set from its start found no members at all. Distinct
+/// from [`set_no_longer_detected_error`]: the naming convention still
+/// matches (so this *is* a member of some set), but the run of parts a
+/// merge must read does not begin where the convention requires.
+///
+/// Worded without naming *which* member is missing on purpose: which one
+/// that is depends on the convention (a `.partN.rar` set starts at
+/// `part1`, a split ZIP's enumeration starts at `.z01` even though its
+/// entry point is the `.zip`), and guessing wrong in a user-facing string
+/// is worse than staying general.
 fn incomplete_set_error(first_part: &Path) -> ApplicationError {
     ApplicationError::new(
         ApplicationErrorKind::NotFound,
-        "this split archive is incomplete -- its first part is missing, so there is nothing to \
-         merge from",
+        "this split archive is incomplete -- none of its parts could be found, so there is \
+         nothing to merge from",
     )
     .with_recoverability(Recoverability::Fatal)
     .with_path(first_part.to_path_buf())
@@ -440,6 +453,137 @@ fn merge_attempt(
     }
 }
 
+/// What [`run_merge`] does once one attempt's outcome is known.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PostAttempt {
+    /// Publish `Completed { Merged }`, then honour `delete_originals`.
+    Complete,
+    /// Stop without publishing anything: cancellation was requested and
+    /// this attempt did not succeed, so the registry's own `Cancelled`
+    /// (published by `cancel_operation` itself) is the whole story.
+    Stop,
+    /// Raise another password challenge and retry the attempt.
+    Prompt,
+    /// Publish `Failed`.
+    Fail,
+}
+
+/// Decides what to do with one attempt's outcome.
+///
+/// Split out of [`run_merge`] because the one rule here that is easy to
+/// get wrong is impossible to test by racing a real merge: **a merge that
+/// actually succeeded must be reported as a success even when
+/// cancellation was requested.** By the time core returns `Ok`, the
+/// output archive is written; suppressing `Completed { Merged }` at that
+/// point would throw away the only value that tells a frontend where the
+/// result is, in exchange for nothing. Cancellation only decides the fate
+/// of an attempt that did *not* finish.
+fn decide_post_attempt(outcome: &MergeAttempt, cancellation_requested: bool) -> PostAttempt {
+    match outcome {
+        MergeAttempt::Merged(_) => PostAttempt::Complete,
+        MergeAttempt::PasswordRequired if cancellation_requested => PostAttempt::Stop,
+        MergeAttempt::PasswordRequired => PostAttempt::Prompt,
+        MergeAttempt::Failed(_) if cancellation_requested => PostAttempt::Stop,
+        MergeAttempt::Failed(_) => PostAttempt::Fail,
+    }
+}
+
+/// Publishes a successful merge's terminal state and then, only if that
+/// state is what actually landed, deletes the original parts.
+///
+/// The read-back is the load-bearing part. `OperationRegistry::cancel`
+/// sets the cancel flag *and* transitions to `Cancelled` in one call, so
+/// a cancellation racing this function can win the registry's write lock
+/// and make `Cancelled` terminal — at which point `transition` no-ops and
+/// this operation must not delete anything. Reading the state back after
+/// the transition settles that unambiguously: `Completed` is terminal, so
+/// once observed it can never be superseded, and any other observed state
+/// means the merge is not the operation's outcome and the parts stay.
+///
+/// `parts` is `None` when the request did not ask for deletion. When set,
+/// it is always the disk-derived enumeration taken before the attempt ran
+/// — the same list, from the same source, that `MergeService`'s own
+/// cleanup step would have used — never anything the caller supplied.
+async fn finish_successful_merge(
+    inner: &Arc<AppRuntime>,
+    operation_id: OperationId,
+    output_path: PathBuf,
+    parts: Option<&[PathBuf]>,
+) {
+    // Emitted before the terminal transition, since a `Progress` event
+    // published after one is silently dropped. Reported at 100 rather
+    // than core's own 90: core has already emitted its own 100
+    // ("Merge complete") by now, and a progress bar must not run
+    // backwards.
+    if parts.is_some() {
+        let _ = inner
+            .operations()
+            .transition(
+                operation_id,
+                OperationState::Progress {
+                    completed_units: 100,
+                    total_units: Some(100),
+                    message: Some("Deleting original parts...".to_string()),
+                },
+            )
+            .await;
+    }
+
+    let result = OperationResult::Merged {
+        output_path: output_path.clone(),
+    };
+    if inner
+        .operations()
+        .transition(operation_id, OperationState::Completed { result })
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let Some(parts) = parts else {
+        return;
+    };
+    let landed_as_completed = matches!(
+        inner.operations().operation(operation_id).await,
+        Some(snapshot)
+            if matches!(
+                snapshot.state,
+                OperationState::Completed {
+                    result: OperationResult::Merged { .. }
+                }
+            )
+    );
+    if !landed_as_completed {
+        return;
+    }
+    delete_original_parts(parts);
+}
+
+/// Removes every part of a merged set, mirroring `MergeService`'s own
+/// cleanup step (which [`run_merge`] asks core to skip). A part that
+/// cannot be removed is logged and skipped rather than failing the merge
+/// — core's behaviour, and the right one: the output archive already
+/// holds the content, so a leftover part is untidy, not a failure.
+///
+/// Only the part's file name is logged, never its directory: a warning
+/// line is not the vetted channel for exposing a user's filesystem
+/// layout (the same reason `ApplicationError::path` is opt-in).
+fn delete_original_parts(parts: &[PathBuf]) {
+    for part in parts {
+        let name = part
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "<unnamed>".to_string());
+        match std::fs::remove_file(part) {
+            Ok(()) => tracing::debug!("deleted merged split-archive part {name}"),
+            Err(error) => {
+                tracing::warn!("failed to delete merged split-archive part {name}: {error}");
+            }
+        }
+    }
+}
+
 /// Raises a `Challenge::Password` on `operation_id`, awaits the caller's
 /// response, and returns the freshly supplied password. `None` means the
 /// operation was cancelled (or the challenge channel closed) while
@@ -500,12 +644,12 @@ async fn await_password_retry(
 /// *directly* here: `arclain_core::archive::CancellationToken` is the
 /// same `Arc<AtomicBool>` the registry hands out, so it is passed to
 /// `MergeService::merge` unchanged and the merge itself observes
-/// cancellation at core's own three checkpoints. Cancellation therefore
-/// remains checkpoint-based -- neither the extraction nor the compression
-/// child process is killed mid-run (there is no lower-level hook for
-/// either, the same documented limitation `crate::operations::
-/// archive_mutation` has for its backend calls) -- and what survives a
-/// cancellation depends on which checkpoint observed it:
+/// cancellation at core's own checkpoints. Cancellation therefore remains
+/// checkpoint-based -- neither the extraction nor the compression child
+/// process is killed mid-run (there is no lower-level hook for either,
+/// the same documented limitation `crate::operations::archive_mutation`
+/// has for its backend calls) -- and what survives depends on which
+/// checkpoint observed it:
 ///
 /// - **Before/at validation** (the common case: cancelling while the
 ///   dialog is still up, or immediately after starting): nothing has been
@@ -513,20 +657,44 @@ async fn await_password_retry(
 /// - **After extraction, before compression**: the extracted content
 ///   lived in a `tempfile::TempDir` that core drops on the way out, so it
 ///   is removed. Still no output archive.
-/// - **After compression, before deleting originals**: the output archive
-///   is *complete and left in place*, and the original parts are **not**
-///   deleted. This window is core's own, pre-existing shape -- its last
-///   `check_cancelled()` sits between writing the archive and honoring
-///   `delete_originals` -- and this operation preserves it rather than
-///   deleting a finished archive out from under a user. A cancellation
-///   observed here still reports `OperationState::Cancelled`, so a
-///   frontend must not assume "cancelled" implies "nothing was written".
+/// - **After compression**: the output archive is *complete and left in
+///   place*. That window is core's own, pre-existing shape, preserved
+///   rather than "fixed" by deleting a finished archive out from under a
+///   user -- so a frontend must not read `OperationState::Cancelled` as
+///   "nothing was written".
 /// - **While parked on a password challenge**: extraction has already
 ///   failed, so the temporary directory is gone and nothing was written.
 ///
-/// A cancelled merge never deletes originals at any checkpoint: the
-/// deletion step is the last thing core does, after the final
-/// cancellation check.
+/// ## Two guarantees that hold at the *composition* level, not core's
+///
+/// The cancel flag can be set at any instant, including after core's own
+/// last check has already passed. Two properties therefore cannot be
+/// delegated to `MergeService` and are enforced here instead:
+///
+/// 1. **A merge that finished always reports that it finished.** The
+///    cancel flag is never allowed to suppress a successful attempt --
+///    see [`decide_post_attempt`]. Once core returns `Ok`, the output
+///    archive exists, and withholding `Completed { Merged }` would
+///    discard the only value telling a frontend where it is. (Whether
+///    that publish or a concurrently-arriving `Cancelled` becomes the
+///    terminal state is the registry's call; both are honest, and
+///    guarantee 2 covers either.)
+/// 2. **`Cancelled` always implies the original parts survived.** This is
+///    why `delete_originals` is *not* delegated to core: core's final
+///    `check_cancelled()` sits before its own deletion loop, so a cancel
+///    landing in the window `[core's check passes] -> [N remove_file] ->
+///    [core returns Ok] -> [this worker resumes]` would have deleted the
+///    parts while the operation reported `Cancelled` -- the parts gone
+///    and the `Merged { output_path }` needed to find the result never
+///    emitted. Instead core is always called with `delete_originals:
+///    false`, and [`finish_successful_merge`] deletes only after reading
+///    this operation's own terminal state back as `Completed { Merged }`.
+///    `Completed` is terminal and so cannot be superseded once observed,
+///    which makes the implication exact rather than probable.
+///
+/// The parts deleted are always the disk-derived enumeration taken before
+/// the attempt ran -- the same source, at the same point in the sequence,
+/// core's own cleanup step used -- never anything the caller supplied.
 pub(crate) async fn run_merge(
     inner: Arc<AppRuntime>,
     operation_id: OperationId,
@@ -615,7 +783,12 @@ pub(crate) async fn run_merge(
             output_format: request.output_format.to_core(),
             output_path: Some(output_path.clone()),
             compression_level: request.compression_level.to_core(),
-            delete_originals: request.delete_originals,
+            // Always `false`, whatever the request asked for: this
+            // operation performs the deletion itself, after publishing
+            // its own terminal state. See `run_merge`'s doc comment for
+            // why that sequencing -- not core's -- is what makes
+            // "`Cancelled` implies the parts survived" true.
+            delete_originals: false,
             password: current_password.clone(),
         };
 
@@ -671,39 +844,44 @@ pub(crate) async fn run_merge(
             }
         };
 
-        // Checked before classifying the failure: core reports a
-        // cancellation as an ordinary `Err`, and the registry has already
-        // published `Cancelled` by the time the flag is set, so there is
-        // nothing left for this worker to do but stop.
-        if inner.operations().is_cancelled(operation_id).await {
-            return;
-        }
+        // Deliberately consulted *after* the outcome is known, and never
+        // allowed to suppress a success -- see `decide_post_attempt`.
+        let cancellation_requested = inner.operations().is_cancelled(operation_id).await;
 
-        match outcome {
-            MergeAttempt::Merged(written_path) => {
-                let _ = inner
-                    .operations()
-                    .transition(
-                        operation_id,
-                        OperationState::Completed {
-                            result: OperationResult::Merged {
-                                output_path: written_path,
-                            },
-                        },
-                    )
-                    .await;
+        match decide_post_attempt(&outcome, cancellation_requested) {
+            PostAttempt::Complete => {
+                let written_path = match outcome {
+                    MergeAttempt::Merged(written_path) => written_path,
+                    // Unreachable: `decide_post_attempt` only answers
+                    // `Complete` for `Merged`. Handled rather than
+                    // `unreachable!()` so a future variant cannot turn a
+                    // classification mistake into a panic on a
+                    // destructive path.
+                    _ => return,
+                };
+                finish_successful_merge(
+                    &inner,
+                    operation_id,
+                    written_path,
+                    request.delete_originals.then_some(current.parts.as_slice()),
+                )
+                .await;
                 return;
             }
-            MergeAttempt::PasswordRequired => {
+            PostAttempt::Stop => return,
+            PostAttempt::Fail => {
+                let MergeAttempt::Failed(error) = outcome else {
+                    return;
+                };
+                fail(&inner, operation_id, merge_backend_error(error)).await;
+                return;
+            }
+            PostAttempt::Prompt => {
                 match await_password_retry(&inner, operation_id, &archive_name, &mut attempt).await
                 {
                     Some(password) => current_password = Some(password),
                     None => return,
                 }
-            }
-            MergeAttempt::Failed(error) => {
-                fail(&inner, operation_id, merge_backend_error(error)).await;
-                return;
             }
         }
     }
@@ -891,6 +1069,71 @@ mod tests {
         let mut other_first = requested.clone();
         other_first.first_part = PathBuf::from("/sets/RJ999999.part1.rar");
         assert!(!describes_the_same_set(&requested, &other_first));
+    }
+
+    /// The regression this pins: a cancel landing after core has already
+    /// written the output must not suppress `Completed { Merged }`. An
+    /// earlier revision consulted the cancel flag before matching the
+    /// outcome *at all*, so a merge that had genuinely finished reported
+    /// only `Cancelled` — and the caller lost the one value telling it
+    /// where the result is. Deterministic by construction: the flag is
+    /// passed in rather than raced.
+    #[test]
+    fn a_successful_attempt_is_completed_even_when_cancellation_was_requested() {
+        let merged = MergeAttempt::Merged(PathBuf::from("/sets/rj123456.7z"));
+        assert_eq!(
+            decide_post_attempt(&merged, true),
+            PostAttempt::Complete,
+            "a merge that finished must report that it finished"
+        );
+        assert_eq!(decide_post_attempt(&merged, false), PostAttempt::Complete);
+    }
+
+    /// The other half of the same rule: cancellation *does* decide the
+    /// fate of an attempt that did not finish, and it must not turn into a
+    /// password prompt or a `Failed` event for an operation the registry
+    /// has already reported as `Cancelled`.
+    #[test]
+    fn an_unfinished_attempt_stops_when_cancellation_was_requested() {
+        assert_eq!(
+            decide_post_attempt(&MergeAttempt::PasswordRequired, true),
+            PostAttempt::Stop
+        );
+        assert_eq!(
+            decide_post_attempt(&MergeAttempt::PasswordRequired, false),
+            PostAttempt::Prompt
+        );
+
+        let failed = || MergeAttempt::Failed(anyhow::anyhow!("7z failed (code Some(1)): nope"));
+        assert_eq!(decide_post_attempt(&failed(), true), PostAttempt::Stop);
+        assert_eq!(decide_post_attempt(&failed(), false), PostAttempt::Fail);
+    }
+
+    /// `delete_original_parts` is the only code in this crate that removes
+    /// a user's files, and it must remove exactly what it is handed and
+    /// tolerate a member that is already gone (core logs and skips one it
+    /// cannot remove; so does this).
+    #[test]
+    fn deleting_original_parts_removes_each_one_and_tolerates_a_missing_member() {
+        let temp = tempfile::tempdir().expect("create tempdir");
+        let dir = temp.path();
+        let present = dir.join("rj123456.part1.rar");
+        let also_present = dir.join("rj123456.part2.rar");
+        let never_existed = dir.join("rj123456.part3.rar");
+        std::fs::write(&present, b"").expect("write part");
+        std::fs::write(&also_present, b"").expect("write part");
+        let bystander = dir.join("keep-me.bin");
+        std::fs::write(&bystander, b"keep").expect("write bystander");
+
+        delete_original_parts(&[present.clone(), also_present.clone(), never_existed.clone()]);
+
+        assert!(!present.exists());
+        assert!(!also_present.exists());
+        assert!(!never_existed.exists());
+        assert!(
+            bystander.exists(),
+            "only the parts handed in may be removed"
+        );
     }
 
     #[test]
