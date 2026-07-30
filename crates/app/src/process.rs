@@ -393,6 +393,48 @@ pub(crate) fn preset_to_core(
     })
 }
 
+/// Clears every stored `PipelineStep::Convert::password` in `presets`,
+/// reporting whether anything was actually cleared.
+///
+/// ## Why this exists, and why it runs on the *write* paths
+///
+/// `arclain_core::PipelineStep::Convert` carries a `password:
+/// Option<String>` that the pipeline executor never reads -- it binds
+/// the field (`executor.rs`'s `Convert` arm: `password: _`) and
+/// discards it. A pre-facade Process page nonetheless offered a
+/// password text field for it, so a user who typed one had the plain
+/// secret serialized into `pipeline_presets.json` in the configuration
+/// directory, where it does nothing but sit.
+///
+/// [`PipelineStepDto`] has no counterpart field, so a preset *rewritten*
+/// through this facade loses it. That alone is not enough: both write
+/// paths are read-modify-write over the whole file, so saving preset A
+/// re-serializes preset B verbatim -- actively re-persisting B's secret
+/// on every unrelated save. This makes any write that touches the file
+/// clear the whole file's secrets, which is the only point at which the
+/// residue actually stops being rewritten.
+///
+/// **Deliberately not done on load.** `arclain_core::load_presets`
+/// collapses *missing*, *unreadable* and *unparseable* into one answer
+/// (the built-ins), so a rewrite driven off its return value would
+/// silently overwrite a corrupt-but-hand-recoverable presets file with
+/// the two shipped defaults, destroying every preset the user has. The
+/// write paths are safe because the user asked for a write: the file is
+/// being replaced either way, and this only changes what is put in it.
+pub(crate) fn strip_stored_step_secrets(presets: &mut [arclain_core::SavedPreset]) -> bool {
+    let mut stripped = false;
+    for preset in presets.iter_mut() {
+        for step in preset.pipeline.steps.iter_mut() {
+            if let arclain_core::PipelineStep::Convert { password, .. } = step {
+                if password.take().is_some() {
+                    stripped = true;
+                }
+            }
+        }
+    }
+    stripped
+}
+
 /// Maps one `arclain_core::PreviewEntry`. Entry-level rather than
 /// whole-preview because [`crate::runtime::process_ops`] assembles the
 /// result from one core preview *per input* -- see
@@ -506,6 +548,84 @@ mod tests {
         let error = preset_to_core(&input).unwrap_err();
         assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
         assert_eq!(error.field.as_deref(), Some("rule_id"));
+    }
+
+    // ── stored-secret stripping ─────────────────────────────────────────
+
+    fn legacy_preset_with_password(name: &str, password: &str) -> arclain_core::SavedPreset {
+        arclain_core::SavedPreset {
+            name: name.to_string(),
+            pipeline: arclain_core::Pipeline {
+                input: None,
+                steps: vec![
+                    arclain_core::PipelineStep::Flatten {
+                        strip_common_prefix: true,
+                        max_depth: 1,
+                    },
+                    arclain_core::PipelineStep::Convert {
+                        format: arclain_core::ConvertFormat::Zip,
+                        compression: arclain_core::CompressionLevel::Normal,
+                        password: Some(password.to_string()),
+                    },
+                ],
+                output: arclain_core::PipelineOutput::SameFolder,
+                collision_policy: None,
+                output_artifact: arclain_core::OutputArtifact::Archive,
+            },
+        }
+    }
+
+    fn stored_passwords(presets: &[arclain_core::SavedPreset]) -> Vec<Option<String>> {
+        presets
+            .iter()
+            .flat_map(|preset| &preset.pipeline.steps)
+            .filter_map(|step| match step {
+                arclain_core::PipelineStep::Convert { password, .. } => Some(password.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stripping_clears_every_stored_convert_password_and_nothing_else() {
+        let mut presets = vec![
+            legacy_preset_with_password("Legacy A", "hunter2"),
+            legacy_preset_with_password("Legacy B", "correct horse"),
+        ];
+        let before_steps: Vec<usize> = presets
+            .iter()
+            .map(|preset| preset.pipeline.steps.len())
+            .collect();
+
+        assert!(strip_stored_step_secrets(&mut presets));
+        assert_eq!(stored_passwords(&presets), vec![None, None]);
+
+        // The steps themselves are untouched -- this clears a field, it
+        // does not rewrite the pipeline.
+        let after_steps: Vec<usize> = presets
+            .iter()
+            .map(|preset| preset.pipeline.steps.len())
+            .collect();
+        assert_eq!(after_steps, before_steps);
+        assert!(matches!(
+            presets[0].pipeline.steps[0],
+            arclain_core::PipelineStep::Flatten {
+                strip_common_prefix: true,
+                max_depth: 1
+            }
+        ));
+        assert_eq!(presets[0].name, "Legacy A");
+    }
+
+    /// Reports `false` when there was nothing to clear, so the write
+    /// paths can log only when a secret was genuinely removed.
+    #[test]
+    fn stripping_a_clean_preset_list_reports_no_change() {
+        let mut presets = vec![preset_to_core(&preset_input()).unwrap()];
+        assert!(!strip_stored_step_secrets(&mut presets));
+        assert_eq!(stored_passwords(&presets), vec![None]);
+
+        assert!(!strip_stored_step_secrets(&mut Vec::new()));
     }
 
     // ── built-in detection ──────────────────────────────────────────────

@@ -139,6 +139,16 @@ pub(super) async fn run_save_pipeline_preset(
 
     let _write_guard = inner.settings_write_lock.lock().await;
     let mut presets = load_presets(inner).await?;
+    // Every write rewrites the whole file, so a save of *this* preset
+    // would otherwise re-serialize every other preset's stored, inert
+    // `Convert::password` straight back to disk. See
+    // `process::strip_stored_step_secrets` for why the clearing happens
+    // here and not on load.
+    if process::strip_stored_step_secrets(&mut presets) {
+        tracing::info!(
+            "[process] cleared an inert stored convert password from the saved presets file"
+        );
+    }
     // Compared on the *trimmed* stored name, against an already-trimmed
     // new one. A presets file written before this facade existed can
     // hold `"  Padded  "`, which a frontend then shows -- and offers to
@@ -175,6 +185,15 @@ pub(super) async fn run_delete_pipeline_preset(
     presets.retain(|preset| preset.name != name);
     if presets.len() == before {
         return Err(preset_not_found_error(&name));
+    }
+    // Same reason as the save path: this rewrites the whole file, so
+    // every surviving preset's stored secret would be re-persisted.
+    // Placed after the not-found check so a delete that changes nothing
+    // also writes nothing.
+    if process::strip_stored_step_secrets(&mut presets) {
+        tracing::info!(
+            "[process] cleared an inert stored convert password from the saved presets file"
+        );
     }
     store_presets(inner, presets).await
 }

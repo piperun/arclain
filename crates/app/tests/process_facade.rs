@@ -599,6 +599,177 @@ fn editing_a_preset_whose_stored_name_is_padded_replaces_it_rather_than_duplicat
     });
 }
 
+/// A legacy preset's stored, inert convert password does not survive a
+/// save of a **different** preset.
+///
+/// That is the path that matters, and the one a "the DTO just drops it"
+/// argument misses: both write paths are read-modify-write over the
+/// whole presets file, so without an explicit clear, saving preset B
+/// re-serializes preset A's plain secret straight back to disk on every
+/// unrelated save. `arclain_core`'s executor never reads the field
+/// (`executor.rs`'s `Convert` arm binds it `password: _`), so it buys
+/// nothing and only sits in the configuration directory.
+#[test]
+fn a_legacy_stored_convert_password_does_not_survive_saving_another_preset() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let paths = test_paths(&temp);
+    let presets_file = paths.config_dir.join("pipeline_presets.json");
+    std::fs::create_dir_all(&paths.config_dir).unwrap();
+    arclain_core::save_presets(
+        &presets_file,
+        &[arclain_core::SavedPreset {
+            name: "Legacy with a secret".to_string(),
+            pipeline: arclain_core::Pipeline {
+                input: None,
+                steps: vec![arclain_core::PipelineStep::Convert {
+                    format: arclain_core::ConvertFormat::Zip,
+                    compression: arclain_core::CompressionLevel::Normal,
+                    password: Some("hunter2".to_string()),
+                }],
+                output: arclain_core::PipelineOutput::SameFolder,
+                collision_policy: None,
+                output_artifact: arclain_core::OutputArtifact::Archive,
+            },
+        }],
+    )
+    .unwrap();
+    assert!(
+        std::fs::read_to_string(&presets_file)
+            .unwrap()
+            .contains("hunter2"),
+        "the fixture must actually start with the secret on disk"
+    );
+
+    let app = bootstrap_with_paths(&temp, paths);
+    runtime.block_on(async {
+        // A save of something else entirely.
+        let presets = app
+            .save_pipeline_preset(preset_input("Unrelated"))
+            .await
+            .expect("saving an unrelated preset must succeed");
+        assert_eq!(
+            names(&presets),
+            vec!["Legacy with a secret".to_string(), "Unrelated".to_string()],
+            "the legacy preset itself must survive -- this clears a field, it does not delete rows"
+        );
+    });
+
+    let on_disk = std::fs::read_to_string(&presets_file).unwrap();
+    assert!(
+        !on_disk.contains("hunter2"),
+        "an unrelated save must not re-persist another preset's stored secret; file: {on_disk}"
+    );
+    // And the row is otherwise intact: still one Convert step, still zip.
+    let reloaded = arclain_core::load_presets(&presets_file);
+    let legacy = reloaded
+        .iter()
+        .find(|preset| preset.name == "Legacy with a secret")
+        .expect("the legacy preset must still be there");
+    assert!(matches!(
+        legacy.pipeline.steps.as_slice(),
+        [arclain_core::PipelineStep::Convert {
+            format: arclain_core::ConvertFormat::Zip,
+            password: None,
+            ..
+        }]
+    ));
+}
+
+/// The delete path rewrites the whole file too, so it clears the
+/// survivors' secrets for the same reason.
+#[test]
+fn deleting_a_preset_also_clears_the_survivors_stored_secrets() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let paths = test_paths(&temp);
+    let presets_file = paths.config_dir.join("pipeline_presets.json");
+    std::fs::create_dir_all(&paths.config_dir).unwrap();
+    let with_secret = |name: &str, password: &str| arclain_core::SavedPreset {
+        name: name.to_string(),
+        pipeline: arclain_core::Pipeline {
+            input: None,
+            steps: vec![arclain_core::PipelineStep::Convert {
+                format: arclain_core::ConvertFormat::Zip,
+                compression: arclain_core::CompressionLevel::Normal,
+                password: Some(password.to_string()),
+            }],
+            output: arclain_core::PipelineOutput::SameFolder,
+            collision_policy: None,
+            output_artifact: arclain_core::OutputArtifact::Archive,
+        },
+    };
+    arclain_core::save_presets(
+        &presets_file,
+        &[
+            with_secret("Doomed", "doomed-secret"),
+            with_secret("Survivor", "survivor-secret"),
+        ],
+    )
+    .unwrap();
+
+    let app = bootstrap_with_paths(&temp, paths);
+    runtime.block_on(async {
+        let remaining = app
+            .delete_pipeline_preset("Doomed".to_string())
+            .await
+            .expect("deleting a listed preset must succeed");
+        assert_eq!(names(&remaining), vec!["Survivor".to_string()]);
+    });
+
+    let on_disk = std::fs::read_to_string(&presets_file).unwrap();
+    assert!(
+        !on_disk.contains("survivor-secret") && !on_disk.contains("doomed-secret"),
+        "a delete must not re-persist the surviving preset's stored secret; file: {on_disk}"
+    );
+}
+
+/// A rejected save must not rewrite the file at all -- so it also must
+/// not be a back-door way to clear secrets, and more importantly must
+/// not touch a file the user did not successfully ask to change.
+#[test]
+fn a_rejected_save_leaves_a_legacy_file_exactly_as_it_was() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let paths = test_paths(&temp);
+    let presets_file = paths.config_dir.join("pipeline_presets.json");
+    std::fs::create_dir_all(&paths.config_dir).unwrap();
+    arclain_core::save_presets(
+        &presets_file,
+        &[arclain_core::SavedPreset {
+            name: "Legacy with a secret".to_string(),
+            pipeline: arclain_core::Pipeline {
+                input: None,
+                steps: vec![arclain_core::PipelineStep::Convert {
+                    format: arclain_core::ConvertFormat::Zip,
+                    compression: arclain_core::CompressionLevel::Normal,
+                    password: Some("hunter2".to_string()),
+                }],
+                output: arclain_core::PipelineOutput::SameFolder,
+                collision_policy: None,
+                output_artifact: arclain_core::OutputArtifact::Archive,
+            },
+        }],
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(&presets_file).unwrap();
+
+    let app = bootstrap_with_paths(&temp, paths);
+    runtime.block_on(async {
+        let mut invalid = preset_input("No steps");
+        invalid.steps.clear();
+        app.save_pipeline_preset(invalid)
+            .await
+            .expect_err("an empty step list must be rejected");
+    });
+
+    assert_eq!(
+        std::fs::read_to_string(&presets_file).unwrap(),
+        before,
+        "a rejected save must not rewrite the presets file"
+    );
+}
+
 #[test]
 fn an_invalid_preset_is_rejected_and_nothing_is_written() {
     let runtime = foreign_runtime();
