@@ -619,6 +619,20 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
 /// first time it appears (visible, at the tab's declared priority, in
 /// the default display mode). See `UiService::sync_host_items`.
 ///
+/// Plugin text is untrusted (WASM, bounded only by the runtime's ~1 MiB
+/// whole-result quota), and the layout editor saves a whole region back
+/// through `save_ui_items`, which refuses any text field over
+/// [`crate::layout::MAX_UI_ITEM_TEXT_BYTES`]. A row stored over that
+/// bound would therefore fail every later save of its region -- a
+/// plugin bricking the layout editor with a long caption. So the sync
+/// enforces the same bound the user path does: `label`/`icon` are
+/// display text and are truncated to it (the tab still appears), while
+/// a tab whose *identity* (`id`/`action_data`, both derived from the
+/// declared tab id) cannot fit is skipped with a warning -- truncating
+/// an id could collide with another row, and the live top-tab strip
+/// renders from the plugin manager directly, so the tab itself keeps
+/// working; it just gets no arrangeable row.
+///
 /// Deliberately not behind `settings_write_lock`: this runs during
 /// bootstrap, before any application handle (and therefore any
 /// concurrent facade writer) exists.
@@ -626,19 +640,45 @@ fn sync_plugin_top_tab_items(
     ui_service: &arclain_core::services::UiService,
     top_tabs: Vec<(String, arclain_plugins::types::TopTabConfig)>,
 ) -> anyhow::Result<usize> {
+    /// Truncates plugin-declared display text to the largest char
+    /// boundary at or under the user write path's per-field bound.
+    fn clamp_text(value: String) -> String {
+        let bound = crate::layout::MAX_UI_ITEM_TEXT_BYTES;
+        if value.len() <= bound {
+            return value;
+        }
+        let mut end = bound;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value[..end].to_string()
+    }
+
     let mut ui_items = Vec::with_capacity(top_tabs.len());
     for (plugin_id, tab) in top_tabs {
+        let id = format!("plugin:{}:{}", plugin_id, tab.id);
+        let action_data = format!("{}:{}", plugin_id, tab.id);
+        if id.len() > crate::layout::MAX_UI_ITEM_TEXT_BYTES
+            || action_data.len() > crate::layout::MAX_UI_ITEM_TEXT_BYTES
+        {
+            warn!(
+                "Skipping the toolbar row of a top tab of plugin {:?}: its declared id is \
+                 too long to store",
+                plugin_id
+            );
+            continue;
+        }
         ui_items.push(UiItem {
-            id: format!("plugin:{}:{}", plugin_id, tab.id),
+            id,
             region: UiRegion::Toolbar,
             group_id: Some("plugins".to_string()),
-            label: tab.label,
-            icon: Some(tab.icon),
+            label: clamp_text(tab.label),
+            icon: Some(clamp_text(tab.icon)),
             visible: true,
             sort_order: tab.priority as i32,
             display_mode: DisplayMode::IconAndText,
             action_type: ActionType::Plugin,
-            action_data: Some(format!("{}:{}", plugin_id, tab.id)),
+            action_data: Some(action_data),
         });
     }
     if !ui_items.is_empty() {
@@ -733,6 +773,94 @@ mod tests {
                 priority: 100,
             },
         )]
+    }
+
+    /// The layout editor loads a whole region and saves it back whole
+    /// through `save_ui_items`, whose validation refuses any text field
+    /// over `MAX_UI_ITEM_TEXT_BYTES`. A plugin-declared label is only
+    /// bounded by the plugin runtime's ~1 MiB whole-result quota, so an
+    /// unclamped sync would store a row that makes *every subsequent
+    /// region save* fail -- a plugin bricking the toolbar editor with a
+    /// long caption. The sync must clamp what it stores to the same
+    /// bound the user path enforces, and the row must still appear
+    /// (truncated), not be dropped.
+    #[test]
+    fn top_tab_sync_clamps_plugin_text_so_the_region_stays_saveable() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = temp_ui_service(&temp);
+
+        // Multibyte text (3 bytes per char) whose length crosses the
+        // bound mid-character, so a byte-index truncation would panic
+        // or split a code point -- the clamp must land on a char
+        // boundary at or under the bound.
+        let oversized_label = "ラベル".repeat(crate::layout::MAX_UI_ITEM_TEXT_BYTES / 3);
+        assert!(oversized_label.len() > crate::layout::MAX_UI_ITEM_TEXT_BYTES);
+        let mut tabs = one_top_tab(&oversized_label);
+        tabs[0].1.icon = "ア".repeat(crate::layout::MAX_UI_ITEM_TEXT_BYTES);
+
+        assert_eq!(sync_plugin_top_tab_items(&service, tabs).unwrap(), 1);
+
+        let row = {
+            let mut items = service
+                .list_items(UiRegion::Toolbar)
+                .expect("list the toolbar");
+            items.retain(|item| item.id == "plugin:demo:main");
+            items
+                .pop()
+                .expect("the synced top-tab row must still appear")
+        };
+        assert!(
+            row.label.len() <= crate::layout::MAX_UI_ITEM_TEXT_BYTES,
+            "the stored label must respect the user write path's bound"
+        );
+        assert!(
+            oversized_label.starts_with(&row.label) && !row.label.is_empty(),
+            "the clamp is a truncation, not a replacement"
+        );
+        let icon = row.icon.clone().expect("the icon survives, clamped");
+        assert!(icon.len() <= crate::layout::MAX_UI_ITEM_TEXT_BYTES);
+
+        // The brick check itself: the whole region, exactly as the
+        // layout editor reloads and re-saves it, passes the same
+        // validation `save_ui_items` runs.
+        let region: Vec<crate::layout::UiItemDto> = service
+            .list_items(UiRegion::Toolbar)
+            .expect("list the toolbar")
+            .into_iter()
+            .map(crate::layout::UiItemDto::from)
+            .collect();
+        crate::layout::items_to_core(crate::layout::UiRegionDto::Toolbar, region)
+            .expect("a synced region must remain saveable by the layout editor");
+    }
+
+    /// `id`/`action_data` carry the tab's identity and dispatch wiring,
+    /// so an oversized one cannot be truncated (a truncated id could
+    /// collide and a truncated action_data would misdispatch). A tab
+    /// whose identity cannot fit the row bound is skipped -- the live
+    /// top-tab strip still renders it from the plugin manager directly;
+    /// it just gets no arrangeable row -- and, critically, it cannot
+    /// poison the region for the layout editor.
+    #[test]
+    fn a_top_tab_whose_identity_cannot_fit_a_row_is_skipped() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = temp_ui_service(&temp);
+
+        let mut tabs = one_top_tab("Demo");
+        tabs[0].1.id = "t".repeat(crate::layout::MAX_UI_ITEM_TEXT_BYTES + 1);
+
+        assert_eq!(
+            sync_plugin_top_tab_items(&service, tabs).unwrap(),
+            0,
+            "an unstorable tab is skipped, not stored oversized"
+        );
+        assert!(
+            service
+                .list_items(UiRegion::Toolbar)
+                .expect("list the toolbar")
+                .iter()
+                .all(|item| item.id.len() <= crate::layout::MAX_UI_ITEM_TEXT_BYTES),
+            "no oversized identity may reach the table"
+        );
     }
 
     /// The startup sync runs on *every* launch, so it must only write
