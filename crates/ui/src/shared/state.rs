@@ -95,7 +95,10 @@ impl SharedState {
                         .map(|path| path.to_string_lossy().into_owned())
                         .unwrap_or_default(),
                     password: tab.current_password.get(),
-                    entries: tab.entries.get(),
+                    // The session's rows in the plugin ABI's own shape --
+                    // the memoized legacy projection, handed out
+                    // zero-copy (see `TabInventory::legacy_rows`).
+                    entries: tab.inventory.get().legacy_rows(),
                     // 0 is never a real `ArchiveSessionId` (the facade
                     // mints ids from 1) -- a safe "no session open in
                     // this tab" sentinel for this fallback context.

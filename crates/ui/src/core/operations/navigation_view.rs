@@ -42,7 +42,7 @@ pub fn refresh_view_entries_for_tab(signals: &AppSignals, tab_id: TabId) {
 }
 
 fn refresh_view_entries_for(tab: &Arc<TabState>) {
-    let all_entries = tab.entries.get();
+    let all_entries = tab.inventory.get().legacy_rows();
     let current_path = tab.listing.get().current_path().to_string();
 
     info!(

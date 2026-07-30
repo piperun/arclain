@@ -556,7 +556,7 @@ mod tests {
         let tab = signals.tabs.get().active().clone();
 
         // Per-tab signals start at defaults
-        assert!(tab.entries.get().is_empty());
+        assert_eq!(tab.inventory.get().entry_count(), 0);
         assert!(tab.metadata.get().is_none());
         assert!(tab.archive_path.get().is_none());
         assert_eq!(tab.active_toolbar.get(), ToolbarContext::Archive);
@@ -627,43 +627,6 @@ mod tests {
         let tab2 = signals2.tabs.get().active().clone();
         tab2.archive_path.set(Some(PathBuf::from("/shared.zip")));
         assert_eq!(tab1.archive_path.get(), Some(PathBuf::from("/shared.zip")));
-    }
-
-    #[test]
-    fn test_signals_entries_update() {
-        use arclain_core::ArchiveEntry;
-
-        let signals = AppSignals::new();
-        let tab = signals.tabs.get().active().clone();
-
-        // Create test entries
-        let entries = vec![
-            ArchiveEntry {
-                path: "file1.txt".to_string(),
-                size: 100,
-                packed_size: 50,
-                modified: None,
-                is_dir: false,
-                encrypted: false,
-                crc32: None,
-            },
-            ArchiveEntry {
-                path: "file2.txt".to_string(),
-                size: 200,
-                packed_size: 100,
-                modified: None,
-                is_dir: false,
-                encrypted: false,
-                crc32: None,
-            },
-        ];
-
-        tab.entries.set(Arc::new(entries));
-
-        let result = tab.entries.get();
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].path, "file1.txt");
-        assert_eq!(result[1].path, "file2.txt");
     }
 
     #[test]

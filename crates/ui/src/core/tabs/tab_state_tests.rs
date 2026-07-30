@@ -8,7 +8,7 @@ fn default_state_signals_are_initialized() {
     let tab = TabState::new(TabId(42));
     assert_eq!(tab.id, TabId(42));
     assert!(tab.archive_path.get().is_none());
-    assert!(tab.entries.get().is_empty());
+    assert_eq!(tab.inventory.get().entry_count(), 0);
     assert!(tab.metadata.get().is_none());
     assert!(tab.opened_archive.get().is_none());
     assert!(tab.pending_challenge.get().is_empty());

@@ -4,23 +4,23 @@
 //! session's own [`EntryPage`] converts into.
 //!
 //! The load-bearing assertion is a *parity* one. The archive browser
-//! still renders rows produced by the pre-facade flat-listing projection
-//! (`crate::core::operations::navigation_view::rows_in_directory` over
-//! `TabState::entries`); the facade path
-//! (`ArclainApp::list_entries` + `crate::core::utils::file_entry_from_dto`)
-//! is what replaces it. Every test below drives *both* against the same
-//! real archive and asserts the rows match field for field -- that is
-//! what makes swapping the producer a safe change rather than a hopeful
-//! one, and what would catch a silent display regression (a lost
-//! Modified date, a folder whose recursive size stopped aggregating) the
-//! moment either side drifted.
+//! still renders rows produced by the legacy flat-listing projection
+//! (`crate::core::operations::navigation_view::rows_in_directory`, now
+//! over the tab's session-fed `TabInventory::legacy_rows`); the direct
+//! facade path (`ArclainApp::list_entries` +
+//! `crate::core::utils::file_entry_from_dto`) is what replaces it when
+//! the renderer migrates. Every test below drives *both* against the
+//! same real archive and asserts the rows match field for field -- that
+//! is what makes swapping the render-side producer a safe change rather
+//! than a hopeful one, and what would catch a silent display regression
+//! (a lost Modified date, a folder whose recursive size stopped
+//! aggregating) the moment the legacy projection drifted from the pages
+//! the session serves.
 //!
-//! A real, on-disk ZIP fixture rather than a fake backend, for the same
-//! reason `archive_mutation_ui_test.rs` documents: the UI's own re-list
-//! resolves its backend through `SharedState`'s extension-based
-//! `BackendSelector`, independently of whatever backend the facade was
-//! bootstrapped with, so only a real archive keeps both sides looking at
-//! the same bytes.
+//! A real, on-disk ZIP fixture rather than a fake backend: the rows both
+//! producers consume are the ones a real backend listed and the facade's
+//! session indexed, so the parity covers the whole conversion chain
+//! (backend string shapes included), not a fixture's idealized values.
 //!
 //! [`ArchiveSnapshot`]: arclain_app::archive::ArchiveSnapshot
 //! [`EntryPage`]: arclain_app::archive::EntryPage
@@ -225,8 +225,8 @@ fn open_entries(entries: &[FixtureEntry]) -> OpenedFixture {
     });
 
     wait_until(
-        "the archive open never populated the tab's flat entries",
-        || !tab.entries.get().is_empty(),
+        "the archive open never populated the tab's inventory",
+        || tab.inventory.get().entry_count() > 0,
     );
 
     OpenedFixture {
@@ -276,7 +276,7 @@ fn facade_rows(fixture: &OpenedFixture, listing: &TabListing) -> Vec<FileEntry> 
 
 fn flat_listing_rows(fixture: &OpenedFixture, listing: &TabListing) -> Vec<FileEntry> {
     sorted_by_archive_path(rows_in_directory(
-        &fixture.tab.entries.get(),
+        &fixture.tab.inventory.get().legacy_rows(),
         listing.current_path(),
     ))
 }
@@ -475,8 +475,9 @@ fn a_tab_holding_a_page_reports_that_page_as_its_current_directory() {
         "the open must have bound the tab's listing to the session it holds"
     );
     assert!(listing.descend("game"));
+    let generation = listing.begin_loading();
     let page = list(&fixture, listing.request());
-    assert!(listing.adopt_page(page));
+    assert!(listing.adopt_page(generation, page));
     fixture.tab.listing.set(listing);
 
     let current = fixture.shared.app_state.lock().get_current_entries();
@@ -545,25 +546,23 @@ fn entry_ids_survive_a_refresh_within_the_same_session() {
     );
 }
 
-/// The one shape where the two row producers genuinely disagree, pinned
-/// here so it is a known, characterized difference rather than a surprise
-/// the render-side migration discovers.
+/// The one shape where the pre-facade backend re-list and the session's
+/// rows genuinely disagreed -- and where deleting the duplicate pipeline
+/// deliberately changed what the user sees.
 ///
-/// When an archive *names* a directory (rather than only implying it from
-/// its files' paths), the two sides read that row differently. The flat
-/// filter never trims the trailing `/` a directory entry carries, so
-/// `"docs/"` looks like a nested path to it and it synthesizes a fresh
-/// `docs` folder row with no timestamp. The session's index normalizes the
-/// trailing slash away first, recognizes the row as the directory itself,
-/// and keeps the timestamp the archive recorded for it.
-///
-/// So a folder that is explicitly listed gains a Modified date it did not
-/// show before. 7z and rar emit explicit directory rows routinely, so this
-/// is reachable, not theoretical -- and it is the facade being *more*
-/// faithful to the archive, which is why it is characterized rather than
-/// worked around.
+/// When an archive *names* a directory (rather than only implying it
+/// from its files' paths), the old flat filter over raw backend rows
+/// never trimmed the trailing `/` the directory entry carried, so
+/// `"docs/"` looked like a nested path and it synthesized a dateless
+/// `docs` folder row. The session's index normalizes the slash away,
+/// recognizes the row as the directory itself, and keeps the timestamp
+/// the archive recorded. Now that *both* row producers read the
+/// session's rows, the explicitly listed folder shows its own Modified
+/// date on both -- the sanctioned "folder rows gain Modified dates"
+/// change, and the divergence the pre-cutover characterization pinned is
+/// closed by construction rather than merely tolerated.
 #[test]
-fn an_explicitly_listed_directory_gains_its_own_modified_date() {
+fn an_explicitly_listed_directorys_date_reaches_both_row_producers() {
     let fixture = open_entries(&[
         FixtureEntry::Directory("docs/"),
         FixtureEntry::file("docs/manual.txt", b"manual"),
@@ -573,29 +572,16 @@ fn an_explicitly_listed_directory_gains_its_own_modified_date() {
     let from_facade = facade_rows(&fixture, &listing);
     let from_flat_listing = flat_listing_rows(&fixture, &listing);
 
-    // One `docs` folder row on both sides -- the difference is one field.
     assert_eq!(from_facade.len(), 1);
-    assert_eq!(from_flat_listing.len(), 1);
     assert_eq!(from_facade[0].archive_path, "docs");
-    assert_eq!(from_flat_listing[0].archive_path, "docs");
-    assert!(from_facade[0].is_folder && from_flat_listing[0].is_folder);
-
-    assert!(
-        from_flat_listing[0].modified.is_empty(),
-        "the flat filter synthesizes this folder row and has no date for it"
-    );
+    assert!(from_facade[0].is_folder);
     assert!(
         !from_facade[0].modified.is_empty(),
         "the session keeps the date the archive recorded for the directory it named"
     );
-
-    // Every other field still matches, so the divergence is exactly one
-    // field wide.
     assert_eq!(
-        FileEntry {
-            modified: from_flat_listing[0].modified.clone(),
-            ..from_facade[0].clone()
-        },
-        from_flat_listing[0]
+        from_facade, from_flat_listing,
+        "both producers now read the session's rows, so the folder's date -- and \
+         every other field -- must agree"
     );
 }

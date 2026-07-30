@@ -63,7 +63,7 @@ async fn resolve_selection_entry_ids(
     let page = app
         .list_entries(
             session_id,
-            crate::core::tabs::TabListing::whole_directory_request(directory),
+            arclain_app::archive::ListEntriesRequest::whole_directory(directory),
         )
         .await
         .map_err(|error| error.summary)?;

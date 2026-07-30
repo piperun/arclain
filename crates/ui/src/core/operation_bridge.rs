@@ -48,7 +48,7 @@
 //! `archive_session_id` signal already carries.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -326,138 +326,117 @@ fn archive_error_kind(kind: arclain_app::error::ApplicationErrorKind) -> Archive
     }
 }
 
-/// The pieces of `relist_for_browser_signals` that come from actual
-/// backend I/O, plain data with no `TabState`/`SharedState` access --
-/// see `resolve_archive_listing`'s own doc comment for why this is kept
-/// separate.
-struct ResolvedListing {
-    info: arclain_core::archive::ArchiveInfo,
-    resolved_password: Option<String>,
-}
-
-/// The blocking half of `relist_for_browser_signals`: lists `path`
-/// through `backend`, trying `current_password` first, then falling
-/// back to auto-detecting one from `pass_rules`/`last_entries` exactly
-/// the way `archive_ops::attempt_initial` does (see its own doc
-/// comment) using the identical inputs the facade resolved its own
-/// password from, so it deterministically re-derives the same guess --
-/// there is nothing to read the facade's own resolved password back
-/// from without reaching into its private `ArchiveSession` internals,
-/// which this crate must not do.
+/// Fetches the whole-archive inventory and the current directory's page
+/// from `session_id`'s session and seats both onto `tab` -- the one
+/// fetch-and-adopt sequence every relist (a fresh open, a post-mutation
+/// refresh, a CRC-backfill catch-up) runs.
 ///
-/// Pure data in, data out: no signal access, so this can run inside
-/// `spawn_blocking` without a blocking-pool thread ever touching
-/// `SharedState`/`TabState`. `backend.list()` is a real blocking
-/// filesystem/subprocess call (7z-CLI or a native archive library), and
-/// this is invoked from the bridge worker's own event loop (see
-/// `spawn`'s doc comment) -- running it inline on that loop would block
-/// every other tab's operation events (and the broadcast channel
-/// itself) for as long as the listing takes.
-fn resolve_archive_listing(
-    backend: Arc<dyn arclain_core::ArchiveBackend>,
-    pass_rules: Vec<arclain_core::utilities::PassRule>,
-    last_entries: Vec<String>,
-    path: PathBuf,
-    current_password: Option<String>,
-) -> anyhow::Result<ResolvedListing> {
-    let archive_name = path.to_str();
-    let auto_password =
-        || arclain_core::utilities::auto_password_for(&pass_rules, archive_name, &last_entries);
+/// The write path for every seam `TabListing`/`TabInventory` expose:
+/// `begin_loading` marks the attempt and mints the generation its reply
+/// must present, `adopt_page`/`adopt` seat the answers behind their
+/// session/revision guards, and a fetch error is recorded through
+/// `fail` -- so a failed first listing is distinguishable from an empty
+/// directory, a failed *refresh* keeps its rows per that type's
+/// documented semantics, and a superseded request's late reply (either
+/// direction) is dropped by its own token instead of applied.
+///
+/// The two fetches are immediate in-memory queries against the session's
+/// index (no backend I/O -- the facade's session already holds the
+/// listing the pre-facade code used to re-derive with its own second
+/// `backend.list()` call), so awaiting them inline on the bridge's event
+/// loop is fine. The `O(entries)` DTO-to-legacy conversion runs here on
+/// the calling task, off the tab's signal locks (see
+/// `AdoptedInventory::prepare`).
+async fn fetch_and_adopt_listing(
+    app: &ArclainApp,
+    tab: &crate::core::tabs::TabState,
+    session_id: arclain_app::ids::ArchiveSessionId,
+) -> Result<(), arclain_app::error::ApplicationError> {
+    let mut generation = None;
+    let mut request = None;
+    tab.listing.update(|listing| {
+        generation = Some(listing.begin_loading());
+        request = Some(listing.request().clone());
+    });
+    let (generation, request) = (
+        generation.expect("update ran"),
+        request.expect("update ran"),
+    );
 
-    let (info, resolved_password) = if let Some(password) = current_password {
-        // Already known -- either a prior open of this same tab, or a
-        // password the user just submitted for a live challenge.
-        (backend.list(&path, Some(&password))?, Some(password))
-    } else {
-        match backend.list(&path, None) {
-            Ok(info) if info.headers_encrypted => match auto_password() {
-                Some(password) => match backend.list(&path, Some(&password)) {
-                    Ok(unlocked) => (unlocked, Some(password)),
-                    Err(_) => (info, None),
-                },
-                None => (info, None),
-            },
-            Ok(info) => (info, None),
-            Err(error) => match auto_password() {
-                Some(password) => (backend.list(&path, Some(&password))?, Some(password)),
-                None => return Err(error),
-            },
+    let record_failure = |error: &arclain_app::error::ApplicationError| {
+        tab.listing.update(|listing| {
+            listing.fail(generation, &request.directory, error.clone());
+        });
+    };
+
+    let inventory = match app.list_all_entries(session_id).await {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            record_failure(&error);
+            return Err(error);
         }
     };
-    Ok(ResolvedListing {
-        info,
-        resolved_password,
-    })
+    let prepared = crate::core::tabs::AdoptedInventory::prepare(inventory);
+    tab.inventory.update(|inventory| {
+        inventory.adopt(prepared);
+    });
+
+    let page = match app.list_entries(session_id, request.clone()).await {
+        Ok(page) => page,
+        Err(error) => {
+            record_failure(&error);
+            return Err(error);
+        }
+    };
+    tab.listing.update(|listing| {
+        listing.adopt_page(generation, page);
+    });
+    Ok(())
 }
 
-/// Re-lists `path` directly through the backend selector to populate this
-/// tab's flat `entries`/`archive_extras`/`opened_archive` signals -- the
-/// data the archive browser UI reads today. A deliberate duplicate of
-/// the facade's own internal listing: `arclain_app::ArchiveSession`
-/// already holds an indexed copy of the same data behind
-/// `list_entries`/`archive_snapshot`, but those are paginated,
-/// hierarchical queries (`ArchiveEntryDto`), not the flat
-/// `Vec<ArchiveEntry>` `TabState::entries` and the rest of the archive
-/// browser were built around -- migrating the browser onto the paginated
-/// facade model is a separate, much larger undertaking this task does
-/// not attempt (see this task's report).
+/// Populates `tab`'s browser model for a freshly opened archive, from
+/// the facade session `handle_open_archive_completed` stamped onto the
+/// tab immediately before calling this: rebinds the listing and
+/// inventory to that session (so any reply still in flight for the
+/// archive this one replaced is refused rather than seated), resets the
+/// browse cursor to the archive root, clears the selection, seats the
+/// session's own rows via [`fetch_and_adopt_listing`], and re-stamps the
+/// two transitional handles (`opened_archive`, `current_password`) from
+/// the session's own archive handle -- the backend and resolved password
+/// the pre-facade code re-derived by running a second, duplicate
+/// `backend.list()` with its own auto-password ladder.
 ///
-/// The actual backend listing (`resolve_archive_listing`) runs inside
-/// `spawn_blocking` -- see that function's own doc comment for why
-/// running it directly on the bridge's event loop would be a problem.
-async fn relist_for_browser_signals(
+/// `pub` for the same reason `OperationOrigins::register` is: production
+/// code must reach this only through the bridge's own event handling,
+/// but the integration tests drive the real relist (and its failure
+/// path) directly.
+pub async fn relist_for_browser_signals(
     shared: &SharedState,
     tab: &crate::core::tabs::TabState,
     path: &Path,
-) -> anyhow::Result<()> {
-    let (backend, pass_rules, last_entries) = {
-        let state = shared.app_state.lock();
-        (
-            state.backend_selector.select(path)?,
-            state.pass_rules.clone(),
-            state.last_entries.clone(),
-        )
+) -> Result<(), arclain_app::error::ApplicationError> {
+    let Some(app) = shared.facade.clone() else {
+        // Unreachable from the bridge (which only runs with a facade);
+        // reported rather than panicked for any direct caller.
+        return Err(arclain_app::error::ApplicationError::new(
+            arclain_app::error::ApplicationErrorKind::Internal,
+            "no application facade available",
+        ));
     };
-    let current_password = tab.current_password.get();
-    let path_owned = path.to_path_buf();
-    // `backend` is `Arc<dyn ArchiveBackend>` -- cloned (a cheap refcount
-    // bump) rather than moved outright, since `Archive::new`/
-    // `with_password` below still need a handle to it after the
-    // blocking task below consumes its own copy.
-    let backend_for_blocking = backend.clone();
-    let ResolvedListing {
-        info,
-        resolved_password,
-    } = tokio::task::spawn_blocking(move || {
-        resolve_archive_listing(
-            backend_for_blocking,
-            pass_rules,
-            last_entries,
-            path_owned,
-            current_password,
-        )
-    })
-    .await
-    .map_err(|join_error| anyhow::anyhow!("archive listing task panicked: {join_error}"))??;
-
-    if let Some(password) = &resolved_password {
-        tab.current_password.set(Some(password.clone()));
-    }
+    let Some(session_id) = tab.archive_session_id.get() else {
+        return Err(arclain_app::error::ApplicationError::new(
+            arclain_app::error::ApplicationErrorKind::Internal,
+            "the tab holds no archive session to list",
+        ));
+    };
 
     tab.archive_path.set(Some(path.to_path_buf()));
-    tab.archive_extras
-        .set(crate::core::operations::archive::ArchiveExtras {
-            archive_encrypted: info.encrypted,
-            headers_encrypted: info.headers_encrypted,
-            encryption_method: info.encryption_method.clone(),
-        });
-    // Bound to the session `handle_open_archive_completed` stamped onto
-    // the tab immediately before calling this, so any listing reply
-    // still in flight for the archive this one replaced is refused
-    // rather than seated (see `TabListing::adopt_page`).
-    tab.listing.set(crate::core::tabs::TabListing::for_session(
-        tab.archive_session_id.get(),
-    ));
+    tab.listing
+        .set(crate::core::tabs::TabListing::for_session(Some(session_id)));
+    tab.inventory
+        .set(crate::core::tabs::TabInventory::for_session(Some(
+            session_id,
+        )));
     {
         let mut view_state = tab.browser_view_state.get();
         if view_state.selection.clear() {
@@ -466,29 +445,32 @@ async fn relist_for_browser_signals(
     }
     tab.selection_count.set_if_changed(0);
 
-    // Refresh the auto-password matcher's "internal file paths" input
-    // (see `resolve_archive_listing`'s own doc comment on
-    // `auto_password_for`) with this archive's own entries. Left stale
-    // (whatever was set at app startup, or by whichever archive was
-    // opened first this session), a `PassRule` keyed on an entry
-    // filename could only ever match the very first archive it was
-    // ever checked against.
-    {
-        let mut state = shared.app_state.lock();
-        state.last_entries = info
-            .entries
-            .iter()
-            .map(|entry| entry.path.clone())
-            .collect();
+    // The session's own archive handle carries the backend and the
+    // password the open actually resolved (typed, rule-matched, or
+    // challenge-answered). Stamping `current_password` from it is what
+    // keeps the password-consuming paths that have not migrated yet --
+    // the file-edit read, the plugin event context -- working for an
+    // auto-unlocked archive, where no dialog ever ran UI-side to write
+    // the signal.
+    match app.session_archive_handle(session_id).await {
+        Ok(handle) => {
+            let resolved_password = handle.lock().password_ref().map(str::to_string);
+            if resolved_password.is_some() {
+                tab.current_password.set(resolved_password);
+            }
+            tab.opened_archive.set(Some(handle));
+        }
+        Err(error) => {
+            // The session vanished between the completion event and this
+            // call (a racing close). The fetches below will fail the
+            // same way and report it.
+            tracing::warn!(
+                "[operation_bridge] could not fetch the session's archive handle: {error:?}"
+            );
+        }
     }
-    tab.entries.set(Arc::new(info.entries));
 
-    let archive = match resolved_password {
-        Some(pw) => arclain_core::Archive::with_password(backend, path.to_path_buf(), pw),
-        None => arclain_core::Archive::new(backend, path.to_path_buf()),
-    };
-    tab.opened_archive
-        .set(Some(Arc::new(parking_lot::RwLock::new(archive))));
+    fetch_and_adopt_listing(&app, tab, session_id).await?;
 
     crate::core::operations::navigation_view::refresh_view_entries_for_tab(
         shared.signals(),
@@ -635,6 +617,15 @@ async fn handle_open_archive_completed(
     // so a tab's snapshot can never describe a different archive than the
     // session it holds.
     tab.archive_snapshot.set(Some(snapshot.clone()));
+    // The archive-level encryption trio rides the same snapshot -- the
+    // facade captured it from the very listing that built the session,
+    // so the extras can never describe a different listing than the rows.
+    tab.archive_extras
+        .set(crate::core::operations::archive::ArchiveExtras {
+            archive_encrypted: snapshot.encrypted,
+            headers_encrypted: snapshot.headers_encrypted,
+            encryption_method: snapshot.encryption_method.clone(),
+        });
     tab.pending_open_operation.set(None);
     dequeue_and_present_next(&tab, operation_id);
 
@@ -664,10 +655,10 @@ async fn handle_open_archive_completed(
 
     if let Err(error) = relist_for_browser_signals(shared, &tab, &snapshot.source_path).await {
         tracing::error!(
-            "[operation_bridge] archive opened via the facade but the UI-side re-list failed: {error:#}"
+            "[operation_bridge] archive opened via the facade but the UI-side re-list failed: {error:?}"
         );
         shared.signals().status_bar.update(|status| {
-            status.message = format!("Archive opened but failed to display: {error:#}");
+            status.message = format!("Archive opened but failed to display: {}", error.summary);
         });
     } else {
         crate::core::operations::archive::finish_archive_load(shared, &tab);
@@ -896,37 +887,49 @@ fn handle_organize_terminal(
 /// comment) -- pruning by path here is this flat, not-yet-`EntryId`-aware
 /// browser model's practical equivalent of that guarantee, so deleting
 /// one selected file does not also silently deselect every other one.
-async fn refresh_entries_after_mutation(
+/// Re-seats `tab`'s browser model from its session after the archive's
+/// contents changed (an `ArchiveModify` completion, or a CRC backfill
+/// that bumped the revision): fetches the fresh inventory and the
+/// *current* directory's page -- the browse cursor, selection, and
+/// folder expansion survive, unlike a fresh open's root reset -- and
+/// prunes selection entries whose path no longer exists anywhere in the
+/// archive.
+///
+/// A failed refresh reaches the user through the caller's status-bar
+/// report while the previous rows stay on screen -- `TabListing::fail`'s
+/// documented keep-the-rows semantics, exercised through this real path.
+///
+/// `pub(crate)` for `crate::core::operations::archive::finish_archive_load`,
+/// whose backfill catch-up runs the same refresh.
+pub(crate) async fn refresh_entries_after_mutation(
     shared: &SharedState,
     tab: &crate::core::tabs::TabState,
-    path: &Path,
-) -> anyhow::Result<()> {
-    let (backend, password) = {
-        let state = shared.app_state.lock();
-        (
-            state.backend_selector.select(path)?,
-            tab.current_password.get(),
-        )
+    session_id: arclain_app::ids::ArchiveSessionId,
+) -> Result<(), arclain_app::error::ApplicationError> {
+    let Some(app) = shared.facade.clone() else {
+        return Err(arclain_app::error::ApplicationError::new(
+            arclain_app::error::ApplicationErrorKind::Internal,
+            "no application facade available",
+        ));
     };
-    let path_owned = path.to_path_buf();
-    // `backend.list()` is a real blocking filesystem/subprocess call --
-    // see `resolve_archive_listing`'s identical concern for why this
-    // must not run inline on the bridge's own event loop.
-    let info = tokio::task::spawn_blocking(move || backend.list(&path_owned, password.as_deref()))
-        .await
-        .map_err(|join_error| anyhow::anyhow!("archive re-list task panicked: {join_error}"))??;
+    fetch_and_adopt_listing(&app, tab, session_id).await?;
 
-    let fresh_paths: std::collections::HashSet<String> = info
-        .entries
+    // Prune selections whose entry the mutation removed. Path-keyed
+    // against the whole fresh inventory (files and folders alike --
+    // folder rows are selectable in the browser), so a selection on an
+    // untouched entry survives the refresh.
+    let fresh = tab.inventory.get();
+    let fresh_paths: std::collections::HashSet<&str> = fresh
+        .entries()
         .iter()
-        .map(|entry| entry.path.clone())
+        .map(|entry| entry.path.as_str())
         .collect();
     {
         let mut view_state = tab.browser_view_state.get();
         let stale: Vec<String> = view_state
             .selection
             .iter()
-            .filter(|selected| !fresh_paths.contains(*selected))
+            .filter(|selected| !fresh_paths.contains(selected.as_str()))
             .cloned()
             .collect();
         let mut changed = false;
@@ -938,7 +941,6 @@ async fn refresh_entries_after_mutation(
         }
     }
 
-    tab.entries.set(Arc::new(info.entries));
     crate::core::operations::navigation_view::refresh_view_entries_for_tab(
         shared.signals(),
         tab.id,
@@ -948,41 +950,68 @@ async fn refresh_entries_after_mutation(
 
 /// Refreshes `tab_id`'s browser signals once its `ArchiveModify`
 /// operation reaches `Completed` -- see [`refresh_entries_after_mutation`].
-/// A no-op if the tab (or its archive path) is already gone -- nothing
+/// A no-op if the tab (or its session binding) is already gone -- nothing
 /// left to refresh.
 ///
-/// Deliberately *not* also wired to the transient `SnapshotChanged`
-/// state the worker emits immediately before `Completed`: an earlier
-/// version of this bridge refreshed on both, which meant every
-/// successful mutation triggered two full UI-side `backend.list()`
-/// calls back to back (three counting the facade's own internal
-/// re-list inside `run_archive_mutation` -- for a 7z-backed archive,
-/// each is a subprocess spawn plus a full central-directory read) for
-/// no benefit: the worker always emits `Completed` immediately after
-/// `SnapshotChanged`, so there is no meaningful gap between them for a
-/// live subscriber to observe one without the other. `Completed` alone
-/// is also sufficient for the *reconciliation* path (`register_operation`'s
-/// own one-shot catch-up, and `reconcile_after_lag`): both replay
-/// whichever state the registry's record currently holds, which for a
-/// finished operation is always the terminal one -- reconciliation
-/// landing on `SnapshotChanged` specifically was never something either
-/// path could rely on, since `OperationRegistry` keeps only the latest
-/// state, not a history.
+/// The *row* refresh deliberately runs on `Completed` only, not also on
+/// the transient `SnapshotChanged` the worker emits immediately before
+/// it: an earlier version refreshed on both, doubling the relist per
+/// successful mutation for no benefit, since the worker always emits
+/// `Completed` immediately after `SnapshotChanged` and the
+/// reconciliation paths (`register_operation`'s one-shot catch-up,
+/// `reconcile_after_lag`) only ever replay the registry's *latest*
+/// state anyway. `SnapshotChanged` itself now refreshes only the
+/// lightweight `tab.archive_snapshot` summary -- see
+/// [`refresh_snapshot_signal`].
 async fn refresh_tab_after_archive_modify(shared: &SharedState, tab_id: TabId) {
     let Some(tab) = shared.signals().tabs.get().get(tab_id).cloned() else {
         return;
     };
-    let Some(archive_path) = tab.archive_path.get() else {
+    let Some(session_id) = tab.archive_session_id.get() else {
         return;
     };
-    if let Err(error) = refresh_entries_after_mutation(shared, &tab, &archive_path).await {
+    refresh_snapshot_signal(shared, &tab, session_id).await;
+    if let Err(error) = refresh_entries_after_mutation(shared, &tab, session_id).await {
         tracing::error!(
             "[operation_bridge] archive mutation succeeded via the facade but the UI-side \
-             re-list failed: {error:#}"
+             re-list failed: {error:?}"
         );
         shared.signals().status_bar.update(|status| {
-            status.message = format!("Archive changed but failed to refresh the view: {error:#}");
+            status.message = format!(
+                "Archive changed but failed to refresh the view: {}",
+                error.summary
+            );
         });
+    }
+}
+
+/// Re-fetches `session_id`'s [`arclain_app::archive::ArchiveSnapshot`]
+/// and stamps it onto `tab`, so the tab's summary (revision, entry
+/// count, total size) tracks the session across mutations instead of
+/// describing the archive as it was at open time. Guarded by the tab's
+/// own session binding: a late refresh for a session the tab no longer
+/// holds is dropped, mirroring `TabListing`'s session guard.
+async fn refresh_snapshot_signal(
+    shared: &SharedState,
+    tab: &crate::core::tabs::TabState,
+    session_id: arclain_app::ids::ArchiveSessionId,
+) {
+    let Some(app) = shared.facade.clone() else {
+        return;
+    };
+    match app.archive_snapshot(session_id).await {
+        Ok(snapshot) => {
+            if tab.archive_session_id.get() == Some(session_id) {
+                tab.archive_snapshot.set(Some(snapshot));
+            }
+        }
+        Err(error) => {
+            // A racing close; the terminal event handling owns whatever
+            // cleanup applies.
+            tracing::debug!(
+                "[operation_bridge] snapshot refresh skipped for a gone session: {error:?}"
+            );
+        }
     }
 }
 
@@ -1483,16 +1512,24 @@ async fn handle_event(
                 Some(error),
             )
         }
-        // `SnapshotChanged` deliberately has no handler of its own here:
-        // see `refresh_tab_after_archive_modify`'s own doc comment for
-        // why refreshing on it *in addition to* `Completed` doubled the
-        // UI-side re-list (and the facade's own internal one) for every
-        // successful mutation, since the worker always emits `Completed`
-        // immediately after `SnapshotChanged` -- there is no meaningful
-        // gap between them for a user to benefit from an earlier
-        // refresh, and both `register_operation`'s own reconciliation
-        // and `reconcile_after_lag` already land on whichever state is
-        // *latest*, which for a finished mutation is always `Completed`.
+        // `SnapshotChanged` refreshes only the tab's lightweight
+        // `archive_snapshot` summary -- an immediate in-memory read.
+        // The full *row* refresh stays on `Completed` (which the worker
+        // always emits immediately after), where an earlier version of
+        // this bridge refreshing rows on both states doubled the relist
+        // per successful mutation for no benefit. `Completed`'s handler
+        // also re-stamps the snapshot itself, because the
+        // reconciliation paths (`register_operation`'s one-shot
+        // catch-up, `reconcile_after_lag`) only ever replay the
+        // registry's *latest* state and would never observe this
+        // transient one.
+        (OperationKind::ArchiveModify, OperationState::SnapshotChanged { session_id, .. }) => {
+            if let Some(tab) = shared.signals().tabs.get().get(tab_id).cloned() {
+                if tab.archive_session_id.get() == Some(session_id) {
+                    refresh_snapshot_signal(shared, &tab, session_id).await;
+                }
+            }
+        }
         (OperationKind::ArchiveModify, OperationState::Completed { .. }) => {
             handle_archive_modify_completed(shared, origins, tab_id, event.operation_id).await;
         }
@@ -2525,178 +2562,14 @@ mod tests {
         assert_eq!(origins.tracked_ids(), vec![op_b]);
     }
 
-    // -- resolve_archive_listing (auto-password re-derivation) ---------
-    //
-    // Regression test for a bug the automated suite never caught during
-    // Task 6 -- only a manual, real-archive test did: `resolve_archive_
-    // listing` must independently re-derive the same auto-detected
-    // password the facade's own `archive_ops::attempt_initial` resolved
-    // internally. There is nothing to read the facade's own resolved
-    // password back from without reaching into its private
-    // `ArchiveSession` internals, which this crate must not do. Without
-    // this, an archive a matching `PassRule` auto-unlocked on the facade
-    // side (no password ever typed, no challenge ever raised) would open
-    // successfully there while the UI-side re-list still saw an
-    // encrypted, unreadable listing.
-
-    struct FakeBackend {
-        correct_password: String,
-    }
-
-    impl arclain_core::ArchiveBackend for FakeBackend {
-        fn name(&self) -> &str {
-            "fake"
-        }
-        fn capabilities(&self) -> arclain_core::archive::BackendCapabilities {
-            arclain_core::archive::BackendCapabilities::read_only()
-        }
-        fn identify(&self, _path: &Path) -> anyhow::Result<arclain_core::archive::ArchiveKind> {
-            Ok(arclain_core::archive::ArchiveKind::Zip)
-        }
-        fn list(
-            &self,
-            _path: &Path,
-            password: Option<&str>,
-        ) -> anyhow::Result<arclain_core::archive::ArchiveInfo> {
-            match password {
-                Some(candidate) if candidate == self.correct_password => {
-                    Ok(arclain_core::archive::ArchiveInfo {
-                        archive_path: PathBuf::new(),
-                        archive_kind: arclain_core::archive::ArchiveKind::Zip,
-                        entries: vec![arclain_core::archive::ArchiveEntry {
-                            path: "secret.txt".to_string(),
-                            size: 10,
-                            packed_size: 5,
-                            modified: None,
-                            is_dir: false,
-                            encrypted: true,
-                            crc32: None,
-                        }],
-                        encrypted: true,
-                        headers_encrypted: false,
-                        encryption_method: Some("AES256".to_string()),
-                    })
-                }
-                _ => Err(anyhow::anyhow!("Wrong password for archive")),
-            }
-        }
-        fn extract_all(&self, _: &Path, _: &Path, _: Option<&str>) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-        fn extract_files(
-            &self,
-            _: &Path,
-            _: &Path,
-            _: &[String],
-            _: Option<&str>,
-        ) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-        fn extract_directory(
-            &self,
-            _: &Path,
-            _: &Path,
-            _: &str,
-            _: Option<&str>,
-        ) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-        fn recompress_7z(&self, _: &Path, _: &Path) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-        fn add_files(&self, _: &Path, _: &[PathBuf]) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-        fn create_archive(&self, _: &Path, _: &[PathBuf], _: &str) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-        fn read_text_file(&self, _: &Path, _: &str, _: Option<&str>) -> anyhow::Result<String> {
-            unimplemented!()
-        }
-        fn delete_files(&self, _: &Path, _: &[String]) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-        fn add_or_update_file_from_str(&self, _: &Path, _: &str, _: &str) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-        fn convert_to_7z(
-            &self,
-            _: &arclain_core::Archive,
-            _: &Path,
-            _: &Path,
-        ) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-        fn crc32_of_entry(&self, _: &Path, _: &str, _: Option<&str>) -> anyhow::Result<String> {
-            unimplemented!()
-        }
-    }
-
-    fn matching_rule(archive_name: &str, password: &str) -> arclain_core::utilities::PassRule {
-        arclain_core::utilities::PassRule {
-            name: "test".to_string(),
-            pattern: archive_name.to_string(),
-            password: password.to_string(),
-            priority: 10,
-            enabled: true,
-        }
-    }
-
-    #[test]
-    fn resolve_archive_listing_auto_detects_a_password_from_a_matching_pass_rule() {
-        let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(FakeBackend {
-            correct_password: "correct-horse-battery-staple".to_string(),
-        });
-        let rules = vec![matching_rule(
-            "auto-unlock-fixture.zip",
-            "correct-horse-battery-staple",
-        )];
-        let path = PathBuf::from("auto-unlock-fixture.zip");
-
-        let resolved = resolve_archive_listing(backend, rules, Vec::new(), path, None)
-            .expect("a matching pass rule must let this succeed without ever prompting");
-
-        assert_eq!(
-            resolved.resolved_password.as_deref(),
-            Some("correct-horse-battery-staple")
-        );
-        assert_eq!(resolved.info.entries.len(), 1);
-    }
-
-    #[test]
-    fn resolve_archive_listing_fails_when_no_pass_rule_matches_and_no_password_is_known() {
-        let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(FakeBackend {
-            correct_password: "secret".to_string(),
-        });
-        let path = PathBuf::from("unmatched.zip");
-
-        let result = resolve_archive_listing(backend, Vec::new(), Vec::new(), path, None);
-
-        assert!(
-            result.is_err(),
-            "with no known password and no matching rule, this must fail rather than silently \
-             succeeding with an unreadable listing"
-        );
-    }
-
-    #[test]
-    fn resolve_archive_listing_uses_an_already_known_password_without_consulting_pass_rules() {
-        let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(FakeBackend {
-            correct_password: "already-known".to_string(),
-        });
-        let path = PathBuf::from("archive.zip");
-
-        let resolved = resolve_archive_listing(
-            backend,
-            Vec::new(),
-            Vec::new(),
-            path,
-            Some("already-known".to_string()),
-        )
-        .expect("an already-known correct password must succeed with no pass rules needed");
-
-        assert_eq!(resolved.resolved_password.as_deref(), Some("already-known"));
-    }
+    // The auto-password re-derivation tests (and the FakeBackend that
+    // served them) are gone with `resolve_archive_listing` itself: the
+    // relist consumes the facade session's already-resolved listing, so
+    // there is no second ladder left to keep in step with the facade's.
+    // The facade-side ladder and the session-password/stored-rule
+    // behavior are covered where they live now --
+    // `crates/app/src/runtime/archive_ops.rs`'s own unit tests and
+    // `crates/app/tests/archive_sessions.rs`.
 }
 
 #[cfg(test)]

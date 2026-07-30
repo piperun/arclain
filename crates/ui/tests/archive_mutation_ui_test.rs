@@ -166,15 +166,14 @@ fn start_add_files_reaches_a_real_backend_and_the_bridge_refreshes_the_tabs_entr
         snapshot.session_id
     });
 
-    // The real UI-side re-list (through the extension-based
-    // `BackendSelector`, independent of the facade) must have already
-    // populated the tab from the real (empty) archive.
+    // The bridge's relist must have already seated the session's own
+    // (empty) inventory onto the tab.
     wait_until(
-        "the archive open never populated the tab's entries signal",
+        "the archive open never populated the tab's archive path",
         || tab.archive_path.get().as_deref() == Some(archive_path.as_path()),
     );
     assert_eq!(
-        tab.entries.get().len(),
+        tab.inventory.get().entry_count(),
         0,
         "the fixture archive starts with zero entries"
     );
@@ -189,8 +188,9 @@ fn start_add_files_reaches_a_real_backend_and_the_bridge_refreshes_the_tabs_entr
     wait_until(
         "start_add_files never reached a real backend or the bridge never refreshed the tab",
         || {
-            tab.entries
+            tab.inventory
                 .get()
+                .legacy_rows()
                 .iter()
                 .any(|entry| entry.path == "new_file.txt")
         },
@@ -257,9 +257,19 @@ fn delete_files_from_a_subdirectory_resolves_through_the_navigated_directory_and
         arclain_ui::core::operation_bridge::register_operation(&shared, operation_id, tab_id).await;
     });
 
+    // Three files; the inventory also carries the synthesized `subdir`
+    // directory row, so count files rather than rows.
     wait_until(
-        "the archive open never populated the tab's entries signal",
-        || tab.entries.get().len() == 3,
+        "the archive open never populated the tab's inventory",
+        || {
+            tab.inventory
+                .get()
+                .legacy_rows()
+                .iter()
+                .filter(|entry| !entry.is_dir)
+                .count()
+                == 3
+        },
     );
 
     // Simulate the user having navigated into `subdir` before selecting
@@ -279,15 +289,15 @@ fn delete_files_from_a_subdirectory_resolves_through_the_navigated_directory_and
         "delete_files from a subdirectory never reached a real backend or the bridge never \
          refreshed the tab",
         || {
-            let entries = tab.entries.get();
-            entries.len() == 2
+            let entries = tab.inventory.get().legacy_rows();
+            entries.iter().filter(|entry| !entry.is_dir).count() == 2
                 && !entries
                     .iter()
                     .any(|entry| entry.path == "subdir/nested.txt")
         },
     );
 
-    let final_entries = tab.entries.get();
+    let final_entries = tab.inventory.get().legacy_rows();
     let remaining: std::collections::HashSet<&str> = final_entries
         .iter()
         .map(|entry| entry.path.as_str())

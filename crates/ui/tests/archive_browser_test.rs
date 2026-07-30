@@ -19,6 +19,42 @@ use std::time::{Duration, Instant};
 mod common;
 use common::TestContext;
 
+/// Seeds a tab's whole-archive inventory with fabricated facade rows --
+/// what the bridge's relist would adopt from `list_all_entries` in
+/// production. Test-constructed `EntryId`s are fine here: these tests
+/// never hand them back to a facade, they only feed the render-side
+/// projections.
+fn seed_inventory(tab: &arclain_ui::core::tabs::TabState, paths: &[String]) {
+    use arclain_app::archive::{ArchiveEntryDto, ArchiveInventory, ArchivePath, EntryKind};
+    use arclain_ui::core::tabs::{AdoptedInventory, TabInventory};
+
+    let session_id = arclain_app::ids::ArchiveSessionId::from_raw(1);
+    let inventory = ArchiveInventory {
+        session_id,
+        revision: 1,
+        entries: paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| ArchiveEntryDto {
+                id: arclain_app::ids::EntryId::from_raw(index as u64 + 1),
+                path: ArchivePath::parse(path.clone()).unwrap(),
+                name: path.rsplit('/').next().unwrap_or(path).to_string(),
+                kind: EntryKind::File,
+                compressed_size: Some(0),
+                uncompressed_size: 0,
+                modified_at_unix_ms: None,
+                encrypted: false,
+                crc32: None,
+            })
+            .collect(),
+    };
+    let prepared = AdoptedInventory::prepare(inventory);
+    tab.inventory.update(|held| {
+        *held = TabInventory::for_session(Some(session_id));
+        held.adopt(prepared.clone());
+    });
+}
+
 trait HandleAction {
     fn handle_action(&mut self, action: Action);
 }
@@ -574,19 +610,12 @@ fn idle_render_reuses_entry_allocation_without_publishing_state() {
         .collect();
     tab.browser_entries
         .update(|snapshot| snapshot.replace(entries));
-    tab.entries.set(Arc::new(
-        (0..10_000)
-            .map(|index| arclain_core::ArchiveEntry {
-                path: format!("folder-{index:05}/entry.txt"),
-                size: 0,
-                packed_size: 0,
-                modified: None,
-                is_dir: false,
-                encrypted: false,
-                crc32: None,
-            })
-            .collect(),
-    ));
+    seed_inventory(
+        &tab,
+        &(0..10_000)
+            .map(|index| format!("folder-{index:05}/entry.txt"))
+            .collect::<Vec<_>>(),
+    );
     let before = tab.browser_entries.get();
 
     let entry_notifications = Arc::new(AtomicUsize::new(0));
@@ -638,15 +667,7 @@ fn full_toolbar_and_browser_idle_frames_do_not_publish_browser_view_state() {
             is_folder: false,
         }]);
     });
-    tab.entries.set(Arc::new(vec![arclain_core::ArchiveEntry {
-        path: "folder/settled.txt".to_string(),
-        size: 0,
-        packed_size: 0,
-        modified: None,
-        is_dir: false,
-        encrypted: false,
-        crc32: None,
-    }]));
+    seed_inventory(&tab, &["folder/settled.txt".to_string()]);
     tab.browser_view_state.update(|state| {
         state.toolbar_state.show_tree_panel = true;
     });

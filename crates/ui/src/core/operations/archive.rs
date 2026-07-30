@@ -2,7 +2,6 @@ use crate::core::tabs::{TabId, TabState};
 use crate::shared::components::status_bar;
 use crate::shared::dialogs::MergeDialogState;
 use crate::shared::SharedState;
-use arclain_core::ArchiveBackend;
 use crc32fast::Hasher;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -166,92 +165,82 @@ pub fn load_archive_into_tab(shared: &SharedState, tab_id: TabId, path: &std::pa
 
 /// Finishes an archive load once the facade's `start_open_archive`
 /// operation has completed and `crate::core::operation_bridge` has
-/// already populated the tab's flat `entries`/`archive_path`/
-/// `archive_extras` signals: precomputes CRC-32 for entries whose
-/// content is encrypted (unless the CRC policy is `on_access`), and
+/// already seated the tab's session-backed listing/inventory: kicks off
+/// the facade's encrypted-CRC backfill (unless the CRC policy is
+/// `on_access`), refreshes the tab's rows when it landed anything, and
 /// proactively shows the password dialog when the policy is
-/// `prompt_on_open` and the archive turned out to hold encrypted
-/// content the open itself didn't need a password for (headers
-/// unencrypted, but individual files are). Ported from the pre-facade
-/// `load_archive_data`, adapted to read/write signals directly instead
-/// of threading `&mut` out-parameters through a render frame -- the
-/// operation bridge that calls this has no render frame to thread them
-/// through.
+/// `prompt_on_open` and the backfill reports encrypted content with no
+/// password anywhere in reach (neither the one the session was opened
+/// with nor a stored rule matching the archive's name or its own entry
+/// paths -- `ArclainApp::backfill_encrypted_crcs` owns that ladder now,
+/// where the pre-facade code re-derived it from `AppState`'s own
+/// rule/last-entries mirrors).
+///
+/// The policy split stays exactly where it was: this function is the
+/// policy, the facade method is the mechanism. What moved is the
+/// computation and its write -- the CRCs land in the session's own index
+/// (visible to every consumer of the session's rows, not a private flat
+/// list) and come back to this tab as a higher-revision refresh.
+///
+/// Runs as a spawned task rather than inline on the bridge's event
+/// loop: the computation reads and hashes every targeted entry's
+/// decrypted content, which for a large encrypted archive takes
+/// arbitrarily long, and the pre-facade version blocked every other
+/// tab's operation events for that whole duration. The visible ordering
+/// change is deliberate and an improvement -- rows appear immediately
+/// and their CRCs (or the password prompt) follow when ready.
 pub fn finish_archive_load(shared: &SharedState, tab: &crate::core::tabs::TabState) {
-    let (policy, pass_rules, last_entries, fallback_backend) = {
-        let state = shared.app_state.lock();
-        (
-            state.encrypted_crc_policy.clone(),
-            state.pass_rules.clone(),
-            state.last_entries.clone(),
-            state.fallback_backend.clone(),
-        )
+    let policy = shared.app_state.lock().encrypted_crc_policy.clone();
+    if policy == "on_access" {
+        return;
+    }
+    let Some(session_id) = tab.archive_session_id.get() else {
+        return;
+    };
+    let Some(app) = shared.facade.clone() else {
+        return;
+    };
+    let Some(tab) = shared.signals().tabs.get().get(tab.id).cloned() else {
+        return;
     };
 
-    let archive_path = tab.archive_path.get();
-    let archive_name_owned = archive_path
-        .as_ref()
-        .and_then(|p| p.to_str())
-        .map(|s| s.to_string());
-    // Stays on `AppState::pass_rules` (which carries the decrypted
-    // passwords) rather than the facade: `ArclainApp::password_rules`
-    // returns summaries that report only *whether* a password is
-    // configured, so auto-unlock cannot be expressed through it. Closing
-    // this needs the facade to own auto-unlock itself, not a wider
-    // password-rule read model.
-    let auto_pw = arclain_core::utilities::auto_password_for(
-        &pass_rules,
-        archive_name_owned.as_deref(),
-        &last_entries,
-    );
-    let have_pw = tab.current_password.read().is_some() || auto_pw.is_some();
+    let shared = shared.clone();
+    let runtime = shared.services.tokio_runtime.clone();
+    runtime.clone().spawn(async move {
+        let report = match app.backfill_encrypted_crcs(session_id).await {
+            Ok(report) => report,
+            Err(error) => {
+                tracing::warn!("[archive] encrypted-CRC backfill failed: {error:?}");
+                return;
+            }
+        };
 
-    if have_pw && policy != "on_access" {
-        let password = tab.current_password.get().or_else(|| auto_pw.clone());
-        if let (Some(pw), Some(arc_path)) = (password, archive_path.clone()) {
-            let paths_to_compute: Vec<String> = {
-                let entries_arc = tab.entries.get();
-                let headers_encrypted = tab.archive_extras.get().headers_encrypted;
-                entries_arc
-                    .iter()
-                    .filter(|e| {
-                        !e.is_dir && (e.encrypted || headers_encrypted) && e.crc32.is_none()
-                    })
-                    .map(|e| e.path.clone())
-                    .collect()
-            };
-            if !paths_to_compute.is_empty() {
-                tracing::info!(
-                    "[archive] Computing CRC-32 for {} encrypted entries (policy={}). \
-                     Switch to 'on_access' in Settings if this hangs.",
-                    paths_to_compute.len(),
-                    policy
-                );
+        if report.computed > 0 {
+            tracing::info!(
+                "[archive] Computed CRC-32 for {} encrypted entries (policy={policy}).",
+                report.computed
+            );
+            // The tab may have moved on to a different archive while the
+            // computation ran; the refresh's own session guards drop a
+            // stale answer, but skip the work outright when the binding
+            // already changed.
+            if tab.archive_session_id.get() != Some(session_id) {
+                return;
             }
-            let mut computed: Vec<(String, String)> = Vec::new();
-            for p in paths_to_compute {
-                if let Ok(sum) = fallback_backend.crc32_of_entry(&arc_path, &p, Some(&pw)) {
-                    computed.push((p, sum));
-                }
-            }
-            if !computed.is_empty() {
-                let mut entries_arc = tab.entries.get();
-                for (p, sum) in computed {
-                    if let Some(e) = std::sync::Arc::make_mut(&mut entries_arc)
-                        .iter_mut()
-                        .find(|e| e.path == p && e.encrypted && e.crc32.is_none())
-                    {
-                        e.crc32 = Some(sum);
-                    }
-                }
-                tab.entries.set(entries_arc.clone());
+            if let Err(error) = crate::core::operation_bridge::refresh_entries_after_mutation(
+                &shared, &tab, session_id,
+            )
+            .await
+            {
+                tracing::warn!("[archive] rows did not refresh after the CRC backfill: {error:?}");
             }
         }
-    }
 
-    if policy == "prompt_on_open" && !have_pw {
-        let any_encrypted = tab.entries.get().iter().any(|e| e.encrypted);
-        if any_encrypted {
+        if policy == "prompt_on_open"
+            && !report.password_available
+            && report.any_encrypted
+            && tab.archive_session_id.get() == Some(session_id)
+        {
             let mut dialog = tab.password_dialog.get();
             dialog.show = true;
             dialog.password.clear();
@@ -261,7 +250,7 @@ pub fn finish_archive_load(shared: &SharedState, tab: &crate::core::tabs::TabSta
                 status.message = "Password required to access encrypted content".to_string();
             });
         }
-    }
+    });
 }
 
 /// Archive information state — output shape of the per-tab
@@ -278,10 +267,11 @@ pub struct ArchiveInfo {
     pub total_crc32: Option<String>,
 }
 
-/// Non-derivable inputs to `ArchiveInfo` — fields the backend's `list`
-/// call surfaces that can't be re-computed from `entries`/`archive_path`.
-/// Written by `crate::core::operation_bridge`'s `relist_for_browser_signals`
-/// and read by the `Computed<ArchiveInfo>` derivation on `TabState`.
+/// Non-derivable inputs to `ArchiveInfo` — the archive-level encryption
+/// facts the backend's open-time listing surfaced, which no entry row
+/// carries. Written by `crate::core::operation_bridge`'s open-completion
+/// handler from `ArchiveSnapshot`'s own trio and read by the
+/// `Computed<ArchiveInfo>` derivation on `TabState`.
 #[derive(Default, Clone)]
 pub struct ArchiveExtras {
     pub archive_encrypted: bool,
@@ -289,35 +279,54 @@ pub struct ArchiveExtras {
     pub encryption_method: Option<String>,
 }
 
-/// Derive an [`ArchiveInfo`] from the given inputs. Pure function — the
-/// Computed closure on `TabState` is this with the signals' `.get()`
-/// results plugged in.
+/// Derive an [`ArchiveInfo`] from the tab's whole-archive inventory
+/// rows. Pure function — the Computed closure on `TabState` is this with
+/// the signals' `.get()` results plugged in.
+///
+/// Directory rows are excluded from every aggregate: unlike the flat
+/// backend rows this used to sum (where a directory row carried zeros),
+/// an inventory's directory rows carry the session's *recursive
+/// aggregates*, and summing those alongside the files they aggregate
+/// would count every byte once per ancestor. `file_count` counts actual
+/// files for the same reason — the pre-facade number was the backend's
+/// raw row count, which drifted with whether a backend happened to list
+/// directories explicitly.
 pub fn derive_archive_info(
-    entries: &[arclain_core::ArchiveEntry],
+    entries: &[arclain_app::archive::ArchiveEntryDto],
     archive_path: Option<&std::path::Path>,
     extras: &ArchiveExtras,
 ) -> ArchiveInfo {
+    use arclain_app::archive::EntryKind;
+
     let archive_format = archive_path
         .and_then(|p| p.extension())
         .and_then(|e| e.to_str())
         .map(|s| s.to_uppercase())
         .unwrap_or_default();
 
-    let total_size = entries.iter().map(|e| e.size).sum();
-    let compressed_size = entries.iter().map(|e| e.packed_size).sum();
-    let file_count = entries.len();
+    let files = || {
+        entries
+            .iter()
+            .filter(|entry| entry.kind != EntryKind::Directory)
+    };
+    let total_size = files().map(|entry| entry.uncompressed_size).sum();
+    let compressed_size = files()
+        .map(|entry| entry.compressed_size.unwrap_or(0))
+        .sum();
+    let file_count = files().count();
 
     // Aggregate per-entry CRC-32 into a single archive checksum.
     // Sorted path:crc pairs keep the result order-independent across
     // backends that list entries in different orders. Skipped for
     // empty / fully-encrypted archives (no entry CRCs available yet).
-    let mut pairs: Vec<(String, String)> = entries
-        .iter()
-        .filter(|e| !e.is_dir)
-        .filter_map(|e| {
-            e.crc32
+    // Directory rows are excluded exactly as before -- their crc32 is
+    // itself an aggregate.
+    let mut pairs: Vec<(String, String)> = files()
+        .filter_map(|entry| {
+            entry
+                .crc32
                 .as_ref()
-                .map(|c| (e.path.replace('\\', "/"), c.to_uppercase()))
+                .map(|crc| (entry.path.as_str().to_string(), crc.to_uppercase()))
         })
         .collect();
     let total_crc32 = if pairs.is_empty() {

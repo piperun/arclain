@@ -59,7 +59,7 @@ pub fn render_archive_browser(
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy())
             .unwrap_or_else(|| std::borrow::Cow::Borrowed("archive"));
-        let archive_entries = tab.entries.get();
+        let archive_entries = tab.inventory.get().legacy_rows();
         let listing = tab.listing.get();
         let tree = tree_projection.projection(&archive_entries, |entries| {
             // TRANSITIONAL(4c): see `crate::core::operations::navigation_view`.

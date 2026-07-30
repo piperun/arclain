@@ -94,13 +94,31 @@ pub fn render_header_panel(
                         title,
                         maker,
                         file,
-                        entry_count: t.entries.get().len(),
+                        // Files plus directories, synthesized ancestors
+                        // included -- agrees with the session's own
+                        // `ArchiveSnapshot::entry_count`. (The pre-facade
+                        // count was the backend's raw row count, which
+                        // omitted implied ancestor folders.)
+                        entry_count: t.inventory.get().entry_count(),
                         active: t.id == active_id,
                     }
                 })
                 .collect();
-            let active_entries = col.active().entries.get();
-            let active_paths: Vec<&str> = active_entries.iter().map(|e| e.path.as_str()).collect();
+            // File paths only, matching `ArclainApp::archive_file_paths`'s
+            // scope for the same search -- the inventory held on the tab
+            // IS the per-(session, revision) cache, so no per-frame
+            // facade call happens here. (The pre-facade input was the
+            // backend's raw listing, which also carried any explicitly
+            // listed directory row; a *named but empty* directory is no
+            // longer findable by name, while every non-empty one still
+            // matches through the paths beneath it.)
+            let active_inventory = col.active().inventory.get();
+            let active_paths: Vec<&str> = active_inventory
+                .entries()
+                .iter()
+                .filter(|entry| entry.kind != arclain_app::archive::EntryKind::Directory)
+                .map(|entry| entry.path.as_str())
+                .collect();
             let active_code = tab_summaries
                 .iter()
                 .find(|s| s.active)

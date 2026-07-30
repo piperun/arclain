@@ -10,7 +10,7 @@ use crate::core::signals::ToolbarContext;
 use arclain_app::archive::ArchiveSnapshot;
 use arclain_app::{Computed, Signal};
 use arclain_core::features::organization::GameMetadata;
-use parking_lot::RwLock;
+use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
@@ -38,37 +38,13 @@ pub struct TabState {
     /// notifies — readers naturally pick up the new value the next
     /// frame because the renderer always polls each frame).
     pub archive_loaded: Computed<bool>,
-    /// TRANSITIONAL(4b): every entry in this tab's archive at every
-    /// depth, as the backend listed it.
-    ///
-    /// The archive browser's whole-archive consumers were built on this
-    /// flat list: the folder tree's directory set, a drag-out's
-    /// "everything under this folder" expansion, the derived
-    /// [`ArchiveInfo`] totals, and the plugin bridge's event context.
-    /// None of them are expressible through the application facade's
-    /// read model yet -- `ArclainApp::list_entries` answers one
-    /// *directory* at a time, and no facade method returns whole-archive
-    /// [`arclain_app::archive::ArchiveEntryDto`] rows -- so the tab still
-    /// holds the pre-facade shape for them, written by
-    /// `crate::core::operation_bridge`'s own backend re-list.
-    ///
-    /// This is the field the browser-model migration deletes: the
-    /// relisting side (4b) is what can page `list_entries` across the
-    /// directory tree and hand the tab real, session-minted
-    /// `EntryId`-carrying rows. Deliberately *not* synthesized into DTOs
-    /// here in the meantime: an `EntryId` this crate invented would not
-    /// be the one the owning session assigned, and every facade method
-    /// that takes one (extract, delete, materialize) resolves it against
-    /// that session -- a frontend-minted id could therefore name a
-    /// different entry than the row the user picked.
-    pub entries: Signal<Arc<Vec<arclain_core::ArchiveEntry>>>,
     /// Every entry in this tab's archive at every depth, as the facade's
     /// session reports it -- the [`TabInventory`] the operation bridge
     /// adopts from `ArclainApp::list_all_entries` on every relist.
     ///
     /// The whole-archive counterpart to [`Self::listing`] (which holds
-    /// one directory's page), and the replacement for the flat
-    /// [`Self::entries`] list above: rows here carry the session's own
+    /// one directory's page), and the replacement for the pre-facade
+    /// flat `entries` list: rows here carry the session's own
     /// `EntryId`s and folder aggregates, and the not-yet-migrated
     /// core-typed consumers read the memoized `legacy_rows` projection
     /// instead of a separately-listed copy that could drift from what
@@ -134,7 +110,7 @@ pub struct TabState {
     /// Every other archive I/O path goes through the facade's own session
     /// (see [`Self::archive_session_id`]); the render-side consumers are
     /// what still need this one, so it dies when they move.
-    pub opened_archive: Signal<Option<Arc<RwLock<arclain_core::Archive>>>>,
+    pub opened_archive: Signal<Option<Arc<Mutex<arclain_core::Archive>>>>,
     /// The application facade's session id for this tab's open archive
     /// (`None` when no archive is open in this tab). Set once the
     /// `start_open_archive` operation reaches `Completed { ArchiveOpened }`
@@ -318,31 +294,30 @@ pub struct TabState {
 impl TabState {
     pub fn new(id: TabId) -> Self {
         let archive_path: Signal<Option<PathBuf>> = Signal::new(None).with_name("archive_path");
-        let entries: Signal<Arc<Vec<arclain_core::ArchiveEntry>>> =
-            Signal::new(Arc::new(Vec::new())).with_name("entries");
         let archive_extras: Signal<ArchiveExtras> =
             Signal::new(ArchiveExtras::default()).with_name("archive_extras");
         let archive_loaded = {
             let archive_path = archive_path.clone();
             Computed::new(move || archive_path.read().is_some())
         };
+        let inventory: Signal<TabInventory> =
+            Signal::new(TabInventory::default()).with_name("inventory");
         let archive_info = {
-            let entries = entries.clone();
+            let inventory = inventory.clone();
             let archive_path = archive_path.clone();
             let archive_extras = archive_extras.clone();
             Computed::new(move || {
-                let ents = entries.get();
+                let inventory = inventory.get();
                 let path = archive_path.get();
                 let extras = archive_extras.get();
-                derive_archive_info(ents.as_slice(), path.as_deref(), &extras)
+                derive_archive_info(inventory.entries(), path.as_deref(), &extras)
             })
         };
         Self {
             id,
             archive_path,
             archive_loaded,
-            entries,
-            inventory: Signal::new(TabInventory::default()).with_name("inventory"),
+            inventory,
             metadata: Signal::new(None).with_name("metadata"),
             archive_extras,
             archive_info,
@@ -414,7 +389,6 @@ impl TabState {
         }
         let sig_ctx = crate::core::signal_context::SignalContext::new(ctx.clone());
         sig_ctx.bind_named(&self.archive_path, "tab.archive_path");
-        sig_ctx.bind_named(&self.entries, "tab.entries");
         sig_ctx.bind_named(&self.inventory, "tab.inventory");
         sig_ctx.bind_named(&self.metadata, "tab.metadata");
         sig_ctx.bind_named(&self.archive_extras, "tab.archive_extras");
