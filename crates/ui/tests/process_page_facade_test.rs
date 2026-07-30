@@ -214,6 +214,41 @@ fn a_folder_input_is_expanded_at_run_time_not_at_preview_time() {
     );
 }
 
+/// A step the application refuses to translate leaves the panel saying
+/// why, rather than silently blank. Execute is gated on the preview
+/// having entries, so a blank panel would also grey the button out with
+/// no reason attached to it.
+#[test]
+fn a_step_the_application_refuses_is_reported_in_the_preview() {
+    let (temp, shared) = create_test_shared_state_with_facade();
+    let mut state = seeded_page();
+
+    let input = build_zip_fixture(temp.path(), "RJ123456.zip", &[("a.bin", b"a")]);
+    flatten_to_folder(
+        &mut state,
+        PipelineInputsDto::Files { paths: vec![input] },
+        &temp.path().join("out"),
+    );
+    // What the "+ Organize" button produces before a rule is picked.
+    state.draft.steps.push(PipelineStepDto::Organize {
+        rule_id: String::new(),
+    });
+
+    handle_process_action(&mut state, ProcessAction::RefreshPreview, &shared);
+
+    assert!(state.preview.entries.is_empty());
+    assert_eq!(
+        state.preview.global_warnings.len(),
+        1,
+        "the rejection must reach the panel: {:?}",
+        state.preview.global_warnings
+    );
+    assert!(
+        !state.preview_dirty,
+        "a rejected preview must not re-fire the action every frame"
+    );
+}
+
 // ── cancellation ────────────────────────────────────────────────────────
 
 /// The page's Cancel reaches the operation registry, and the registry

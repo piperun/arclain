@@ -661,8 +661,18 @@ pub fn handle_process_action(
             match runtime.block_on(app.preview_pipeline(state.preview_request())) {
                 Ok(preview) => state.preview = preview,
                 Err(error) => {
+                    // A half-built pipeline is previewable, so the only
+                    // rejections here are steps that cannot run at all
+                    // -- most often an Organize step whose rule has not
+                    // been picked yet. Shown as the panel's own warning
+                    // rather than blanking it: an empty preview would
+                    // also disable Execute, leaving the user with a
+                    // greyed-out button and no reason for it.
                     tracing::debug!("[process] preview_pipeline was rejected: {error:?}");
-                    state.preview = Default::default();
+                    state.preview = arclain_app::process::PipelinePreviewDto {
+                        entries: Vec::new(),
+                        global_warnings: vec![error.summary.clone()],
+                    };
                 }
             }
         }
