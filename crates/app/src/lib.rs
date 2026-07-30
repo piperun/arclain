@@ -52,6 +52,17 @@
 //! re-exports from the storage layer, so a frontend draws its chrome from
 //! this crate's vocabulary rather than the database's.
 //!
+//! [`archive::ProductMetadataSummary`] is the read model for what a
+//! plugin reported about the product an archive contains, via
+//! `ArclainApp::product_metadata` (session-keyed) or the pure
+//! [`archive::product_metadata_from_document`] (for a caller already
+//! holding the raw document). Both parse through the organize planner's
+//! own function, so a frontend cannot display a title the plan was not
+//! built from -- and neither carries the raw document or inline
+//! screenshot bytes onward. There is no write counterpart: metadata is
+//! written by plugins and announced as
+//! [`event::SessionEvent::MetadataChanged`].
+//!
 //! [`archive::multipart`] and [`operations::merge`] between them own the
 //! split-archive feature: [`archive::detect_multipart`] answers "is this
 //! file part of a multi-part set?" for a frontend's drop/file-picker

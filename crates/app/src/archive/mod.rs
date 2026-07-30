@@ -3,10 +3,12 @@
 //! archive format or which UI toolkit is on the other end.
 
 pub mod multipart;
+mod product_metadata;
 mod session;
 mod store;
 
 pub use multipart::{detect_multipart, MultiPartArchiveDto, MultiPartFormat};
+pub use product_metadata::{product_metadata_from_document, ProductMetadataSummary, ScreenshotRef};
 pub(crate) use session::{ArchiveSession, SessionEncryption};
 pub(crate) use store::ArchiveSessionStore;
 

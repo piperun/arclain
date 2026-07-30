@@ -701,6 +701,45 @@ impl ArclainApp {
         .await?
     }
 
+    /// What a plugin has reported about the *product* the archive open
+    /// in `session_id` contains, in the vocabulary a frontend displays
+    /// -- see [`crate::archive::ProductMetadataSummary`].
+    ///
+    /// `Ok(None)` when no plugin has reported anything for this session
+    /// yet, and also when what it reported does not parse: a display
+    /// surface has nothing different to do in those two cases, and a
+    /// metadata-less plan is what the planner already makes of an
+    /// unparseable document. `NotFound` for an unknown or already-closed
+    /// session id.
+    ///
+    /// The read counterpart of [`Self::archive_snapshot`]'s raw
+    /// `metadata` document, and preferred over it for anything that
+    /// reads *fields*: the document's parse rule stays inside this
+    /// application (shared with the organize planner, so a panel cannot
+    /// display a title the plan was not built from), and the payloads a
+    /// display surface never needs -- the document itself, inline
+    /// screenshot bytes -- do not cross the boundary at all.
+    ///
+    /// There is deliberately no write counterpart. Metadata is written
+    /// by plugins, through the `emit_metadata` host function and
+    /// [`crate::plugins::ArchiveContextBridge`]; every announcement of
+    /// such a write reaches a frontend as
+    /// [`crate::event::SessionEvent::MetadataChanged`]. No frontend path
+    /// writes metadata, and adding a second writer here would give the
+    /// planner two sources to disagree about.
+    pub async fn product_metadata(
+        &self,
+        session_id: ArchiveSessionId,
+    ) -> Result<Option<crate::archive::ProductMetadataSummary>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let session = inner.archive_sessions().get(session_id).await?;
+            Ok(crate::archive::product_metadata_from_document(
+                session.metadata(),
+            ))
+        })
+        .await?
+    }
+
     /// A point-in-time summary of an open archive session.
     pub async fn archive_snapshot(
         &self,

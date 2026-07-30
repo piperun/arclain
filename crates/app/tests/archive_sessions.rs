@@ -40,7 +40,7 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use arclain_app::archive::{
-    ArchivePath, EntrySortKey, ListEntriesRequest, OpenArchiveRequest, SortDirection,
+    ArchivePath, EntrySortKey, ListEntriesRequest, OpenArchiveRequest, ScreenshotRef, SortDirection,
 };
 use arclain_app::challenge::{Challenge, ChallengeResponse, SecretInput};
 use arclain_app::error::ApplicationErrorKind;
@@ -353,6 +353,121 @@ fn closing_a_session_makes_every_subsequent_query_not_found() {
         assert_eq!(second_close.kind, ApplicationErrorKind::NotFound);
         let snapshot_error = app.archive_snapshot(session_id).await.unwrap_err();
         assert_eq!(snapshot_error.kind, ApplicationErrorKind::NotFound);
+    });
+}
+
+/// `product_metadata` reports nothing until a plugin writes to the
+/// session, then reports what it wrote -- already parsed, so a frontend
+/// never sees the raw document. The write goes through the same
+/// `ArchiveContextBridge` the `emit_metadata` host function uses.
+#[test]
+fn product_metadata_is_empty_until_a_plugin_reports_and_then_summarizes_what_it_reported() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let archive_path = build_zip_fixture(
+        temp.path(),
+        "[RJ123456] Placeholder.zip",
+        &[("game/Game.exe", b"x")],
+    );
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: archive_path,
+                password: None,
+            })
+            .await
+            .unwrap();
+        let session_id = wait_for_archive_opened(&app, operation_id).await.session_id;
+
+        assert_eq!(
+            app.product_metadata(session_id)
+                .await
+                .expect("an open session must answer"),
+            None,
+            "a session no plugin has reported for has no product metadata"
+        );
+
+        let bridge = app.active_tab_bridge(|_| panic!("fallback must not run: the session exists"));
+        bridge.set_session_metadata(
+            session_id.into_raw(),
+            Some(serde_json::json!({
+                "product_id": "RJ123456",
+                "source": "dlsite",
+                "title": "Placeholder Title",
+                "circle": "Placeholder Circle",
+                "release_date": "2024-01-01",
+                "tags": ["Tag A", "Tag B"],
+                "screenshots": [
+                    {"FilePath": "covers/front.png"},
+                    {"Base64": "aGVsbG8="},
+                    {"FilePath": "covers/front.png"}
+                ],
+            })),
+        );
+
+        let summary = app
+            .product_metadata(session_id)
+            .await
+            .expect("an open session must answer")
+            .expect("the reported metadata must summarize");
+        assert_eq!(summary.product_id, "RJ123456");
+        assert_eq!(summary.title.as_deref(), Some("Placeholder Title"));
+        assert_eq!(
+            summary.creator.as_deref(),
+            Some("Placeholder Circle"),
+            "the document's `circle` is the creator, exactly as the planner reads it"
+        );
+        assert_eq!(summary.release_date.as_deref(), Some("2024-01-01"));
+        assert_eq!(summary.tags, vec!["Tag A", "Tag B"]);
+        assert_eq!(
+            summary
+                .screenshots
+                .iter()
+                .map(ScreenshotRef::identifier)
+                .collect::<Vec<_>>(),
+            vec![
+                std::path::PathBuf::from("covers/front.png")
+                    .display()
+                    .to_string(),
+                "Base64 data (8 bytes)".to_string(),
+            ],
+            "identifiers are enumerated once each, in first-reported order"
+        );
+    });
+}
+
+/// The same store-validated identifier treatment every other
+/// session-keyed read gets: an id this app never minted, and one whose
+/// session has been closed, are both `NotFound` rather than "no
+/// metadata".
+#[test]
+fn product_metadata_rejects_an_unknown_or_closed_session_id() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let archive_path = build_zip_fixture(temp.path(), "fixture.zip", &[("a.txt", b"x")]);
+
+    runtime.block_on(async {
+        let unknown = app
+            .product_metadata(ArchiveSessionId::from_raw(999_999))
+            .await
+            .unwrap_err();
+        assert_eq!(unknown.kind, ApplicationErrorKind::NotFound);
+
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: archive_path,
+                password: None,
+            })
+            .await
+            .unwrap();
+        let session_id = wait_for_archive_opened(&app, operation_id).await.session_id;
+        app.close_archive(session_id).await.expect("close");
+
+        let closed = app.product_metadata(session_id).await.unwrap_err();
+        assert_eq!(closed.kind, ApplicationErrorKind::NotFound);
     });
 }
 
