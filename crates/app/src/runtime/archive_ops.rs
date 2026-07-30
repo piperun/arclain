@@ -689,6 +689,107 @@ pub(super) async fn run_backfill_encrypted_crcs(
     }
 }
 
+/// The `ArclainApp::read_entry_text` worker: resolves `entry_id` against
+/// `session_id`'s current index and reads that entry's decoded text
+/// through the session's own backend and password.
+///
+/// The password is the session's -- typed, rule-matched, or
+/// challenge-answered at open. That is the whole point of this method
+/// existing: the pre-facade file-edit read carried its own
+/// `BackendSelector` and its own copy of the password, stamped onto the
+/// tab from the session's raw archive handle, so a frontend held the
+/// archive's secret purely to hand it straight back to a backend the
+/// session already owns.
+///
+/// Errors, all `Fatal` (nothing here is retryable without a different
+/// input): `NotFound` for an id this session's current index never
+/// minted -- the same hard failure every other id-consuming path gives a
+/// fabricated or superseded id; `InvalidInput` for a directory, which
+/// has no text to read; `PasswordRequired` when the backend's own
+/// failure is password-shaped, so a caller can prompt rather than
+/// showing a raw backend message; `Backend` otherwise.
+pub(super) async fn run_read_entry_text(
+    inner: Arc<AppRuntime>,
+    session_id: crate::ids::ArchiveSessionId,
+    entry_id: crate::ids::EntryId,
+) -> Result<String, ApplicationError> {
+    let session = inner.archive_sessions().get(session_id).await?;
+    let Some(entry) = session.entry(entry_id) else {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::NotFound,
+            "the requested entry does not exist in this archive session",
+        )
+        .with_recoverability(Recoverability::Fatal)
+        .with_archive_session_id(session_id)
+        .with_entry_id(entry_id));
+    };
+    if entry.kind == crate::archive::EntryKind::Directory {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "a directory entry has no text content to read",
+        )
+        .with_recoverability(Recoverability::Fatal)
+        .with_archive_session_id(session_id)
+        .with_entry_id(entry_id)
+        .with_field("entry_id"));
+    }
+
+    let source_path = session.source_path();
+    let path_in_archive = entry.path.as_str().to_string();
+    // Snapshot the backend and password under the handle's lock and drop
+    // it before the read: holding the session's archive mutex across a
+    // backend call (a 7-Zip subprocess, for a large archive) would block
+    // every other session-scoped backend call for its whole duration.
+    // Same discipline as the materialization worker.
+    let (backend, password) = {
+        let archive = session.archive_arc();
+        let guard = archive.lock();
+        (
+            guard.backend_arc(),
+            guard.password_ref().map(str::to_string),
+        )
+    };
+
+    let Some(handle) = inner.tokio_handle() else {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::Internal,
+            "the application runtime is shutting down",
+        )
+        .with_recoverability(Recoverability::Fatal)
+        .with_archive_session_id(session_id));
+    };
+
+    let read = handle
+        .spawn_blocking(move || {
+            backend.read_text_file(&source_path, &path_in_archive, password.as_deref())
+        })
+        .await
+        .map_err(|join_error| {
+            ApplicationError::new(
+                ApplicationErrorKind::Internal,
+                "the archive text read task failed",
+            )
+            .with_diagnostic(join_error.to_string())
+            .with_recoverability(Recoverability::Fatal)
+            .with_archive_session_id(session_id)
+            .with_entry_id(entry_id)
+        })?;
+
+    read.map_err(|error| {
+        let diagnostic = format!("{error:#}");
+        let kind = if is_password_error(&diagnostic) {
+            ApplicationErrorKind::PasswordRequired
+        } else {
+            ApplicationErrorKind::Backend
+        };
+        ApplicationError::new(kind, "could not read the entry's text content")
+            .with_diagnostic(diagnostic)
+            .with_recoverability(Recoverability::Fatal)
+            .with_archive_session_id(session_id)
+            .with_entry_id(entry_id)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -713,9 +713,14 @@ impl arclain_core::ArchiveBackend for FakeContentEncryptedBackend {
         &self,
         _archive: &Path,
         _path_in_archive: &str,
-        _password: Option<&str>,
+        password: Option<&str>,
     ) -> anyhow::Result<String> {
-        unimplemented!()
+        match password {
+            Some(candidate) if candidate == self.correct_password => {
+                Ok(FAKE_ENTRY_TEXT.to_string())
+            }
+            _ => Err(anyhow::anyhow!("Wrong password for archive")),
+        }
     }
     fn delete_files(&self, _archive: &Path, _files: &[String]) -> anyhow::Result<()> {
         unimplemented!()
@@ -748,6 +753,10 @@ impl arclain_core::ArchiveBackend for FakeContentEncryptedBackend {
         }
     }
 }
+
+/// The text [`FakeContentEncryptedBackend`] yields for a correctly
+/// unlocked entry.
+const FAKE_ENTRY_TEXT: &str = "decrypted contents";
 
 fn bootstrap_app_with_fake_backend(temp: &tempfile::TempDir, correct_password: &str) -> ArclainApp {
     let paths = support::temp_paths(temp.path());
@@ -1570,5 +1579,198 @@ fn backfill_encrypted_crcs_reports_the_prompt_material_when_no_password_is_known
             .await
             .unwrap();
         assert_eq!(page.entries[0].crc32, None, "rows stay untouched");
+    });
+}
+
+/// `read_entry_text` round-trips a real archive entry's content: the
+/// caller names a session and an id the session itself minted, and the
+/// session supplies the backend. This is the read the frontend used to
+/// perform itself, with its own `BackendSelector` and its own copy of
+/// the archive's password.
+#[test]
+fn read_entry_text_returns_a_real_entrys_content() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let archive_path = build_zip_fixture(
+        temp.path(),
+        "fixture.zip",
+        &[
+            ("notes/todo.txt", b"remember the milk" as &[u8]),
+            ("readme.txt", b"top level"),
+        ],
+    );
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: archive_path,
+                password: None,
+            })
+            .await
+            .unwrap();
+        let session_id = wait_for_archive_opened(&app, operation_id).await.session_id;
+
+        let inventory = app.list_all_entries(session_id).await.unwrap();
+        let nested = inventory
+            .entries
+            .iter()
+            .find(|entry| entry.path.as_str() == "notes/todo.txt")
+            .expect("the nested file must be indexed");
+
+        assert_eq!(
+            app.read_entry_text(session_id, nested.id).await.unwrap(),
+            "remember the milk"
+        );
+
+        let root_file = inventory
+            .entries
+            .iter()
+            .find(|entry| entry.path.as_str() == "readme.txt")
+            .expect("the root file must be indexed");
+        assert_eq!(
+            app.read_entry_text(session_id, root_file.id).await.unwrap(),
+            "top level",
+            "each id must read its own entry, not whichever one was read first"
+        );
+    });
+}
+
+/// A directory has no text to read, and the refusal must name the field
+/// rather than surfacing whatever the backend would have said about a
+/// path that is not a file.
+#[test]
+fn read_entry_text_refuses_a_directory_entry() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let archive_path = build_zip_fixture(
+        temp.path(),
+        "fixture.zip",
+        &[("notes/todo.txt", b"remember the milk" as &[u8])],
+    );
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: archive_path,
+                password: None,
+            })
+            .await
+            .unwrap();
+        let session_id = wait_for_archive_opened(&app, operation_id).await.session_id;
+
+        let inventory = app.list_all_entries(session_id).await.unwrap();
+        let directory = inventory
+            .entries
+            .iter()
+            .find(|entry| entry.path.as_str() == "notes")
+            .expect("the synthesized directory must be indexed");
+
+        let error = app
+            .read_entry_text(session_id, directory.id)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(error.field.as_deref(), Some("entry_id"));
+    });
+}
+
+/// The never-mint rule's enforcement half: an id no index of this
+/// session ever handed out resolves to nothing at all, so a fabricated
+/// value can never read some *other* entry's content. Same for a
+/// session id that was never minted.
+#[test]
+fn read_entry_text_rejects_a_reconstructed_unknown_id() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let archive_path = build_zip_fixture(
+        temp.path(),
+        "fixture.zip",
+        &[("readme.txt", b"top level" as &[u8])],
+    );
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: archive_path,
+                password: None,
+            })
+            .await
+            .unwrap();
+        let session_id = wait_for_archive_opened(&app, operation_id).await.session_id;
+
+        let unknown_entry = app
+            .read_entry_text(session_id, arclain_app::ids::EntryId::from_raw(999_999))
+            .await
+            .unwrap_err();
+        assert_eq!(unknown_entry.kind, ApplicationErrorKind::NotFound);
+
+        let real_id = app.list_all_entries(session_id).await.unwrap().entries[0].id;
+        let unknown_session = app
+            .read_entry_text(ArchiveSessionId::from_raw(999_999), real_id)
+            .await
+            .unwrap_err();
+        assert_eq!(unknown_session.kind, ApplicationErrorKind::NotFound);
+    });
+}
+
+/// The password the session was opened with reaches the read without the
+/// caller ever holding it -- the property that lets the transitional
+/// `session_archive_handle` (whose only remaining job was stamping that
+/// password onto a tab) go away. A backend that refuses the wrong
+/// password proves the right one arrived.
+#[test]
+fn read_entry_text_uses_the_password_the_session_was_opened_with() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_content_encrypted_backend(&temp, "sesame", None);
+    let archive_path = temp.path().join("encrypted.zip");
+    std::fs::write(&archive_path, b"placeholder").unwrap();
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: archive_path,
+                password: Some(SecretInput::new("sesame".to_string())),
+            })
+            .await
+            .unwrap();
+        let session_id = wait_for_archive_opened(&app, operation_id).await.session_id;
+
+        let entry = app.list_all_entries(session_id).await.unwrap().entries[0].id;
+        assert_eq!(
+            app.read_entry_text(session_id, entry).await.unwrap(),
+            "decrypted contents"
+        );
+    });
+}
+
+/// A password-shaped backend failure surfaces as `PasswordRequired`, so a
+/// frontend can prompt instead of showing a raw backend message. The
+/// session here was opened with no password at all (its listing needs
+/// none), which is exactly the shape a content-encrypted archive has.
+#[test]
+fn read_entry_text_reports_a_password_failure_as_password_required() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_content_encrypted_backend(&temp, "sesame", None);
+    let archive_path = temp.path().join("encrypted.zip");
+    std::fs::write(&archive_path, b"placeholder").unwrap();
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: archive_path,
+                password: None,
+            })
+            .await
+            .unwrap();
+        let session_id = wait_for_archive_opened(&app, operation_id).await.session_id;
+
+        let entry = app.list_all_entries(session_id).await.unwrap().entries[0].id;
+        let error = app.read_entry_text(session_id, entry).await.unwrap_err();
+        assert_eq!(error.kind, ApplicationErrorKind::PasswordRequired);
     });
 }

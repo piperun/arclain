@@ -752,29 +752,30 @@ impl ArclainApp {
         .await?
     }
 
-    /// TRANSITIONAL, tied to the legacy egui composition -- not part of
-    /// the frontend-neutral facade, exactly like [`Self::active_tab_bridge`].
-    /// A Flutter bridge must never call it.
+    /// Reads one entry's decoded text content out of an open session --
+    /// what a file-edit dialog populates its editor from.
     ///
-    /// Hands out the session's own `arclain_core::Archive` handle. Its
-    /// one remaining consumer peeks `password_ref()` and drops it: the
-    /// egui bridge stamps the resolved password (typed, auto-matched, or
-    /// challenge-answered) onto the tab for the synchronous file-edit
-    /// read and the plugin event context, which have not migrated yet --
-    /// before this method, the frontend re-listed the archive itself
-    /// just to re-derive that password. (Drag-out, this method's other
-    /// original consumer, has since moved onto the drag-stage surface
-    /// and no longer takes a backend handle at all.) Dies when the
-    /// file-edit read moves onto a facade read surface.
+    /// The session supplies the backend and the password it was opened
+    /// with, so a caller never handles the archive's secret at all. This
+    /// replaces the last frontend-side raw archive read, which selected
+    /// its own backend and passed a password the frontend had been
+    /// stamped with from the session's own handle -- and, with it, the
+    /// transitional `session_archive_handle` that existed to supply that
+    /// stamp.
     ///
-    /// `NotFound` for an unknown or already-closed session id.
-    pub async fn session_archive_handle(
+    /// Reads decoded content through the backend on a blocking thread;
+    /// long enough for a large entry that a caller must not await it on
+    /// a render path. `NotFound` for an unknown or already-closed
+    /// session, and for an `entry_id` this session's current index never
+    /// minted; `InvalidInput` for a directory; `PasswordRequired` when
+    /// the backend failure is password-shaped.
+    pub async fn read_entry_text(
         &self,
         session_id: ArchiveSessionId,
-    ) -> Result<Arc<parking_lot::Mutex<arclain_core::Archive>>, ApplicationError> {
+        entry_id: crate::ids::EntryId,
+    ) -> Result<String, ApplicationError> {
         self.dispatch_async(move |inner| async move {
-            let session = inner.archive_sessions().get(session_id).await?;
-            Ok(session.archive_arc())
+            archive_ops::run_read_entry_text(inner, session_id, entry_id).await
         })
         .await?
     }
