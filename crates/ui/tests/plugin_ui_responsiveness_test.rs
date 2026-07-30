@@ -262,8 +262,16 @@ fn request_returns_while_manager_is_blocked_and_duplicate_is_coalesced() {
         sent.send((first, duplicate)).expect("send request ids");
     });
 
+    // `request` never touches the manager mutex: Snapshot work is handed to
+    // `runtime.spawn`, and only the spawned job takes the manager lock. So
+    // this window only has to cover a fresh `thread::spawn`, two lock-free
+    // queue submissions, and a channel send -- pure thread-scheduling
+    // latency, which parallel test binaries can stretch far past the 100ms
+    // this used to allow. A genuine regression (request blocking on the
+    // held manager lock) still fails at any finite budget, because the
+    // guard is not released until after this wait.
     let (first, duplicate) = received
-        .recv_timeout(Duration::from_millis(100))
+        .recv_timeout(Duration::from_secs(2))
         .expect("request must not wait for the manager mutex");
     assert_eq!(duplicate, first, "identical pending work must coalesce");
     request_thread.join().expect("request thread must finish");
