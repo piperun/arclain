@@ -6,7 +6,7 @@ use crate::features::archive_operations::ArchiveOperationsState;
 use crate::features::file_editing::domain::types::FileEditLoadState;
 use crate::shared::SharedState;
 use anyhow::{anyhow, Result};
-use arclain_app::archive::{ArchivePath, ListEntriesRequest};
+use arclain_app::archive::{ArchivePath, EntryKind, ListEntriesRequest};
 use arclain_app::ids::ArchiveSessionId;
 use arclain_app::operations::ArchiveMutationRequest;
 use arclain_app::ArclainApp;
@@ -73,10 +73,7 @@ impl TextReadIo for FacadeTextReadIo {
                 )
                 .await
                 .map_err(|error| anyhow!("{}", error.summary))?;
-            let entry = page
-                .entries
-                .iter()
-                .find(|entry| entry.name == name)
+            let entry = readable_entry_named(&page.entries, &name)
                 .ok_or_else(|| anyhow!("{path} is no longer in the archive"))?;
             self.app
                 .read_entry_text(self.session_id, entry.id)
@@ -84,6 +81,34 @@ impl TextReadIo for FacadeTextReadIo {
                 .map_err(|error| anyhow!("{}", error.summary))
         })
     }
+}
+
+/// The entry named `name` in one directory's listing that could actually
+/// hold text.
+///
+/// A file and a directory can share a name at the same nesting level --
+/// that collision is precisely what the session's `(kind, path, ordinal)`
+/// entry identity exists to disambiguate -- so a page can legitimately
+/// contain two rows answering to `name`, and only one of them is
+/// readable.
+///
+/// Today's index happens to list the file first (its build inserts every
+/// file before any directory, and the name sort that follows is stable),
+/// so a name-only match would pick the right row by accident. Nothing
+/// promises that: it is a tie-break artifact of build order, not a
+/// documented property of `list_entries`. Matching on kind makes the
+/// selection independent of it, and mirrors the kind check
+/// `file_opener`'s `resolve_directory_entry_id` already applies from the
+/// other side. Without it, the day the order changes, reading a file
+/// fails with `InvalidInput` ("a directory entry has no text content to
+/// read") about a row sitting right there in the same page.
+fn readable_entry_named<'a>(
+    entries: &'a [arclain_app::archive::ArchiveEntryDto],
+    name: &str,
+) -> Option<&'a arclain_app::archive::ArchiveEntryDto> {
+    entries
+        .iter()
+        .find(|entry| entry.name == name && entry.kind != EntryKind::Directory)
 }
 
 /// Stands in when the tab holds no archive session (or the composition
@@ -333,5 +358,87 @@ impl FileOpsService {
 
     pub fn copy_path(&self, egui_ctx: &egui::Context, file: &str) {
         egui_ctx.copy_text(file.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arclain_app::archive::ArchiveEntryDto;
+
+    /// Test-only rows standing in for one `list_entries` page. The
+    /// `EntryId`s are fabricated but never leave this module -- the
+    /// function under test only *selects* a row, and nothing here hands
+    /// an id to a facade.
+    fn row(id: u64, path: &str, kind: EntryKind) -> ArchiveEntryDto {
+        ArchiveEntryDto {
+            id: arclain_app::ids::EntryId::from_raw(id),
+            path: ArchivePath::parse(path.to_string()).unwrap(),
+            name: path.rsplit('/').next().unwrap_or(path).to_string(),
+            kind,
+            compressed_size: Some(0),
+            uncompressed_size: 0,
+            modified_at_unix_ms: None,
+            encrypted: false,
+            crc32: None,
+        }
+    }
+
+    /// The collision the session's entry identity exists to disambiguate:
+    /// `notes` is both a file and (implied by `notes/inner.txt`) a
+    /// directory. The directory is deliberately listed *first* here --
+    /// the order a name-only match would lose to. A real page currently
+    /// happens to order them the other way round, which is exactly why
+    /// this case needs a test that does not depend on that: it pins the
+    /// selection rule itself, not the ordering that presently makes the
+    /// rule redundant.
+    #[test]
+    fn a_directory_sharing_the_targets_name_never_wins_the_read() {
+        let page = [
+            row(1, "notes", EntryKind::Directory),
+            row(2, "notes", EntryKind::File),
+        ];
+
+        let chosen = readable_entry_named(&page, "notes").expect("the file row must be found");
+        assert_eq!(chosen.kind, EntryKind::File);
+        assert_eq!(chosen.id, arclain_app::ids::EntryId::from_raw(2));
+    }
+
+    /// A symlink is readable text as far as the backend is concerned --
+    /// only a directory is excluded.
+    #[test]
+    fn a_symlink_is_still_a_readable_target() {
+        let page = [row(1, "link", EntryKind::Symlink)];
+
+        assert_eq!(
+            readable_entry_named(&page, "link").map(|entry| entry.id),
+            Some(arclain_app::ids::EntryId::from_raw(1))
+        );
+    }
+
+    /// A name that only a directory carries has nothing to read, and must
+    /// report "not in the archive" rather than resolving to the folder.
+    #[test]
+    fn a_name_only_a_directory_carries_resolves_to_nothing() {
+        let page = [row(1, "notes", EntryKind::Directory)];
+
+        assert!(readable_entry_named(&page, "notes").is_none());
+    }
+
+    #[test]
+    fn splitting_a_path_separates_the_directory_from_the_entry_name() {
+        let (directory, name) = split_archive_path("game/data/save.dat").unwrap();
+        assert_eq!(directory.as_str(), "game/data");
+        assert_eq!(name, "save.dat");
+
+        let (root, name) = split_archive_path("readme.txt").unwrap();
+        assert_eq!(root.as_str(), "");
+        assert_eq!(name, "readme.txt");
+
+        // A backslash-separated path normalizes the same way, so a row
+        // whose path arrived from a Windows-shaped source still resolves.
+        let (directory, name) = split_archive_path(r"game\data\save.dat").unwrap();
+        assert_eq!(directory.as_str(), "game/data");
+        assert_eq!(name, "save.dat");
     }
 }

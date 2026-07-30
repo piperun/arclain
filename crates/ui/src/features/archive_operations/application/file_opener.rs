@@ -181,6 +181,19 @@ fn needs_whole_archive_fallback(strategy: OpenStrategy, directory: &str) -> bool
 /// containing directory (bringing sibling files along -- the directory is
 /// what gets materialized; the returned name locates the specific file to
 /// actually launch inside the resulting lease either way).
+///
+/// The target row is matched on name *and* kind, the mirror of
+/// [`resolve_directory_entry_id`]'s own directory requirement: a file and
+/// a directory can share a name at the same nesting level, so a page can
+/// hold two rows answering to the target's name, and materializing the
+/// directory would extract its whole subtree instead of the one file the
+/// user asked to open.
+///
+/// Today's index lists the file first, so a name-only match picks the
+/// right row by accident -- but that is a stable-sort tie-break artifact
+/// of build order, not something `list_entries` promises. Naming the kind
+/// makes this independent of it, and removes the asymmetry with the
+/// directory lookup directly below.
 async fn resolve_materialization_target(
     app: &ArclainApp,
     session_id: ArchiveSessionId,
@@ -194,7 +207,11 @@ async fn resolve_materialization_target(
     let page = list_directory(app, session_id, directory.clone())
         .await
         .map_err(|error| format!("{error:?}"))?;
-    let Some(target_entry) = page.entries.iter().find(|entry| entry.name == name) else {
+    let Some(target_entry) = page
+        .entries
+        .iter()
+        .find(|entry| entry.name == name && entry.kind != EntryKind::Directory)
+    else {
         return Err(format!("{file_path} not found in the archive"));
     };
 

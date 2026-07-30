@@ -513,3 +513,92 @@ fn a_failed_refresh_keeps_the_rows_and_records_the_failure() {
         "the whole-archive inventory keeps its last good answer too"
     );
 }
+
+/// A file and a directory sharing a name at the same level is legal in a
+/// ZIP, and the session's entry index carries both rows. Reading the file
+/// for editing must resolve to the *file*.
+///
+/// What this adds over the selection rule's own unit tests is that the
+/// collision is *reachable*: a real ZIP really does produce two rows
+/// answering to `notes`, and the whole resolution -- page fetch, row
+/// selection, id hand-off, the session's own read -- survives it. It is
+/// deliberately not the regression guard for the selection rule (a real
+/// page currently orders the file first, so it would pass either way);
+/// `readable_entry_named`'s unit tests are, and they bite.
+#[test]
+fn reading_a_file_whose_name_a_directory_shares_resolves_to_the_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive_path = temp.path().join("collision.zip");
+    // `notes` is a file; `notes/inner.txt` implies a `notes` directory.
+    build_zip_fixture(
+        &archive_path,
+        &[
+            ("notes", b"the file's own contents" as &[u8]),
+            ("notes/inner.txt", b"nested"),
+        ],
+    );
+
+    let app = bootstrap_real_app(&temp);
+    let mut shared = create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.clone();
+    let tab = shared.signals().tabs.get().active().clone();
+    let tab_id = tab.id;
+
+    runtime.block_on({
+        let shared = shared.clone();
+        let app = app.clone();
+        let archive_path = archive_path.clone();
+        async move {
+            let operation_id = app
+                .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                    source_path: archive_path,
+                    password: None,
+                })
+                .await
+                .expect("start_open_archive must be accepted");
+            wait_for_open_completion(&app, operation_id).await;
+            arclain_ui::core::operation_bridge::register_operation(&shared, operation_id, tab_id)
+                .await;
+        }
+    });
+
+    wait_until("the collision fixture never populated the tab", || {
+        tab.inventory.get().entry_count() > 0
+    });
+    // Both rows really are there -- otherwise this test would pass by
+    // never reproducing the collision at all.
+    let inventory = tab.inventory.get();
+    let named_notes: Vec<arclain_app::archive::EntryKind> = inventory
+        .entries()
+        .iter()
+        .filter(|entry| entry.path.as_str() == "notes")
+        .map(|entry| entry.kind.clone())
+        .collect();
+    assert_eq!(
+        named_notes.len(),
+        2,
+        "the fixture must produce a colliding file/directory pair, got {named_notes:?}"
+    );
+
+    arclain_ui::features::archive_browser::application::FileOpsService.read_text(
+        &shared,
+        tab.clone(),
+        "notes".to_string(),
+    );
+    wait_until("the file-edit read never completed", || {
+        !matches!(
+            tab.file_edit_dialog.get().load_state,
+            arclain_ui::features::file_editing::domain::types::FileEditLoadState::Loading { .. }
+        )
+    });
+
+    let dialog = tab.file_edit_dialog.get();
+    assert_eq!(
+        dialog.load_state,
+        arclain_ui::features::file_editing::domain::types::FileEditLoadState::Ready,
+        "the directory row won the name match: {}",
+        dialog.error
+    );
+    assert_eq!(dialog.content, "the file's own contents");
+}

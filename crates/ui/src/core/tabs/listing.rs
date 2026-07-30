@@ -397,13 +397,24 @@ impl TabListing {
     /// The current directory's rows -- empty until the session returns
     /// some.
     ///
-    /// TRANSITIONAL(4c): an un-migrated consumer sees exactly what it saw
-    /// when this was an `Option<EntryPage>`, which is what keeps its
-    /// behavior unchanged. A consumer that *renders* a directory must not
-    /// keep that reading: an empty slice here is not "this folder is
-    /// empty" unless [`Self::page`] is also `Some`, and [`Self::status`]
-    /// is what turns the other cases into a spinner or an error instead of
-    /// a blank folder.
+    /// TRANSITIONAL(browser-page-fetch): **no production caller.** The
+    /// browser draws the tab's whole-archive inventory scoped to the
+    /// browsed directory instead (`crate::core::operations::browser_rows`),
+    /// because that repaints on navigation without a round trip, so
+    /// nothing reads the page a relist seats here. This accessor, and the
+    /// per-relist `list_entries` fetch that fills it, live or die
+    /// together with that decision: either the fetch goes and
+    /// `TabListing` keeps only the cursor, the request and the request
+    /// status, or the renderer moves onto pages and fetches on navigate.
+    /// Whoever settles that owns this method.
+    ///
+    /// **The warning below is the specification of a renderer that does
+    /// not exist yet, and is the reason this doc comment is worth
+    /// keeping.** An empty slice here is not "this folder is empty"
+    /// unless [`Self::page`] is also `Some`; [`Self::status`] is what
+    /// turns the other cases into a spinner or an error instead of a
+    /// blank folder. Nothing renders that distinction today -- see the
+    /// task report's concern on the missing `Failed` renderer.
     pub fn entries(&self) -> &[ArchiveEntryDto] {
         match &self.rows {
             Some(page) => &page.entries,
