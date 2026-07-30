@@ -5,6 +5,12 @@
 //! public facade against the real bundled `ui-demo` WASM fixture, the
 //! same way a real frontend would.
 //!
+//! Plus the plugin-*management* surface beside them: `install_plugin`,
+//! the widened `PluginSummary`, and the `plugin_chrome`/
+//! `plugin_network_log` read models. Those need a live guest to register
+//! a top tab and write a log line; the mirror-fidelity half of the same
+//! surface is unit-tested inside `arclain_app::plugins`.
+//!
 //! Every test is a plain (synchronous) `#[test]`, not `#[tokio::test]`,
 //! for the same reason `crates/app/tests/archive_sessions.rs` uses that
 //! pattern: `ArclainApp` owns its own Tokio runtime, and dropping it from
@@ -29,8 +35,9 @@ use arclain_app::ids::{ArchiveSessionId, PluginSessionId};
 // `arclain_plugins` ever receives from the real facade, only useful here
 // to hand-build a sample document for one serde round-trip test.
 use arclain_app::plugins::{
-    PluginActionDto, PluginActionRequest, PluginExtensionPointDto, PluginHostIntentDto,
-    PluginToastLevelDto, PluginUiDocument,
+    PluginActionDto, PluginActionRequest, PluginBadgeDto, PluginCapabilityDto,
+    PluginExtensionPointDto, PluginHostIntentDto, PluginToastLevelDto, PluginTopTabDto,
+    PluginUiDocument,
 };
 use arclain_app::{ArclainApp, BootstrapConfig};
 
@@ -55,6 +62,16 @@ fn dummy_sevenzip(temp: &tempfile::TempDir) -> PathBuf {
     support::create_dummy_executable(temp.path(), sevenzip_exe_name())
 }
 
+/// The workspace's built `plugins/{name}/{name}.wasm` (produced by `just
+/// plugins`) -- the real component `ArclainApp::install_plugin` is pointed
+/// at, and the source half of [`install_plugin_fixture`]'s folder copy.
+fn fixture_wasm_path(name: &str) -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins")
+        .join(name)
+        .join(format!("{name}.wasm"))
+}
+
 /// Copies a workspace plugin fixture (`plugins/{name}/{name}.toml`,
 /// `{name}.wasm`, built by `just plugins`) into `plugins_dir/{name}/`,
 /// the folder-mode layout `arclain_plugins::loader::PluginLoader::
@@ -62,11 +79,16 @@ fn dummy_sevenzip(temp: &tempfile::TempDir) -> PathBuf {
 /// (rather than a hand-built `arclain_plugins::types::PluginLayout`)
 /// proves the whole path end to end: WASM `get-ui-layout`/`on-ui-event`
 /// calls, normalization, and the facade session/action wiring together.
+///
+/// Not the same thing as [`ArclainApp::install_plugin`], which derives its
+/// manifest from the component's own metadata export rather than from the
+/// hand-written `.toml` this copies. Both paths are covered.
 fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
-    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins")
-        .join(name);
     let dest_dir = plugins_dir.join(name);
+    let fixture_dir = fixture_wasm_path(name)
+        .parent()
+        .expect("a fixture .wasm always has a parent directory")
+        .to_path_buf();
     std::fs::create_dir_all(&dest_dir).expect("create plugin fixture directory");
     std::fs::copy(
         fixture_dir.join(format!("{name}.wasm")),
@@ -102,6 +124,25 @@ fn bootstrap_app_with_plugin(temp: &tempfile::TempDir, plugin_name: &str) -> Arc
 
 fn bootstrap_app_with_ui_demo(temp: &tempfile::TempDir) -> ArclainApp {
     bootstrap_app_with_plugin(temp, "ui-demo")
+}
+
+/// The same isolated temp profile, with an *empty* plugins directory --
+/// the starting point for the `install_plugin` tests, which need the
+/// component to arrive through the facade rather than through a folder
+/// copy made before bootstrap.
+fn bootstrap_app_without_plugins(temp: &tempfile::TempDir) -> ArclainApp {
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
+    std::fs::create_dir_all(&paths.plugins_dir).expect("create plugins dir");
+    ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .expect("bootstrap with no plugins installed must succeed")
 }
 
 /// Bootstraps with `facade-test-fixture`, the deterministic plugin built
@@ -229,6 +270,264 @@ fn set_plugin_enabled_rejects_an_unknown_plugin_id() {
         .unwrap_err();
 
     assert_eq!(error.kind, ApplicationErrorKind::NotFound);
+}
+
+// ===========================================================================
+// Plugin management: the widened summary, install, and the chrome /
+// network-log read models.
+//
+// The DTO mirror-fidelity half of this surface (field-for-field and
+// variant-for-variant against the `arclain_plugins` shapes, the untrusted
+// text bounds, the install error envelope) is unit-tested inside
+// `arclain_app::plugins`; what needs a real, running plugin is here.
+// ===========================================================================
+
+#[test]
+fn plugins_reports_the_manifest_author_description_and_capabilities() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+
+    let summaries = runtime
+        .block_on(app.plugins())
+        .expect("plugins() must succeed");
+
+    let fixture = summaries
+        .iter()
+        .find(|summary| summary.id == "facade-test-fixture")
+        .expect("the fixture must be reported");
+    assert_eq!(fixture.author, "Arclain Team");
+    assert!(
+        fixture
+            .description
+            .starts_with("Deterministic plugin used only by"),
+        "description was {:?}",
+        fixture.description,
+    );
+    // Exactly what the fixture's manifest declares -- not everything, and
+    // in `to_capabilities`'s own order rather than the manifest's.
+    assert_eq!(
+        fixture.capabilities,
+        vec![
+            PluginCapabilityDto::ArchiveMetadataRead,
+            PluginCapabilityDto::FileRead,
+        ],
+    );
+}
+
+#[test]
+fn plugins_reports_a_plugin_that_declares_no_capabilities_with_an_empty_list() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+
+    let summaries = runtime.block_on(app.plugins()).unwrap();
+
+    let ui_demo = summaries
+        .iter()
+        .find(|summary| summary.id == "ui-demo")
+        .expect("ui-demo must be reported");
+    assert_eq!(ui_demo.author, "Arclain Team");
+    assert!(ui_demo.capabilities.is_empty());
+}
+
+#[test]
+fn install_plugin_loads_a_wasm_component_and_reports_it_immediately() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+
+    let before = runtime.block_on(app.plugins()).unwrap();
+    assert!(before.is_empty(), "the profile must start with no plugins");
+
+    let installed = runtime
+        .block_on(app.install_plugin(fixture_wasm_path("facade-test-fixture")))
+        .expect("installing the bundled fixture component must succeed");
+
+    assert_eq!(installed, "facade-test-fixture");
+    let after = runtime.block_on(app.plugins()).unwrap();
+    let fixture = after
+        .iter()
+        .find(|summary| summary.id == "facade-test-fixture")
+        .expect("the freshly installed plugin must be listed without a restart");
+    assert!(
+        fixture.enabled,
+        "an installed plugin is enabled for this run"
+    );
+    assert_eq!(fixture.load_error, None);
+    assert_eq!(fixture.name, "Facade Test Fixture");
+    // An install derives its manifest from the component's own metadata
+    // export, which declares no capabilities -- unlike the folder-mode
+    // fixture, whose hand-written `.toml` does.
+    assert!(fixture.capabilities.is_empty());
+}
+
+#[test]
+fn install_plugin_refuses_a_second_install_of_the_same_plugin() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+
+    runtime
+        .block_on(app.install_plugin(fixture_wasm_path("facade-test-fixture")))
+        .expect("the first install must succeed");
+
+    let error = runtime
+        .block_on(app.install_plugin(fixture_wasm_path("facade-test-fixture")))
+        .expect_err("installing an already-installed plugin must fail");
+
+    assert_eq!(error.kind, ApplicationErrorKind::Plugin);
+    assert_eq!(error.field.as_deref(), Some("wasm_path"));
+    let diagnostic = error.diagnostic.expect("a diagnostic must be attached");
+    assert!(diagnostic.len() <= 4096);
+    assert!(
+        diagnostic.contains("already installed"),
+        "diagnostic was {diagnostic:?}",
+    );
+}
+
+#[test]
+fn install_plugin_rejects_a_file_that_is_not_a_wasm_component() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+
+    let not_wasm = temp.path().join("notes.txt");
+    std::fs::write(&not_wasm, b"definitely not a wasm component").unwrap();
+
+    let error = runtime
+        .block_on(app.install_plugin(not_wasm))
+        .expect_err("a non-wasm file must not install");
+
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(error.field.as_deref(), Some("wasm_path"));
+    assert!(runtime.block_on(app.plugins()).unwrap().is_empty());
+}
+
+#[test]
+fn install_plugin_reports_a_missing_file_without_installing_anything() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+
+    let error = runtime
+        .block_on(app.install_plugin(temp.path().join("nowhere").join("ghost.wasm")))
+        .expect_err("a path that names no file must not install");
+
+    assert_eq!(error.kind, ApplicationErrorKind::Plugin);
+    let diagnostic = error.diagnostic.expect("a diagnostic must be attached");
+    assert!(diagnostic.len() <= 4096);
+    assert!(runtime.block_on(app.plugins()).unwrap().is_empty());
+}
+
+#[test]
+fn plugin_chrome_reports_the_counts_and_the_fixtures_declared_top_tab() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+
+    let chrome = runtime
+        .block_on(app.plugin_chrome())
+        .expect("plugin_chrome() must succeed");
+
+    assert_eq!(chrome.summary.total, 1);
+    assert_eq!(chrome.summary.enabled, 1);
+    assert_eq!(
+        chrome.top_tabs,
+        vec![PluginTopTabDto {
+            plugin_id: "facade-test-fixture".to_string(),
+            id: "fixture-tab".to_string(),
+            label: "Fixture".to_string(),
+            icon: "DATABASE".to_string(),
+            badge: Some(PluginBadgeDto {
+                count: Some(7),
+                dot: true,
+                color: "orange".to_string(),
+            }),
+            priority: 250,
+        }],
+    );
+}
+
+#[test]
+fn plugin_chrome_drops_a_disabled_plugins_tab_but_still_counts_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+
+    runtime
+        .block_on(app.set_plugin_enabled("facade-test-fixture".to_string(), false))
+        .expect("disabling must succeed");
+
+    let chrome = runtime.block_on(app.plugin_chrome()).unwrap();
+
+    assert_eq!(chrome.summary.total, 1, "a disabled plugin is still loaded");
+    assert_eq!(chrome.summary.enabled, 0);
+    assert!(
+        chrome.top_tabs.is_empty(),
+        "only enabled plugins contribute tabs",
+    );
+}
+
+#[test]
+fn plugin_chrome_reports_no_tabs_for_a_plugin_that_registers_none() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+
+    let chrome = runtime.block_on(app.plugin_chrome()).unwrap();
+
+    assert_eq!(chrome.summary.total, 1);
+    assert_eq!(chrome.summary.enabled, 1);
+    assert!(chrome.top_tabs.is_empty());
+}
+
+#[test]
+fn plugin_network_log_reports_the_line_the_fixture_wrote_at_load() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+
+    let entries = runtime
+        .block_on(app.plugin_network_log())
+        .expect("plugin_network_log() must succeed");
+
+    assert_eq!(entries.len(), 1, "entries were {entries:?}");
+    assert_eq!(entries[0].message, "facade-test-fixture: initialized");
+    assert!(
+        entries[0].logged_at_unix_ms > 1_600_000_000_000,
+        "a real timestamp, not the epoch: {}",
+        entries[0].logged_at_unix_ms,
+    );
+}
+
+#[test]
+fn plugin_network_log_drops_a_disabled_plugins_lines() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+
+    runtime
+        .block_on(app.set_plugin_enabled("facade-test-fixture".to_string(), false))
+        .expect("disabling must succeed");
+
+    let entries = runtime.block_on(app.plugin_network_log()).unwrap();
+
+    assert!(
+        entries.is_empty(),
+        "the log aggregates enabled plugins only, got {entries:?}",
+    );
+}
+
+#[test]
+fn plugin_network_log_is_empty_for_a_plugin_that_logs_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+
+    let entries = runtime.block_on(app.plugin_network_log()).unwrap();
+
+    assert!(entries.is_empty(), "entries were {entries:?}");
 }
 
 #[test]

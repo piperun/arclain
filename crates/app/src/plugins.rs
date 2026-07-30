@@ -850,6 +850,64 @@ fn image_fetch_error(error: arclain_network::HttpError) -> ApplicationError {
 // crate's own opaque ids).
 // ============================================================================
 
+/// One capability a plugin's manifest declares, as carried by
+/// [`PluginSummary::capabilities`]. Mirrors
+/// `arclain_plugins::types::PluginCapability` variant for variant.
+///
+/// A mirrored enum rather than the `Vec<String>` of `{:?}`-formatted
+/// variant names the pre-facade plugins page built for itself: a `Debug`
+/// spelling is not a contract, so a non-Rust frontend receiving one could
+/// neither match on it nor translate it without re-deriving Rust's own
+/// formatting. [`Self::label`] keeps that rendering available to whoever
+/// wants it, from one place, instead of every caller re-deriving it.
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginCapabilityDto {
+    FileRead,
+    FileWrite,
+    Network,
+    ArchiveMetadataRead,
+    ArchiveMetadataWrite,
+    ArchiveModify,
+}
+
+impl From<arclain_plugins::types::PluginCapability> for PluginCapabilityDto {
+    fn from(capability: arclain_plugins::types::PluginCapability) -> Self {
+        use arclain_plugins::types::PluginCapability as Source;
+        // No wildcard arm: a capability added upstream fails to compile
+        // here until this mirror carries it too.
+        match capability {
+            Source::FileRead => Self::FileRead,
+            Source::FileWrite => Self::FileWrite,
+            Source::Network => Self::Network,
+            Source::ArchiveMetadataRead => Self::ArchiveMetadataRead,
+            Source::ArchiveMetadataWrite => Self::ArchiveMetadataWrite,
+            Source::ArchiveModify => Self::ArchiveModify,
+        }
+    }
+}
+
+impl PluginCapabilityDto {
+    /// The permission label a plugin detail view renders for this
+    /// capability, byte-identical to the `{:?}` spelling the pre-facade
+    /// plugins page produced (pinned by
+    /// `capability_labels_match_the_pre_facade_debug_spelling`), so a
+    /// frontend that adopts this DTO renders exactly what it rendered
+    /// before.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FileRead => "FileRead",
+            Self::FileWrite => "FileWrite",
+            Self::Network => "Network",
+            Self::ArchiveMetadataRead => "ArchiveMetadataRead",
+            Self::ArchiveMetadataWrite => "ArchiveMetadataWrite",
+            Self::ArchiveModify => "ArchiveModify",
+        }
+    }
+}
+
 /// One plugin as reported by [`crate::ArclainApp::plugins`]: enough to
 /// render a plugin list/settings row without a caller needing to reach
 /// into `arclain_plugins::PluginListItem`/`PluginManifest` directly.
@@ -858,13 +916,30 @@ pub struct PluginSummary {
     pub id: String,
     pub name: String,
     pub version: String,
+    /// The manifest's `[plugin] author`, verbatim. A plain `String`, not
+    /// an `Option`, because the manifest field itself is required and
+    /// carries no absent state -- an author nobody filled in is the empty
+    /// string at the source, and inventing a `None` here would claim a
+    /// distinction the manifest cannot express.
+    pub author: String,
+    /// The manifest's `[plugin] description`, verbatim. A `String` for
+    /// the same reason [`Self::author`] is one.
+    pub description: String,
+    /// Every capability the manifest grants this plugin, in
+    /// `arclain_plugins::types::CapabilitiesConfig::to_capabilities`'s own
+    /// order (which follows the source enum's declaration order, not the
+    /// manifest's key order), deduplicated by construction because each
+    /// capability has exactly one manifest flag.
+    pub capabilities: Vec<PluginCapabilityDto>,
     pub enabled: bool,
     /// `Some(reason)` if this plugin was discovered on disk but failed to
     /// load -- see `arclain_plugins::manager::FailedPlugin`. A plugin
     /// reported this way has no running instance and `arclain_plugins`
     /// records only its id and failure reason, not its manifest: `enabled`
-    /// is always `false`, and `name`/`version` are always empty strings
-    /// rather than whatever the manifest claimed.
+    /// is always `false`, `name`/`version`/`author`/`description` are
+    /// always empty strings rather than whatever the manifest claimed, and
+    /// `capabilities` is always empty -- *not* "this plugin declared no
+    /// capabilities", but "no manifest survived to say".
     pub load_error: Option<String>,
 }
 
@@ -1165,6 +1240,215 @@ pub fn analyze_url(url: &str) -> Result<DomainAnalysisDto, ApplicationError> {
 }
 
 // ============================================================================
+// Plugin chrome: the status counts and top-tab strip an application frame
+// renders, plus the aggregated plugin network log
+// ============================================================================
+// Kept in its own delimited section for the same reason as the domain-access
+// section above: a concurrent worktree may be touching this same shared file.
+//
+// Two *separate* read models, deliberately not one call. A frontend polls
+// them on different cadences -- the top-tab strip's badges are chrome that
+// redraws with the window, the network log is a diagnostics page that only
+// matters while it is open -- and folding them together would force the
+// tighter of the two cadences onto both, re-entering every enabled plugin's
+// WASM for a log nobody is looking at.
+
+/// Counts-only plugin status, as reported by
+/// [`PluginChromeSnapshot::summary`]. Mirrors
+/// `arclain_plugins::manager::PluginStatusSummary` field for field.
+///
+/// `u64` rather than the source's `usize`: these cross a frontend
+/// boundary (a Dart bridge today, whatever comes next later), and a
+/// pointer-width integer is not a stable wire type. Widening is lossless
+/// on every platform this application builds for.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PluginStatusSummaryDto {
+    /// Every plugin that loaded successfully, enabled or not. Failed
+    /// plugins are *not* counted -- they never reached the manager's
+    /// plugin map (see [`PluginSummary::load_error`]).
+    pub total: u64,
+    /// How many of [`Self::total`] are currently enabled.
+    pub enabled: u64,
+}
+
+impl From<arclain_plugins::manager::PluginStatusSummary> for PluginStatusSummaryDto {
+    fn from(summary: arclain_plugins::manager::PluginStatusSummary) -> Self {
+        // Destructured rather than field-accessed, for the reason
+        // `crate::layout`'s mirrors are: a field added upstream fails to
+        // compile here until this mirror carries it too.
+        let arclain_plugins::manager::PluginStatusSummary { total, enabled } = summary;
+        Self {
+            total: total as u64,
+            enabled: enabled as u64,
+        }
+    }
+}
+
+/// The badge a plugin's top tab carries, if any. Mirrors
+/// `arclain_plugins::types::BadgeConfig` field for field.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PluginBadgeDto {
+    /// A numeric count to render. `None`, or `Some(0)`, means the badge
+    /// carries no number -- the pre-facade renderer draws nothing for a
+    /// zero count, and this DTO preserves the distinction rather than
+    /// normalizing it, because only the renderer knows what it wants to
+    /// do with a zero.
+    pub count: Option<u32>,
+    /// Render a plain dot instead of a number.
+    pub dot: bool,
+    /// The plugin's semantic color name (`"red"`, `"green"`, `"blue"`,
+    /// `"orange"`, or anything else). Plugin-authored and therefore
+    /// untrusted: a renderer maps known names onto its own theme and
+    /// falls back for the rest, and must never treat this as a color
+    /// literal.
+    pub color: String,
+}
+
+impl From<arclain_plugins::types::BadgeConfig> for PluginBadgeDto {
+    fn from(badge: arclain_plugins::types::BadgeConfig) -> Self {
+        let arclain_plugins::types::BadgeConfig { count, dot, color } = badge;
+        Self { count, dot, color }
+    }
+}
+
+/// One top-level tab an enabled plugin registers, as reported by
+/// [`PluginChromeSnapshot::top_tabs`]. Mirrors
+/// `arclain_plugins::types::TopTabConfig` field for field, plus the
+/// owning [`Self::plugin_id`] that the manager reports alongside each
+/// config rather than inside it.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PluginTopTabDto {
+    /// The plugin that registered this tab. Host-validated
+    /// (`arclain_plugins::types::PluginId`: at most 64 bytes of
+    /// `[A-Za-z0-9_-]`), never plugin-authored free text.
+    pub plugin_id: String,
+    /// The tab's own id, unique only within its plugin. Plugin-authored,
+    /// and passed through verbatim: it is identity, not display text, and
+    /// two absurd ids truncated to the same prefix would select each
+    /// other's tab.
+    pub id: String,
+    /// Display text, truncated to [`MAX_PLUGIN_TOP_TAB_TEXT_BYTES`].
+    pub label: String,
+    /// An icon *name* (`"GLOBE"`, `"DATABASE"`, ...) or a glyph, likewise
+    /// truncated to [`MAX_PLUGIN_TOP_TAB_TEXT_BYTES`]. Which names are
+    /// recognized is the renderer's business, not this facade's.
+    pub icon: String,
+    pub badge: Option<PluginBadgeDto>,
+    /// Lower sorts earlier. Already applied: [`PluginChromeSnapshot::
+    /// top_tabs`] arrives sorted.
+    pub priority: u32,
+}
+
+/// The longest a plugin-authored *display* field of a [`PluginTopTabDto`]
+/// may be, matching [`crate::layout::MAX_UI_ITEM_TEXT_BYTES`] (the bound
+/// `runtime::bootstrap`'s `sync_plugin_top_tab_items` already applies to
+/// this very data on its way into the layout database).
+///
+/// A tab label is tens of bytes; a plugin is untrusted WASM whose whole
+/// `get-top-tabs` result is bounded only by the runtime's ~1 MiB quota.
+/// Without this, one plugin could hand a frontend a near-megabyte string
+/// to lay out in its tab strip on every frame.
+pub const MAX_PLUGIN_TOP_TAB_TEXT_BYTES: usize = crate::layout::MAX_UI_ITEM_TEXT_BYTES;
+
+/// Truncates plugin-authored display text at the largest char boundary at
+/// or under [`MAX_PLUGIN_TOP_TAB_TEXT_BYTES`]. Truncating rather than
+/// dropping the tab, for the same reason `sync_plugin_top_tab_items`
+/// truncates rather than skipping on a long *label*: an over-long caption
+/// must not cost the user a whole tab.
+fn clamp_top_tab_text(mut value: String) -> String {
+    if value.len() <= MAX_PLUGIN_TOP_TAB_TEXT_BYTES {
+        return value;
+    }
+    let mut end = MAX_PLUGIN_TOP_TAB_TEXT_BYTES;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+    value
+}
+
+impl From<(String, arclain_plugins::types::TopTabConfig)> for PluginTopTabDto {
+    fn from(entry: (String, arclain_plugins::types::TopTabConfig)) -> Self {
+        let (plugin_id, config) = entry;
+        // Destructured for the drift guard `crate::layout`'s mirrors use:
+        // a field added to `TopTabConfig` fails to compile here until this
+        // mirror carries it too. `plugin_id` is the one field with no
+        // counterpart in the source struct -- the manager reports it
+        // beside each config, in the tuple this impl takes.
+        let arclain_plugins::types::TopTabConfig {
+            id,
+            label,
+            icon,
+            badge,
+            priority,
+        } = config;
+        Self {
+            plugin_id,
+            id,
+            label: clamp_top_tab_text(label),
+            icon: clamp_top_tab_text(icon),
+            badge: badge.map(PluginBadgeDto::from),
+            priority,
+        }
+    }
+}
+
+/// What [`crate::ArclainApp::plugin_chrome`] reports: everything an
+/// application frame needs to draw its plugin-owned chrome in one read.
+///
+/// [`Default`] is what an application composed without a plugin runtime
+/// reports -- zero counts, no tabs -- so a frontend renders "no plugin
+/// chrome" through the same path it renders "no plugins enabled".
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PluginChromeSnapshot {
+    pub summary: PluginStatusSummaryDto,
+    /// Every enabled plugin's top tabs, already sorted by
+    /// [`PluginTopTabDto::priority`] (ascending). A plugin whose
+    /// `get-top-tabs` call fails contributes nothing and does not fail the
+    /// read -- matching `EnabledPluginSnapshot::get_all_top_tabs`, which
+    /// logs and skips.
+    pub top_tabs: Vec<PluginTopTabDto>,
+}
+
+/// One line of the aggregated plugin network log, as reported by
+/// [`crate::ArclainApp::plugin_network_log`].
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PluginNetworkLogEntryDto {
+    /// When the plugin logged this line, as Unix milliseconds -- the same
+    /// wire shape [`crate::archive::ArchiveEntryDto::modified_at_unix_ms`]
+    /// uses, rather than a `SystemTime` no bridge can carry. Negative for
+    /// the (pathological) case of a clock set before 1970.
+    pub logged_at_unix_ms: i64,
+    /// The plugin-authored message. Already bounded at its source: each
+    /// line is truncated to 4 KiB, and each plugin retains at most 256
+    /// lines / 256 KiB, oldest evicted first.
+    pub message: String,
+}
+
+/// Converts a `SystemTime` to Unix milliseconds, saturating rather than
+/// panicking on a time so far from the epoch that it does not fit an
+/// `i64` (roughly ±292 million years -- reachable only from a corrupted
+/// clock, never from a real log line).
+fn unix_millis(time: std::time::SystemTime) -> i64 {
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(elapsed) => i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX),
+        Err(before_epoch) => i64::try_from(before_epoch.duration().as_millis())
+            .map(|millis| -millis)
+            .unwrap_or(i64::MIN),
+    }
+}
+
+impl From<(std::time::SystemTime, String)> for PluginNetworkLogEntryDto {
+    fn from(entry: (std::time::SystemTime, String)) -> Self {
+        let (logged_at, message) = entry;
+        Self {
+            logged_at_unix_ms: unix_millis(logged_at),
+            message,
+        }
+    }
+}
+
+// ============================================================================
 // Errors
 // ============================================================================
 
@@ -1212,6 +1496,89 @@ fn plugin_execution_error(error: PluginError) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::Plugin, "plugin execution failed")
         .with_diagnostic(error.to_string())
         .with_recoverability(Recoverability::Retry)
+}
+
+/// The longest `wasm_path` [`crate::ArclainApp::install_plugin`] accepts.
+/// Matches the bound the pre-facade egui `PluginUiJobs` queue applied to
+/// the same field, kept here so it survives that queue's removal: a path
+/// this long cannot name a real file on any supported platform, so
+/// rejecting it costs nothing and keeps an absurd caller-supplied value
+/// out of the manager, the error envelope, and the log.
+pub const MAX_PLUGIN_INSTALL_PATH_BYTES: usize = 32 * 1024;
+
+fn invalid_install_path(reason: &str) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::InvalidInput,
+        "plugin file cannot be installed",
+    )
+    .with_diagnostic(reason.to_string())
+    .with_recoverability(Recoverability::UserAction)
+    .with_field("wasm_path")
+}
+
+/// Structural validation of an install request, before any file is opened.
+///
+/// Deliberately *not* an existence check: whether the file is there is
+/// the filesystem's answer at open time, and asking here would only add a
+/// check the install then races (the file can vanish, or appear, in
+/// between). What this rejects are the things that are wrong about the
+/// *request* regardless of what is on disk -- an empty path, an absurdly
+/// long one, and one that does not name a `.wasm` file at all. The last
+/// duplicates a check `PluginManager::install_plugin` also makes, on
+/// purpose: the manager reports it as an untyped `LoadError` string among
+/// a dozen others, and matching on that string to recover the distinction
+/// would be far more fragile than re-deriving it from the path.
+pub(crate) fn validate_install_path(wasm_path: &std::path::Path) -> Result<(), ApplicationError> {
+    if wasm_path.as_os_str().is_empty() {
+        return Err(invalid_install_path("a plugin path must not be empty"));
+    }
+    if wasm_path.as_os_str().as_encoded_bytes().len() > MAX_PLUGIN_INSTALL_PATH_BYTES {
+        return Err(invalid_install_path(&format!(
+            "a plugin path must not exceed {MAX_PLUGIN_INSTALL_PATH_BYTES} bytes"
+        )));
+    }
+    if !wasm_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("wasm"))
+    {
+        return Err(invalid_install_path(
+            "a plugin must be installed from a .wasm file",
+        ));
+    }
+    Ok(())
+}
+
+/// Maps a failed `PluginManager::install_plugin` onto the error envelope.
+///
+/// Classified by `PluginError` *variant* rather than by its message: the
+/// message is the only thing that distinguishes "file does not exist"
+/// from "already installed" inside `LoadError`, and a facade that
+/// branches on backend prose breaks the first time that prose is
+/// reworded. Everything the manager rejects is therefore reported as a
+/// `Plugin` failure the user must act on, with the manager's own wording
+/// carried verbatim in the (bounded, path-redacted) diagnostic -- except
+/// the variants that genuinely mean something more specific.
+fn plugin_install_error(error: PluginError) -> ApplicationError {
+    let kind = match error {
+        // A manifest this plugin's own metadata export produced is
+        // malformed -- the plugin file is the invalid input.
+        PluginError::InvalidManifest(_) => ApplicationErrorKind::InvalidInput,
+        PluginError::Io(_) => ApplicationErrorKind::Backend,
+        PluginError::LoadError(_)
+        | PluginError::InitError(_)
+        | PluginError::ExecutionError(_)
+        | PluginError::Unavailable(_)
+        | PluginError::CapabilityDenied(_)
+        | PluginError::NotFound(_)
+        | PluginError::WasmError(_)
+        | PluginError::Serialization(_)
+        | PluginError::TomlError(_) => ApplicationErrorKind::Plugin,
+    };
+    ApplicationError::new(kind, "plugin could not be installed")
+        .with_diagnostic(error.to_string())
+        .with_recoverability(Recoverability::UserAction)
+        .with_field("wasm_path")
 }
 
 /// Maximum byte length of a `Dialog`/`Page` extension point's id string.
@@ -1333,12 +1700,24 @@ impl PluginSessionStore {
         let mut summaries: Vec<PluginSummary> = manager
             .list_plugins()
             .into_iter()
-            .map(|item| PluginSummary {
-                id: item.id,
-                name: item.manifest.plugin.name,
-                version: item.manifest.plugin.version,
-                enabled: item.enabled,
-                load_error: None,
+            .map(|item| {
+                let capabilities = item
+                    .manifest
+                    .capabilities
+                    .to_capabilities()
+                    .into_iter()
+                    .map(PluginCapabilityDto::from)
+                    .collect();
+                PluginSummary {
+                    id: item.id,
+                    name: item.manifest.plugin.name,
+                    version: item.manifest.plugin.version,
+                    author: item.manifest.plugin.author,
+                    description: item.manifest.plugin.description,
+                    capabilities,
+                    enabled: item.enabled,
+                    load_error: None,
+                }
             })
             .collect();
         summaries.extend(
@@ -1349,6 +1728,9 @@ impl PluginSessionStore {
                     id: failed.original_id,
                     name: String::new(),
                     version: String::new(),
+                    author: String::new(),
+                    description: String::new(),
+                    capabilities: Vec::new(),
                     enabled: false,
                     load_error: Some(failed.error),
                 }),
@@ -1368,6 +1750,69 @@ impl PluginSessionStore {
             manager.disable_plugin(plugin_id)
         };
         result.map_err(|_| plugin_not_found(plugin_id))
+    }
+
+    /// Backs [`crate::ArclainApp::install_plugin`]. Blocking: compiles and
+    /// instantiates a WASM component and copies files, so every caller
+    /// must already be on a blocking-pool thread.
+    pub(crate) fn install_plugin(
+        manager: &SyncMutex<PluginManager>,
+        wasm_path: &std::path::Path,
+    ) -> Result<String, ApplicationError> {
+        manager
+            .lock()
+            .install_plugin(wasm_path)
+            .map_err(plugin_install_error)
+    }
+
+    /// Backs [`crate::ArclainApp::plugin_chrome`]. Blocking: reading the
+    /// top tabs calls into every enabled plugin's WASM and waits on each
+    /// instance's lock, so every caller must already be on a
+    /// blocking-pool thread.
+    ///
+    /// Takes the counts and the instance snapshot under one manager lock,
+    /// then *drops* that lock before calling into any plugin -- the
+    /// pattern `EnabledPluginSnapshot`'s own doc comment prescribes, and
+    /// the reason this does not simply call `PluginManager::
+    /// get_all_top_tabs` (which would hold the manager lock across every
+    /// plugin call, stalling every other plugin operation behind one slow
+    /// guest).
+    ///
+    /// Bypassing `PluginManager::get_all_top_tabs` also bypasses its
+    /// memoized result, and that is deliberate: that cache is only
+    /// invalidated on enable/disable/load, so a badge count -- live data a
+    /// plugin updates as work completes -- would freeze at whatever it
+    /// was when the last plugin was toggled. This read model exists to
+    /// serve the *live* strip. The cost is one WASM call per enabled
+    /// plugin per call, so the caller owns the cadence.
+    pub(crate) fn plugin_chrome(manager: &SyncMutex<PluginManager>) -> PluginChromeSnapshot {
+        let (summary, instances) = {
+            let manager = manager.lock();
+            (manager.status_summary(), manager.enabled_plugin_snapshot())
+        };
+        PluginChromeSnapshot {
+            summary: summary.into(),
+            top_tabs: instances
+                .get_all_top_tabs()
+                .into_iter()
+                .map(PluginTopTabDto::from)
+                .collect(),
+        }
+    }
+
+    /// Backs [`crate::ArclainApp::plugin_network_log`]. Blocking for the
+    /// same reason [`Self::plugin_chrome`] is -- it waits on every enabled
+    /// plugin's instance lock -- and drops the manager lock before doing
+    /// so for the same reason.
+    pub(crate) fn plugin_network_log(
+        manager: &SyncMutex<PluginManager>,
+    ) -> Vec<PluginNetworkLogEntryDto> {
+        let instances = { manager.lock().enabled_plugin_snapshot() };
+        instances
+            .get_network_log()
+            .into_iter()
+            .map(PluginNetworkLogEntryDto::from)
+            .collect()
     }
 
     /// Opens a fresh session for `plugin_id`'s requested `extension_point`
@@ -3699,5 +4144,335 @@ mod domain_access_tests {
 
         assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
         assert_eq!(error.field.as_deref(), Some("plugin_id"));
+    }
+}
+
+/// The mirror-fidelity half of the plugin chrome / network-log surface:
+/// everything provable without a running plugin manager. The seeded
+/// read-back through a real `ArclainApp` (which needs a real WASM guest to
+/// register a tab and write a log line) lives in
+/// `crates/app/tests/plugin_sessions.rs`.
+#[cfg(test)]
+mod chrome_and_network_log_tests {
+    use super::*;
+    use arclain_plugins::manager::PluginStatusSummary;
+    use arclain_plugins::types::{BadgeConfig, PluginCapability, TopTabConfig};
+
+    /// One value of every `PluginCapability` variant. The exhaustive
+    /// `match` has no wildcard arm, so a seventh capability upstream fails
+    /// to compile here until this list grows too -- the same drift guard
+    /// `domain_access_tests::every_source_warning` uses.
+    fn every_source_capability() -> Vec<PluginCapability> {
+        let all = vec![
+            PluginCapability::FileRead,
+            PluginCapability::FileWrite,
+            PluginCapability::Network,
+            PluginCapability::ArchiveMetadataRead,
+            PluginCapability::ArchiveMetadataWrite,
+            PluginCapability::ArchiveModify,
+        ];
+        for capability in &all {
+            match capability {
+                PluginCapability::FileRead
+                | PluginCapability::FileWrite
+                | PluginCapability::Network
+                | PluginCapability::ArchiveMetadataRead
+                | PluginCapability::ArchiveMetadataWrite
+                | PluginCapability::ArchiveModify => {}
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn every_capability_mirrors_to_a_distinct_dto_variant() {
+        let source = every_source_capability();
+        let mirrored: Vec<PluginCapabilityDto> = source
+            .iter()
+            .copied()
+            .map(PluginCapabilityDto::from)
+            .collect();
+
+        let unique: std::collections::BTreeSet<PluginCapabilityDto> =
+            mirrored.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            source.len(),
+            "two source capabilities collapsed onto one mirrored variant: {mirrored:?}",
+        );
+    }
+
+    /// Pins the exact rendering the pre-facade plugins page produced with
+    /// `format!("{:?}", capability)`, so adopting [`PluginCapabilityDto`]
+    /// in the permissions list is a rename, not a visible change.
+    #[test]
+    fn capability_labels_match_the_pre_facade_debug_spelling() {
+        for capability in every_source_capability() {
+            assert_eq!(
+                PluginCapabilityDto::from(capability).label(),
+                format!("{capability:?}"),
+            );
+        }
+    }
+
+    #[test]
+    fn capability_serializes_under_its_own_stable_vocabulary() {
+        assert_eq!(
+            serde_json::to_string(&PluginCapabilityDto::ArchiveMetadataWrite).unwrap(),
+            "\"archive_metadata_write\"",
+        );
+    }
+
+    #[test]
+    fn status_summary_mirrors_its_source_field_for_field() {
+        let dto = PluginStatusSummaryDto::from(PluginStatusSummary {
+            total: 7,
+            enabled: 3,
+        });
+
+        assert_eq!(
+            dto,
+            PluginStatusSummaryDto {
+                total: 7,
+                enabled: 3
+            }
+        );
+    }
+
+    #[test]
+    fn badge_mirrors_its_source_field_for_field() {
+        let dto = PluginBadgeDto::from(BadgeConfig {
+            count: Some(12),
+            dot: true,
+            color: "red".to_string(),
+        });
+
+        assert_eq!(
+            dto,
+            PluginBadgeDto {
+                count: Some(12),
+                dot: true,
+                color: "red".to_string(),
+            }
+        );
+    }
+
+    /// A badge whose `count` is absent and whose `dot` is unset survives
+    /// as-is rather than being normalized away: only a renderer knows
+    /// whether "no count, no dot" means "draw nothing".
+    #[test]
+    fn badge_preserves_an_empty_configuration() {
+        let dto = PluginBadgeDto::from(BadgeConfig {
+            count: None,
+            dot: false,
+            color: String::new(),
+        });
+
+        assert_eq!(dto.count, None);
+        assert!(!dto.dot);
+        assert!(dto.color.is_empty());
+    }
+
+    fn sample_top_tab() -> TopTabConfig {
+        TopTabConfig {
+            id: "library".to_string(),
+            label: "Library".to_string(),
+            icon: "DATABASE".to_string(),
+            badge: Some(BadgeConfig {
+                count: Some(4),
+                dot: false,
+                color: "blue".to_string(),
+            }),
+            priority: 10,
+        }
+    }
+
+    #[test]
+    fn top_tab_mirrors_its_source_field_for_field_and_carries_its_owner() {
+        let dto = PluginTopTabDto::from(("rj-metadata".to_string(), sample_top_tab()));
+
+        assert_eq!(
+            dto,
+            PluginTopTabDto {
+                plugin_id: "rj-metadata".to_string(),
+                id: "library".to_string(),
+                label: "Library".to_string(),
+                icon: "DATABASE".to_string(),
+                badge: Some(PluginBadgeDto {
+                    count: Some(4),
+                    dot: false,
+                    color: "blue".to_string(),
+                }),
+                priority: 10,
+            }
+        );
+    }
+
+    #[test]
+    fn top_tab_without_a_badge_stays_without_one() {
+        let mut source = sample_top_tab();
+        source.badge = None;
+
+        let dto = PluginTopTabDto::from(("rj-metadata".to_string(), source));
+
+        assert_eq!(dto.badge, None);
+    }
+
+    /// Display text a plugin over-declares is truncated, not dropped --
+    /// and truncated on a char boundary, so a multi-byte glyph straddling
+    /// the bound cannot produce invalid UTF-8 or panic.
+    #[test]
+    fn top_tab_display_text_is_bounded_on_a_char_boundary() {
+        let overlong = "\u{1f600}".repeat(MAX_PLUGIN_TOP_TAB_TEXT_BYTES);
+        let mut source = sample_top_tab();
+        source.label = overlong.clone();
+        source.icon = overlong;
+
+        let dto = PluginTopTabDto::from(("rj-metadata".to_string(), source));
+
+        assert!(dto.label.len() <= MAX_PLUGIN_TOP_TAB_TEXT_BYTES);
+        assert!(dto.icon.len() <= MAX_PLUGIN_TOP_TAB_TEXT_BYTES);
+        assert!(
+            dto.label.len() > MAX_PLUGIN_TOP_TAB_TEXT_BYTES - 4,
+            "the bound must be used, not merely respected",
+        );
+        assert!(dto.label.chars().all(|glyph| glyph == '\u{1f600}'));
+    }
+
+    /// Identity is passed through verbatim even when it is absurd:
+    /// truncating a tab id would make two distinct tabs select each
+    /// other, which is worse than carrying a long string nobody lays out.
+    /// `runtime::bootstrap::sync_plugin_top_tab_items` makes the same
+    /// split for the same reason.
+    #[test]
+    fn top_tab_identity_is_never_truncated() {
+        let long_id = "x".repeat(MAX_PLUGIN_TOP_TAB_TEXT_BYTES * 2);
+        let mut source = sample_top_tab();
+        source.id = long_id.clone();
+
+        let dto = PluginTopTabDto::from(("rj-metadata".to_string(), source));
+
+        assert_eq!(dto.id, long_id);
+    }
+
+    #[test]
+    fn network_log_entry_mirrors_its_source_pair() {
+        let logged_at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_700_000_000_123);
+
+        let dto =
+            PluginNetworkLogEntryDto::from((logged_at, "GET https://example.test/api".to_string()));
+
+        assert_eq!(dto.logged_at_unix_ms, 1_700_000_000_123);
+        assert_eq!(dto.message, "GET https://example.test/api");
+    }
+
+    #[test]
+    fn network_log_entry_reports_a_pre_epoch_time_as_negative_millis() {
+        let logged_at = std::time::UNIX_EPOCH - std::time::Duration::from_millis(1_500);
+
+        let dto = PluginNetworkLogEntryDto::from((logged_at, "clock skew".to_string()));
+
+        assert_eq!(dto.logged_at_unix_ms, -1_500);
+    }
+
+    #[test]
+    fn chrome_snapshot_default_is_the_no_plugin_runtime_answer() {
+        let empty = PluginChromeSnapshot::default();
+
+        assert_eq!(empty.summary.total, 0);
+        assert_eq!(empty.summary.enabled, 0);
+        assert!(empty.top_tabs.is_empty());
+    }
+
+    #[test]
+    fn chrome_snapshot_round_trips_through_serde() {
+        let snapshot = PluginChromeSnapshot {
+            summary: PluginStatusSummaryDto {
+                total: 2,
+                enabled: 1,
+            },
+            top_tabs: vec![PluginTopTabDto::from((
+                "rj-metadata".to_string(),
+                sample_top_tab(),
+            ))],
+        };
+
+        let encoded = serde_json::to_string(&snapshot).expect("encode");
+        let decoded: PluginChromeSnapshot = serde_json::from_str(&encoded).expect("decode");
+
+        assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn install_path_must_name_a_wasm_file() {
+        let error = validate_install_path(std::path::Path::new("/tmp/plugin.txt"))
+            .expect_err("a non-wasm file must be refused before any file is opened");
+
+        assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(error.field.as_deref(), Some("wasm_path"));
+        assert!(error.diagnostic.is_some());
+    }
+
+    #[test]
+    fn install_path_accepts_any_case_of_the_wasm_extension() {
+        validate_install_path(std::path::Path::new("/tmp/plugin.WASM"))
+            .expect("extension matching must not depend on the user's shift key");
+    }
+
+    #[test]
+    fn install_path_must_not_be_empty() {
+        let error = validate_install_path(std::path::Path::new(""))
+            .expect_err("an empty path is a caller bug");
+
+        assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(error.field.as_deref(), Some("wasm_path"));
+    }
+
+    #[test]
+    fn install_path_is_bounded() {
+        let absurd = format!(
+            "{}.wasm",
+            "p".repeat(MAX_PLUGIN_INSTALL_PATH_BYTES.saturating_add(1))
+        );
+
+        let error = validate_install_path(std::path::Path::new(&absurd))
+            .expect_err("a path no filesystem can hold must not reach the plugin manager");
+
+        assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(error.field.as_deref(), Some("wasm_path"));
+    }
+
+    /// The install error envelope: a plugin-side rejection is reported as
+    /// a `Plugin` failure the user can act on, with the backend's own
+    /// wording preserved (bounded and path-redacted by
+    /// `ApplicationError::with_diagnostic`) rather than replaced.
+    #[test]
+    fn install_failures_carry_a_bounded_diagnostic() {
+        let error = plugin_install_error(PluginError::LoadError("x".repeat(16 * 1024)));
+
+        assert_eq!(error.kind, ApplicationErrorKind::Plugin);
+        assert_eq!(error.recoverability, Recoverability::UserAction);
+        assert_eq!(error.field.as_deref(), Some("wasm_path"));
+        let diagnostic = error.diagnostic.expect("a diagnostic must be attached");
+        assert!(
+            diagnostic.len() <= 4096,
+            "diagnostic must respect the 4 KiB envelope bound, got {}",
+            diagnostic.len(),
+        );
+        assert!(diagnostic.ends_with("... [truncated]"));
+    }
+
+    #[test]
+    fn install_reports_a_malformed_manifest_as_invalid_input() {
+        let error = plugin_install_error(PluginError::InvalidManifest("no id".to_string()));
+
+        assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn install_reports_an_io_failure_as_a_backend_failure() {
+        let error = plugin_install_error(PluginError::Io(std::io::Error::other("disk gone")));
+
+        assert_eq!(error.kind, ApplicationErrorKind::Backend);
     }
 }

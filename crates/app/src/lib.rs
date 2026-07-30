@@ -42,6 +42,14 @@
 //! fetch_plugin_image}` for the plugin-scoped namespace and
 //! `ArclainApp::{read_host_image, fetch_host_image, discard_host_image}`
 //! for the host-owned one, kept apart by [`plugins::is_plugin_image_key`].
+//! It further owns plugin *management*: `ArclainApp::install_plugin`, and
+//! the two read models an application frame draws its plugin-owned
+//! surfaces from -- [`plugins::PluginChromeSnapshot`] (status counts plus
+//! the live top-tab strip, via `ArclainApp::plugin_chrome`) and
+//! [`plugins::PluginNetworkLogEntryDto`] (via
+//! `ArclainApp::plugin_network_log`). Those two stay separate calls
+//! because their staleness needs are unrelated -- see
+//! `ArclainApp::plugin_network_log`'s own doc comment.
 //!
 //! [`layout`] owns the application's own chrome-layout surface: the
 //! arrangeable toolbar/context-menu/tools-dialog/info-panel items

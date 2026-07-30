@@ -2646,6 +2646,115 @@ impl ArclainApp {
 
     // ============= Task 14n: boundary-zero network surface (end) ============
 
+    // ========== Task P1: plugin management surfaces (start) =================
+    // Install, plus the two read models an application frame draws its
+    // plugin-owned chrome and its network-diagnostics page from. Kept in
+    // its own clearly-delimited section for the same reason as the
+    // sections above: a concurrent worktree may be touching this same
+    // shared file.
+
+    /// Installs a plugin from a `.wasm` component file, returning the
+    /// installed plugin's id.
+    ///
+    /// Copies the component and a manifest derived from its own metadata
+    /// export into this application's plugins directory, then loads and
+    /// initializes it -- so the plugin is usable immediately, without a
+    /// restart. `InvalidInput` for a request that is malformed on its face
+    /// (empty path, a path over
+    /// [`crate::plugins::MAX_PLUGIN_INSTALL_PATH_BYTES`], or one that does
+    /// not name a `.wasm` file); `Plugin` for a file that is not a valid,
+    /// installable plugin -- missing, not a component, declaring an id
+    /// that is already installed, failing its own `init`; `Unsupported`
+    /// when this application has no plugin runtime at all.
+    ///
+    /// # Not a registered operation, and not cancellable
+    ///
+    /// Deliberately a plain awaited `Result` rather than an
+    /// [`crate::ids::OperationId`]: `PluginManager::install_plugin` is one
+    /// synchronous call with no interior cancellation point and no
+    /// progress to report, and it holds the plugin manager's lock from
+    /// start to finish, so there is nothing an operation id could observe,
+    /// interleave with, or interrupt. Handing one out would advertise a
+    /// cancellation this application cannot honor -- and a cancel that
+    /// "succeeded" after the component was already published and
+    /// registered would be a lie about the state of the user's plugins
+    /// directory, not merely a no-op.
+    ///
+    /// # The installed plugin is enabled for this run only
+    ///
+    /// A freshly installed plugin starts enabled in the live manager but
+    /// is **not** added to the persisted enabled-plugin set. Once that set
+    /// exists at all, `bootstrap` trusts it completely and disables
+    /// anything absent from it, so a plugin installed and never explicitly
+    /// toggled is disabled again at the next start. Call
+    /// [`Self::set_plugin_enabled`] after installing to make it durable.
+    /// Long-standing behavior, carried over unchanged rather than fixed
+    /// here: the pre-facade install path did exactly the same thing.
+    pub async fn install_plugin(
+        &self,
+        wasm_path: std::path::PathBuf,
+    ) -> Result<String, ApplicationError> {
+        crate::plugins::validate_install_path(&wasm_path)?;
+        self.dispatch_blocking(move |inner| {
+            let manager = crate::plugins::require_manager(inner.plugin_manager())?;
+            crate::plugins::PluginSessionStore::install_plugin(&manager, &wasm_path)
+        })
+        .await?
+    }
+
+    /// The plugin-owned chrome an application frame draws: how many
+    /// plugins are loaded and enabled, and every top tab the enabled ones
+    /// currently register, sorted by the priority they declare.
+    ///
+    /// Reads each enabled plugin's tabs live, on this application's
+    /// blocking pool -- deliberately *not* through `PluginManager`'s own
+    /// memoized top-tab list, which only refreshes when a plugin is
+    /// enabled, disabled or loaded and would therefore freeze a badge
+    /// count at whatever it was then. That makes this a real call into
+    /// every enabled plugin, so a caller that polls owns the cadence; it
+    /// is not a per-frame read.
+    ///
+    /// A plugin whose `get-top-tabs` call fails contributes no tabs and
+    /// does not fail this read. An application composed without a plugin
+    /// runtime reports zero counts and no tabs rather than an error, for
+    /// the same reason [`Self::plugins`] reports an empty list.
+    pub async fn plugin_chrome(
+        &self,
+    ) -> Result<crate::plugins::PluginChromeSnapshot, ApplicationError> {
+        self.dispatch_blocking(|inner| match inner.plugin_manager() {
+            Some(manager) => crate::plugins::PluginSessionStore::plugin_chrome(&manager),
+            None => crate::plugins::PluginChromeSnapshot::default(),
+        })
+        .await
+    }
+
+    /// Every enabled plugin's network-activity log, merged and sorted
+    /// oldest first.
+    ///
+    /// The lines plugins write through the WIT `log-network-activity`
+    /// import -- what a diagnostics page renders. Already bounded at the
+    /// source (per plugin: at most 256 lines, 256 KiB, each line at most
+    /// 4 KiB, oldest evicted first), so this is a whole-log read with no
+    /// paging.
+    ///
+    /// Kept separate from [`Self::plugin_chrome`] rather than folded into
+    /// one call because the two have unrelated staleness needs: chrome is
+    /// redrawn with the window, a network log matters only while its page
+    /// is open, and combining them would impose the tighter cadence on
+    /// both. Reports an empty log, not an error, when this application has
+    /// no plugin runtime.
+    pub async fn plugin_network_log(
+        &self,
+    ) -> Result<Vec<crate::plugins::PluginNetworkLogEntryDto>, ApplicationError> {
+        self.dispatch_blocking(|inner| match inner.plugin_manager() {
+            Some(manager) => crate::plugins::PluginSessionStore::plugin_network_log(&manager),
+            None => Vec::new(),
+        })
+        .await
+    }
+
+    // =========== Task P1: plugin management surfaces (end) ==================
+
     /// Runs `work` against the composed session state on this app's own
     /// Tokio runtime, then awaits the result -- so the computation
     /// itself is never at the mercy of whatever executor happens to be
