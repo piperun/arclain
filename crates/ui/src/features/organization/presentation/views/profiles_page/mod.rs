@@ -13,7 +13,7 @@ mod add_profile_dialog;
 use crate::features::organization::application::facade;
 use crate::shared::components::item_table::{ItemTable, TableColumn};
 use crate::shared::components::Form;
-use crate::shared::SharedState;
+use crate::shared::{LoadSlot, SharedState};
 use add_profile_dialog::AddProfileDialog;
 use arclain_app::organization::{
     archive_format_options, ArchiveFormatOptionDto, OrganizationProfileInput,
@@ -79,7 +79,10 @@ pub enum ProfilesAction {
 }
 
 pub struct ProfilesPage {
-    profiles: Option<Vec<OrganizationProfileSummary>>,
+    /// The cached profile list plus the arming state of the auto-fired
+    /// `LoadProfiles` intent — see [`LoadSlot`] for why a failed load
+    /// holds (with a Retry affordance) instead of re-firing per frame.
+    profiles: LoadSlot<Vec<OrganizationProfileSummary>>,
     dialog: AddProfileDialog,
     error: Option<String>,
 }
@@ -87,7 +90,7 @@ pub struct ProfilesPage {
 impl Default for ProfilesPage {
     fn default() -> Self {
         Self {
-            profiles: None,
+            profiles: LoadSlot::default(),
             dialog: AddProfileDialog::default(),
             error: None,
         }
@@ -107,9 +110,9 @@ impl ProfilesPage {
     }
 
     /// Borrow the cached profiles list. `None` until the dispatcher
-    /// has run `LoadProfiles` at least once.
+    /// has run `LoadProfiles` successfully at least once.
     pub fn profiles(&self) -> Option<&[OrganizationProfileSummary]> {
-        self.profiles.as_deref()
+        self.profiles.data().map(Vec::as_slice)
     }
 
     pub fn render(
@@ -120,14 +123,45 @@ impl ProfilesPage {
         // First render (or after a mutation that invalidated the cache):
         // emit a Load action and show a placeholder. The dispatcher
         // populates `self.profiles` synchronously after render returns;
-        // the next frame shows real data.
-        if self.profiles.is_none() {
-            ui.label(
-                egui::RichText::new("Loading profiles…")
-                    .size(12.0)
-                    .color(theme.colors.on_surface_variant),
-            );
-            return Some(ProfilesAction::LoadProfiles);
+        // the next frame shows real data. The slot arms the intent at
+        // most once per user action, so a load the dispatcher *fails*
+        // holds on the error branch below instead of re-firing a
+        // blocking database call every frame.
+        if self.profiles.data().is_none() {
+            if self.profiles.try_fire() {
+                ui.label(
+                    egui::RichText::new("Loading profiles…")
+                        .size(12.0)
+                        .color(theme.colors.on_surface_variant),
+                );
+                return Some(ProfilesAction::LoadProfiles);
+            }
+            if let Some(error) = self.error.clone() {
+                ui.colored_label(egui::Color32::RED, error);
+                ui.add_space(8.0);
+                if ui
+                    .add(
+                        TextButton::new("Retry", ButtonSize::Small)
+                            .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
+                    // One fresh shot; the auto-fire above emits it on
+                    // the next frame.
+                    self.error = None;
+                    self.profiles.rearm();
+                }
+            } else {
+                // Fired but unanswered — the dispatcher runs in the
+                // same frame, so this only shows when no dispatcher is
+                // wired at all.
+                ui.label(
+                    egui::RichText::new("Loading profiles…")
+                        .size(12.0)
+                        .color(theme.colors.on_surface_variant),
+                );
+            }
+            return None;
         }
 
         let mut emitted: Option<ProfilesAction> = None;
@@ -158,7 +192,7 @@ impl ProfilesPage {
                         self.dialog.open();
                     }
 
-                    if let Some(profiles) = &self.profiles {
+                    if let Some(profiles) = self.profiles.data() {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 egui::RichText::new(format!("{} profiles", profiles.len()))
@@ -178,7 +212,7 @@ impl ProfilesPage {
                 ui.add_space(12.0);
 
                 // Table
-                let actions = if let Some(profiles) = &self.profiles {
+                let actions = if let Some(profiles) = self.profiles.data() {
                     let columns = vec![
                         TableColumn::exact(50.0, "Default"),
                         TableColumn::resizable(200.0, "Name"),
@@ -287,7 +321,7 @@ impl ProfilesPage {
                 // Handle edit click → open dialog locally; no action emitted
                 // until the user saves.
                 if let Some(edit_idx) = actions.get_edit() {
-                    if let Some(profiles) = &self.profiles {
+                    if let Some(profiles) = self.profiles.data() {
                         if let Some(profile) = profiles.get(*edit_idx) {
                             self.dialog.edit(profile);
                         }
@@ -296,7 +330,7 @@ impl ProfilesPage {
 
                 // Handle delete click → emit DeleteProfile action.
                 if let Some(delete_idx) = actions.get_delete() {
-                    if let Some(profiles) = &self.profiles {
+                    if let Some(profiles) = self.profiles.data() {
                         if let Some(profile) = profiles.get(*delete_idx) {
                             if !profile.is_system {
                                 emitted = Some(ProfilesAction::DeleteProfile(profile.id.clone()));
@@ -309,7 +343,7 @@ impl ProfilesPage {
         // Handle set-default click (deferred out of the table closure).
         if emitted.is_none() {
             if let Some(idx) = set_default_idx.get() {
-                if let Some(profiles) = &self.profiles {
+                if let Some(profiles) = self.profiles.data() {
                     if let Some(profile) = profiles.get(idx) {
                         emitted = Some(ProfilesAction::SetDefaultProfile(profile.id.clone()));
                     }
@@ -372,10 +406,15 @@ pub fn handle_profiles_action(
 
     match result {
         Ok(profiles) => {
-            page.profiles = Some(profiles);
+            page.profiles.set(profiles);
             page.error = None;
         }
         Err(error) => {
+            // For a failed load the cache stays empty and the page's
+            // slot stays disarmed: render shows the error with a Retry
+            // button instead of re-emitting LoadProfiles every frame.
+            // For a failed mutation the previous list stays cached and
+            // the error shows above it, exactly as before.
             page.error = Some(facade::describe(context, &error));
         }
     }

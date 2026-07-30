@@ -28,8 +28,10 @@ use egui_kittest::Harness;
 mod profiles_page {
     use super::*;
     use arclain_ui::features::organization::presentation::views::profiles_page::{
-        ProfilesAction, ProfilesPage,
+        handle_profiles_action, ProfilesAction, ProfilesPage,
     };
+    use arclain_ui::shared::SharedState;
+    use egui_kittest::kittest::Queryable as _;
 
     struct Stage {
         page: ProfilesPage,
@@ -60,6 +62,67 @@ mod profiles_page {
             "first render with profiles=None must auto-emit LoadProfiles"
         );
     }
+
+    struct StormStage {
+        page: ProfilesPage,
+        shared: SharedState,
+        theme: AppTheme,
+        load_count: usize,
+    }
+
+    /// A `LoadProfiles` dispatch that fails (here: no facade) leaves the
+    /// cache empty. The auto-fire must not depend on the dispatcher
+    /// succeeding in order to quench: it fires once, holds the failure,
+    /// and only the Retry affordance arms exactly one more attempt.
+    /// Without that, a failed load re-fires a blocking database call
+    /// every frame, forever.
+    #[test]
+    fn a_failed_load_fires_once_and_retry_arms_exactly_one_more() {
+        let mut harness = Harness::new_ui_state(
+            |ui, s: &mut StormStage| {
+                if let Some(action) = s.page.render(ui, &s.theme) {
+                    if matches!(action, ProfilesAction::LoadProfiles) {
+                        s.load_count += 1;
+                    }
+                    // Dispatch synchronously after render, exactly as
+                    // `settings_content.rs` does. No facade, so the
+                    // load fails and the cache stays empty.
+                    handle_profiles_action(&mut s.page, action, &s.shared);
+                }
+            },
+            StormStage {
+                page: ProfilesPage::new(),
+                shared: common::create_test_shared_state(),
+                theme: AppTheme::new(false),
+                load_count: 0,
+            },
+        );
+
+        for _ in 0..4 {
+            harness.step();
+        }
+        assert_eq!(
+            harness.state().load_count,
+            1,
+            "a failed load must fire exactly once, not once per frame"
+        );
+        assert!(
+            harness.state().page.error().is_some(),
+            "the failure must be surfaced on the page"
+        );
+
+        // Retry is a user action: it arms exactly one further attempt,
+        // which also fails, and the page holds again.
+        harness.get_by_label("Retry").click();
+        for _ in 0..4 {
+            harness.step();
+        }
+        assert_eq!(
+            harness.state().load_count,
+            2,
+            "Retry must arm exactly one more load"
+        );
+    }
 }
 
 // ============================================================================
@@ -69,8 +132,10 @@ mod profiles_page {
 mod rules_page {
     use super::*;
     use arclain_ui::features::organization::presentation::views::rules_page::{
-        RulesPage, RulesPageAction,
+        handle_rules_page_action, RulesPage, RulesPageAction,
     };
+    use arclain_ui::shared::SharedState;
+    use egui_kittest::kittest::Queryable as _;
 
     struct ListStage {
         page: RulesPage,
@@ -132,6 +197,79 @@ mod rules_page {
                 Some(RulesPageAction::LoadRule { rule_id: 42 })
             ),
             "render_edit_rule with no editor state must auto-emit LoadRule"
+        );
+    }
+
+    struct StormStage {
+        page: RulesPage,
+        shared: SharedState,
+        theme: AppTheme,
+        load_count: usize,
+    }
+
+    /// A `LoadRules` dispatch that fails (here: no facade) leaves the
+    /// cache empty. The auto-fire must not depend on the dispatcher
+    /// succeeding in order to quench: it fires once, holds the failure,
+    /// and only the Retry affordance arms exactly one more attempt.
+    /// Without that, a failed load re-fires a blocking database call
+    /// every frame, forever.
+    #[test]
+    fn a_failed_load_fires_once_and_retry_arms_exactly_one_more() {
+        let mut harness = Harness::new_ui_state(
+            |ui, s: &mut StormStage| {
+                if let Some(action) = s.page.render(ui, &s.theme) {
+                    if matches!(action, RulesPageAction::LoadRules) {
+                        s.load_count += 1;
+                    }
+                    // Dispatch synchronously after render, exactly as
+                    // `settings_content.rs` does. No facade, so the
+                    // load fails and the cache stays empty.
+                    handle_rules_page_action(&mut s.page, action, &s.shared, None);
+                }
+            },
+            StormStage {
+                page: RulesPage::new(),
+                shared: common::create_test_shared_state(),
+                theme: AppTheme::new(false),
+                load_count: 0,
+            },
+        );
+
+        for _ in 0..4 {
+            harness.step();
+        }
+        assert_eq!(
+            harness.state().load_count,
+            1,
+            "a failed load must fire exactly once, not once per frame"
+        );
+        assert!(
+            harness.state().page.error().is_some(),
+            "the failure must be surfaced on the page"
+        );
+
+        // Retry is a user action: it arms exactly one further attempt,
+        // which also fails, and the page holds again.
+        harness.get_by_label("Retry").click();
+        for _ in 0..4 {
+            harness.step();
+        }
+        assert_eq!(
+            harness.state().load_count,
+            2,
+            "Retry must arm exactly one more load"
+        );
+
+        // A cache invalidation (the user saved or cancelled an edit) is
+        // also a user action, so it arms the reload the same way.
+        harness.state_mut().page.mark_saved_and_clear();
+        for _ in 0..4 {
+            harness.step();
+        }
+        assert_eq!(
+            harness.state().load_count,
+            3,
+            "invalidating the cache must arm exactly one reload"
         );
     }
 }

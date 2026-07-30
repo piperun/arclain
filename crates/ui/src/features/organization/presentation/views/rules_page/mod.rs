@@ -16,7 +16,7 @@ use crate::core::SettingsPage;
 use crate::features::organization::application::facade;
 use crate::shared::components::item_table::{ItemTable, TableColumn};
 use crate::shared::components::Form;
-use crate::shared::SharedState;
+use crate::shared::{LoadSlot, SharedState};
 use arclain_app::organization::{OrganizationRuleInput, OrganizationRuleSummary};
 use arclain_widgets::{ButtonSize, TextButton};
 pub use rule_editor::{RuleEditorAction, RuleEditorState};
@@ -50,7 +50,12 @@ pub struct RuleEditorOutput {
 }
 
 pub struct RulesPage {
-    rules: Option<Vec<OrganizationRuleSummary>>,
+    /// The cached rule list plus the arming state of the auto-fired
+    /// `LoadRules` intent — see [`LoadSlot`] for why a failed load
+    /// holds (with a Retry affordance) instead of re-firing per frame.
+    rules: LoadSlot<Vec<OrganizationRuleSummary>>,
+    /// The last `LoadRules` failure, shown in place of the list while
+    /// the slot is empty (beside a Retry button that re-arms it).
     error: Option<String>,
     /// State for the rule editor (when editing a rule via dedicated page)
     editor_state: Option<RuleEditorState>,
@@ -62,7 +67,7 @@ pub struct RulesPage {
 impl Default for RulesPage {
     fn default() -> Self {
         Self {
-            rules: None,
+            rules: LoadSlot::default(),
             error: None,
             editor_state: None,
             editor_load_error: None,
@@ -89,9 +94,10 @@ impl RulesPage {
     }
 
     /// The cached rule list. `None` until the dispatcher has run
-    /// `LoadRules` at least once, matching `ProfilesPage::profiles`.
+    /// `LoadRules` successfully at least once, matching
+    /// `ProfilesPage::profiles`.
     pub fn rules(&self) -> Option<&[OrganizationRuleSummary]> {
-        self.rules.as_deref()
+        self.rules.data().map(Vec::as_slice)
     }
 
     /// The rule the editor is currently editing, as the save will
@@ -108,14 +114,45 @@ impl RulesPage {
         // First render (or after a mutation that invalidated the cache):
         // emit a Load action and show a placeholder. The dispatcher
         // populates `self.rules` synchronously after render returns;
-        // the next frame shows real data.
-        if self.rules.is_none() {
-            ui.label(
-                egui::RichText::new("Loading rules…")
-                    .size(12.0)
-                    .color(theme.colors.on_surface_variant),
-            );
-            return Some(RulesPageAction::LoadRules);
+        // the next frame shows real data. The slot arms the intent at
+        // most once per user action, so a load the dispatcher *fails*
+        // holds on the error branch below instead of re-firing a
+        // blocking database call every frame.
+        if self.rules.data().is_none() {
+            if self.rules.try_fire() {
+                ui.label(
+                    egui::RichText::new("Loading rules…")
+                        .size(12.0)
+                        .color(theme.colors.on_surface_variant),
+                );
+                return Some(RulesPageAction::LoadRules);
+            }
+            if let Some(error) = self.error.clone() {
+                ui.colored_label(egui::Color32::RED, error);
+                ui.add_space(8.0);
+                if ui
+                    .add(
+                        TextButton::new("Retry", ButtonSize::Small)
+                            .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
+                    // One fresh shot; the auto-fire above emits it on
+                    // the next frame.
+                    self.error = None;
+                    self.rules.rearm();
+                }
+            } else {
+                // Fired but unanswered — the dispatcher runs in the
+                // same frame, so this only shows when no dispatcher is
+                // wired at all.
+                ui.label(
+                    egui::RichText::new("Loading rules…")
+                        .size(12.0)
+                        .color(theme.colors.on_surface_variant),
+                );
+            }
+            return None;
         }
 
         let mut emitted: Option<RulesPageAction> = None;
@@ -152,7 +189,7 @@ impl RulesPage {
                     emitted = Some(RulesPageAction::Navigate(SettingsPage::EditRule(0)));
                 }
 
-                if let Some(rules) = &self.rules {
+                if let Some(rules) = self.rules.data() {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
                             egui::RichText::new(format!("{} rules", rules.len()))
@@ -172,7 +209,7 @@ impl RulesPage {
             ui.add_space(12.0);
 
             // Table
-            let actions = if let Some(rules) = &self.rules {
+            let actions = if let Some(rules) = self.rules.data() {
                 let columns = vec![
                     TableColumn::exact(60.0, "Status"),
                     TableColumn::resizable(180.0, "Name"),
@@ -257,7 +294,7 @@ impl RulesPage {
             // facade never produces) simply has no edit route.
             if emitted.is_none() {
                 if let Some(edit_idx) = actions.get_edit() {
-                    if let Some(rules) = &self.rules {
+                    if let Some(rules) = self.rules.data() {
                         if let Some(id) = rules
                             .get(*edit_idx)
                             .and_then(|rule| rule.id.parse::<i64>().ok())
@@ -317,7 +354,7 @@ impl RulesPage {
                     // Editor done: clear local state, invalidate the
                     // list cache so the next list render re-fetches.
                     self.editor_state = None;
-                    self.rules = None;
+                    self.rules.invalidate();
                     output.editor_action = Some(action);
                 }
                 RuleEditorAction::None => {}
@@ -361,7 +398,8 @@ impl RulesPage {
     /// Mark the rule as saved and clear editor state (called after successful save)
     pub fn mark_saved_and_clear(&mut self) {
         self.editor_state = None;
-        self.rules = None; // Trigger refresh when returning to list
+        // Trigger (and arm) one refresh when returning to the list.
+        self.rules.invalidate();
     }
 }
 
@@ -388,13 +426,16 @@ pub fn handle_rules_page_action(
             );
         }
         RulesPageAction::LoadRules => {
+            // On failure the cache stays empty and the page's slot
+            // stays disarmed: render shows `page.error` with a Retry
+            // button instead of re-emitting this action every frame.
             let Some((app, runtime)) = facade::handles(shared) else {
                 page.error = Some(facade::unavailable());
                 return;
             };
             match runtime.block_on(app.organization_rules()) {
                 Ok(rules) => {
-                    page.rules = Some(rules);
+                    page.rules.set(rules);
                     page.error = None;
                 }
                 Err(error) => {
