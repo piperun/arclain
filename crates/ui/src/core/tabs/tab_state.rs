@@ -106,6 +106,12 @@ pub struct TabState {
     /// Replaces the pre-facade `navigation:
     /// Signal<arclain_core::archive::NavigationState>`, which navigated a
     /// bare `String` cursor over the flat `entries` list above.
+    ///
+    /// The per-entry view state that has to survive a refresh -- selection,
+    /// folder expansion, scroll -- is **not** keyed by the `EntryId` these
+    /// listing rows carry; it stays keyed by archive-root path.
+    /// [`BrowserViewState`] documents each one and why re-keying belongs
+    /// with the render-side migration rather than here.
     pub listing: Signal<TabListing>,
     pub current_password: Signal<Option<String>>,
     pub selection_count: Signal<usize>,

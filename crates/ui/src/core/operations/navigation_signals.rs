@@ -62,13 +62,9 @@ pub fn navigate_up(signals: &AppSignals) -> bool {
     navigate(signals, TabListing::up)
 }
 
-/// Return the active tab to the archive root with an empty history --
-/// what opening a different archive into the tab starts from.
-pub fn reset_navigation(signals: &AppSignals) {
-    signals
-        .tabs
-        .get()
-        .active()
-        .listing
-        .set(TabListing::default());
-}
+// `reset_navigation` used to sit here, callerless behind an
+// `#[allow(dead_code)]`. Resetting a tab's cursor is what opening an
+// archive into it does, and `crate::core::operation_bridge` does that
+// itself -- by seating a `TabListing::for_session(..)` bound to the
+// session it just opened, which a bare "reset" helper cannot express
+// without silently unbinding the tab from its own archive.

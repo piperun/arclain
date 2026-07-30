@@ -886,7 +886,7 @@ fn handle_organize_terminal(
 /// (used for a fresh `OpenArchive` completion), not a reuse of it: a
 /// mutation never changes which archive is open, which folder the user
 /// is viewing, or its encryption status, so none of `archive_extras`/
-/// `navigation`/`current_password`/`opened_archive` are touched here,
+/// `listing`/`current_password`/`opened_archive` are touched here,
 /// unlike that function's own full reset.
 ///
 /// Selection is pruned to just the paths still present in the fresh

@@ -3,16 +3,29 @@
 // Parity coverage for the navigation rules `arclain_core::archive::
 // NavigationState` used to own. Each test below names the behavior it
 // pins so a future change to `ArchiveNavigation` cannot quietly alter
-// the breadcrumb/history UX -- the pre-facade type's own tests are gone
-// with it, and these are what replaced them.
+// the breadcrumb/history UX.
+//
+// `NavigationState` itself is still alive in `arclain_core`, still tested
+// there, and still called by the `TRANSITIONAL(4c)` projections in
+// `crate::core::operations::navigation_view` -- these tests do not
+// replace its tests, they pin that the tab's own cursor behaves the same
+// way. That the original tests still run is what let the rule-by-rule
+// parity be checked rather than asserted; both sets go when the
+// render-side migration removes the last caller.
 
 use super::*;
+use arclain_app::error::{ApplicationErrorKind, Recoverability};
 use arclain_app::ids::{ArchiveSessionId, EntryId};
 
 /// A listing bound to session 1 -- what every page helper below answers
 /// for unless a test deliberately names another session.
 fn listing() -> TabListing {
     TabListing::for_session(Some(ArchiveSessionId::from_raw(1)))
+}
+
+fn listing_error(summary: &str) -> ApplicationError {
+    ApplicationError::new(ApplicationErrorKind::Backend, summary)
+        .with_recoverability(Recoverability::Retry)
 }
 
 fn page(directory: &str, revision: u64, session: u64, names: &[&str]) -> EntryPage {
@@ -326,4 +339,164 @@ fn the_listing_exposes_the_same_history_predicates_the_toolbar_reads() {
     assert!(listing.can_go_forward());
     assert!(listing.forward());
     assert_eq!(listing.current_path(), "game");
+}
+
+// =========================================================================
+// PageState -- why a directory has no rows
+// =========================================================================
+
+/// The whole reason `PageState` exists. An `Option<EntryPage>` gives one
+/// representation of "no rows" for four different causes, and once the
+/// render path reads this model, a listing that *failed* would render as a
+/// perfectly ordinary empty folder.
+#[test]
+fn a_failed_listing_is_distinguishable_from_an_empty_directory() {
+    let mut empty = listing();
+    assert!(empty.adopt_page(page("", 1, 1, &[])));
+
+    let mut failed = listing();
+    assert!(failed.fail(&ArchivePath::root(), listing_error("backend exploded")));
+
+    // Indistinguishable on the transitional accessor, by design -- that is
+    // what keeps un-migrated consumers behaving exactly as before.
+    assert!(empty.entries().is_empty());
+    assert!(failed.entries().is_empty());
+
+    // Distinguishable everywhere it matters.
+    assert!(matches!(empty.page_state(), PageState::Loaded(_)));
+    assert!(matches!(failed.page_state(), PageState::Failed(_)));
+    assert!(
+        empty.page().is_some(),
+        "the session said this folder is empty"
+    );
+    assert!(
+        failed.page().is_none(),
+        "nothing is known about this folder"
+    );
+    assert_eq!(empty.failure(), None);
+    assert_eq!(
+        failed.failure().map(|error| error.summary.as_str()),
+        Some("backend exploded")
+    );
+}
+
+#[test]
+fn a_listing_that_has_asked_nothing_is_neither_loading_nor_failed() {
+    let listing = listing();
+    assert_eq!(listing.page_state(), &PageState::Absent);
+    assert!(!listing.is_loading());
+    assert_eq!(listing.failure(), None);
+    assert!(listing.page().is_none());
+}
+
+#[test]
+fn a_listing_in_flight_is_neither_empty_nor_failed() {
+    let mut listing = listing();
+    listing.begin_loading();
+
+    assert!(listing.is_loading());
+    assert_eq!(listing.page_state(), &PageState::Loading);
+    assert!(listing.page().is_none());
+    assert_eq!(listing.failure(), None);
+    assert!(listing.entries().is_empty());
+}
+
+#[test]
+fn a_page_arriving_clears_the_in_flight_marker() {
+    let mut listing = listing();
+    listing.begin_loading();
+    assert!(listing.adopt_page(page("", 1, 1, &["readme.txt"])));
+
+    assert!(!listing.is_loading());
+    assert_eq!(listing.entries()[0].name, "readme.txt");
+}
+
+#[test]
+fn navigating_discards_a_failure_along_with_everything_else() {
+    let mut listing = listing();
+    assert!(listing.fail(&ArchivePath::root(), listing_error("root failed")));
+
+    assert!(listing.descend("game"));
+    assert_eq!(
+        listing.page_state(),
+        &PageState::Absent,
+        "the root's failure said nothing about game/"
+    );
+    assert_eq!(listing.failure(), None);
+}
+
+/// The mirror of `adopt_page`'s own directory refusal: a failure for the
+/// directory the user has already navigated away from must not surface as
+/// a failure of the one now on screen.
+#[test]
+fn a_failure_for_a_directory_no_longer_browsed_is_refused() {
+    let mut listing = listing();
+    assert!(listing.descend("game"));
+
+    let stale = ArchivePath::root();
+    assert!(!listing.fail(&stale, listing_error("root failed, too late")));
+    assert_eq!(listing.page_state(), &PageState::Absent);
+}
+
+/// Rows already loaded are the session's last successful answer for this
+/// exact directory. A failed *refresh* must not replace them with
+/// "contents unknown" -- the user can still act on what is shown, and the
+/// failure reaches them through the status bar like any other.
+#[test]
+fn a_failed_refresh_does_not_discard_rows_the_session_already_returned() {
+    let mut listing = listing();
+    assert!(listing.adopt_page(page("", 3, 1, &["readme.txt"])));
+
+    assert!(!listing.fail(&ArchivePath::root(), listing_error("refresh failed")));
+    assert_eq!(listing.entries()[0].name, "readme.txt");
+    assert_eq!(listing.failure(), None);
+}
+
+#[test]
+fn a_retry_that_also_fails_replaces_the_earlier_failure() {
+    let mut listing = listing();
+    assert!(listing.fail(&ArchivePath::root(), listing_error("first attempt")));
+    assert!(listing.fail(&ArchivePath::root(), listing_error("second attempt")));
+
+    assert_eq!(
+        listing.failure().map(|error| error.summary.as_str()),
+        Some("second attempt")
+    );
+}
+
+// =========================================================================
+// whole_directory_request
+// =========================================================================
+
+/// Regression guard for a silent data loss: extraction resolved its
+/// selected paths to `EntryId`s through a listing capped at a literal
+/// `100_000`, so every row selected past that in a larger directory was
+/// simply not found and not extracted -- with no error, because "none of
+/// the selected items are in this listing" is indistinguishable from a
+/// stale selection.
+#[test]
+fn a_whole_directory_request_does_not_cap_below_any_directory_an_archive_can_hold() {
+    let request = TabListing::whole_directory_request(ArchivePath::root());
+
+    assert_eq!(
+        request.offset, 0,
+        "a resolution pass must start at the first row"
+    );
+    assert_eq!(request.limit, ALL_ENTRIES_IN_ONE_DIRECTORY);
+    assert!(
+        u64::from(request.limit) > 100_000,
+        "extraction once capped this at 100 000 and silently dropped every \
+         selected row past that"
+    );
+}
+
+/// A fresh listing asks for exactly the whole-directory shape, so the
+/// browser's own request and the selection-resolution requests cannot
+/// drift apart.
+#[test]
+fn a_fresh_listing_asks_for_the_whole_directory_shape() {
+    assert_eq!(
+        listing().request(),
+        &TabListing::whole_directory_request(ArchivePath::root())
+    );
 }

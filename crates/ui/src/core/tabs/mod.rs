@@ -17,7 +17,7 @@ pub mod tab_state;
 pub mod tabs_collection;
 pub mod view_state;
 
-pub use listing::{ArchiveNavigation, TabListing, ALL_ENTRIES_IN_ONE_DIRECTORY};
+pub use listing::{ArchiveNavigation, PageState, TabListing, ALL_ENTRIES_IN_ONE_DIRECTORY};
 pub use op_guard::OpGuard;
 pub use persistence::{load_collection, save_collection, snapshot, TabRestore, TabsSnapshot};
 pub use plugin_instances::TabPluginPool;

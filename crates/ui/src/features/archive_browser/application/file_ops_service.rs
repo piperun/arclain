@@ -1,12 +1,11 @@
 //! File operations application service
 
 use crate::core::operations;
-use crate::core::tabs::{OpGuard, TabState, ALL_ENTRIES_IN_ONE_DIRECTORY};
+use crate::core::tabs::{OpGuard, TabListing, TabState};
 use crate::features::archive_operations::ArchiveOperationsState;
 use crate::features::file_editing::domain::types::FileEditLoadState;
 use crate::shared::SharedState;
 use anyhow::{anyhow, Result};
-use arclain_app::archive::{EntrySortKey, ListEntriesRequest, SortDirection};
 use arclain_app::operations::ArchiveMutationRequest;
 use arclain_core::backends::BackendSelector;
 use std::path::Path;
@@ -99,17 +98,7 @@ impl FileOpsService {
         let runtime = shared.services.tokio_runtime.clone();
         runtime.spawn(async move {
             let page = match app
-                .list_entries(
-                    session_id,
-                    ListEntriesRequest {
-                        directory,
-                        sort_key: EntrySortKey::Name,
-                        sort_direction: SortDirection::Ascending,
-                        name_filter: None,
-                        offset: 0,
-                        limit: ALL_ENTRIES_IN_ONE_DIRECTORY,
-                    },
-                )
+                .list_entries(session_id, TabListing::whole_directory_request(directory))
                 .await
             {
                 Ok(page) => page,

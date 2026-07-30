@@ -1,8 +1,8 @@
 use crate::core::tabs::view_state::RevisionedSelection;
-use crate::core::tabs::{TabId, ALL_ENTRIES_IN_ONE_DIRECTORY};
+use crate::core::tabs::{TabId, TabListing};
 use crate::shared::models::file_entry::FileEntry;
 use crate::shared::SharedState;
-use arclain_app::archive::{ArchivePath, EntrySortKey, ListEntriesRequest, SortDirection};
+use arclain_app::archive::ArchivePath;
 use arclain_app::ids::ArchiveSessionId;
 use arclain_app::operations::ArchiveMutationRequest;
 use std::path::PathBuf;
@@ -132,17 +132,7 @@ pub fn start_replace_text(
             .unwrap_or_default();
         let directory = ArchivePath::parse(parent).unwrap_or_else(|_| ArchivePath::root());
         let page = match app
-            .list_entries(
-                session_id,
-                ListEntriesRequest {
-                    directory,
-                    sort_key: EntrySortKey::Name,
-                    sort_direction: SortDirection::Ascending,
-                    name_filter: None,
-                    offset: 0,
-                    limit: ALL_ENTRIES_IN_ONE_DIRECTORY,
-                },
-            )
+            .list_entries(session_id, TabListing::whole_directory_request(directory))
             .await
         {
             Ok(page) => page,

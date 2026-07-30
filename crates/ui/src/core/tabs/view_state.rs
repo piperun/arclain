@@ -277,6 +277,11 @@ impl BrowserProjectionCache {
 
 /// Renderer-owned selection with an explicit invalidation revision.
 ///
+/// Keyed by **archive-root path** (`FileEntry::archive_path`), not by
+/// `EntryId` — see [`BrowserViewState`]'s own doc comment for why all
+/// three pieces of per-entry state stay path-keyed for now, and what makes
+/// re-keying them safe later.
+///
 /// Only immutable `HashSet` access is exposed. Every mutating operation
 /// advances `revision`, so projection caches never need to hash or scan the
 /// complete selection merely to detect a change.
@@ -344,12 +349,44 @@ impl Deref for RevisionedSelection {
     }
 }
 
+/// Renderer-owned browser view state for one tab.
+///
+/// # What survives a refresh, and what it is keyed by
+///
+/// Every piece of per-entry state here is keyed by **archive-root path**,
+/// not by `EntryId`, and stays that way through the tab's move onto the
+/// facade's listing model:
+///
+/// * **Selection** — `RevisionedSelection` is a set of
+///   `FileEntry::archive_path` strings. Survives a refresh for every row
+///   whose path is still present (`operation_bridge` prunes the rest).
+/// * **Folder expansion** — `TreePanelState::expanded_folders` is a set of
+///   folder paths, and `selected_path` is one. Survives a refresh
+///   unconditionally, because the tree panel holds paths the fresh
+///   listing simply re-matches.
+/// * **Scroll offset** — not keyed by entry identity at all: egui persists
+///   it per scroll-area id (`"grid_scroll"`), so it survives a refresh as
+///   a pixel offset and is unaffected by which rows moved.
+///
+/// **The decision:** all three stay path-keyed through the tab's
+/// data-model swap. Re-keying them on `EntryId` belongs with the
+/// render-side migration, which is what actually puts `EntryId`-carrying
+/// rows in front of the renderer -- re-keying earlier would mean
+/// translating ids back to paths at every call site that still reads
+/// `FileEntry`. What makes that later change safe is already pinned:
+/// `EntryId` is stable across a refresh within one session
+/// (`entry_ids_survive_a_refresh_within_the_same_session` in
+/// `crates/ui/tests/tab_archive_model_test.rs`), so id-keyed state will
+/// survive a refresh at least as well as path-keyed state does today --
+/// and strictly better across a rename, which a path key loses and an id
+/// key does not.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BrowserViewState {
     /// Renderer-owned paths selected in the current browser projection.
     pub selection: RevisionedSelection,
-    // NOTE: current_path moved to NavigationState signal pre-relocation
-    //       for single source of truth; that history is preserved here.
+    // NOTE: current_path moved to the tab's own listing cursor
+    //       pre-relocation for single source of truth; that history is
+    //       preserved here.
     pub toolbar_state: ToolbarState,
     pub sort_state: SortState,
     pub tree_state: TreePanelState,

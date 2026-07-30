@@ -42,26 +42,86 @@ use std::time::Duration;
 
 /// A fixture with every shape the browser's row conversion has to get
 /// right: a root-level file, a root-level directory the listing implies
-/// rather than names, two nesting levels under it, and mixed-case names
-/// (whose tie ordering the two producers deliberately disagree on -- see
-/// [`sorted_by_archive_path`]).
-const FIXTURE: &[(&str, &[u8])] = &[
-    ("readme.txt", b"readme"),
-    ("Zebra.txt", b"zebra"),
-    ("game/Game.exe", b"executable-bytes"),
-    ("game/data/save.dat", b"save-data-contents"),
-    ("game/data/config.ini", b"[settings]"),
+/// rather than names, two nesting levels under it, an encrypted entry, and
+/// mixed-case names (whose tie ordering the two producers deliberately
+/// disagree on -- see [`sorted_by_archive_path`]).
+///
+/// Deliberately no *explicit* directory entry: that one shape is the only
+/// place the two row producers genuinely disagree, and it gets its own
+/// fixture and its own characterizing test
+/// (`an_explicitly_listed_directory_gains_its_own_modified_date`) rather
+/// than weakening every parity assertion here.
+const FIXTURE: &[FixtureEntry] = &[
+    FixtureEntry::file("readme.txt", b"readme"),
+    FixtureEntry::file("Zebra.txt", b"zebra"),
+    FixtureEntry::file("game/Game.exe", b"executable-bytes"),
+    FixtureEntry::file("game/data/save.dat", b"save-data-contents"),
+    FixtureEntry::file("game/data/config.ini", b"[settings]"),
+    FixtureEntry::encrypted_file("game/licence.key", b"secret-licence-bytes"),
 ];
 
-fn build_zip_fixture(path: &Path, entries: &[(&str, &[u8])]) {
+/// One entry [`build_zip_fixture`] writes. `Directory` exists so a fixture
+/// can carry a directory the archive *names*, rather than only ones its
+/// file paths imply -- 7z and rar emit those routinely.
+#[derive(Clone, Copy)]
+enum FixtureEntry {
+    File {
+        path: &'static str,
+        content: &'static [u8],
+        encrypted: bool,
+    },
+    Directory(&'static str),
+}
+
+impl FixtureEntry {
+    const fn file(path: &'static str, content: &'static [u8]) -> Self {
+        Self::File {
+            path,
+            content,
+            encrypted: false,
+        }
+    }
+
+    const fn encrypted_file(path: &'static str, content: &'static [u8]) -> Self {
+        Self::File {
+            path,
+            content,
+            encrypted: true,
+        }
+    }
+}
+
+/// The password the encrypted fixture entry is written with. Never needed
+/// for *listing* -- a zip's central directory is readable without it, which
+/// is why an encrypted entry can appear in a listing-parity fixture at all.
+const FIXTURE_PASSWORD: &str = "fixture-password";
+
+fn build_zip_fixture(path: &Path, entries: &[FixtureEntry]) {
     let file = std::fs::File::create(path).expect("create zip fixture file");
     let mut writer = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default();
-    for (entry_path, content) in entries {
-        writer
-            .start_file(*entry_path, options)
-            .expect("start zip fixture entry");
-        std::io::Write::write_all(&mut writer, content).expect("write zip fixture entry content");
+    let plain = zip::write::SimpleFileOptions::default();
+    for entry in entries {
+        match entry {
+            FixtureEntry::Directory(name) => writer
+                .add_directory(*name, plain)
+                .expect("add zip fixture directory"),
+            FixtureEntry::File {
+                path: entry_path,
+                content,
+                encrypted,
+            } => {
+                let options = if *encrypted {
+                    plain.with_aes_encryption(zip::AesMode::Aes256, FIXTURE_PASSWORD)
+                } else {
+                    plain
+                };
+                writer
+                    .start_file(*entry_path, options)
+                    .expect("start zip fixture entry");
+                std::io::Write::write_all(&mut writer, content)
+                    .expect("write zip fixture entry content");
+            }
+        }
     }
     writer.finish().expect("finish zip fixture");
 }
@@ -130,9 +190,13 @@ struct OpenedFixture {
 /// tab ends up carrying exactly what production would give it: a session
 /// id, a snapshot, and the flat entry list the browser reads today.
 fn open_fixture() -> OpenedFixture {
+    open_entries(FIXTURE)
+}
+
+fn open_entries(entries: &[FixtureEntry]) -> OpenedFixture {
     let temp = tempfile::tempdir().unwrap();
     let archive_path = temp.path().join("fixture.zip");
-    build_zip_fixture(&archive_path, FIXTURE);
+    build_zip_fixture(&archive_path, entries);
 
     let app = bootstrap_real_app(&temp);
     let mut shared = create_test_shared_state();
@@ -239,15 +303,18 @@ fn opening_an_archive_stamps_the_tab_with_the_session_its_snapshot_describes() {
     assert_eq!(snapshot.archive_type, "zip");
     assert_eq!(
         snapshot.entry_count,
-        // Five files plus the three directories the index derives from
-        // their paths: `game`, `game/data`, and nothing else.
+        // Every fixture file plus the two directories the index derives
+        // from their paths: `game` and `game/data`.
         (FIXTURE.len() + 2) as u64
     );
     assert_eq!(
         snapshot.total_uncompressed_size,
         FIXTURE
             .iter()
-            .map(|(_, content)| content.len() as u64)
+            .map(|entry| match entry {
+                FixtureEntry::File { content, .. } => content.len() as u64,
+                FixtureEntry::Directory(_) => 0,
+            })
             .sum::<u64>()
     );
     assert_eq!(snapshot.revision, 1, "a freshly opened session starts at 1");
@@ -312,12 +379,21 @@ fn descending_lists_the_directory_the_cursor_moved_to() {
         facade_rows(&fixture, &listing),
         flat_listing_rows(&fixture, &listing)
     );
+    let game_rows = facade_rows(&fixture, &listing);
     assert_eq!(
-        facade_rows(&fixture, &listing)
+        game_rows
             .iter()
             .map(|row| row.archive_path.as_str())
             .collect::<Vec<_>>(),
-        vec!["game/Game.exe", "game/data"]
+        vec!["game/Game.exe", "game/data", "game/licence.key"]
+    );
+    assert!(
+        game_rows
+            .iter()
+            .find(|row| row.archive_path == "game/licence.key")
+            .expect("the encrypted entry must be listed")
+            .encrypted,
+        "an encrypted entry must still be flagged as one after the DTO round trip"
     );
 
     assert!(listing.descend("data"));
@@ -406,7 +482,10 @@ fn a_tab_holding_a_page_reports_that_page_as_its_current_directory() {
     let current = fixture.shared.app_state.lock().get_current_entries();
     let mut paths: Vec<&str> = current.iter().map(|entry| entry.path.as_str()).collect();
     paths.sort_unstable();
-    assert_eq!(paths, vec!["game/Game.exe", "game/data"]);
+    assert_eq!(
+        paths,
+        vec!["game/Game.exe", "game/data", "game/licence.key"]
+    );
     assert!(
         current
             .iter()
@@ -463,5 +542,60 @@ fn entry_ids_survive_a_refresh_within_the_same_session() {
             .iter()
             .all(|(_, id)| !nested.iter().any(|(_, other)| other == id)),
         "two different entries were handed the same id within one session"
+    );
+}
+
+/// The one shape where the two row producers genuinely disagree, pinned
+/// here so it is a known, characterized difference rather than a surprise
+/// the render-side migration discovers.
+///
+/// When an archive *names* a directory (rather than only implying it from
+/// its files' paths), the two sides read that row differently. The flat
+/// filter never trims the trailing `/` a directory entry carries, so
+/// `"docs/"` looks like a nested path to it and it synthesizes a fresh
+/// `docs` folder row with no timestamp. The session's index normalizes the
+/// trailing slash away first, recognizes the row as the directory itself,
+/// and keeps the timestamp the archive recorded for it.
+///
+/// So a folder that is explicitly listed gains a Modified date it did not
+/// show before. 7z and rar emit explicit directory rows routinely, so this
+/// is reachable, not theoretical -- and it is the facade being *more*
+/// faithful to the archive, which is why it is characterized rather than
+/// worked around.
+#[test]
+fn an_explicitly_listed_directory_gains_its_own_modified_date() {
+    let fixture = open_entries(&[
+        FixtureEntry::Directory("docs/"),
+        FixtureEntry::file("docs/manual.txt", b"manual"),
+    ]);
+    let listing = TabListing::default();
+
+    let from_facade = facade_rows(&fixture, &listing);
+    let from_flat_listing = flat_listing_rows(&fixture, &listing);
+
+    // One `docs` folder row on both sides -- the difference is one field.
+    assert_eq!(from_facade.len(), 1);
+    assert_eq!(from_flat_listing.len(), 1);
+    assert_eq!(from_facade[0].archive_path, "docs");
+    assert_eq!(from_flat_listing[0].archive_path, "docs");
+    assert!(from_facade[0].is_folder && from_flat_listing[0].is_folder);
+
+    assert!(
+        from_flat_listing[0].modified.is_empty(),
+        "the flat filter synthesizes this folder row and has no date for it"
+    );
+    assert!(
+        !from_facade[0].modified.is_empty(),
+        "the session keeps the date the archive recorded for the directory it named"
+    );
+
+    // Every other field still matches, so the divergence is exactly one
+    // field wide.
+    assert_eq!(
+        FileEntry {
+            modified: from_flat_listing[0].modified.clone(),
+            ..from_facade[0].clone()
+        },
+        from_flat_listing[0]
     );
 }
