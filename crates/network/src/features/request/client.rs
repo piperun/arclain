@@ -1308,6 +1308,106 @@ impl AsyncHttpClient {
                 .map_err(|error| error.to_string())
         })
     }
+
+    /// Host buffered GET bounded to `limit` body bytes that keeps the
+    /// response's identity (status code and `Content-Type`).
+    ///
+    /// [`Self::blocking_get_with_limit`] returns bytes alone, and
+    /// [`Self::request`] keeps the identity but buffers the body with no
+    /// ceiling at all. A caller that must both bound memory *and* refuse a
+    /// body whose declared type is wrong (an HTML error page served where an
+    /// image was asked for) needs both properties at once, which is what
+    /// this adds.
+    ///
+    /// Non-2xx responses are returned rather than turned into an error, so
+    /// the caller decides which status codes it accepts.
+    ///
+    /// For use from background threads only (uses `block_on`).
+    pub fn blocking_get_response_with_limit(
+        &self,
+        url: &str,
+        use_proxy: bool,
+        limit: usize,
+    ) -> Result<HttpResponse, String> {
+        let client = if use_proxy {
+            self.plugin_context
+                .proxy_runtime
+                .read()
+                .client_proxied
+                .clone()
+        } else {
+            self.client_direct.clone()
+        };
+        let url = url.to_string();
+
+        self.runtime.block_on(async {
+            let mut req = client.get(&url);
+            if is_dlsite_url(&url) {
+                info!(
+                    "Injecting DLSite headers (bounded buffered) for {}",
+                    safe_log_fingerprint(&url)
+                );
+                req = inject_dlsite_browser_headers(req);
+            }
+            let response = req
+                .timeout(crate::DEFAULT_REQUEST_TIMEOUT)
+                .send()
+                .await
+                .map_err(|error| format!("Request failed: {error}"))?;
+            buffered_response_with_limit(response, limit)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// Checked plugin buffered GET bounded to `limit` body bytes that keeps
+    /// the response's identity -- the per-plugin counterpart of
+    /// [`Self::blocking_get_response_with_limit`], running through the same
+    /// capability, whitelist, DNS-pinning and rate-limit executor every
+    /// other `*_for_plugin` request uses.
+    ///
+    /// For use from background threads only (uses `block_on`).
+    pub fn blocking_get_response_for_plugin_with_limit(
+        &self,
+        plugin_id: &str,
+        url: &str,
+        limit: usize,
+    ) -> Result<HttpResponse, HttpError> {
+        self.runtime.block_on(async {
+            let response = self
+                .plugin_context
+                .execute(plugin_id, HttpRequest::get(url))
+                .await?;
+            buffered_response_with_limit(response, limit).await
+        })
+    }
+}
+
+/// Reads `response` into an [`HttpResponse`] whose body is bounded by
+/// `limit`, preserving the status code and `Content-Type` the server sent.
+async fn buffered_response_with_limit(
+    response: reqwest::Response,
+    limit: usize,
+) -> Result<HttpResponse, HttpError> {
+    let status_code = response.status().as_u16();
+    let headers: HashMap<String, String> = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.to_string(), value.to_string()))
+        })
+        .collect();
+    let content_type = headers.get("content-type").cloned();
+    let body = read_buffered_response_with_limit(response, limit).await?;
+    Ok(HttpResponse {
+        status_code,
+        headers,
+        body,
+        content_type,
+    })
 }
 
 fn buffered_response_limit_error(limit: usize) -> HttpError {
