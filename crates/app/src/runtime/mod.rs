@@ -401,6 +401,28 @@ impl AppRuntime {
     }
 
     // ==================== Task 11: plugin sessions (end) ====================
+
+    // ============ Task 12: host-owned display images (start) ================
+
+    /// Backs [`ArclainApp::materialized_resource_limit`].
+    ///
+    /// Resolved once, at bootstrap, from the resource configuration this
+    /// instance composed: `ResourceManager` exposes it as a plain read of
+    /// its own immutable `ResourceConfig`, and changing it needs `&mut`,
+    /// which nothing holding the shared `Arc` can obtain. The fallback is
+    /// the same default `ResourceManager` itself would report, so an
+    /// instance composed without one answers identically instead of
+    /// forcing every caller to invent a bound of its own.
+    pub(crate) fn materialized_resource_limit(&self) -> usize {
+        self.session
+            .resource_manager
+            .as_ref()
+            .map_or(arclain_data::DEFAULT_MAX_RESOURCE_SIZE_BYTES, |manager| {
+                manager.materialization_limit()
+            })
+    }
+
+    // ============= Task 12: host-owned display images (end) =================
 }
 
 /// The application facade. Cheap to clone (an `Arc` internally); every
@@ -2254,14 +2276,7 @@ impl ArclainApp {
     /// exceeds the cap or any other cache read failure.
     pub async fn read_plugin_image(&self, cache_key: String) -> Result<Vec<u8>, ApplicationError> {
         self.dispatch(move |inner| {
-            let cache = inner.content_cache().ok_or_else(|| {
-                ApplicationError::new(
-                    ApplicationErrorKind::Unsupported,
-                    "content cache is unavailable",
-                )
-                .with_recoverability(Recoverability::Fatal)
-            })?;
-            crate::plugins::read_plugin_image(cache, &cache_key)
+            crate::plugins::read_plugin_image(image_cache(inner)?, &cache_key)
         })
         .await?
     }
@@ -2290,15 +2305,8 @@ impl ArclainApp {
         source_url: Option<String>,
     ) -> Result<(), ApplicationError> {
         self.dispatch(move |inner| {
-            let cache = inner.content_cache().ok_or_else(|| {
-                ApplicationError::new(
-                    ApplicationErrorKind::Unsupported,
-                    "content cache is unavailable",
-                )
-                .with_recoverability(Recoverability::Fatal)
-            })?;
             crate::plugins::write_plugin_image(
-                cache,
+                image_cache(inner)?,
                 &plugin_id,
                 &cache_key,
                 &bytes,
@@ -2309,6 +2317,152 @@ impl ArclainApp {
     }
 
     // ==================== Task 11: plugin sessions (end) ====================
+
+    // ============ Task 12: host-owned display images (start) ================
+    // The host half of the image surface, so a frontend holds neither a
+    // content-cache handle nor an HTTP client of its own. See
+    // `crate::plugins`'s "Display images" section for why the two image
+    // namespaces refuse each other's keys.
+
+    /// Resolves a **host-owned** image cache key into its cached bytes,
+    /// capped at [`crate::plugins::MAX_HOST_IMAGE_BYTES`].
+    ///
+    /// `NotFound` for a key nothing cached; `PermissionDenied` for a
+    /// plugin-scoped key (those resolve through
+    /// [`Self::read_plugin_image`] and nothing else); `Internal` for an
+    /// entry over the cap or any other cache read failure.
+    pub async fn read_host_image(&self, cache_key: String) -> Result<Vec<u8>, ApplicationError> {
+        self.dispatch(move |inner| crate::plugins::read_host_image(image_cache(inner)?, &cache_key))
+            .await?
+    }
+
+    /// Drops a host-owned cached image, reporting whether anything was
+    /// removed.
+    ///
+    /// For the one case a frontend cannot recover from on its own: an entry
+    /// that reads back fine but does not decode. Without this it would be
+    /// re-read, re-failed, and re-served forever. Plugin-scoped keys are
+    /// refused -- evicting a plugin's own cache entry is not a frontend's
+    /// call.
+    pub async fn discard_host_image(&self, cache_key: String) -> Result<bool, ApplicationError> {
+        self.dispatch(move |inner| {
+            crate::plugins::discard_host_image(image_cache(inner)?, &cache_key)
+        })
+        .await?
+    }
+
+    /// Serves a **host-owned** image cache key, fetching `url` into it
+    /// first when it is not cached yet, and reports which of the two
+    /// happened.
+    ///
+    /// This is the affordance that lets a frontend stop owning an HTTP
+    /// client: it passes the key its renderer asked for plus the URL the
+    /// document offered as a fallback, and the application owns the
+    /// fetch, the [`crate::plugins::MAX_HOST_IMAGE_BYTES`] ceiling
+    /// (enforced *while* reading the body, so an oversized response is
+    /// never buffered whole), the response validation, and the cache
+    /// write. A second call for the same key answers from the cache with
+    /// no network request at all.
+    ///
+    /// `on_behalf_of_plugin` names whose domain whitelist and rate limit
+    /// gate the request -- a plugin document's URL fallback must spend that
+    /// plugin's network budget even for a legacy host-owned key. It is
+    /// **not** a namespace selector: this method writes the host namespace
+    /// only, and refuses a plugin-scoped `cache_key` with
+    /// `PermissionDenied`.
+    pub async fn fetch_host_image(
+        &self,
+        cache_key: String,
+        url: String,
+        on_behalf_of_plugin: Option<String>,
+    ) -> Result<crate::plugins::ImageBytesDto, ApplicationError> {
+        self.dispatch_image_fetch(move |cache, http| {
+            crate::plugins::fetch_host_image(
+                &cache,
+                &http,
+                &cache_key,
+                &url,
+                on_behalf_of_plugin.as_deref(),
+            )
+        })
+        .await
+    }
+
+    /// Serves a **plugin-scoped** image cache key, fetching `url` into the
+    /// plugin's own cache namespace first when it is not cached yet.
+    ///
+    /// The fetch-and-cache counterpart of [`Self::read_plugin_image`], and
+    /// the reason a frontend never needs [`Self::write_plugin_image`] to
+    /// recover a missing plugin asset: this spends `plugin_id`'s network
+    /// budget and writes `plugin_id`'s namespace, both derived from the one
+    /// authorization the write path uses. `plugin_id` must match the owner
+    /// the key encodes (`PermissionDenied` otherwise), and a key this
+    /// facade never encoded is `NotFound` -- host-owned keys go through
+    /// [`Self::fetch_host_image`].
+    pub async fn fetch_plugin_image(
+        &self,
+        plugin_id: String,
+        cache_key: String,
+        url: String,
+    ) -> Result<crate::plugins::ImageBytesDto, ApplicationError> {
+        self.dispatch_image_fetch(move |cache, http| {
+            crate::plugins::fetch_plugin_image(&cache, &http, &plugin_id, &cache_key, &url)
+        })
+        .await
+    }
+
+    /// Runs one blocking fetch-and-cache on the application's blocking
+    /// pool.
+    ///
+    /// `spawn_blocking`, not [`Self::dispatch`]: the work both touches the
+    /// disk cache and drives an HTTP request whose client blocks on the
+    /// runtime internally, and doing either from a runtime task panics
+    /// ("Cannot block the current thread from within a runtime"). Handing
+    /// it to a blocking-pool thread is what makes the blocking hop
+    /// unskippable rather than something a future call site can forget.
+    async fn dispatch_image_fetch<F>(
+        &self,
+        work: F,
+    ) -> Result<crate::plugins::ImageBytesDto, ApplicationError>
+    where
+        F: FnOnce(
+                Arc<arclain_core::ContentCache>,
+                Arc<arclain_network::AsyncHttpClient>,
+            ) -> Result<crate::plugins::ImageBytesDto, ApplicationError>
+            + Send
+            + 'static,
+    {
+        self.dispatch_async(move |inner| async move {
+            let handle = inner.tokio_handle().ok_or_else(shutdown_error)?;
+            let cache = image_cache(&inner)?.clone();
+            let http = inner.core_services().async_http_client.clone();
+            handle
+                .spawn_blocking(move || work(cache, http))
+                .await
+                .map_err(|join_error| {
+                    ApplicationError::new(ApplicationErrorKind::Internal, "image fetch task failed")
+                        .with_diagnostic(join_error.to_string())
+                })?
+        })
+        .await?
+    }
+
+    /// The byte ceiling this application applies to one fully materialized
+    /// resource body -- the bound a caller must respect when it asks a
+    /// remote service for a whole payload rather than streaming it.
+    ///
+    /// Synchronous on purpose. It reads an immutable value this instance
+    /// resolved at bootstrap (no I/O, no lock, no runtime hop), and its
+    /// callers are render-path code: handing them a future would push them
+    /// straight into a `block_on` on the UI thread, which is exactly the
+    /// pattern this facade exists to remove. `ArclainApp::api_version` and
+    /// `ArclainApp::active_tab_bridge` are synchronous for the same
+    /// reason.
+    pub fn materialized_resource_limit(&self) -> usize {
+        self.inner.materialized_resource_limit()
+    }
+
+    // ============= Task 12: host-owned display images (end) =================
 
     // ============ Task 14n: boundary-zero network surface (start) ===========
     // The application-owned halves of the network surface a frontend used
@@ -2498,6 +2652,19 @@ impl ArclainApp {
                 .with_diagnostic(join_error.to_string())
         })
     }
+}
+
+/// The composed content cache every image method needs, or the one error
+/// they all report when this instance was composed without one (no cache
+/// directory, or a cache index that failed to open at bootstrap).
+fn image_cache(inner: &AppRuntime) -> Result<&Arc<arclain_core::ContentCache>, ApplicationError> {
+    inner.content_cache().ok_or_else(|| {
+        ApplicationError::new(
+            ApplicationErrorKind::Unsupported,
+            "content cache is unavailable",
+        )
+        .with_recoverability(Recoverability::Fatal)
+    })
 }
 
 fn shutdown_error() -> ApplicationError {

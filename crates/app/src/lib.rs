@@ -36,7 +36,12 @@
 //! domain-access surface a frontend used to reach `arclain-network`
 //! directly for: [`plugins::DomainWhitelistEntryDto`] (via
 //! `ArclainApp::plugin_domain_whitelist`) and the pure [`analyze_url`]
-//! re-exported below.
+//! re-exported below -- and the whole *display-image* surface, so a
+//! frontend holds neither a content-cache handle nor an HTTP client to
+//! render one: `ArclainApp::{read_plugin_image, write_plugin_image,
+//! fetch_plugin_image}` for the plugin-scoped namespace and
+//! `ArclainApp::{read_host_image, fetch_host_image, discard_host_image}`
+//! for the host-owned one, kept apart by [`plugins::is_plugin_image_key`].
 //!
 //! [`layout`] owns the application's own chrome-layout surface: the
 //! arrangeable toolbar/context-menu/tools-dialog/info-panel items
