@@ -24,9 +24,22 @@
 //!   `MainPage` layout (`"layout-call-{n}"`), so a test can dispatch this
 //!   action and confirm the resulting document's label advanced by
 //!   exactly one call, not three.
+//! - **Plugin chrome**: `get-top-tabs` returns exactly one tab, with a
+//!   badge, at a fixed priority, so a test can read `plugin_chrome` back
+//!   and assert every mirrored field. `ui-demo` registers no tabs at all.
+//! - **Network log**: `init` writes exactly one `log-network-activity`
+//!   line, so a test can read `plugin_network_log` back without the
+//!   plugin needing the network capability or a live server. `init` is
+//!   the only deterministic write point: it runs exactly once per load,
+//!   whereas anything on a UI path would make the line count depend on
+//!   how many other tests rendered first.
 
-use archust_plugin_sdk::info;
+use archust_plugin_sdk::{info, log_network_activity};
 use std::sync::atomic::{AtomicU32, Ordering};
+
+/// The single network-log line [`Component::init`] writes. Named here so
+/// `crates/app`'s own test can assert on it without repeating the string.
+const INIT_NETWORK_LOG_LINE: &str = "facade-test-fixture: initialized";
 
 /// Incremented on every `get-ui-layout` call for `"MainPage"`. Backed by
 /// this WASM instance's own linear memory, so it persists across calls
@@ -51,6 +64,7 @@ impl archust_plugin_sdk::Guest for Component {
 
     fn init() {
         info("Facade test fixture initialized");
+        log_network_activity(INIT_NETWORK_LOG_LINE);
     }
 
     fn get_default_rules() -> Vec<archust_plugin_sdk::arclain::plugin::rules::PluginRuleDefinition>
@@ -94,7 +108,24 @@ impl archust_plugin_sdk::Guest for Component {
     }
 
     fn get_top_tabs() -> Vec<archust_plugin_sdk::arclain::plugin::ui::TopTabConfig> {
-        vec![]
+        use archust_plugin_sdk::arclain::plugin::ui::{BadgeConfig, TopTabConfig};
+
+        // Every field distinct and constant: a count that is not the
+        // priority, a `dot` that is not the default, and a colour the
+        // renderer maps rather than passes through -- so a mirror test
+        // that transposed two fields would fail rather than pass by
+        // coincidence.
+        vec![TopTabConfig {
+            id: "fixture-tab".to_string(),
+            label: "Fixture".to_string(),
+            icon: "DATABASE".to_string(),
+            badge: Some(BadgeConfig {
+                count: Some(7),
+                dot: true,
+                color: "orange".to_string(),
+            }),
+            priority: 250,
+        }]
     }
 
     fn on_ui_event(

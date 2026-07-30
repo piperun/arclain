@@ -5,12 +5,18 @@ version = "0.1.0"
 description = "Deterministic plugin used only by arclain_app's own facade tests (crash containment, action ordering, refresh coalescing) -- not a user-facing plugin"
 author = "Arclain Team"
 
+# Two capabilities are declared so `PluginSummary.capabilities` has a
+# non-empty value to round-trip through a real manager, and two are left
+# off so the test can prove it reports what the manifest says rather than
+# everything. Both grants are inert: this fixture calls no capability-gated
+# host function, and neither of them is one of the two `request-fetch`
+# needs, so nothing it can do changes because they are on.
 [capabilities]
 network = false
-archive_metadata_read = false
+archive_metadata_read = true
 archive_metadata_write = false
 archive_modify = false
-file_read = false
+file_read = true
 file_write = false
 
 [rate_limits]
