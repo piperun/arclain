@@ -1,5 +1,6 @@
 //! Per-tab state — owns the archive-context signals and the plugin pool.
 
+use super::inventory::TabInventory;
 use super::listing::TabListing;
 use super::plugin_instances::TabPluginPool;
 use super::view_state::{BrowserEntriesSnapshot, BrowserViewState};
@@ -61,6 +62,18 @@ pub struct TabState {
     /// that session -- a frontend-minted id could therefore name a
     /// different entry than the row the user picked.
     pub entries: Signal<Arc<Vec<arclain_core::ArchiveEntry>>>,
+    /// Every entry in this tab's archive at every depth, as the facade's
+    /// session reports it -- the [`TabInventory`] the operation bridge
+    /// adopts from `ArclainApp::list_all_entries` on every relist.
+    ///
+    /// The whole-archive counterpart to [`Self::listing`] (which holds
+    /// one directory's page), and the replacement for the flat
+    /// [`Self::entries`] list above: rows here carry the session's own
+    /// `EntryId`s and folder aggregates, and the not-yet-migrated
+    /// core-typed consumers read the memoized `legacy_rows` projection
+    /// instead of a separately-listed copy that could drift from what
+    /// id-consuming operations resolve against.
+    pub inventory: Signal<TabInventory>,
     pub metadata: Signal<Option<serde_json::Value>>,
     // Note: `loading` and `status_message` signals were removed in the
     // 2026-05-19 audit. Both were write-only — set by archive load /
@@ -329,6 +342,7 @@ impl TabState {
             archive_path,
             archive_loaded,
             entries,
+            inventory: Signal::new(TabInventory::default()).with_name("inventory"),
             metadata: Signal::new(None).with_name("metadata"),
             archive_extras,
             archive_info,
@@ -401,6 +415,7 @@ impl TabState {
         let sig_ctx = crate::core::signal_context::SignalContext::new(ctx.clone());
         sig_ctx.bind_named(&self.archive_path, "tab.archive_path");
         sig_ctx.bind_named(&self.entries, "tab.entries");
+        sig_ctx.bind_named(&self.inventory, "tab.inventory");
         sig_ctx.bind_named(&self.metadata, "tab.metadata");
         sig_ctx.bind_named(&self.archive_extras, "tab.archive_extras");
         sig_ctx.bind_named(&self.game_metadata, "tab.game_metadata");

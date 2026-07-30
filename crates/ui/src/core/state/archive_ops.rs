@@ -56,22 +56,7 @@ impl AppState {
             .get()
             .entries()
             .iter()
-            .map(core_entry_from_dto)
+            .map(crate::core::utils::core_entry_from_dto)
             .collect()
-    }
-}
-
-/// TRANSITIONAL(4c): one pre-facade flat entry rebuilt from a facade
-/// listing row. Goes with [`AppState::get_current_entries`].
-fn core_entry_from_dto(dto: &arclain_app::archive::ArchiveEntryDto) -> arclain_core::ArchiveEntry {
-    let modified = crate::core::utils::format_modified_unix_ms(dto.modified_at_unix_ms);
-    arclain_core::ArchiveEntry {
-        path: dto.path.as_str().to_string(),
-        size: dto.uncompressed_size,
-        packed_size: dto.compressed_size.unwrap_or(0),
-        modified: (!modified.is_empty()).then_some(modified),
-        is_dir: matches!(dto.kind, arclain_app::archive::EntryKind::Directory),
-        encrypted: dto.encrypted,
-        crc32: dto.crc32.clone(),
     }
 }
