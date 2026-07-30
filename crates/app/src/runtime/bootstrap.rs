@@ -600,6 +600,14 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
 /// (`plugin:{plugin_id}:{tab_id}`, toolbar region, `plugins` group).
 /// Returns how many rows were synced.
 ///
+/// This runs on every launch, so it writes only the columns the plugin
+/// declaration owns -- identity, labelling and dispatch wiring. The
+/// arrangement of a row (`visible`, `sort_order`, `display_mode`) is
+/// the user's, stored between launches by `ArclainApp::save_ui_items`
+/// and the layout editors; the values built here only *seed* a row the
+/// first time it appears (visible, at the tab's declared priority, in
+/// the default display mode). See `UiService::sync_host_items`.
+///
 /// Deliberately not behind `settings_write_lock`: this runs during
 /// bootstrap, before any application handle (and therefore any
 /// concurrent facade writer) exists.
@@ -623,7 +631,7 @@ fn sync_plugin_top_tab_items(
         });
     }
     if !ui_items.is_empty() {
-        ui_service.upsert_items(&ui_items)?;
+        ui_service.sync_host_items(&ui_items)?;
     }
     Ok(ui_items.len())
 }
@@ -689,5 +697,94 @@ mod tests {
         assert_eq!(cache.limits().max_object_bytes, 17);
         assert_eq!(manager.config().cache_limits.max_object_bytes, 17);
         assert_eq!(manager.config().fallback_dir.as_ref(), Some(&fallback_dir));
+    }
+
+    /// A `UiService` over a real (temp-file) config database, its
+    /// tables created and seeded the same way a launch creates them.
+    fn temp_ui_service(temp: &tempfile::TempDir) -> arclain_core::services::UiService {
+        let db_path = temp.path().join("config.sqlite");
+        drop(arclain_core::config::ConfigDb::open(&db_path).expect("create the config database"));
+        arclain_core::services::UiService::new(
+            arclain_db::DieselPool::new(&db_path).expect("pool over the config database"),
+        )
+    }
+
+    /// One enabled plugin declaring one top tab labelled `label`, in
+    /// the shape `PluginManager::get_all_top_tabs` reports.
+    fn one_top_tab(label: &str) -> Vec<(String, arclain_plugins::types::TopTabConfig)> {
+        vec![(
+            "demo".to_string(),
+            arclain_plugins::types::TopTabConfig {
+                id: "main".to_string(),
+                label: label.to_string(),
+                icon: "PUZZLE_PIECE".to_string(),
+                badge: None,
+                priority: 100,
+            },
+        )]
+    }
+
+    /// The startup sync runs on *every* launch, so it must only write
+    /// the columns the plugin declaration owns (label, icon, dispatch
+    /// wiring) and never the user's own arrangement of the row --
+    /// visibility, position, display mode -- which `save_ui_items` and
+    /// the layout editors store between launches.
+    #[test]
+    fn top_tab_sync_preserves_user_arrangement_and_applies_plugin_renames() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = temp_ui_service(&temp);
+        let synced_row = |service: &arclain_core::services::UiService| {
+            service
+                .list_items(UiRegion::Toolbar)
+                .expect("list the toolbar")
+                .into_iter()
+                .find(|item| item.id == "plugin:demo:main")
+                .expect("the synced top-tab row")
+        };
+
+        // First launch: the sync creates the row, seeding the
+        // arrangement from the tab's own declaration.
+        assert_eq!(
+            sync_plugin_top_tab_items(&service, one_top_tab("Demo")).unwrap(),
+            1
+        );
+        let created = synced_row(&service);
+        assert!(created.visible);
+        assert_eq!(created.sort_order, 100);
+        assert_eq!(created.label, "Demo");
+        assert_eq!(created.display_mode, DisplayMode::IconAndText);
+
+        // The user hides the tab, moves it, and switches its display
+        // mode -- the row exactly as `save_ui_items` stores those edits.
+        let mut arranged = created.clone();
+        arranged.visible = false;
+        arranged.sort_order = 5;
+        arranged.display_mode = DisplayMode::TextOnly;
+        service.upsert_items(&[arranged]).unwrap();
+
+        // Next launch: the plugin renamed its tab. The rename lands;
+        // the user's arrangement survives.
+        assert_eq!(
+            sync_plugin_top_tab_items(&service, one_top_tab("Demo (renamed)")).unwrap(),
+            1
+        );
+        let after = synced_row(&service);
+        assert_eq!(
+            after.label, "Demo (renamed)",
+            "the plugin-declared label is the sync's to refresh"
+        );
+        assert_eq!(after.icon.as_deref(), Some("PUZZLE_PIECE"));
+        assert_eq!(after.action_type, ActionType::Plugin);
+        assert_eq!(after.action_data.as_deref(), Some("demo:main"));
+        assert!(!after.visible, "a launch must not unhide what the user hid");
+        assert_eq!(
+            after.sort_order, 5,
+            "a launch must not move what the user arranged"
+        );
+        assert_eq!(
+            after.display_mode,
+            DisplayMode::TextOnly,
+            "a launch must not reset the user's display mode"
+        );
     }
 }

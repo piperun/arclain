@@ -97,6 +97,52 @@ pub fn upsert_item(conn: &mut diesel::SqliteConnection, item: &UiItem) -> Result
     Ok(())
 }
 
+/// Upsert for a host-driven refresh of an item, preserving the user's
+/// arrangement of it.
+///
+/// The `ui_items` columns have two owners. The host (a plugin's own
+/// declaration, refreshed on every launch) owns the identity, labelling
+/// and dispatch facts: `region`, `group_id`, `label`, `icon`,
+/// `action_type`, `action_data`. The user owns the arrangement --
+/// `visible`, `sort_order`, `display_mode` -- written by the layout
+/// editors through [`upsert_item`], which takes every column.
+///
+/// A missing row is created whole, `item`'s arrangement fields seeding
+/// the initial one. An existing row takes only the host-owned columns,
+/// so a refresh on launch can rename or re-icon an item but can never
+/// unhide, move, or restyle what the user arranged.
+pub fn sync_host_item(conn: &mut diesel::SqliteConnection, item: &UiItem) -> Result<()> {
+    use crate::diesel_schema::ui_items::dsl::*;
+
+    diesel::insert_into(ui_items)
+        .values((
+            id.eq(&item.id),
+            region.eq(item.region.as_str()),
+            group_id.eq(&item.group_id),
+            label.eq(&item.label),
+            icon.eq(&item.icon),
+            visible.eq(item.visible),
+            sort_order.eq(item.sort_order),
+            display_mode.eq(item.display_mode.as_str()),
+            action_type.eq(item.action_type.as_str()),
+            action_data.eq(&item.action_data),
+        ))
+        .on_conflict(id)
+        .do_update()
+        .set((
+            region.eq(item.region.as_str()),
+            group_id.eq(&item.group_id),
+            label.eq(&item.label),
+            icon.eq(&item.icon),
+            action_type.eq(item.action_type.as_str()),
+            action_data.eq(&item.action_data),
+        ))
+        .execute(conn)
+        .map_err(diesel_err("sync"))?;
+
+    Ok(())
+}
+
 /// Delete item
 pub fn delete_item(conn: &mut diesel::SqliteConnection, item_id: &str) -> Result<()> {
     use crate::diesel_schema::ui_items::dsl::*;
@@ -223,5 +269,63 @@ mod tests {
         set_display_option(&mut conn, "test_key", "new_value").unwrap();
         let val = get_display_option(&mut conn, "test_key").unwrap();
         assert_eq!(val, Some("new_value".to_string()));
+    }
+
+    /// Pins [`sync_host_item`]'s column split: an existing row takes the
+    /// host-owned facts and keeps the user-owned arrangement; a missing
+    /// row is created whole.
+    #[test]
+    fn sync_host_item_updates_host_columns_and_preserves_arrangement() {
+        let mut conn = setup_db();
+
+        let declared = UiItem {
+            id: "plugin:demo:main".to_string(),
+            region: UiRegion::Toolbar,
+            group_id: Some("plugins".to_string()),
+            label: "Demo".to_string(),
+            icon: Some("PUZZLE_PIECE".to_string()),
+            visible: true,
+            sort_order: 100,
+            display_mode: DisplayMode::IconAndText,
+            action_type: ActionType::Plugin,
+            action_data: Some("demo:main".to_string()),
+        };
+
+        // Absent row: created whole, arrangement seeded from the item.
+        sync_host_item(&mut conn, &declared).unwrap();
+        let created = list_items_by_region(&mut conn, UiRegion::Toolbar).unwrap();
+        assert_eq!(created.len(), 1);
+        assert!(created[0].visible);
+        assert_eq!(created[0].sort_order, 100);
+        assert_eq!(created[0].display_mode, DisplayMode::IconAndText);
+
+        // The user re-arranges the row (a full upsert, as the layout
+        // editors write it).
+        let mut arranged = created[0].clone();
+        arranged.visible = false;
+        arranged.sort_order = 5;
+        arranged.display_mode = DisplayMode::TextOnly;
+        upsert_item(&mut conn, &arranged).unwrap();
+
+        // Present row: the host refresh renames and re-icons, and the
+        // arrangement survives.
+        let mut renamed = declared.clone();
+        renamed.label = "Demo (renamed)".to_string();
+        renamed.icon = Some("STAR".to_string());
+        sync_host_item(&mut conn, &renamed).unwrap();
+
+        let synced = list_items_by_region(&mut conn, UiRegion::Toolbar).unwrap();
+        assert_eq!(synced.len(), 1);
+        let synced = &synced[0];
+        assert_eq!(synced.label, "Demo (renamed)");
+        assert_eq!(synced.icon.as_deref(), Some("STAR"));
+        assert_eq!(synced.action_type, ActionType::Plugin);
+        assert!(!synced.visible, "visible is the user's column");
+        assert_eq!(synced.sort_order, 5, "sort_order is the user's column");
+        assert_eq!(
+            synced.display_mode,
+            DisplayMode::TextOnly,
+            "display_mode is the user's column"
+        );
     }
 }

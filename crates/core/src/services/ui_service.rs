@@ -5,8 +5,8 @@
 
 use anyhow::Result;
 use arclain_db::{
-    delete_item, get_display_option, list_items_by_region, set_display_option, upsert_item,
-    DieselPool, UiItem, UiRegion,
+    delete_item, get_display_option, list_items_by_region, set_display_option, sync_host_item,
+    upsert_item, DieselPool, UiItem, UiRegion,
 };
 
 /// Service for managing UI configuration items
@@ -61,6 +61,21 @@ impl UiService {
         self.pool.with_conn(|conn| {
             for item in items {
                 upsert_item(conn, item)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Batch host-refresh of items: creates missing rows whole, and on
+    /// existing rows writes only the host-owned columns, never the
+    /// user's arrangement (visibility, position, display mode). For a
+    /// launch-time sync of plugin-declared items; a user-driven save
+    /// wants [`Self::upsert_items`]. See `arclain_db::sync_host_item`
+    /// for the exact column split.
+    pub fn sync_host_items(&self, items: &[UiItem]) -> Result<()> {
+        self.pool.with_conn(|conn| {
+            for item in items {
+                sync_host_item(conn, item)?;
             }
             Ok(())
         })

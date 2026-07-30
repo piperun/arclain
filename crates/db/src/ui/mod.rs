@@ -27,7 +27,8 @@ pub use config::ensure_ui_tables;
 
 // Diesel DSL CRUD — the canonical API for all post-startup callers.
 pub use diesel_ops::{
-    delete_item, get_display_option, list_items_by_region, set_display_option, upsert_item,
+    delete_item, get_display_option, list_items_by_region, set_display_option, sync_host_item,
+    upsert_item,
 };
 
 pub use seed::seed_defaults_if_empty;
