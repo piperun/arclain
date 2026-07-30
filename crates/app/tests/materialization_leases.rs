@@ -70,6 +70,14 @@ fn bootstrap_app(paths: AppPaths, backend: Arc<dyn arclain_core::ArchiveBackend>
 /// barrier instead), so a generous margin is what actually buys
 /// robustness against scheduler jitter under a loaded machine, not a
 /// tighter TTL.
+///
+/// The flip side of that short TTL: from the moment materialization
+/// commits, the sweeper may remove the lease at any point >=150ms later,
+/// so a test using this bootstrap must never assert pre-expiry disk state
+/// after observing the terminal event -- there is no bound on how late
+/// that assertion runs on a loaded machine. Prove "content really was on
+/// disk" through commit-time guarantees (`commit` canonicalizes the path;
+/// `size` is measured from disk) rather than a fresh `exists()` check.
 fn bootstrap_app_with_short_lease_lifetime(
     paths: AppPaths,
     backend: Arc<dyn arclain_core::ArchiveBackend>,
@@ -981,7 +989,21 @@ fn expired_leases_are_removed_by_the_background_cleanup_task() {
             .await
             .unwrap();
         let lease = expect_materialized(wait_for_terminal(&app, operation_id).await);
-        assert!(lease.local_path.exists());
+        // Deliberately NO `lease.local_path.exists()` precondition here:
+        // the 150ms TTL countdown began at commit time, so any test-side
+        // disk check placed before the removal poll is racing the very
+        // 20ms sweeper this test enables -- on a loaded machine the sweep
+        // can legitimately win that race before this line runs. What that
+        // assertion used to guard (a vacuous pass where nothing was ever
+        // on disk) is already guaranteed by construction without touching
+        // the clock: `MaterializationStore::commit` canonicalizes
+        // `local_path` -- which fails on a nonexistent path -- before the
+        // terminal event can carry the lease at all, and `size` below is
+        // measured by the worker from the extracted bytes on disk.
+        assert_eq!(
+            lease.size, 1,
+            "the scripted one-byte payload must actually have been extracted to disk"
+        );
 
         // Bounded poll for the real background cleanup task (150ms TTL,
         // 20ms sweep interval) to notice and remove it -- not an
