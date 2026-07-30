@@ -53,6 +53,18 @@
 //! branch, and `ArclainApp::start_merge` combines a detected set into one
 //! archive as a registered operation.
 //!
+//! [`process`] owns the Process page's own surface: saved
+//! pipeline-preset CRUD ([`process::PipelinePresetSummary`], via
+//! `ArclainApp::{pipeline_presets, save_pipeline_preset,
+//! delete_pipeline_preset}`), the synchronous
+//! [`process::PipelinePreviewDto`] a step editor recomputes as the user
+//! types, and the database-persisted
+//! [`process::InterruptedPipelineRunDto`] query that survives a restart
+//! (unlike `ArclainApp::recent_operations`). The `PipelineRequest` that
+//! actually *runs* a pipeline stays in [`operations`], and both ends
+//! speak the same step/destination/policy DTOs so a caller cannot
+//! preview one description and run another.
+//!
 //! [`organization`] owns the organization feature's own surface:
 //! archive-profile and organization-rule CRUD, the output formats a
 //! profile may name ([`organization::archive_format_options`]), plus the
@@ -73,6 +85,7 @@ pub mod materialization;
 pub mod operations;
 pub mod organization;
 pub mod plugins;
+pub mod process;
 pub mod runtime;
 pub mod settings;
 

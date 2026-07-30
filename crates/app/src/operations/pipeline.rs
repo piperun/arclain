@@ -50,6 +50,14 @@ impl CompressionLevelDto {
             Self::Max => arclain_core::CompressionLevel::Max,
         }
     }
+
+    pub(crate) fn from_core(level: arclain_core::CompressionLevel) -> Self {
+        match level {
+            arclain_core::CompressionLevel::Fast => Self::Fast,
+            arclain_core::CompressionLevel::Normal => Self::Normal,
+            arclain_core::CompressionLevel::Max => Self::Max,
+        }
+    }
 }
 
 /// Mirrors `arclain_core::PipelineStep` exactly, with one deliberate
@@ -117,6 +125,44 @@ impl PipelineStepDto {
             }),
         }
     }
+
+    /// The reverse of [`Self::to_core`], for reading a stored
+    /// `arclain_core::Pipeline` back out as DTOs (see
+    /// [`crate::process::PipelinePresetSummary`]).
+    ///
+    /// Total, and lossy in exactly one documented place: a stored
+    /// `Convert` step's inert `password` has no DTO field to land in
+    /// (see this type's own doc comment), so a preset that carries one
+    /// loses it on the next save through this facade. Nothing reads that
+    /// field -- `arclain_core`'s executor binds it `password: _` -- so
+    /// dropping it changes no behavior; it is called out because a
+    /// round trip through these two functions is otherwise exact.
+    ///
+    /// `format` is emitted as the extension token (`"zip"`/`"7z"`),
+    /// which is precisely what [`parse_convert_format`] accepts, so
+    /// `from_core(step).to_core()` never fails on a `Convert` step.
+    pub(crate) fn from_core(step: &arclain_core::PipelineStep) -> Self {
+        match step {
+            arclain_core::PipelineStep::Flatten {
+                strip_common_prefix,
+                max_depth,
+            } => Self::Flatten {
+                strip_common_prefix: *strip_common_prefix,
+                max_depth: *max_depth,
+            },
+            arclain_core::PipelineStep::Organize { rule_id } => Self::Organize {
+                rule_id: rule_id.to_string(),
+            },
+            arclain_core::PipelineStep::Convert {
+                format,
+                compression,
+                password: _,
+            } => Self::Convert {
+                format: format.extension().to_string(),
+                compression: CompressionLevelDto::from_core(*compression),
+            },
+        }
+    }
 }
 
 fn parse_step_rule_id(rule_id: &str) -> Result<i64, ApplicationError> {
@@ -147,6 +193,13 @@ impl PipelineDestinationDto {
             Self::Folder { path } => arclain_core::PipelineOutput::NewFolder(path.clone()),
         }
     }
+
+    pub(crate) fn from_core(output: &arclain_core::PipelineOutput) -> Self {
+        match output {
+            arclain_core::PipelineOutput::SameFolder => Self::SameFolder,
+            arclain_core::PipelineOutput::NewFolder(path) => Self::Folder { path: path.clone() },
+        }
+    }
 }
 
 /// Mirrors `arclain_core::OutputCollisionPolicy` exactly.
@@ -166,6 +219,15 @@ impl OutputCollisionPolicyDto {
             Self::Skip => arclain_core::OutputCollisionPolicy::Skip,
             Self::Overwrite => arclain_core::OutputCollisionPolicy::Overwrite,
             Self::Smart => arclain_core::OutputCollisionPolicy::Smart,
+        }
+    }
+
+    pub(crate) fn from_core(policy: arclain_core::OutputCollisionPolicy) -> Self {
+        match policy {
+            arclain_core::OutputCollisionPolicy::Fail => Self::Fail,
+            arclain_core::OutputCollisionPolicy::Skip => Self::Skip,
+            arclain_core::OutputCollisionPolicy::Overwrite => Self::Overwrite,
+            arclain_core::OutputCollisionPolicy::Smart => Self::Smart,
         }
     }
 }
@@ -203,6 +265,13 @@ impl OutputArtifactDto {
         match self {
             Self::Archive => arclain_core::OutputArtifact::Archive,
             Self::Folder => arclain_core::OutputArtifact::Folder,
+        }
+    }
+
+    pub(crate) fn from_core(artifact: arclain_core::OutputArtifact) -> Self {
+        match artifact {
+            arclain_core::OutputArtifact::Archive => Self::Archive,
+            arclain_core::OutputArtifact::Folder => Self::Folder,
         }
     }
 }
@@ -458,6 +527,92 @@ mod tests {
             OutputArtifactDto::Folder.to_core(),
             arclain_core::OutputArtifact::Folder
         );
+    }
+
+    /// `from_core` exists so a stored preset can be read back out as
+    /// DTOs (`crate::process`). The property that matters is that the
+    /// pair is a true round trip on everything the DTO carries -- if it
+    /// were not, listing a preset and saving it straight back would
+    /// silently rewrite it.
+    #[test]
+    fn step_dtos_round_trip_from_core_and_back() {
+        for step in [
+            arclain_core::PipelineStep::Flatten {
+                strip_common_prefix: true,
+                max_depth: 0,
+            },
+            arclain_core::PipelineStep::Flatten {
+                strip_common_prefix: false,
+                max_depth: 7,
+            },
+            arclain_core::PipelineStep::Organize { rule_id: 42 },
+            arclain_core::PipelineStep::Convert {
+                format: arclain_core::ConvertFormat::Zip,
+                compression: arclain_core::CompressionLevel::Fast,
+                password: None,
+            },
+            arclain_core::PipelineStep::Convert {
+                format: arclain_core::ConvertFormat::SevenZ,
+                compression: arclain_core::CompressionLevel::Max,
+                password: None,
+            },
+        ] {
+            let dto = PipelineStepDto::from_core(&step);
+            assert_eq!(
+                dto.to_core()
+                    .expect("a step built from core must translate back"),
+                step
+            );
+        }
+    }
+
+    /// The one documented lossy edge: a stored `Convert` step's inert
+    /// `password` has no DTO field, so it is dropped rather than
+    /// silently smuggled through. Pins that this is the *only* thing
+    /// that changes.
+    #[test]
+    fn a_stored_convert_password_is_dropped_not_carried() {
+        let stored = arclain_core::PipelineStep::Convert {
+            format: arclain_core::ConvertFormat::Zip,
+            compression: arclain_core::CompressionLevel::Normal,
+            password: Some("hunter2".to_string()),
+        };
+        let round_tripped = PipelineStepDto::from_core(&stored).to_core().unwrap();
+        assert_eq!(
+            round_tripped,
+            arclain_core::PipelineStep::Convert {
+                format: arclain_core::ConvertFormat::Zip,
+                compression: arclain_core::CompressionLevel::Normal,
+                password: None,
+            }
+        );
+    }
+
+    #[test]
+    fn destination_policy_and_artifact_dtos_round_trip_from_core_and_back() {
+        for output in [
+            arclain_core::PipelineOutput::SameFolder,
+            arclain_core::PipelineOutput::NewFolder(PathBuf::from("/out")),
+        ] {
+            assert_eq!(PipelineDestinationDto::from_core(&output).to_core(), output);
+        }
+        for policy in [
+            arclain_core::OutputCollisionPolicy::Fail,
+            arclain_core::OutputCollisionPolicy::Skip,
+            arclain_core::OutputCollisionPolicy::Overwrite,
+            arclain_core::OutputCollisionPolicy::Smart,
+        ] {
+            assert_eq!(
+                OutputCollisionPolicyDto::from_core(policy).to_core(),
+                policy
+            );
+        }
+        for artifact in [
+            arclain_core::OutputArtifact::Archive,
+            arclain_core::OutputArtifact::Folder,
+        ] {
+            assert_eq!(OutputArtifactDto::from_core(artifact).to_core(), artifact);
+        }
     }
 
     #[test]

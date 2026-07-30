@@ -16,6 +16,12 @@ use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 const APP_NAME: &str = "arclain";
 const PLUGINS_DIR_ENV: &str = "ARCLAIN_PLUGINS_DIR";
 
+/// The saved-presets file name, identical to the one
+/// `arclain_core::default_presets_path` builds -- so an existing profile's
+/// presets are found unchanged. See [`AppPaths::presets_file`] for why
+/// only the *directory* half is resolved differently.
+const PRESETS_FILE_NAME: &str = "pipeline_presets.json";
+
 /// The five on-disk directories `ArclainApp::bootstrap` resolves and
 /// creates before anything else. All frontends read this back via
 /// [`crate::ArclainApp::paths`] -- for example, a Settings page showing
@@ -177,6 +183,30 @@ impl AppPaths {
     /// Where `pass.redb` and `master.key` live.
     pub(crate) fn secrets_dir(&self) -> PathBuf {
         self.data_dir.join("secrets")
+    }
+
+    /// The saved pipeline presets file (`crate::process`).
+    ///
+    /// The one place this location is derived, deliberately: presets are
+    /// read by three separate code paths -- listing them, previewing one,
+    /// and resolving a
+    /// [`crate::operations::pipeline::PipelineSpecDto::Preset`] that
+    /// `start_pipeline` is about to run -- and a facade whose list and
+    /// whose executor read *different files* would be the same class of
+    /// silent divergence this crate takes pains to avoid elsewhere.
+    ///
+    /// Not `arclain_core::default_presets_path()`, which resolves the
+    /// same file name under `arclain_app_fs::AppDirectories::init`
+    /// instead. That function takes no overrides here, so it reports the
+    /// real OS-conventional profile regardless of
+    /// [`crate::BootstrapConfig::paths_override`] -- an
+    /// override-respecting application would read and write one user's
+    /// actual presets from a test or a portable install -- and it
+    /// *creates* seven directories on disk merely by being called.
+    /// Joining `config_dir` is override-aware, side-effect-free, and
+    /// resolves the identical path under system defaults.
+    pub(crate) fn presets_file(&self) -> PathBuf {
+        self.config_dir.join(PRESETS_FILE_NAME)
     }
 
     /// Where materialization leases (application-owned, temporary,
@@ -394,6 +424,42 @@ mod tests {
         assert_eq!(
             paths.plugin_log_dir(),
             arclain_core::utilities::plugin_log_dir()
+        );
+    }
+
+    /// Under system defaults -- the only configuration a real
+    /// deployment runs -- the facade's own presets path must be the
+    /// exact file an existing profile already has, or upgrading to the
+    /// facade would silently lose every saved preset. Under an override
+    /// it must follow the override instead, which is what
+    /// `arclain_core::default_presets_path` cannot do.
+    ///
+    /// Asserted against the derivation rather than against
+    /// `default_presets_path()` itself, deliberately: that function
+    /// *creates* seven directories under the real user profile merely by
+    /// being called (`arclain_app_fs::AppDirectories::init`), which is
+    /// half of why this crate does not use it -- and is not something a
+    /// unit test should do to the machine running it.
+    #[test]
+    fn the_presets_file_matches_cores_default_under_system_defaults_and_follows_an_override() {
+        let system = AppPaths::system_default().unwrap();
+        let core_derivation = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(APP_NAME)
+            .join(PRESETS_FILE_NAME);
+        assert_eq!(system.presets_file(), core_derivation);
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let overridden = AppPaths {
+            config_dir: temp.path().join("config"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            log_dir: temp.path().join("logs"),
+            plugins_dir: temp.path().join("plugins"),
+        };
+        assert_eq!(
+            overridden.presets_file(),
+            temp.path().join("config").join(PRESETS_FILE_NAME)
         );
     }
 

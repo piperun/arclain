@@ -33,6 +33,7 @@ mod drag_stage_ops;
 mod layout_ops;
 mod organization_ops;
 mod paths;
+mod process_ops;
 mod processing_ops;
 mod session_store;
 mod settings_ops;
@@ -1601,6 +1602,238 @@ impl ArclainApp {
     }
 
     // ============= Task c5: organization rules/profiles (end) ============
+
+    // ============== Task c7: the Process page's surface (start) ==========
+    // Kept in its own clearly-delimited section for the same reason as
+    // the sections around it: concurrent worktrees also edit this file.
+    // Every method here is a thin dispatch wrapper; the logic lives in
+    // `crate::process` (pure DTOs/validation) and `runtime::process_ops`
+    // (the `AppRuntime`-touching execution layer) -- see both modules'
+    // own doc comments.
+
+    /// Every saved pipeline preset, in stored order, with the shipped
+    /// defaults standing in when no presets file exists yet.
+    ///
+    /// # Built-ins are a seed, not a namespace
+    ///
+    /// This is the semantics `arclain_core` has always had, preserved
+    /// rather than redesigned, and it is worth stating plainly because
+    /// "built-in" usually implies protection here and does not:
+    ///
+    /// * With **no presets file**, this returns the presets the
+    ///   application ships, every one flagged
+    ///   [`crate::process::PipelinePresetSummary::builtin`].
+    /// * The **first save materializes the whole list** -- built-ins
+    ///   included, since a frontend saves the list it was handed. From
+    ///   then on the file is the only source: built-ins are never
+    ///   re-merged into it.
+    /// * So a user may edit, rename, shadow or **delete a built-in, and
+    ///   it stays deleted**. Deleting every preset leaves genuinely
+    ///   none; the shipped ones do not reappear on the next launch.
+    /// * A corrupt or unreadable presets file is *not* an error: it
+    ///   degrades to the built-ins (see
+    ///   `runtime::process_ops::load_presets`), and the next save
+    ///   overwrites it.
+    ///
+    /// A summary's `name` is directly usable as
+    /// [`crate::operations::pipeline::PipelineSpecDto::Preset::id`] --
+    /// the presets listed here are read from the same file, through the
+    /// same resolution ([`AppPaths::presets_file`]), that
+    /// [`Self::start_pipeline`] resolves a preset against.
+    pub async fn pipeline_presets(
+        &self,
+    ) -> Result<Vec<crate::process::PipelinePresetSummary>, ApplicationError> {
+        self.dispatch_async(|inner| async move { process_ops::run_pipeline_presets(&inner).await })
+            .await?
+    }
+
+    /// Creates a preset, or replaces the existing one with the same
+    /// name, returning the full updated list (matching
+    /// [`Self::pipeline_presets`]'s shape) so a caller does not need a
+    /// second round trip -- the same way [`Self::upsert_organization_rule`]
+    /// does.
+    ///
+    /// The name is the key and a save replaces in place; see
+    /// [`crate::process::PipelinePresetInput`] for why, and note the
+    /// consequence of the built-in rule above: saving over a shipped
+    /// preset's name replaces it permanently.
+    ///
+    /// `InvalidInput` for a blank name, an empty step list, or a step
+    /// whose own fields do not parse (an unknown convert format, a
+    /// non-numeric organize rule id) -- each of which would otherwise be
+    /// stored happily and only fail on the first run that used the
+    /// preset. `Persistence` when the presets file cannot be written.
+    pub async fn save_pipeline_preset(
+        &self,
+        preset: crate::process::PipelinePresetInput,
+    ) -> Result<Vec<crate::process::PipelinePresetSummary>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            process_ops::run_save_pipeline_preset(&inner, preset).await
+        })
+        .await?
+    }
+
+    /// Deletes the preset named `name`, returning the full updated list.
+    ///
+    /// `NotFound` when no preset has that name. Deleting a shipped
+    /// preset is permitted and permanent -- see
+    /// [`Self::pipeline_presets`].
+    ///
+    /// One case worth knowing: with no presets file yet, the list a
+    /// caller sees is the shipped defaults, and deleting one of them
+    /// *creates* the file holding the remaining ones. That is exactly
+    /// what the pre-facade page did, and it is why deletion sticks.
+    pub async fn delete_pipeline_preset(
+        &self,
+        name: String,
+    ) -> Result<Vec<crate::process::PipelinePresetSummary>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            process_ops::run_delete_pipeline_preset(&inner, name).await
+        })
+        .await?
+    }
+
+    /// What a pipeline would do to each of its inputs: the steps in
+    /// order, the predicted output path, and any warning about that
+    /// path already existing.
+    ///
+    /// # This is not an operation
+    ///
+    /// A step editor recomputes this on every edit, so it is
+    /// deliberately not built like the mutating flows: it registers
+    /// nothing with the operation registry, mints no
+    /// [`crate::ids::OperationId`], broadcasts no
+    /// [`crate::event::OperationEvent`], and starts no work that
+    /// outlives the returned future. Nothing is written, no archive is
+    /// opened, and no archive byte is read.
+    ///
+    /// It is not *free*, though, and the cost is worth knowing: it stats
+    /// each predicted output to answer the collision warning, a folder
+    /// input reads that directory, and a
+    /// [`crate::operations::pipeline::PipelineSpecDto::Preset`] reads the
+    /// presets file. All of it runs on the blocking pool and is awaited
+    /// before this returns. An editor recomputing per keystroke should
+    /// pass [`crate::operations::pipeline::PipelineSpecDto::Steps`],
+    /// which is what its own state already is.
+    ///
+    /// # Metadata: this preview and `start_pipeline` do not agree
+    ///
+    /// **The known divergence, mirrored rather than manufactured or
+    /// hidden.** Predicted output *names* come from `arclain_core`'s
+    /// `stem_from`: a sanitized metadata title if there is one, else a
+    /// product code detected in the input's own file name, else the
+    /// input's stem. The two ends resolve that metadata from different
+    /// places:
+    ///
+    /// * **This preview** uses the archive session named by
+    ///   [`crate::process::PipelinePreviewRequest::metadata`] -- one
+    ///   plugin-reported blob, applied to every input, read through the
+    ///   same function [`Self::preview_organize_plan`] and a
+    ///   session-bound [`Self::start_organize`] read it with. That is
+    ///   what the pre-facade Process page previewed with (it passed the
+    ///   active tab's fetched metadata, whatever files the pipeline was
+    ///   pointed at).
+    /// * **[`Self::start_pipeline`]** uses `arclain_core`'s executor,
+    ///   which looks each input up *individually* in the DLsite library,
+    ///   keyed on a product code detected in that input's own file name.
+    ///   It never sees a session.
+    ///
+    /// So a predicted output path here can legitimately differ from the
+    /// path the run writes -- a session's plugin blob and the library's
+    /// row for the same product are separate records that nothing
+    /// reconciles, and an input the session has nothing to do with is
+    /// still named from the session's title. Closing this means giving
+    /// [`crate::operations::PipelineRequest`] a session binding the way
+    /// [`crate::operations::OrganizeRequest::archive_session_id`] has
+    /// one, so both ends read the one source; that is a change to what
+    /// `start_pipeline` accepts, not something this preview can decide
+    /// on its own.
+    ///
+    /// # What a preview accepts that a run does not
+    ///
+    /// Three asymmetries with [`crate::operations::PipelineRequest`],
+    /// each deliberate, because a half-built pipeline still has to be
+    /// previewable:
+    ///
+    /// * **No inputs** and **no steps** are accepted here and refused
+    ///   there. Core answers both with a `global_warnings` entry rather
+    ///   than an error, which is what an editor shows before the user has
+    ///   finished.
+    /// * A **folder** input is accepted here and cannot be expressed
+    ///   there at all. The preview's own entry list is the bridge -- it
+    ///   is that folder expanded, in order, which is exactly the file
+    ///   list `start_pipeline` wants. See
+    ///   [`crate::process::PipelinePreviewInputsDto`].
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for an unknown preset id, or for a
+    /// `metadata` session id that names no open session -- the latter is
+    /// deliberately not downgraded to "no metadata", which would quietly
+    /// report a different set of paths than the caller asked about.
+    /// `InvalidInput` for a malformed ad-hoc step (an unknown convert
+    /// format, a non-numeric organize rule id) -- the one thing a
+    /// preview validates as strictly as a run, since a step that cannot
+    /// be translated has no behavior to predict.
+    pub async fn preview_pipeline(
+        &self,
+        request: crate::process::PipelinePreviewRequest,
+    ) -> Result<crate::process::PipelinePreviewDto, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            process_ops::run_preview_pipeline(&inner, request).await
+        })
+        .await?
+    }
+
+    /// Pipeline runs a previous process started and never finished --
+    /// what a "previous runs were interrupted" banner is built from.
+    ///
+    /// Not [`Self::recent_operations`]: that is this process's own
+    /// in-memory operation registry, emptied by a restart. This is
+    /// database-persisted and survives one, which is the entire point.
+    ///
+    /// # What marks a run interrupted
+    ///
+    /// `arclain_core` records every pipeline run in the config database
+    /// and leaves the row `in_progress` while it executes. At startup,
+    /// composing the database services sweeps any `in_progress` row
+    /// whose `started_at` is **more than an hour old** into `failed`
+    /// with the marker this query selects on, stamping `completed_at`
+    /// with the sweep's own clock. A row can only be in that state
+    /// because the process that owned it died, so the sweep is the
+    /// definition of "interrupted".
+    ///
+    /// Two consequences of that hour-long threshold, stated because they
+    /// are real: a run interrupted less than an hour before the next
+    /// launch is *not* reported (its row is swept by some later
+    /// startup instead), and a genuinely long-running pipeline in
+    /// another live Arclain process is mislabelled interrupted if a
+    /// second instance starts while it is past the hour.
+    ///
+    /// # `since_unix`, and the fact that nothing clears these
+    ///
+    /// `since_unix` filters on the *sweep* time above -- when the run was
+    /// declared interrupted -- not when it started or when it actually
+    /// died, which nothing records. Passing `0` therefore returns
+    /// **every interrupted run ever recorded in this profile**, and that
+    /// set only ever grows: no code path deletes these rows, clears the
+    /// marker, or acknowledges them. A caller that wants "since I last
+    /// looked" must remember a timestamp itself and pass it here; one
+    /// that passes `0` and renders a banner will render that banner on
+    /// every launch, forever, however long ago the crash was.
+    ///
+    /// Empty (not an error) when no configuration database is open.
+    pub async fn interrupted_pipeline_runs(
+        &self,
+        since_unix: i64,
+    ) -> Result<Vec<crate::process::InterruptedPipelineRunDto>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            process_ops::run_interrupted_pipeline_runs(&inner, since_unix).await
+        })
+        .await?
+    }
+
+    // =============== Task c7: the Process page's surface (end) ===========
 
     // ============= chrome layout and display options (start) =============
     // Kept in its own clearly-delimited section for the same reason as the
