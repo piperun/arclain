@@ -93,12 +93,14 @@
 //!   paths_override` entirely (reading the *real* OS-conventional
 //!   directory regardless of what this app instance was told to use)
 //!   and *creates* seven directories on disk as a side effect merely by
-//!   being called. `resolve_pipeline_spec` instead joins
+//!   being called. `AppPaths::presets_file` instead joins
 //!   `AppPaths::config_dir` (already override-aware, already created by
 //!   `AppPaths::ensure_created` at bootstrap) with the same
 //!   `"pipeline_presets.json"` filename `default_presets_path()` uses --
 //!   identical in production, correct under `paths_override`, no extra
-//!   side effect.
+//!   side effect. That accessor, and `process_ops::load_presets` on top
+//!   of it, are now the single resolution shared with the preset CRUD
+//!   surface, so what a caller lists is what a run resolves.
 //! - **Organize's password handling matches the open flow, not a
 //!   second, divergent implementation.** An undisclosed regression: an
 //!   earlier version of this module's Organize support called
@@ -234,31 +236,25 @@ pub(super) async fn resolve_pipeline_spec(
 /// this runs inside `spawn_blocking` rather than directly on the
 /// calling async task -- see [`resolve_rule_and_profile`] for the same
 /// reasoning applied to Organize's own I/O-requiring pre-flight checks.
+///
+/// Reads through `process_ops::load_presets` rather than calling
+/// `arclain_core::load_presets` with its own path: the presets a caller
+/// lists and edits (`ArclainApp::pipeline_presets`) and the presets a
+/// run resolves must be the same file, and one shared reader is what
+/// makes that true by construction rather than by two matching string
+/// joins. Behavior is unchanged -- `load_presets` already returns the
+/// built-ins for a missing file, which is what the `exists()` branch
+/// this replaces was open-coding.
 async fn resolve_preset_pipeline(
     inner: &Arc<AppRuntime>,
     preset_id: &str,
 ) -> Result<Pipeline, ApplicationError> {
-    let presets_path = inner.paths().config_dir.join("pipeline_presets.json");
-    let preset_id = preset_id.to_string();
-    let Some(handle) = inner.tokio_handle() else {
-        return Err(shutdown_mid_request_error());
-    };
-    let presets = handle
-        .spawn_blocking(move || {
-            if presets_path.exists() {
-                arclain_core::load_presets(&presets_path)
-            } else {
-                arclain_core::builtin_presets()
-            }
-        })
-        .await
-        .map_err(internal_join_error)?;
-
-    presets
+    super::process_ops::load_presets(inner)
+        .await?
         .into_iter()
         .find(|preset| preset.name == preset_id)
         .map(|preset| preset.pipeline)
-        .ok_or_else(|| preset_not_found_error(&preset_id))
+        .ok_or_else(|| preset_not_found_error(preset_id))
 }
 
 // ─── Convert/Pipeline background workers ───────────────────────────────
