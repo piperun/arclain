@@ -131,9 +131,11 @@ impl DragStagingLease {
         let renew_task = {
             let app = app.clone();
             let lease_id = lease.id;
-            // Renew at a third of the TTL, so two consecutive renewals can
-            // fail transiently before the lease actually expires. Clamped:
-            // test TTL overrides are tens of milliseconds, production is
+            // Renew at a third of the TTL, so a renewal has room to land
+            // well before expiry even under scheduling delay. That is
+            // slack, not retry tolerance: the loop below treats any
+            // renewal error as terminal. Clamped, because test TTL
+            // overrides are tens of milliseconds and production is
             // minutes.
             let ttl_ms = (lease.expires_at_unix_ms - super::current_unix_ms()).max(0) as u64;
             let interval = std::time::Duration::from_millis((ttl_ms / 3).clamp(25, 60_000));
@@ -271,7 +273,8 @@ async fn fail(inner: &Arc<AppRuntime>, operation_id: OperationId, error: Applica
 /// application's own runtime handle; runs until the operation reaches a
 /// terminal state.
 ///
-/// Cancellation follows `run_materialize`'s exact shape: the registry's
+/// Cancellation follows `run_materialize`'s shape, with one documented
+/// gap: the registry's
 /// cancel flag is handed to the backend as its `CancellationToken`, the
 /// blocking extraction is awaited to completion (never abandoned -- the
 /// reservation's cleanup must not race a backend still writing into its
@@ -280,6 +283,13 @@ async fn fail(inner: &Arc<AppRuntime>, operation_id: OperationId, error: Applica
 /// `Cancelled` immediately when `cancel_operation` is called, so a
 /// blocked `stage_drag_payload_blocking` caller unblocks right away
 /// while this worker finishes cooperatively in the background.
+///
+/// The gap: `run_materialize` passes the token on every arm, but the
+/// batched (>75 file) arm here has no token to pass -- that backend
+/// entry point takes none. A cancel during a batched stage still
+/// unblocks the shell immediately and still cleans up, but the backend
+/// churns to completion first. This matches what the pre-facade drag
+/// did; closing it needs a cancellable batch entry point in the backend.
 pub(crate) async fn run_drag_stage(
     inner: Arc<AppRuntime>,
     operation_id: OperationId,
