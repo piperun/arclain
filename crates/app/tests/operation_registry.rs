@@ -122,6 +122,10 @@ mod serialization_snapshots {
             serde_json::to_value(OperationKind::PluginAction).unwrap(),
             serde_json::json!("plugin_action")
         );
+        assert_eq!(
+            serde_json::to_value(OperationKind::Merge).unwrap(),
+            serde_json::json!("merge")
+        );
     }
 
     #[test]
@@ -201,6 +205,40 @@ mod serialization_snapshots {
 
         let round_tripped: OperationResult = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, result);
+    }
+
+    #[test]
+    fn operation_result_merged_serializes_with_its_output_path() {
+        let result = OperationResult::Merged {
+            output_path: std::path::PathBuf::from("/sets/rj123456.7z"),
+        };
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "merged",
+                "data": { "output_path": "/sets/rj123456.7z" }
+            })
+        );
+
+        let round_tripped: OperationResult = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, result);
+    }
+
+    #[test]
+    fn operation_state_completed_with_merged_serializes_end_to_end() {
+        let state = OperationState::Completed {
+            result: OperationResult::Merged {
+                output_path: std::path::PathBuf::from("merged.7z"),
+            },
+        };
+        let value = serde_json::to_value(&state).unwrap();
+        assert_eq!(value["state"], serde_json::json!("completed"));
+        assert_eq!(value["result"]["type"], serde_json::json!("merged"));
+        assert_eq!(
+            value["result"]["data"]["output_path"],
+            serde_json::json!("merged.7z")
+        );
     }
 
     #[test]
