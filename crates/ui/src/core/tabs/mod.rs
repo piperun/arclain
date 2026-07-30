@@ -10,7 +10,6 @@
 //! in the originating tab even after the user switches.
 
 pub mod inventory;
-pub mod legacy_metadata;
 pub mod listing;
 pub mod op_guard;
 pub mod persistence;
@@ -20,7 +19,6 @@ pub mod tabs_collection;
 pub mod view_state;
 
 pub use inventory::{AdoptedInventory, TabInventory};
-pub use legacy_metadata::legacy_pipeline_metadata;
 pub use listing::{ArchiveNavigation, ListingGeneration, RequestStatus, TabListing};
 pub use op_guard::OpGuard;
 pub use persistence::{load_collection, save_collection, snapshot, TabRestore, TabsSnapshot};
