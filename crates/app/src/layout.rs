@@ -361,7 +361,11 @@ pub(crate) fn stored_width(value: Option<String>, fallback: f32) -> f32 {
 }
 
 fn is_storable_width(width: f32) -> bool {
-    width.is_finite() && width >= 0.0 && width <= MAX_UI_PANEL_WIDTH_PX
+    // The finiteness check is not redundant with the range check for
+    // NaN's sake alone -- it says what is being asserted, and a reader
+    // should not have to know that a range comparison happens to reject
+    // NaN too.
+    width.is_finite() && (0.0..=MAX_UI_PANEL_WIDTH_PX).contains(&width)
 }
 
 // ============================================================================
@@ -772,29 +776,34 @@ mod tests {
         check_display_options(&UiDisplayOptionsDto::default()).expect("defaults must be storable");
     }
 
+    fn with_tree_panel_width(width: f32) -> UiDisplayOptionsDto {
+        UiDisplayOptionsDto {
+            tree_panel_width: width,
+            ..UiDisplayOptionsDto::default()
+        }
+    }
+
     #[test]
     fn a_non_finite_panel_width_is_refused() {
-        let mut options = UiDisplayOptionsDto::default();
-        options.tree_panel_width = f32::NAN;
-        let error = check_display_options(&options).expect_err("NaN is not a width");
+        let error = check_display_options(&with_tree_panel_width(f32::NAN))
+            .expect_err("NaN is not a width");
         assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
         assert_eq!(error.field.as_deref(), Some("tree_panel_width"));
 
-        options = UiDisplayOptionsDto::default();
-        options.properties_panel_width = f32::INFINITY;
-        let error = check_display_options(&options).expect_err("infinity is not a width");
+        let error = check_display_options(&UiDisplayOptionsDto {
+            properties_panel_width: f32::INFINITY,
+            ..UiDisplayOptionsDto::default()
+        })
+        .expect_err("infinity is not a width");
         assert_eq!(error.field.as_deref(), Some("properties_panel_width"));
     }
 
     #[test]
     fn an_absurd_or_negative_panel_width_is_refused() {
-        let mut options = UiDisplayOptionsDto::default();
-        options.tree_panel_width = -1.0;
-        assert!(check_display_options(&options).is_err());
-
-        options = UiDisplayOptionsDto::default();
-        options.tree_panel_width = MAX_UI_PANEL_WIDTH_PX + 1.0;
-        assert!(check_display_options(&options).is_err());
+        assert!(check_display_options(&with_tree_panel_width(-1.0)).is_err());
+        assert!(
+            check_display_options(&with_tree_panel_width(MAX_UI_PANEL_WIDTH_PX + 1.0)).is_err()
+        );
     }
 
     // ========================================================================

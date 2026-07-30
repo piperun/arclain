@@ -34,10 +34,15 @@ use crate::features::settings::application::facade;
 /// Holds *display-option* state only. Item state (toolbar buttons,
 /// info-panel sections, context-menu entries) lives on the canonical
 /// `AppSignals` and is consumed via `shared.signals()`.
+#[derive(Default)]
 pub struct InterfaceSettingsState {
     /// Every display option in one value, which is also the shape the
     /// application reads and writes — so nothing here re-parses stored
     /// text or decides what an unset option means.
+    ///
+    /// Starts at the application's own fresh-profile answer, so an
+    /// un-loaded page holds what a first-run load would return rather
+    /// than an arbitrary placeholder.
     pub display_options: UiDisplayOptionsDto,
     /// Display-options changes since last save. Item toggles persist
     /// immediately and do not affect this flag.
@@ -54,20 +59,6 @@ pub struct InterfaceSettingsState {
     pub error: Option<String>,
     /// Show the layout type selection dialog
     pub layout_dialog_open: bool,
-}
-
-impl Default for InterfaceSettingsState {
-    fn default() -> Self {
-        Self {
-            // The application's own fresh-profile answer, so an
-            // un-loaded page shows what a first-run load would.
-            display_options: UiDisplayOptionsDto::default(),
-            dirty: false,
-            loaded: false,
-            error: None,
-            layout_dialog_open: false,
-        }
-    }
 }
 
 impl InterfaceSettingsState {
