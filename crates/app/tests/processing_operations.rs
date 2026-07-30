@@ -1843,6 +1843,97 @@ fn start_convert_preserves_pre_existing_destination_when_it_is_not_a_recognized_
     );
 }
 
+/// Cancelling a Convert mid-batch stops every input that had not
+/// started, and leaves no partial output behind for the one that had.
+///
+/// The `list`/`extract_all` gate makes this deterministic rather than a
+/// race: the operation is cancelled only once the first input's
+/// extraction is provably under way (its "Processing" progress message
+/// has been seen), and the extraction is released only afterwards.
+///
+/// What "no partial output" means here is exactly what the operation
+/// documents, no more: an input already in flight is *not* interrupted
+/// (`execute_pipeline` has no mid-file cancellation hook -- the
+/// pre-facade UI carried the same limitation, in its own words), so this
+/// asserts on the destination rather than pretending the in-flight file
+/// stops. `StagedOutput` stages beside the destination and only promotes
+/// a verified artifact, so a run that ends without committing must leave
+/// the destination directory as empty as it found it -- no half-written
+/// archive and no orphaned staging file.
+#[test]
+fn start_convert_cancellation_stops_unstarted_inputs_and_leaves_no_partial_output() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+
+    // Unique fixture filenames -- see the collision comment in
+    // `start_convert_preserves_pre_existing_destination_when_it_is_not_a_recognized_prior_output`.
+    let gated_input = build_zip_fixture(
+        temp.path(),
+        "convert-cancel-first.zip",
+        &[("data.bin", b"alpha-content")],
+    );
+    let unstarted_input = build_zip_fixture(
+        temp.path(),
+        "convert-cancel-second.zip",
+        &[("data.bin", b"beta-content")],
+    );
+
+    let (backend, release) = FakeExtractBackend::gated(gated_input.clone());
+    let app = bootstrap_app_ex(&temp, Some(backend));
+    let destination = temp.path().join("out");
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_convert(ConvertRequest {
+                inputs: vec![gated_input.clone(), unstarted_input.clone()],
+                destination: destination.clone(),
+                format: "zip".to_string(),
+                flatten: false,
+            })
+            .await
+            .expect("start_convert must be accepted");
+
+        wait_for_message_containing(
+            &mut receiver,
+            operation_id,
+            "Processing convert-cancel-first",
+        )
+        .await;
+
+        app.cancel_operation(operation_id)
+            .await
+            .expect("cancel_operation must succeed while the operation is still running");
+
+        // Only now let the first input's (already in-flight, and not
+        // interruptible mid-file) extraction proceed.
+        release.send(()).expect("release the gated extraction");
+
+        let (_messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(terminal, OperationState::Cancelled);
+    });
+
+    // The unstarted input must never have been touched, and nothing
+    // partial may be left where the outputs would have gone.
+    let written: Vec<String> = std::fs::read_dir(&destination)
+        .map(|dir| {
+            dir.filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !written
+            .iter()
+            .any(|name| name.contains("convert-cancel-second")),
+        "an input that had not started yet must never be processed after cancellation;          destination held: {written:?}"
+    );
+    assert!(
+        written.is_empty(),
+        "a cancelled run must leave no committed or staged artifact behind;          destination held: {written:?}"
+    );
+}
+
 /// Locates a real, working 7-Zip CLI on this machine, if any, that does
 /// **not** exhibit the known bug reported alongside this task (7-Zip
 /// 26.02 silently appends the format extension to an extensionless
