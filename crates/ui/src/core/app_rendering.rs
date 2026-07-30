@@ -199,14 +199,25 @@ pub fn render_tab_bar_panel(
                 source: None,
             }];
 
+            // The plugin half of the strip is built through the
+            // application facade's own read model
+            // (`arclain_app::plugins::PluginTopTabDto`), so every
+            // plugin-authored field this renders has already been
+            // mirrored and bounded there rather than arriving as a raw
+            // plugin-runtime struct. The cached tuple still comes from
+            // the legacy plugin worker; only the vocabulary has moved.
             if let Some(Ok((_, top_tabs))) = shared_state.plugin_ui_jobs.chrome_snapshot() {
                 for (plugin_id, tab_config) in top_tabs.iter() {
+                    let tab = arclain_app::plugins::PluginTopTabDto::from((
+                        plugin_id.clone(),
+                        tab_config.clone(),
+                    ));
                     tabs.push(components::top_tab_bar::TopTab {
-                        id: tab_config.id.clone(),
-                        label: tab_config.label.clone(),
-                        icon: tab_config.icon.clone(),
-                        badge: tab_config.badge.clone(),
-                        source: Some(plugin_id.clone()),
+                        id: tab.id,
+                        label: tab.label,
+                        icon: tab.icon,
+                        badge: tab.badge,
+                        source: Some(tab.plugin_id),
                     });
                 }
             }

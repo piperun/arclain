@@ -3,7 +3,7 @@
 //! Renders the main application tab bar with host tabs and plugin-registered tabs.
 //! Supports badge rendering (numeric count and dot indicators).
 
-use arclain_plugins::BadgeConfig;
+use arclain_app::plugins::PluginBadgeDto;
 use arclain_theme::ThemeColors;
 use egui::{Color32, RichText, Ui, Vec2};
 
@@ -16,8 +16,11 @@ pub struct TopTab {
     pub label: String,
     /// Icon (emoji or text)
     pub icon: String,
-    /// Optional badge
-    pub badge: Option<BadgeConfig>,
+    /// Optional badge, in the application facade's own vocabulary
+    /// ([`PluginBadgeDto`]) rather than the plugin runtime's -- this
+    /// component renders host tabs and plugin tabs through one shape and
+    /// must not name a headless crate to do it.
+    pub badge: Option<PluginBadgeDto>,
     /// Source: None for host, Some(plugin_id) for plugin
     pub source: Option<String>,
 }
@@ -172,7 +175,7 @@ pub fn render(
 }
 
 /// Render a badge (count or dot)
-fn render_badge(ui: &mut Ui, badge: &BadgeConfig, colors: &ThemeColors) {
+fn render_badge(ui: &mut Ui, badge: &PluginBadgeDto, colors: &ThemeColors) {
     let color = badge_color(&badge.color, colors);
 
     if let Some(count) = badge.count {

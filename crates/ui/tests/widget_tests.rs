@@ -110,14 +110,14 @@ fn top_tab_bar_renders_empty() {
 
 #[test]
 fn top_tab_bar_renders_with_badge() {
-    use arclain_plugins::BadgeConfig;
+    use arclain_app::plugins::PluginBadgeDto;
     use arclain_ui::shared::components::top_tab_bar::*;
 
     let tabs = vec![TopTab {
         id: "alerts".into(),
         label: "Alerts".into(),
         icon: "INFO".into(),
-        badge: Some(BadgeConfig {
+        badge: Some(PluginBadgeDto {
             count: Some(5),
             dot: false,
             color: "red".into(),
