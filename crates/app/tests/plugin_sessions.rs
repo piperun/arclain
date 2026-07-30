@@ -817,6 +817,80 @@ fn a_missed_plugin_image_can_be_recovered_by_a_write_and_read_back() {
     });
 }
 
+/// The bootstrap must build the cache *blob store* under the same root
+/// as the cache *index* it was pointed at: `paths_override.cache_dir`.
+/// A blob store that silently lands under the OS-conventional cache dir
+/// instead splits one profile across two roots: the index references
+/// blobs a differently-rooted store does not have, and every *other*
+/// profile's bootstrap reconciles (and deletes from) the shared
+/// OS-conventional store -- which is also what let concurrently
+/// bootstrapping test processes wipe each other's freshly written
+/// blobs out from under this file's recovery round trip.
+#[test]
+fn a_plugin_image_blob_lands_under_the_overridden_cache_dir() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    std::fs::create_dir_all(&paths.plugins_dir).expect("create plugins dir");
+    install_plugin_fixture(&paths.plugins_dir, "ui-demo");
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths.clone()),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .expect("bootstrap with an overridden profile must succeed");
+    let runtime = foreign_runtime();
+
+    // A payload distinctive enough that finding it under the override
+    // root identifies the stored blob rather than an incidental file.
+    let bytes: Vec<u8> = (0..64u8).map(|n| n.wrapping_mul(37) ^ 0x5A).collect();
+    let key = "plugin-image:ui-demo:cover:ROOTCHECK".to_string();
+    runtime
+        .block_on(app.write_plugin_image("ui-demo".to_string(), key.clone(), bytes.clone(), None))
+        .expect("the write must succeed");
+    assert_eq!(
+        runtime.block_on(app.read_plugin_image(key)).unwrap(),
+        bytes,
+        "the write must be readable back"
+    );
+
+    assert!(
+        some_file_contains(&paths.cache_dir, &bytes),
+        "the stored blob must live under the profile's own cache_dir ({}), \
+         not the OS-conventional one",
+        paths.cache_dir.display()
+    );
+}
+
+/// Walks `root` looking for any regular file whose contents contain
+/// `needle`. The blob store is content-addressed (cacache): the stored
+/// object is a file holding the verbatim bytes, so a distinctive
+/// payload is findable without depending on the store's layout.
+fn some_file_contains(root: &std::path::Path, needle: &[u8]) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if some_file_contains(&path, needle) {
+                return true;
+            }
+        } else if let Ok(contents) = std::fs::read(&path) {
+            if contents
+                .windows(needle.len())
+                .any(|window| window == needle)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// A write is rejected for any key the facade did not itself encode, the
 /// same way the read is -- a frontend cannot use this to write into an
 /// arbitrary cache namespace of its choosing.

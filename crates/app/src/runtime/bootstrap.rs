@@ -378,9 +378,20 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
 
                         // -- content cache, resource manager --
                         if let Some(cache_svc) = core_services.cache_service.clone() {
-                            let cache_dir = core_services.cache_dir.clone();
+                            // The blob store must share a root with the cache
+                            // *index* this same profile opened above -- i.e.
+                            // the resolved `paths`, never `core_services.
+                            // cache_dir`, which re-derives the OS-conventional
+                            // location and silently ignores `paths_override`.
+                            // (For a default bootstrap the two are the same
+                            // directory.) A split root means the index
+                            // references blobs a differently-rooted store
+                            // does not have, and every other profile's
+                            // bootstrap reconciles -- deletes from -- the one
+                            // shared OS-conventional store.
+                            let cache_dir = paths.cache_dir.clone();
                             let resource_config = ResourceConfig {
-                                fallback_dir: Some(core_services.cache_dir.join("resources")),
+                                fallback_dir: Some(paths.cache_dir.join("resources")),
                                 ..Default::default()
                             };
                             match initialize_resource_services(
