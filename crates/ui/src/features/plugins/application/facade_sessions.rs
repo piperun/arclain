@@ -161,17 +161,26 @@
 //!   a slot makes unnecessary. Migrating it is a
 //!   [`PluginSlot::MainPage`] declaration plus deleting that cache and
 //!   the two invalidation sites that keep it honest.
-//! - **`PluginButton`** -- not migrated, and the most involved of the
-//!   four despite being the smallest surface. The toolbar renders it
-//!   through an injected closure (`crates/ui/src/shared/components/
-//!   toolbar` must not know about `features/plugins`, so
-//!   `core::arclain_app::toolbar_handler` hands it a renderer and a
-//!   dispatcher), and that closure's signature is in terms of flat
-//!   elements and `(plugin_id, event_id, value)` triples. Migrating it
-//!   means re-expressing that seam in terms of a document and
-//!   [`crate::features::plugins::presentation::rendering::DocumentEvent`]
-//!   -- a change to a shared component's contract, not just to a plugin
-//!   call site, which is why it is last rather than first.
+//! - **`PluginButton`** -- migrated. Declared by
+//!   `crate::core::arclain_app::toolbar_handler`, which owns the whole
+//!   plugin half of the toolbar: it resolves the slot, draws the named
+//!   button (or the whole document, for a stored item that names a plugin
+//!   rather than one of its buttons), and applies the resulting
+//!   [`crate::features::plugins::presentation::rendering::DocumentEvent`]s
+//!   through `document_dispatch`.
+//!
+//!   The seam it reaches that through got *narrower* rather than being
+//!   re-typed. `crates/ui/src/shared/components/toolbar` must not know
+//!   about plugins, and it previously did anyway: its `ButtonContext`
+//!   carried a `HashMap<String, Vec<PluginUiElement>>` it fetched itself,
+//!   and it post-processed the `(plugin_id, event_id, value)` triples that
+//!   came back, string-matching two of the reserved navigation prefixes
+//!   this module's doc comment describes. Now it hands the host a `(ui,
+//!   plugin_id, Option<button_id>)` callback -- the stored item's own
+//!   `action_data`, parsed -- and no plugin type, document or otherwise,
+//!   appears in that module at all. The button set the layout editor
+//!   offers comes from the same document through [`document_buttons`], so
+//!   the editor cannot offer a button the toolbar has no way to draw.
 //!
 //! # What is deliberately not modeled here
 //!
@@ -320,6 +329,65 @@ pub fn document_is_empty(root: &PluginUiNodeDto) -> bool {
             sidebar, content, ..
         } => sidebar.is_empty() && content.is_empty(),
         _ => false,
+    }
+}
+
+/// One `Button` node a plugin's document offers, as the two things a host
+/// needs to put it in a toolbar: the node id an interaction is dispatched
+/// against, and the text to draw.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PluginDocumentButton<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+}
+
+/// Every `Button` node in `root`, in document order.
+///
+/// The `PluginButton` counterpart of [`document_is_empty`], and shared for
+/// the same reason: the toolbar draws one named button out of a plugin's
+/// document, and the layout editor offers the user the set of buttons that
+/// can be named -- so the two must agree on what "this plugin's toolbar
+/// buttons" means or the editor offers items the toolbar cannot draw.
+///
+/// Descends exactly the containers `PluginUiNodeDto::find` descends
+/// (`Single`, `Split`, `Group`, `ListContainer`), which is what keeps the
+/// agreement structural: every id this returns resolves through `find`,
+/// which is the lookup both the toolbar's own render and the application's
+/// dispatch validation use.
+///
+/// A `Toolbar` node's buttons are deliberately not included. They are
+/// plain data inside that node rather than nodes of their own (see
+/// `PluginUiNodeDto::find`'s doc comment), so they have no independent
+/// visibility/enabled state and cannot be addressed by id -- the same
+/// reason the pre-cutover editor, which matched flat
+/// `PluginUiElement::Button` values, never offered them either.
+pub fn document_buttons(root: &PluginUiNodeDto) -> Vec<PluginDocumentButton<'_>> {
+    let mut buttons = Vec::new();
+    collect_buttons(root, &mut buttons);
+    buttons
+}
+
+fn collect_buttons<'a>(node: &'a PluginUiNodeDto, out: &mut Vec<PluginDocumentButton<'a>>) {
+    match &node.kind {
+        PluginUiNodeKind::Button { label, .. } => out.push(PluginDocumentButton {
+            id: &node.id,
+            label,
+        }),
+        PluginUiNodeKind::Single { children }
+        | PluginUiNodeKind::ListContainer { children, .. }
+        | PluginUiNodeKind::Group { children, .. } => {
+            for child in children {
+                collect_buttons(child, out);
+            }
+        }
+        PluginUiNodeKind::Split {
+            sidebar, content, ..
+        } => {
+            for child in sidebar.iter().chain(content) {
+                collect_buttons(child, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1349,6 +1417,133 @@ mod tests {
             .extension_point(),
             PluginExtensionPointDto::Page("p".to_string())
         );
+    }
+
+    fn button(id: &str, label: &str) -> PluginUiNodeDto {
+        PluginUiNodeDto {
+            id: id.to_string(),
+            kind: PluginUiNodeKind::Button {
+                label: label.to_string(),
+                action: None,
+            },
+            visible: true,
+            enabled: true,
+        }
+    }
+
+    fn container(id: &str, kind: PluginUiNodeKind) -> PluginUiNodeDto {
+        PluginUiNodeDto {
+            id: id.to_string(),
+            kind,
+            visible: true,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn document_buttons_reports_every_button_in_document_order() {
+        let root = container(
+            "#root",
+            PluginUiNodeKind::Single {
+                children: vec![
+                    button("first", "First"),
+                    container(
+                        "group",
+                        PluginUiNodeKind::Group {
+                            title: "Options".to_string(),
+                            description: None,
+                            children: vec![button("second", "Second")],
+                        },
+                    ),
+                    container(
+                        "list",
+                        PluginUiNodeKind::ListContainer {
+                            children: vec![button("third", "Third")],
+                            max_height: None,
+                            empty_message: None,
+                        },
+                    ),
+                ],
+            },
+        );
+
+        assert_eq!(
+            document_buttons(&root),
+            vec![
+                PluginDocumentButton {
+                    id: "first",
+                    label: "First"
+                },
+                PluginDocumentButton {
+                    id: "second",
+                    label: "Second"
+                },
+                PluginDocumentButton {
+                    id: "third",
+                    label: "Third"
+                },
+            ]
+        );
+    }
+
+    /// The invariant the layout editor and the toolbar depend on: every
+    /// button the editor may offer is one the toolbar's own lookup
+    /// (`PluginUiNodeDto::find`, which the application also validates
+    /// dispatches with) can resolve.
+    #[test]
+    fn every_discovered_button_resolves_through_the_same_lookup_the_toolbar_uses() {
+        let root = container(
+            "#root",
+            PluginUiNodeKind::Split {
+                sidebar: vec![button("side", "Side")],
+                content: vec![container(
+                    "group",
+                    PluginUiNodeKind::Group {
+                        title: "Options".to_string(),
+                        description: None,
+                        children: vec![button("inner", "Inner")],
+                    },
+                )],
+                sidebar_width: None,
+            },
+        );
+
+        let discovered = document_buttons(&root);
+        assert_eq!(discovered.len(), 2);
+        for found in discovered {
+            assert!(
+                root.find(found.id).is_some(),
+                "{} must resolve through find()",
+                found.id
+            );
+        }
+    }
+
+    /// A `Toolbar` node's buttons are plain data rather than nodes, so
+    /// they have no id `find` can resolve -- offering one would be an
+    /// editor entry the toolbar could never draw.
+    #[test]
+    fn a_toolbar_nodes_buttons_are_not_offered_as_addressable_buttons() {
+        let root = container(
+            "#root",
+            PluginUiNodeKind::Single {
+                children: vec![container(
+                    "bar",
+                    PluginUiNodeKind::Toolbar {
+                        buttons: vec![arclain_app::plugins::PluginToolbarButtonDto {
+                            id: "refresh".to_string(),
+                            label: "Refresh".to_string(),
+                            icon: None,
+                            primary: false,
+                            spacer_before: false,
+                        }],
+                    },
+                )],
+            },
+        );
+
+        assert!(document_buttons(&root).is_empty());
+        assert!(root.find("refresh").is_none());
     }
 
     /// A window-scoped slot must not be swept away when an unrelated tab

@@ -82,8 +82,7 @@ fn render_toolbar(shared: &SharedState) {
             let tab = shared.signals().tabs.get().active().clone();
             let mut view_state = tab.browser_view_state.get();
             let config = ToolbarConfig::new(shared.signals().toolbar_items.get());
-            let mut plugin_renderer = |_: &mut egui::Ui, _: &str, _: &_| Vec::new();
-            let mut plugin_dispatcher = |_: String, _: String, _: Option<String>| {};
+            let mut plugin_renderer = |_: &mut egui::Ui, _: &str, _: Option<&str>| {};
             let _ = toolbar::render(
                 ui,
                 &shared.theme,
@@ -97,7 +96,6 @@ fn render_toolbar(shared: &SharedState) {
                 Some(&config),
                 Some(&shared),
                 &mut plugin_renderer,
-                &mut plugin_dispatcher,
             );
         });
     });

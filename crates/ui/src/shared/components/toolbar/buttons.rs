@@ -1,18 +1,15 @@
 use super::types::{ButtonContext, PluginToolbarRenderer, ToolbarActions, ToolbarState};
 use arclain_app::layout::{UiActionTypeDto, UiItemDto};
-use arclain_plugins::types::PluginUiElement;
 use arclain_theme::ButtonVariant;
 use eframe::egui;
 use egui::Widget;
 
 /// Render a single toolbar button by ID, returns true if action triggered.
 ///
-/// `plugin_renderer` is called when the item dispatches a
-/// `UiActionTypeDto::Plugin` without a specific button id (legacy
-/// multi-button branch). The closure is constructed in
-/// `core/arclain_app/` where it can reach into
-/// `features::plugins::presentation::rendering` — keeping this `shared/`
-/// module free of feature-layer dependencies.
+/// A `UiActionTypeDto::Plugin` item is drawn by `plugin_renderer` rather
+/// than here: this module parses the item's own `action_data` into
+/// `(plugin_id, button_id)` and hands that over, so it never has to name
+/// a plugin type. See [`PluginToolbarRenderer`].
 pub fn render_button(
     ui: &mut egui::Ui,
     item: &UiItemDto,
@@ -23,46 +20,13 @@ pub fn render_button(
 ) {
     if item.action_type == UiActionTypeDto::Plugin {
         if let Some(action_data) = &item.action_data {
-            // format: "plugin_id:button_id"
-            if let Some((plugin_id, btn_id)) = action_data.split_once(':') {
-                if let Some(elements) = ctx.plugin_elements.get(plugin_id) {
-                    // Find button in cached elements
-                    if let Some(PluginUiElement::Button {
-                        id: _,
-                        label,
-                        action: _,
-                    }) = elements
-                        .iter()
-                        .find(|e| matches!(e, PluginUiElement::Button { id, .. } if id == btn_id))
-                    {
-                        // Plugin buttons keep text (they're unique/unfamiliar)
-                        if arclain_widgets::TextButton::new(
-                            label,
-                            arclain_widgets::ButtonSize::Small,
-                        )
-                        .with_theme_colors(&ctx.theme.colors)
-                        .variant(ButtonVariant::Ghost)
-                        .ui(ui)
-                        .clicked()
-                        {
-                            actions.plugin_events.push((
-                                plugin_id.to_string(),
-                                btn_id.to_string(),
-                                None,
-                            ));
-                        }
-                    }
-                }
-            } else {
-                // Legacy: delegate full plugin UI rendering to the injected
-                // callback (lives in features/plugins). shared/ never names
-                // the plugin renderer directly.
-                let plugin_id = action_data.as_str();
-                if let Some(elements) = ctx.plugin_elements.get(plugin_id) {
-                    let events = (plugin_renderer)(ui, plugin_id, elements);
-                    actions.plugin_events.extend(events);
-                }
-            }
+            // "{plugin_id}:{button_id}" names one button; a bare
+            // "{plugin_id}" names the plugin's whole contribution.
+            let (plugin_id, button_id) = match action_data.split_once(':') {
+                Some((plugin_id, button_id)) => (plugin_id, Some(button_id)),
+                None => (action_data.as_str(), None),
+            };
+            (plugin_renderer)(ui, plugin_id, button_id);
         }
         return;
     }

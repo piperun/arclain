@@ -705,8 +705,7 @@ fn full_toolbar_and_browser_idle_frames_do_not_publish_browser_view_state() {
         egui::TopBottomPanel::top("toolbar_panel").show(ctx, |ui| {
             let mut view_state = tab_for_frame.browser_view_state.get();
             let config = ToolbarConfig::new(shared_for_frame.signals().toolbar_items.get());
-            let mut plugin_renderer = |_: &mut egui::Ui, _: &str, _: &_| Vec::new();
-            let mut plugin_dispatcher = |_: String, _: String, _: Option<String>| {};
+            let mut plugin_renderer = |_: &mut egui::Ui, _: &str, _: Option<&str>| {};
             let _ = toolbar::render(
                 ui,
                 &shared_for_frame.theme,
@@ -720,7 +719,6 @@ fn full_toolbar_and_browser_idle_frames_do_not_publish_browser_view_state() {
                 Some(&config),
                 Some(&shared_for_frame),
                 &mut plugin_renderer,
-                &mut plugin_dispatcher,
             );
             tab_for_frame.browser_view_state.set_if_changed(view_state);
         });

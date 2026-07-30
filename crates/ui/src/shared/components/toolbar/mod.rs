@@ -1,17 +1,20 @@
+//! The archive toolbar: stored [`ToolbarConfig`] items, drawn in their
+//! configured groups and order.
+//!
+//! Deliberately plugin-agnostic. An item whose action is a plugin is
+//! drawn by an injected [`PluginToolbarRenderer`] the host supplies —
+//! nothing here knows what a plugin, a plugin UI document, or a plugin
+//! session is, and nothing here has to be told when one changes.
+
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use eframe::egui;
-use parking_lot::Mutex;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 mod buttons;
 mod types;
 
 use types::ButtonContext;
-pub use types::{
-    PluginEventDispatcher, PluginToolbarRenderer, ToolbarActions, ToolbarConfig, ToolbarState,
-};
+pub use types::{PluginToolbarRenderer, ToolbarActions, ToolbarConfig, ToolbarState};
 
 pub fn render(
     ui: &mut egui::Ui,
@@ -26,37 +29,8 @@ pub fn render(
     config: Option<&ToolbarConfig>,
     shared: Option<&SharedState>,
     plugin_renderer: PluginToolbarRenderer<'_>,
-    plugin_dispatcher: PluginEventDispatcher<'_>,
 ) -> ToolbarActions {
     let mut actions = ToolbarActions::default();
-
-    // Collect dialog open/close signals for processing after render.
-    // These are pure UI-state mutations (no plugin work) and stay
-    // synchronous; plugin events themselves go through the async
-    // dispatcher below.
-    let dialog_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
-
-    // Render consumes worker-populated snapshots only. Missing
-    // snapshots/layouts queue one coalesced background request and
-    // appear after the completion signal repaints the UI.
-    let mut plugin_elements = HashMap::new();
-    if let Some(shared) = shared {
-        let origin_tab = Some(shared.signals().tabs.get().active_id());
-        if let Some(Ok(plugins)) = shared
-            .plugin_ui_jobs
-            .plugin_snapshot(shared.signals().plugin_visibility.get())
-        {
-            for plugin in plugins.iter().filter(|plugin| plugin.enabled) {
-                if let Some(Ok(layout)) = shared.plugin_ui_jobs.layout(
-                    &plugin.id,
-                    crate::features::plugins::application::PluginUiTarget::PluginButton,
-                    origin_tab,
-                ) {
-                    plugin_elements.insert(plugin.id.clone(), layout.as_ref().clone().flatten());
-                }
-            }
-        }
-    }
 
     let show_labels = shared
         .map(|s| s.signals().ui_preferences.get().show_button_labels)
@@ -69,7 +43,6 @@ pub fn render(
         can_go_up,
         archive_loaded,
         has_selection,
-        plugin_elements,
         show_labels,
     };
 
@@ -113,8 +86,6 @@ pub fn render(
             ui.separator();
         }
 
-        // Legacy plugin rendering removed (now handled via standard items)
-
         // Panel toggles - right aligned
         if rendered_panels {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -141,45 +112,6 @@ pub fn render(
             });
         }
     });
-
-    // Process plugin events collected from render_button. Dialog
-    // control prefixes stay synchronous (UI-state only); plugin
-    // events go through the async dispatcher so the WASM call doesn't
-    // block the UI thread.
-    let dialog_sink = dialog_signals.clone();
-    for (plugin_id, event_id, value) in actions.plugin_events.drain(..) {
-        if event_id.starts_with("__dialog_open:") {
-            let dialog_id = event_id.trim_start_matches("__dialog_open:").to_string();
-            dialog_sink.lock().push((plugin_id, dialog_id));
-            continue;
-        }
-        if event_id == "__dialog_close" {
-            dialog_sink.lock().push((plugin_id, "__close".to_string()));
-            continue;
-        }
-
-        // Delegate dispatch to the injected callback (constructed in
-        // core/, where reaching into features/plugins is allowed).
-        (plugin_dispatcher)(plugin_id, event_id, value);
-    }
-
-    // Process dialog signals (synchronous — pure signal mutation).
-    if let Some(shared) = shared {
-        let dialog_signal = shared.signals().plugin_dialog_state.clone();
-        let mut dialog_state = dialog_signal.get();
-        let origin_tab = shared.signals().tabs.get().active_id();
-
-        let dialog_sigs = dialog_signals.lock();
-        for (plugin_id, dialog_id) in dialog_sigs.iter() {
-            if dialog_id == "__close" {
-                dialog_state.close_dialog();
-            } else {
-                dialog_state.open_dialog(plugin_id, dialog_id, origin_tab);
-            }
-        }
-
-        dialog_signal.set(dialog_state);
-    }
 
     actions
 }

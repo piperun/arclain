@@ -18,7 +18,6 @@ mod render;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_app::layout::{UiActionTypeDto, UiDisplayModeDto, UiItemDto, UiRegionDto};
-use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
 
 pub use editor::{
@@ -42,6 +41,8 @@ impl Region for ToolbarRegion {
     const AXIS: Axis = Axis::Horizontal;
 
     fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool {
+        use crate::features::plugins::application::{document_buttons, PluginSlot, SlotView};
+
         let Some(Ok(snapshot)) = shared
             .plugin_ui_jobs
             .plugin_snapshot(shared.signals().plugin_visibility.get())
@@ -53,61 +54,71 @@ impl Region for ToolbarRegion {
             .filter(|p| p.enabled)
             .map(|p| (p.id.clone(), p.name.clone()))
             .collect();
-        let origin_tab = Some(shared.signals().tabs.get().active_id());
+        // The editor offers the buttons the *toolbar* would draw, read out
+        // of the very document the toolbar reads (see
+        // `crate::core::arclain_app::toolbar_handler`). Sharing the slot
+        // rather than probing is what makes that identity structural: a
+        // separate read could answer differently and leave the editor
+        // offering an item the toolbar has nothing to draw for.
+        //
+        // Unlike the info-panel region below, sharing costs nothing here.
+        // A `PluginButton` slot is window-scoped and pins no archive at
+        // all, so opening one from this page cannot mis-pin a plugin's
+        // background writes or cache an archive-less answer for a
+        // surface that wanted an archive-scoped one -- the two hazards
+        // `PluginSessions::probe_extension_point` exists to avoid.
+        let Some(facade) = shared.facade.as_ref() else {
+            return false;
+        };
+        let runtime = shared.services.tokio_runtime.handle();
 
         let mut changed = false;
 
         for (plugin_id, plugin_name) in enabled_plugins {
-            let Some(Ok(elements)) = shared.plugin_ui_jobs.layout(
-                &plugin_id,
-                crate::features::plugins::application::PluginUiTarget::PluginButton,
-                origin_tab,
-            ) else {
+            let slot = PluginSlot::PluginButton {
+                plugin_id: plugin_id.clone(),
+            };
+            // Anything but `Ready` is "no answer yet" (or a failed open);
+            // this sync re-runs every frame the editor is open and picks
+            // the answer up then.
+            let SlotView::Ready(document) = shared.plugin_sessions.view(facade, runtime, &slot)
+            else {
                 continue;
             };
 
-            if elements.is_empty() {
-                continue;
-            }
+            for button in document_buttons(&document.root) {
+                let unique_id = format!("plugin_{}_{}", plugin_id, button.id);
+                let action_data = format!("{}:{}", plugin_id, button.id);
 
-            for element in elements.as_ref().clone().flatten() {
-                if let PluginUiElement::Button {
-                    id: btn_id, label, ..
-                } = element
-                {
-                    let unique_id = format!("plugin_{}_{}", plugin_id, btn_id);
-                    let action_data = format!("{}:{}", plugin_id, btn_id);
-
-                    let exists = state.items.iter().any(|item| item.id == unique_id);
-                    if exists {
-                        continue;
-                    }
-
-                    // Migrate from the legacy ID format (`plugin_{id}`,
-                    // one entry per plugin) to the per-button format
-                    // (`plugin_{id}_{btn_id}`). Remove the legacy entry
-                    // if it's still hanging around.
-                    let legacy_id = format!("plugin_{}", plugin_id);
-                    if let Some(pos) = state.items.iter().position(|i| i.id == legacy_id) {
-                        state.items.remove(pos);
-                    }
-
-                    let max_sort = state.items.iter().map(|i| i.sort_order).max().unwrap_or(0);
-
-                    state.items.push(UiItemDto {
-                        id: unique_id,
-                        region: UiRegionDto::Toolbar,
-                        group_id: Some("plugins".to_string()),
-                        label: format!("{} - {}", plugin_name, label),
-                        icon: Some("PUZZLE_PIECE".to_string()),
-                        action_type: UiActionTypeDto::Plugin,
-                        action_data: Some(action_data),
-                        visible: true,
-                        sort_order: max_sort + 10,
-                        display_mode: UiDisplayModeDto::IconAndText,
-                    });
-                    changed = true;
+                let exists = state.items.iter().any(|item| item.id == unique_id);
+                if exists {
+                    continue;
                 }
+
+                // Migrate from the legacy ID format (`plugin_{id}`,
+                // one entry per plugin) to the per-button format
+                // (`plugin_{id}_{btn_id}`). Remove the legacy entry
+                // if it's still hanging around.
+                let legacy_id = format!("plugin_{}", plugin_id);
+                if let Some(pos) = state.items.iter().position(|i| i.id == legacy_id) {
+                    state.items.remove(pos);
+                }
+
+                let max_sort = state.items.iter().map(|i| i.sort_order).max().unwrap_or(0);
+
+                state.items.push(UiItemDto {
+                    id: unique_id,
+                    region: UiRegionDto::Toolbar,
+                    group_id: Some("plugins".to_string()),
+                    label: format!("{} - {}", plugin_name, button.label),
+                    icon: Some("PUZZLE_PIECE".to_string()),
+                    action_type: UiActionTypeDto::Plugin,
+                    action_data: Some(action_data),
+                    visible: true,
+                    sort_order: max_sort + 10,
+                    display_mode: UiDisplayModeDto::IconAndText,
+                });
+                changed = true;
             }
         }
 

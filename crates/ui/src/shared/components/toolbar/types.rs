@@ -1,31 +1,29 @@
 use crate::shared::theme::AppTheme;
 use arclain_app::layout::{UiItemDto, UiRegionDto};
-use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
-use std::collections::HashMap;
 
-/// Callback for rendering a plugin's UI elements (legacy multi-button
-/// branch). Invoked by toolbar code in `shared/` when it encounters a
-/// plugin action without a specific button id. The closure is built in
-/// `core/arclain_app/toolbar_handler.rs`, where it's allowed to reach
-/// into `features::plugins::presentation::rendering` — `shared/` itself
-/// stays plugin-agnostic.
+/// Callback that draws whatever a plugin toolbar item resolves to, and
+/// applies whatever the user did to it.
 ///
-/// Inputs: ui, plugin_id, plugin's flattened ui elements.
-/// Returns: events to append to `ToolbarActions::plugin_events` —
-///   (plugin_id, element_id, optional value).
-pub type PluginToolbarRenderer<'a> = &'a mut dyn FnMut(
-    &mut egui::Ui,
-    &str,
-    &[PluginUiElement],
-) -> Vec<(String, String, Option<String>)>;
-
-/// Callback for dispatching a plugin event (async dispatcher in
-/// features/plugins). Same injection rationale as `PluginToolbarRenderer`:
-/// shared/ produces events, features/plugins routes them.
+/// This module deliberately knows nothing about plugins: no plugin type,
+/// no document, no session. It only knows how to read its *own* stored
+/// item — a `UiItemDto` whose `action_data` names either a plugin
+/// (`"{plugin_id}"`) or one of that plugin's buttons
+/// (`"{plugin_id}:{button_id}"`) — and hands the parsed pair to a host
+/// that does. The closure is built in
+/// `core/arclain_app/toolbar_handler.rs`, where reaching into
+/// `features::plugins` is allowed.
 ///
-/// Args: plugin_id, event_id, optional value.
-pub type PluginEventDispatcher<'a> = &'a mut dyn FnMut(String, String, Option<String>);
+/// Nothing comes back. The host owns the whole round trip (resolve the
+/// plugin's UI session, draw, dispatch the interaction), so there is no
+/// event vocabulary for this module to carry, and in particular no
+/// reserved event-id string for it to intercept — the pre-cutover
+/// version of this seam post-processed exactly two of those prefixes and
+/// silently forwarded the rest to the plugin as literal event ids.
+///
+/// Inputs: ui, plugin_id, the specific button id the item names (`None`
+/// when it names the plugin as a whole).
+pub type PluginToolbarRenderer<'a> = &'a mut dyn FnMut(&mut egui::Ui, &str, Option<&str>);
 
 /// Configuration for toolbar items as the application reports them
 pub struct ToolbarConfig {
@@ -97,8 +95,6 @@ pub struct ToolbarActions {
     pub convert_to_7z: bool,
     pub batch_convert: bool,
     pub organize_archive: bool,
-    /// Collected plugin events: (plugin_id, element_id, value)
-    pub plugin_events: Vec<(String, String, Option<String>)>,
 }
 
 /// Context for button rendering
@@ -109,8 +105,6 @@ pub struct ButtonContext<'a> {
     pub can_go_up: bool,
     pub archive_loaded: bool,
     pub has_selection: bool,
-    /// Cached plugin UI elements by plugin_id
-    pub plugin_elements: HashMap<String, Vec<PluginUiElement>>,
     /// Show text labels next to icons
     pub show_labels: bool,
 }
