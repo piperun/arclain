@@ -190,9 +190,12 @@ async fn set_default_collision_policy(app: &ArclainApp, policy: &str) {
     .expect("setting the default collision policy must succeed");
 }
 
-/// Runs `request` to a terminal state, panicking on failure.
-async fn run_pipeline_to_completion(app: &ArclainApp, request: PipelineRequest) {
+/// Runs `request` to a terminal state, panicking on failure, and returns
+/// every progress message it emitted -- the last of which is the run's
+/// own closing summary.
+async fn run_pipeline_to_completion(app: &ArclainApp, request: PipelineRequest) -> Vec<String> {
     let mut events = app.subscribe_operations();
+    let mut messages = Vec::new();
     let operation_id = app
         .start_pipeline(request)
         .await
@@ -205,8 +208,15 @@ async fn run_pipeline_to_completion(app: &ArclainApp, request: PipelineRequest) 
         if event.operation_id != operation_id {
             continue;
         }
+        if let OperationState::Progress {
+            message: Some(message),
+            ..
+        } = &event.state
+        {
+            messages.push(message.clone());
+        }
         match event.state {
-            OperationState::Completed { .. } => return,
+            OperationState::Completed { .. } => return messages,
             OperationState::Failed { error } => panic!("the pipeline run failed: {error:?}"),
             _ => {}
         }
@@ -1186,7 +1196,7 @@ fn an_archive_less_folder_warns_in_the_preview_and_completes_the_run() {
         assert!(preview.entries.is_empty());
         assert_eq!(preview.global_warnings.len(), 1);
 
-        run_pipeline_to_completion(
+        let messages = run_pipeline_to_completion(
             &app,
             PipelineRequest {
                 inputs,
@@ -1196,6 +1206,16 @@ fn an_archive_less_folder_warns_in_the_preview_and_completes_the_run() {
             },
         )
         .await;
+
+        // An empty batch reports the same closing summary a non-empty
+        // one does, built by the same `format!` -- it is the loop
+        // iterating nothing, not a separate early-return path carrying
+        // its own copy of the sentence.
+        assert_eq!(
+            messages.last().map(String::as_str),
+            Some("0 succeeded, 0 skipped, 0 failed"),
+            "got {messages:?}"
+        );
     });
 }
 

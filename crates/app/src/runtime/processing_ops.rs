@@ -316,12 +316,20 @@ pub(super) async fn run_pipeline(
 /// Expands a run's inputs, on the blocking pool because a folder means a
 /// directory read.
 ///
-/// `None` means this function already transitioned the operation to a
-/// terminal state and the caller must stop -- an unreadable folder is a
-/// whole-batch failure (nothing can be processed), unlike the per-file
-/// failures the loop below folds into its own counters. An *empty*
-/// folder is not a failure: `arclain_core` processes nothing and reports
-/// success for exactly that case, and this mirrors it.
+/// `None` means "stop": there is nothing further for the caller to do.
+/// In the case worth naming -- an unreadable folder -- this has already
+/// transitioned the operation to `Failed`, because a folder that cannot
+/// be listed is a whole-batch failure (nothing can be processed at all),
+/// unlike the per-file failures the loop below folds into its own
+/// counters. The other case leaves *no* terminal state behind: if the
+/// application runtime finished tearing down mid-request there is
+/// nothing left to publish an event through, so this returns without
+/// transitioning, exactly as every other `tokio_handle()` check in this
+/// module does.
+///
+/// An *empty* folder is not a failure and not a `None`: `arclain_core`
+/// processes nothing and reports success for exactly that case, so this
+/// returns an empty list and the loop below mirrors it.
 async fn resolve_run_inputs(
     inner: &Arc<AppRuntime>,
     operation_id: OperationId,
@@ -375,37 +383,20 @@ async fn run_pipeline_over_inputs(
     template: &Pipeline,
     inputs: Vec<PathBuf>,
 ) {
+    // An empty batch is deliberately *not* special-cased. It is
+    // reachable exactly one way -- a `PipelineInputsDto::Folder` that
+    // held no archive when the run started -- and `arclain_core` treats
+    // that as a successful batch of zero rather than an error
+    // (`execute_pipeline` simply iterates nothing). Letting the loop
+    // below iterate nothing produces that same answer through the same
+    // code, with the same closing summary built by the same `format!`,
+    // rather than through a second early-return branch carrying a
+    // hand-copied summary string that nothing keeps in step. An empty
+    // *file list* cannot reach here at all: `ConvertRequest`/
+    // `PipelineRequest::validate` reject one before an operation is ever
+    // registered. Pinned by `process_facade.rs::
+    // an_archive_less_folder_warns_in_the_preview_and_completes_the_run`.
     let total = inputs.len() as u64;
-    if total == 0 {
-        // Reachable exactly one way: a `PipelineInputsDto::Folder` that
-        // held no archive when the run started. `arclain_core` treats
-        // that as a successful batch of zero rather than an error
-        // (`execute_pipeline` simply iterates nothing), and so does
-        // this -- the same answer the preview gives for the same folder,
-        // where it surfaces as a "No archives found" warning. An empty
-        // *file list* cannot reach here: `ConvertRequest`/
-        // `PipelineRequest::validate` reject one before an operation is
-        // ever registered.
-        emit_progress(
-            inner,
-            operation_id,
-            0,
-            0,
-            Some("0 succeeded, 0 skipped, 0 failed".to_string()),
-        )
-        .await;
-        let _ = inner
-            .operations()
-            .transition(
-                operation_id,
-                OperationState::Completed {
-                    result: OperationResult::None,
-                },
-            )
-            .await;
-        return;
-    }
-
     let ctx = build_pipeline_context(inner);
     let temp_root = std::env::temp_dir();
 
