@@ -107,6 +107,36 @@ async fn wait_for_terminal(app: &ArclainApp, operation_id: OperationId) -> Opera
     }
 }
 
+/// Blocks until every path in `parts` is gone, or panics on a deadline.
+///
+/// Needed because the facade deletes the original parts *after* publishing
+/// its terminal state (that ordering is what makes a cancelled merge
+/// provably keep them -- see `arclain_app::operations::merge::run_merge`).
+/// A test that observes `Completed` and immediately stats the disk is
+/// therefore racing the worker's own delete loop, and would flake on a
+/// loaded machine. Waiting for the expected end state instead is sound in
+/// this direction: the deletion is coming, so a bounded wait either sees
+/// it or genuinely failed.
+///
+/// The inverse -- proving a deletion will *never* happen -- is not
+/// observable from outside, which is why the read-back gate's own
+/// regression test lives in `operations::merge`'s unit tests, where the
+/// interleaving is constructed rather than raced.
+fn wait_until_removed(parts: &[PathBuf]) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let remaining: Vec<&PathBuf> = parts.iter().filter(|part| part.exists()).collect();
+        if remaining.is_empty() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a completed merge that asked for cleanup never removed {remaining:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Drains `receiver` until `operation_id` reaches a terminal state,
 /// returning every event that operation produced, in order.
 async fn collect_until_terminal(
@@ -687,6 +717,13 @@ fn delete_originals_removes_the_enumerated_parts_but_never_a_caller_supplied_pat
         }
     });
 
+    // Waits rather than asserting immediately: deletion follows the
+    // terminal event by design -- see `wait_until_removed`.
+    wait_until_removed(
+        &(1..=3)
+            .map(|index| sets.join(format!("rj123456.7z.{index:03}")))
+            .collect::<Vec<_>>(),
+    );
     assert!(
         bystander.exists(),
         "a caller-supplied part list must never be able to direct file deletion"
@@ -695,12 +732,6 @@ fn delete_originals_removes_the_enumerated_parts_but_never_a_caller_supplied_pat
         std::fs::read(&bystander).unwrap(),
         b"this file belongs to somebody else"
     );
-    for index in 1..=3 {
-        assert!(
-            !sets.join(format!("rj123456.7z.{index:03}")).exists(),
-            "delete_originals must remove every part the merge enumerated"
-        );
-    }
     assert!(sets.join("rj123456.7z").exists());
 }
 
@@ -1080,11 +1111,23 @@ fn cancelling_a_merge_parked_on_its_password_challenge_leaves_nothing_behind() {
 /// - this operation's own `Completed { Merged }` wins -> the parts are
 ///   deleted, exactly as a plain successful merge would.
 ///
-/// So the assertion is the implication, not one fixed outcome, which is
-/// why this test can never flake. It is nonetheless the test that bites on
-/// the regression: with deletion delegated to core, the first interleaving
-/// reported `Cancelled` *with the parts already gone*, and the
-/// surviving-parts branch below fails.
+/// So the assertion is the implication, not one fixed outcome.
+///
+/// ## What this test can and cannot prove
+///
+/// It bites hard on the *pre-relocation* shape, where core deleted before
+/// any terminal state was visible: the `Cancelled` branch below then found
+/// the parts already gone (reproduced 6 runs out of 6).
+///
+/// It does **not** prove the read-back gate still holds, and must not be
+/// relied on for that. Deletion now happens *after* the terminal event, so
+/// a regression that deleted without consulting the gate would race this
+/// test's own disk reads -- and win often enough to pass. Proving the gate
+/// means constructing the interleaving rather than racing it, which is what
+/// `arclain_app::operations::merge`'s `the_read_back_gate_*` unit tests do.
+/// This one remains a genuine end-to-end smoke check of the whole
+/// composition, with the `Completed` branch synchronising on the deletion
+/// so it cannot flake in the other direction.
 #[test]
 fn cancelling_a_merge_as_it_finishes_never_loses_the_parts_silently() {
     let Some(sevenzip) = detect_real_sevenzip() else {
@@ -1169,10 +1212,9 @@ fn cancelling_a_merge_as_it_finishes_never_loses_the_parts_silently() {
         } => {
             assert_eq!(written, output_path);
             assert!(written.exists());
-            assert!(
-                parts.iter().all(|part| !part.exists()),
-                "a merge reported as Completed with delete_originals must have removed the parts"
-            );
+            // Waits rather than asserting immediately: the deletion trails
+            // the terminal event by design -- see `wait_until_removed`.
+            wait_until_removed(&parts);
         }
         other => panic!("expected Cancelled or Completed{{Merged}}, got {other:?}"),
     }

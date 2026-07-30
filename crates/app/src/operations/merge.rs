@@ -89,6 +89,7 @@ use crate::challenge::{next_challenge_id, Challenge, ChallengeResponse, SecretIn
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::event::{OperationResult, OperationState};
 use crate::ids::OperationId;
+use crate::operations::OperationRegistry;
 use crate::runtime::AppRuntime;
 
 /// Which container a merge writes its single output archive as. Mirrors
@@ -203,9 +204,16 @@ pub struct MergeRequest {
     /// has been written *and* this operation's terminal state has been
     /// observed to be `Completed { Merged }` -- so a cancelled or failed
     /// merge never deletes anything (see [`run_merge`]'s doc comment for
-    /// why that sequencing is enforced here rather than delegated). A part
-    /// that cannot be removed is logged and skipped (core's own
-    /// behaviour), not treated as a merge failure.
+    /// why that sequencing is enforced here rather than delegated).
+    ///
+    /// Cleanup is best-effort throughout, and always trails the terminal
+    /// event rather than preceding it. A part that cannot be removed is
+    /// logged and skipped (core's own behaviour), not treated as a merge
+    /// failure; and a process death between the `Completed { Merged }` event
+    /// and the end of the delete loop leaves the remaining parts on disk
+    /// beside the finished archive. Every way this can go wrong therefore
+    /// leaks parts rather than losing data -- the content is already in the
+    /// output archive by the time any of it runs.
     pub delete_originals: bool,
     /// A password to try first, for a set whose contents are encrypted.
     /// `None` starts with no password and lets the operation raise
@@ -502,10 +510,30 @@ fn decide_post_attempt(outcome: &MergeAttempt, cancellation_requested: bool) -> 
 ///
 /// `parts` is `None` when the request did not ask for deletion. When set,
 /// it is always the disk-derived enumeration taken before the attempt ran
-/// — the same list, from the same source, that `MergeService`'s own
-/// cleanup step would have used — never anything the caller supplied.
+/// — the same source `MergeService`'s own cleanup step used. For a
+/// single-attempt merge (the common case) that is also the same *moment*
+/// core would have enumerated at; across a password-parked retry whose
+/// directory changed underneath, a part that appeared mid-parking is
+/// merged by core's own re-enumeration but not deleted here. Leak-only,
+/// never a deletion of something outside the set, and never anything the
+/// caller supplied.
+///
+/// Deletion is best-effort and deliberately *after* the terminal event:
+/// a process death in that gap leaves the parts on disk with the merged
+/// archive already written — the content is never lost, only the cleanup
+/// is skipped. The `"Deleting original parts..."` progress message can
+/// likewise precede a veto (it has to be emitted before the terminal
+/// transition to be seen at all), in which case it announced an intent
+/// the terminal `Cancelled` immediately corrects.
+///
+/// Takes the registry rather than the whole [`AppRuntime`] because that is
+/// all it needs — and because the read-back gate is the single line
+/// standing between a cancelled merge and an irreversible deletion, so it
+/// must be directly constructible in a test (see this module's
+/// `the_read_back_gate_*` tests) rather than only reachable through a
+/// bootstrapped application and a real 7-Zip.
 async fn finish_successful_merge(
-    inner: &Arc<AppRuntime>,
+    operations: &OperationRegistry,
     operation_id: OperationId,
     output_path: PathBuf,
     parts: Option<&[PathBuf]>,
@@ -516,8 +544,7 @@ async fn finish_successful_merge(
     // ("Merge complete") by now, and a progress bar must not run
     // backwards.
     if parts.is_some() {
-        let _ = inner
-            .operations()
+        let _ = operations
             .transition(
                 operation_id,
                 OperationState::Progress {
@@ -532,8 +559,7 @@ async fn finish_successful_merge(
     let result = OperationResult::Merged {
         output_path: output_path.clone(),
     };
-    if inner
-        .operations()
+    if operations
         .transition(operation_id, OperationState::Completed { result })
         .await
         .is_err()
@@ -544,18 +570,39 @@ async fn finish_successful_merge(
     let Some(parts) = parts else {
         return;
     };
-    let landed_as_completed = matches!(
-        inner.operations().operation(operation_id).await,
-        Some(snapshot)
-            if matches!(
+    match operations.operation(operation_id).await {
+        Some(snapshot) => {
+            if !matches!(
                 snapshot.state,
                 OperationState::Completed {
                     result: OperationResult::Merged { .. }
                 }
-            )
-    );
-    if !landed_as_completed {
-        return;
+            ) {
+                // A cancellation won the registry's write lock, so
+                // `Cancelled` is terminal and the merge is not this
+                // operation's outcome. Vetoing the deletion here is the
+                // whole reason this operation owns it.
+                tracing::info!(
+                    "skipping split-archive cleanup: the operation ended as something other \
+                     than a completed merge"
+                );
+                return;
+            }
+        }
+        None => {
+            // The record was evicted between the transition above and this
+            // read (the registry bounds its terminal history), so the
+            // gate cannot be satisfied. Skipping is the fail-safe
+            // direction -- the parts leak rather than being deleted on an
+            // unverified outcome -- but it is silent otherwise, and a
+            // caller who asked for cleanup deserves to know it did not
+            // happen.
+            tracing::warn!(
+                "skipping split-archive cleanup: the operation's own record was no longer \
+                 available to confirm it completed"
+            );
+            return;
+        }
     }
     delete_original_parts(parts);
 }
@@ -860,7 +907,7 @@ pub(crate) async fn run_merge(
                     _ => return,
                 };
                 finish_successful_merge(
-                    &inner,
+                    inner.operations(),
                     operation_id,
                     written_path,
                     request.delete_originals.then_some(current.parts.as_slice()),
@@ -891,6 +938,7 @@ pub(crate) async fn run_merge(
 mod tests {
     use super::*;
     use crate::archive::multipart::MultiPartFormat;
+    use crate::event::OperationKind;
 
     fn dto(first_part: &str, base_name: &str) -> MultiPartArchiveDto {
         MultiPartArchiveDto {
@@ -1107,6 +1155,139 @@ mod tests {
         let failed = || MergeAttempt::Failed(anyhow::anyhow!("7z failed (code Some(1)): nope"));
         assert_eq!(decide_post_attempt(&failed(), true), PostAttempt::Stop);
         assert_eq!(decide_post_attempt(&failed(), false), PostAttempt::Fail);
+    }
+
+    /// Writes `count` placeholder part files into a fresh temp directory,
+    /// returning it alongside their paths. Real files, so the assertions
+    /// below observe real deletions rather than a mock's record of them.
+    fn parts_on_disk(count: usize) -> (tempfile::TempDir, Vec<PathBuf>) {
+        let temp = tempfile::tempdir().expect("create tempdir");
+        let parts = (1..=count)
+            .map(|index| {
+                let part = temp.path().join(format!("rj123456.7z.{index:03}"));
+                std::fs::write(&part, b"placeholder part").expect("write part");
+                part
+            })
+            .collect();
+        (temp, parts)
+    }
+
+    /// The gate this whole fix hangs on, in the direction that loses data
+    /// if it regresses: the operation's record is already terminal
+    /// `Cancelled` when the merge finishes, so `finish_successful_merge`
+    /// must read that back and delete nothing.
+    ///
+    /// Deterministic on purpose. The end-to-end test races a real
+    /// cancellation against a real merge and then inspects the disk, which
+    /// cannot reliably observe a *post-terminal* deletion at all -- the
+    /// regression class this gate exists for. Here the interleaving is
+    /// constructed rather than raced, and the deletion (or its absence) has
+    /// finished by the time the assertion runs.
+    #[tokio::test]
+    async fn the_read_back_gate_refuses_to_delete_when_the_operation_was_cancelled() {
+        let operations = OperationRegistry::new();
+        let (operation_id, _cancel) = operations.begin(OperationKind::Merge).await;
+        operations
+            .cancel(operation_id)
+            .await
+            .expect("cancelling a live operation must be accepted");
+
+        let (temp, parts) = parts_on_disk(3);
+        let output_path = temp.path().join("rj123456.7z");
+        std::fs::write(&output_path, b"the merged archive").expect("write output");
+
+        finish_successful_merge(&operations, operation_id, output_path.clone(), Some(&parts)).await;
+
+        for part in &parts {
+            assert!(
+                part.exists(),
+                "a merge whose operation is already Cancelled must delete nothing: {part:?}"
+            );
+        }
+        assert!(
+            output_path.exists(),
+            "the archive core already wrote stays; only the cleanup is vetoed"
+        );
+        assert!(
+            matches!(
+                operations.operation(operation_id).await.map(|s| s.state),
+                Some(OperationState::Cancelled)
+            ),
+            "the terminal state must still be Cancelled -- Completed cannot overwrite it"
+        );
+    }
+
+    /// The same gate in the direction that must still do the work: nothing
+    /// cancelled the operation, `Completed { Merged }` lands, and the parts
+    /// go. Without this half, the test above could be satisfied by never
+    /// deleting anything at all.
+    #[tokio::test]
+    async fn the_read_back_gate_deletes_when_the_merge_is_the_operations_outcome() {
+        let operations = OperationRegistry::new();
+        let (operation_id, _cancel) = operations.begin(OperationKind::Merge).await;
+
+        let (temp, parts) = parts_on_disk(3);
+        let output_path = temp.path().join("rj123456.7z");
+        std::fs::write(&output_path, b"the merged archive").expect("write output");
+
+        finish_successful_merge(&operations, operation_id, output_path.clone(), Some(&parts)).await;
+
+        for part in &parts {
+            assert!(
+                !part.exists(),
+                "a completed merge that asked for cleanup must remove every part: {part:?}"
+            );
+        }
+        assert!(output_path.exists());
+        assert!(
+            matches!(
+                operations.operation(operation_id).await.map(|s| s.state),
+                Some(OperationState::Completed {
+                    result: OperationResult::Merged { .. }
+                })
+            ),
+            "the terminal state must be the merge's own Completed"
+        );
+    }
+
+    /// `parts: None` (the request did not ask for cleanup) must publish the
+    /// same terminal state and touch nothing -- and must not emit the
+    /// "Deleting original parts..." progress message either.
+    #[tokio::test]
+    async fn a_merge_that_did_not_ask_for_cleanup_deletes_nothing() {
+        let operations = OperationRegistry::new();
+        let mut events = operations.subscribe();
+        let (operation_id, _cancel) = operations.begin(OperationKind::Merge).await;
+
+        let (temp, parts) = parts_on_disk(2);
+        let output_path = temp.path().join("rj123456.7z");
+
+        finish_successful_merge(&operations, operation_id, output_path.clone(), None).await;
+
+        for part in &parts {
+            assert!(part.exists(), "nothing was requested, so nothing goes");
+        }
+        assert!(matches!(
+            operations.operation(operation_id).await.map(|s| s.state),
+            Some(OperationState::Completed {
+                result: OperationResult::Merged { .. }
+            })
+        ));
+
+        let mut saw_cleanup_message = false;
+        while let Ok(event) = events.try_recv() {
+            if let OperationState::Progress {
+                message: Some(message),
+                ..
+            } = &event.state
+            {
+                saw_cleanup_message |= message.contains("Deleting original parts");
+            }
+        }
+        assert!(
+            !saw_cleanup_message,
+            "a merge with no cleanup requested must not announce one"
+        );
     }
 
     /// `delete_original_parts` is the only code in this crate that removes
