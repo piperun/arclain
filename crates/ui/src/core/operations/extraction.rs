@@ -141,7 +141,7 @@ pub fn start_extraction(shared: &SharedState, tab: &Arc<TabState>, entry_paths: 
             let page = match app
                 .list_entries(
                     session_id,
-                    crate::core::tabs::TabListing::whole_directory_request(current_directory),
+                    arclain_app::archive::ListEntriesRequest::whole_directory(current_directory),
                 )
                 .await
             {

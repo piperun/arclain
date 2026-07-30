@@ -16,10 +16,7 @@ pub mod settings;
 
 use std::path::{Path, PathBuf};
 
-use arclain_app::archive::{
-    ArchivePath, ArchiveSnapshot, EntrySortKey, ListEntriesRequest, OpenArchiveRequest,
-    SortDirection,
-};
+use arclain_app::archive::{ArchivePath, ArchiveSnapshot, ListEntriesRequest, OpenArchiveRequest};
 use arclain_app::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use arclain_app::event::{OperationEvent, OperationResult, OperationState};
 use arclain_app::ids::{ArchiveSessionId, EntryId};
@@ -251,14 +248,7 @@ pub(crate) async fn resolve_entry_id(
         let page = app
             .list_entries(
                 session_id,
-                ListEntriesRequest {
-                    directory: directory.clone(),
-                    sort_key: EntrySortKey::Name,
-                    sort_direction: SortDirection::Ascending,
-                    name_filter: None,
-                    offset: 0,
-                    limit: u32::MAX,
-                },
+                ListEntriesRequest::whole_directory(directory.clone()),
             )
             .await?;
         let found = page
@@ -357,6 +347,7 @@ impl LastProgressMessage {
 mod tests {
     use std::sync::Arc;
 
+    use arclain_app::archive::{EntrySortKey, SortDirection};
     use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 
     use crate::events::{CancelSignal, TimeoutBudget};

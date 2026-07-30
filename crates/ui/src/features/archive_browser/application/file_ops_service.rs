@@ -1,7 +1,7 @@
 //! File operations application service
 
 use crate::core::operations;
-use crate::core::tabs::{OpGuard, TabListing, TabState};
+use crate::core::tabs::{OpGuard, TabState};
 use crate::features::archive_operations::ArchiveOperationsState;
 use crate::features::file_editing::domain::types::FileEditLoadState;
 use crate::shared::SharedState;
@@ -98,7 +98,10 @@ impl FileOpsService {
         let runtime = shared.services.tokio_runtime.clone();
         runtime.spawn(async move {
             let page = match app
-                .list_entries(session_id, TabListing::whole_directory_request(directory))
+                .list_entries(
+                    session_id,
+                    arclain_app::archive::ListEntriesRequest::whole_directory(directory),
+                )
                 .await
             {
                 Ok(page) => page,

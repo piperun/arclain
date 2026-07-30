@@ -14,6 +14,7 @@
 // render-side migration removes the last caller.
 
 use super::*;
+use arclain_app::archive::{EntrySortKey, SortDirection, ALL_ENTRIES_IN_ONE_DIRECTORY};
 use arclain_app::error::{ApplicationErrorKind, Recoverability};
 use arclain_app::ids::{ArchiveSessionId, EntryId};
 
@@ -514,7 +515,7 @@ fn a_retry_that_also_fails_replaces_the_earlier_failure() {
 }
 
 // =========================================================================
-// whole_directory_request
+// the whole-directory request shape (now contract-owned)
 // =========================================================================
 
 /// Regression guard for a silent data loss: extraction resolved its
@@ -525,7 +526,7 @@ fn a_retry_that_also_fails_replaces_the_earlier_failure() {
 /// stale selection.
 #[test]
 fn a_whole_directory_request_does_not_cap_below_any_directory_an_archive_can_hold() {
-    let request = TabListing::whole_directory_request(ArchivePath::root());
+    let request = ListEntriesRequest::whole_directory(ArchivePath::root());
 
     assert_eq!(
         request.offset, 0,
@@ -546,6 +547,6 @@ fn a_whole_directory_request_does_not_cap_below_any_directory_an_archive_can_hol
 fn a_fresh_listing_asks_for_the_whole_directory_shape() {
     assert_eq!(
         listing().request(),
-        &TabListing::whole_directory_request(ArchivePath::root())
+        &ListEntriesRequest::whole_directory(ArchivePath::root())
     );
 }

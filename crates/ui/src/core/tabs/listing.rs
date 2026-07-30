@@ -18,23 +18,10 @@
 //! cursor: an [`ArchivePath`], validated once, instead of a string
 //! re-normalized at every call site.
 
-use arclain_app::archive::{
-    ArchiveEntryDto, ArchivePath, EntryPage, EntrySortKey, ListEntriesRequest, SortDirection,
-};
+use arclain_app::archive::{ArchiveEntryDto, ArchivePath, EntryPage, ListEntriesRequest};
 use arclain_app::error::ApplicationError;
 use arclain_app::ids::ArchiveSessionId;
 use std::sync::Arc;
-
-/// How many entries a directory-scoped listing asks for when the caller
-/// wants the whole directory rather than one window of it.
-///
-/// The archive browser renders a complete directory today (its
-/// virtualization is renderer-side, over an already-materialized row
-/// list), and a directory's own entry count has no upper bound worth
-/// naming more precisely than "effectively unbounded". The `offset`/
-/// `limit` pair on [`TabListing`]'s request becomes a real window when
-/// the browser panel starts paging through it.
-pub const ALL_ENTRIES_IN_ONE_DIRECTORY: u32 = u32::MAX;
 
 /// Normalizes a path fragment the way `arclain_core::archive::
 /// NavigationState::normalize_path` did: split on either separator, drop
@@ -311,39 +298,18 @@ impl TabListing {
     /// A fresh listing at the archive root, bound to `session` -- what a
     /// tab starts browsing a newly opened archive from, and (with
     /// `None`) what a tab with no archive open holds.
+    ///
+    /// The whole-directory request shape itself lives on the contract
+    /// ([`ListEntriesRequest::whole_directory`]) rather than here: every
+    /// frontend that resolves paths back to `EntryId`s needs it, not
+    /// only this one.
     pub fn for_session(session: Option<ArchiveSessionId>) -> Self {
         Self {
             session,
             navigation: ArchiveNavigation::default(),
-            request: Self::whole_directory_request(ArchivePath::root()),
+            request: ListEntriesRequest::whole_directory(ArchivePath::root()),
             rows: None,
             status: RequestStatus::Idle,
-        }
-    }
-
-    /// The request for everything in one directory, in the order and
-    /// scope the archive browser has always shown a freshly-opened
-    /// archive in: name-ascending, unfiltered, from the first row, with
-    /// no cap.
-    ///
-    /// The one place that shape is written down. Every caller that
-    /// resolves a selection of paths back to `EntryId`s needs exactly it
-    /// (extraction, add/replace-text, delete), and each used to spell it
-    /// out itself -- including one that capped `limit` at a literal
-    /// `100_000` and therefore dropped every selected row past that in a
-    /// larger directory.
-    ///
-    /// Sorting, filtering, and paging still happen renderer-side today
-    /// (over `TabState::browser_entries`); moving each onto these fields
-    /// is what lets the session do that work instead.
-    pub fn whole_directory_request(directory: ArchivePath) -> ListEntriesRequest {
-        ListEntriesRequest {
-            directory,
-            sort_key: EntrySortKey::Name,
-            sort_direction: SortDirection::Ascending,
-            name_filter: None,
-            offset: 0,
-            limit: ALL_ENTRIES_IN_ONE_DIRECTORY,
         }
     }
 

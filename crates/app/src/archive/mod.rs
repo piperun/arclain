@@ -180,6 +180,12 @@ pub enum SortDirection {
     Descending,
 }
 
+/// How many entries a directory-scoped listing asks for when the caller
+/// wants the whole directory rather than one window of it. A directory's
+/// own entry count has no upper bound worth naming more precisely than
+/// "effectively unbounded" -- see [`ListEntriesRequest::whole_directory`].
+pub const ALL_ENTRIES_IN_ONE_DIRECTORY: u32 = u32::MAX;
+
 /// A request for one page of entries within a single directory of an open
 /// archive.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -190,6 +196,30 @@ pub struct ListEntriesRequest {
     pub name_filter: Option<String>,
     pub offset: u64,
     pub limit: u32,
+}
+
+impl ListEntriesRequest {
+    /// The request for everything in one directory, in the read model's
+    /// baseline order: name-ascending, unfiltered, from the first row,
+    /// with no cap.
+    ///
+    /// The one place that shape is written down, for *every* frontend.
+    /// Each caller that resolves a selection of paths back to
+    /// [`EntryId`]s needs exactly this request (extraction,
+    /// add/replace-text, delete, the CLI's path-to-id walk), and before
+    /// it existed each spelled the shape out itself -- including one that
+    /// capped `limit` at a literal `100_000` and therefore silently
+    /// dropped every selected row past that in a larger directory.
+    pub fn whole_directory(directory: ArchivePath) -> Self {
+        Self {
+            directory,
+            sort_key: EntrySortKey::Name,
+            sort_direction: SortDirection::Ascending,
+            name_filter: None,
+            offset: 0,
+            limit: ALL_ENTRIES_IN_ONE_DIRECTORY,
+        }
+    }
 }
 
 /// One page of [`ArchiveEntryDto`] results for a [`ListEntriesRequest`],

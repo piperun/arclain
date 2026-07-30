@@ -103,11 +103,12 @@ fn basename(path: &str) -> String {
 /// One directory's whole listing, for resolving a path to the `EntryId`
 /// naming it.
 ///
-/// Shares [`crate::core::tabs::TabListing::whole_directory_request`] with
-/// every other path-to-id resolution in this crate rather than spelling
-/// the request out again: this call site used to cap `limit` at a literal
-/// `100_000`, so a directory larger than that could not resolve at all --
-/// see [`resolve_directory_entry_id`] for what that silently degraded to.
+/// Shares `ListEntriesRequest::whole_directory` (the contract's own
+/// definition of the shape) with every other path-to-id resolution in
+/// any frontend rather than spelling the request out again: this call
+/// site used to cap `limit` at a literal `100_000`, so a directory
+/// larger than that could not resolve at all -- see
+/// [`resolve_directory_entry_id`] for what that silently degraded to.
 async fn list_directory(
     app: &ArclainApp,
     session_id: ArchiveSessionId,
@@ -115,7 +116,7 @@ async fn list_directory(
 ) -> Result<arclain_app::archive::EntryPage, arclain_app::error::ApplicationError> {
     app.list_entries(
         session_id,
-        crate::core::tabs::TabListing::whole_directory_request(directory),
+        arclain_app::archive::ListEntriesRequest::whole_directory(directory),
     )
     .await
 }

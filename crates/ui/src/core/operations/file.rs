@@ -1,5 +1,5 @@
 use crate::core::tabs::view_state::RevisionedSelection;
-use crate::core::tabs::{TabId, TabListing};
+use crate::core::tabs::TabId;
 use crate::shared::models::file_entry::FileEntry;
 use crate::shared::SharedState;
 use arclain_app::archive::ArchivePath;
@@ -132,7 +132,10 @@ pub fn start_replace_text(
             .unwrap_or_default();
         let directory = ArchivePath::parse(parent).unwrap_or_else(|_| ArchivePath::root());
         let page = match app
-            .list_entries(session_id, TabListing::whole_directory_request(directory))
+            .list_entries(
+                session_id,
+                arclain_app::archive::ListEntriesRequest::whole_directory(directory),
+            )
             .await
         {
             Ok(page) => page,
