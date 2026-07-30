@@ -453,15 +453,49 @@ fn authorize_plugin_image_write<'key>(
 /// [`crate::ArclainApp::fetch_host_image`] stores, for one host-owned
 /// `cache_key`.
 ///
-/// Deliberately the same ceiling as [`MAX_PLUGIN_IMAGE_BYTES`], and for
-/// the same reason: both bound *one rendered image asset* a frontend
-/// materializes whole (a decoded texture upload), so a single asset can
-/// never exhaust a frontend's memory on its own, while still comfortably
-/// admitting a full-resolution cover or screenshot. Held as a separate
-/// constant rather than an alias because the two namespaces are separate
-/// trust boundaries: a future decision to tighten one must not silently
-/// move the other.
-pub const MAX_HOST_IMAGE_BYTES: u32 = 16 * 1024 * 1024;
+/// **Three times [`MAX_PLUGIN_IMAGE_BYTES`], on purpose.** The two
+/// namespaces are different trust boundaries, not two spellings of one
+/// rule:
+///
+/// - A plugin-scoped asset is named by plugin-authored content, so its
+///   ceiling is a containment budget against a guest. 16 MiB is generous
+///   for a cover or screenshot and deliberately tight against anything
+///   else.
+/// - A host-owned asset is one the host itself resolved. Nothing guest-
+///   authored decides it exists, so the ceiling's job here is bounding a
+///   single buffered response, not fencing an untrusted party.
+///
+/// The value is exactly the ceiling host image reads have *always* had:
+/// before this surface existed the frontend read them through
+/// `ContentCache::get`, whose default is
+/// `arclain_data::DEFAULT_MAX_RESOURCE_SIZE_BYTES`. Matching it is the
+/// point -- introducing a bound must not retire images that render today.
+/// A host entry between the plugin cap and this one is not hypothetical
+/// (see `a_host_image_larger_than_the_plugin_cap_still_round_trips`), and
+/// narrowing to 16 MiB would have broken exactly those permanently: the
+/// read refuses them, and so would every URL-fallback refetch that tried
+/// to heal the gap.
+///
+/// The assertion below keeps that equality honest -- if the underlying
+/// default ever moves, this fails to compile instead of silently
+/// narrowing what a user can already see.
+///
+/// What this bound does *not* claim to do is cap decoded size: 50 MiB of
+/// PNG can expand to far more RGBA, and bounding that is the frontend's
+/// job at texture-upload time, not this constant's.
+///
+/// Held as a separate constant rather than an alias of the plugin cap so
+/// the two can move independently, which is the whole reason they can
+/// legitimately differ.
+pub const MAX_HOST_IMAGE_BYTES: u32 = 50 * 1024 * 1024;
+
+const _: () = assert!(
+    MAX_HOST_IMAGE_BYTES as usize == arclain_data::DEFAULT_MAX_RESOURCE_SIZE_BYTES,
+    "MAX_HOST_IMAGE_BYTES must stay equal to the content cache's default \
+     materialized-read ceiling: it exists to preserve what host image reads \
+     already accept, and drifting below it silently stops serving cached \
+     images that render today",
+);
 
 /// Smallest response body accepted as an image by
 /// [`fetch_display_image`].
@@ -2987,6 +3021,41 @@ mod tests {
                 .unwrap_err()
                 .kind,
             ApplicationErrorKind::NotFound
+        );
+    }
+
+    /// The regression this pins: a host image *larger than the plugin cap*
+    /// but within the host cap must keep round-tripping.
+    ///
+    /// Host reads have always been bounded by the content cache's default
+    /// materialized-read ceiling, so entries in the 16-50 MiB band exist in
+    /// real caches and render today. An earlier version of this surface
+    /// gave host images the plugin cap, which retired every one of them
+    /// permanently -- the read refused them and so did every URL-fallback
+    /// refetch, so nothing could heal it. The two caps differ because the
+    /// namespaces are different trust boundaries, and this is the case that
+    /// tells them apart.
+    #[test]
+    fn a_host_image_larger_than_the_plugin_cap_still_round_trips() {
+        let (_root, cache) = test_content_cache();
+        let oversized_for_a_plugin = vec![0x5A_u8; MAX_PLUGIN_IMAGE_BYTES as usize + 1];
+        assert!(
+            oversized_for_a_plugin.len() < MAX_HOST_IMAGE_BYTES as usize,
+            "the fixture must sit between the two caps for this test to mean anything"
+        );
+        cache
+            .put(
+                "dlsite:image:huge-cover",
+                &oversized_for_a_plugin,
+                arclain_db::CacheType::Screenshot,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            read_host_image(&cache, "dlsite:image:huge-cover").unwrap(),
+            oversized_for_a_plugin
         );
     }
 

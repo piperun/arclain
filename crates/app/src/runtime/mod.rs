@@ -2281,9 +2281,9 @@ impl ArclainApp {
         .await?
     }
 
-    /// Caches image bytes a renderer fetched from a plugin document
-    /// node's `url` fallback, under the plugin namespace `cache_key`
-    /// names -- the write counterpart of [`Self::read_plugin_image`].
+    /// Caches image bytes a caller already holds under the plugin
+    /// namespace `cache_key` names -- the write counterpart of
+    /// [`Self::read_plugin_image`].
     ///
     /// Exists because that read decodes the owning plugin out of the key:
     /// a frontend writing the same bytes into its own cache namespace
@@ -2297,6 +2297,23 @@ impl ArclainApp {
     /// namespace, so accepting it unchecked would let any caller holding a
     /// `plugin-image:victim:k` string write bytes `victim` would later
     /// render as its own.
+    ///
+    /// **No in-tree caller today, and retained deliberately.** The egui
+    /// frontend recovers a missing plugin asset through
+    /// [`Self::fetch_plugin_image`], which owns the HTTP request as well as
+    /// the write. This method is kept for two reasons that are about the
+    /// shape of the surface, not about a hypothetical future:
+    ///
+    /// - It is the symmetric write half of the namespaced pair. The
+    ///   *pairing* of a read and a write that resolve one key to one
+    ///   namespace is what makes a namespace mismatch unrepresentable here
+    ///   (see [`crate::plugins::authorize_plugin_image_write`], shared by
+    ///   this and the fetch). Leaving a `read` with no matching `write`
+    ///   re-opens that asymmetry conceptually and invites the next writer
+    ///   to invent their own path into the namespace.
+    /// - A frontend that obtains bytes out of band -- a bridge fetching
+    ///   through its platform's own HTTP stack rather than this one -- has
+    ///   no other supported way to put them where the read will look.
     pub async fn write_plugin_image(
         &self,
         plugin_id: String,

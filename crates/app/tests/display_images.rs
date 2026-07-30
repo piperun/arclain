@@ -55,12 +55,20 @@ fn dummy_sevenzip(temp: &tempfile::TempDir) -> PathBuf {
 
 /// Bootstraps an `ArclainApp` against an isolated temp profile.
 ///
-/// The isolation is load-bearing beyond the usual "don't touch the
-/// developer's profile": the content cache reconciles its own physical
-/// blobs against its index at construction, deleting anything the index
-/// does not reference. Two bootstraps sharing one cache root would
-/// therefore destroy each other's blobs, so every test gets its own
-/// `paths_override` root.
+/// **The `paths_override` root does not isolate the content cache**, which
+/// is worth stating because it is the opposite of what the call reads
+/// like. `bootstrap` takes the cache root from `CoreServices::cache_dir`,
+/// which `init_db_services` sets from the real per-user cache directory
+/// (`AppDirectories::init("arclain", None)`), ignoring the override. Every
+/// bootstrapped application in every test binary therefore shares one
+/// physical blob store, while each holds its *own* index — and the cache
+/// reconciles blobs against its index at construction, deleting whatever
+/// that index does not reference. See this task's report; the fix belongs
+/// to whoever owns `bootstrap.rs`.
+///
+/// The practical consequence for tests here: never share a cache key or a
+/// body between tests (see [`host_key`]), and treat a "row present, blob
+/// gone" read failure as this, not as a bug in the surface under test.
 fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
     let paths = support::temp_paths(temp.path());
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
@@ -170,13 +178,34 @@ impl Drop for ImageStub {
 
 /// A body big enough to clear the fetch path's "real images are >1KB"
 /// floor, prefixed with the PNG signature so its intent is legible.
-fn png_body(len: usize) -> Vec<u8> {
+///
+/// `fill` exists to keep bodies *distinct between tests*, which is
+/// load-bearing rather than cosmetic -- see [`host_key`].
+fn png_body(len: usize, fill: u8) -> Vec<u8> {
     let mut body = b"\x89PNG\r\n\x1a\n".to_vec();
-    body.resize(len, 0x5A);
+    body.resize(len, fill);
     body
 }
 
-const HOST_KEY: &str = "dlsite:image:RJ000001";
+/// A cache key unique to one test.
+///
+/// Every bootstrapped application in this binary shares one *physical*
+/// blob store, because the content cache's root comes from the real
+/// per-user cache directory rather than from `paths_override` (see this
+/// task's report). Two tests using one key therefore share one cache
+/// entry -- and since blobs are content-addressed, two tests using one
+/// *body* share one physical blob even under different keys. Either way,
+/// whichever test discards or evicts first deletes the blob out from under
+/// a peer that still references it, and the peer's next read fails with
+/// its index row intact and the file gone.
+///
+/// So: one key and one body per test, both named after the test. This is
+/// isolation on its own merits, not a dodge around the shared root -- a
+/// test should not depend on what its neighbours cached even once that
+/// root is per-instance.
+fn host_key(test: &str) -> String {
+    format!("dlsite:image:{test}")
+}
 
 // ---------------------------------------------------------------------------
 // fetch_host_image
@@ -188,19 +217,20 @@ const HOST_KEY: &str = "dlsite:image:RJ000001";
 fn fetch_host_image_fetches_once_and_serves_the_cache_afterwards() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
-    let body = png_body(2048);
+    let key = host_key("fetch-once");
+    let body = png_body(2048, 0x11);
     let stub = ImageStub::start(body.clone(), "image/png");
     let runtime = foreign_runtime();
 
     let fetched = runtime
-        .block_on(app.fetch_host_image(HOST_KEY.to_string(), stub.url(), None))
+        .block_on(app.fetch_host_image(key.clone(), stub.url(), None))
         .expect("a cache miss must fetch the image");
     assert_eq!(fetched.bytes, body);
     assert!(!fetched.served_from_cache);
     assert_eq!(stub.request_count(), 1);
 
     let cached = runtime
-        .block_on(app.fetch_host_image(HOST_KEY.to_string(), stub.url(), None))
+        .block_on(app.fetch_host_image(key.clone(), stub.url(), None))
         .expect("a warm key must resolve");
     assert_eq!(cached.bytes, body);
     assert!(cached.served_from_cache);
@@ -214,9 +244,46 @@ fn fetch_host_image_fetches_once_and_serves_the_cache_afterwards() {
     // renderer that fetched can read the asset back on its next pass.
     assert_eq!(
         runtime
-            .block_on(app.read_host_image(HOST_KEY.to_string()))
+            .block_on(app.read_host_image(key.clone()))
             .expect("the fetched bytes must be readable through the host read"),
         body
+    );
+}
+
+/// The other half of the two-cap split, end to end: a host image between
+/// the plugin cap and the host cap must fetch, cache, and read back.
+///
+/// The unit tests pin the *read* side of that band. This pins the write
+/// side, which is the half that decides whether a broken asset can heal:
+/// a renderer that finds such an image missing refetches it, and if the
+/// write refused everything over the plugin cap, that refetch would fail
+/// forever instead of restoring the image. Both halves have to admit the
+/// band for it to be usable at all.
+#[test]
+fn fetch_host_image_accepts_a_body_between_the_plugin_and_host_caps() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let key = host_key("cap-band");
+    let body = png_body(MAX_PLUGIN_IMAGE_BYTES as usize + 1, 0x22);
+    assert!(
+        body.len() < MAX_HOST_IMAGE_BYTES as usize,
+        "the fixture must sit between the two caps for this test to mean anything"
+    );
+    let stub = ImageStub::start(body.clone(), "image/png");
+    let runtime = foreign_runtime();
+
+    let fetched = runtime
+        .block_on(app.fetch_host_image(key.clone(), stub.url(), None))
+        .expect("a host image over the plugin cap must still fetch");
+
+    assert_eq!(fetched.bytes.len(), body.len());
+    assert!(!fetched.served_from_cache);
+    assert_eq!(
+        runtime
+            .block_on(app.read_host_image(key.clone()))
+            .expect("and must read back afterwards")
+            .len(),
+        body.len()
     );
 }
 
@@ -227,17 +294,21 @@ fn fetch_host_image_fetches_once_and_serves_the_cache_afterwards() {
 fn fetch_host_image_refuses_a_response_over_the_size_cap() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
-    let stub = ImageStub::start(png_body(MAX_HOST_IMAGE_BYTES as usize + 1), "image/png");
+    let key = host_key("oversize");
+    let stub = ImageStub::start(
+        png_body(MAX_HOST_IMAGE_BYTES as usize + 1, 0x33),
+        "image/png",
+    );
     let runtime = foreign_runtime();
 
     let error = runtime
-        .block_on(app.fetch_host_image(HOST_KEY.to_string(), stub.url(), None))
+        .block_on(app.fetch_host_image(key.clone(), stub.url(), None))
         .expect_err("an oversized image must be refused");
 
     assert_eq!(error.kind, ApplicationErrorKind::Backend);
     assert_eq!(
         runtime
-            .block_on(app.read_host_image(HOST_KEY.to_string()))
+            .block_on(app.read_host_image(key.clone()))
             .unwrap_err()
             .kind,
         ApplicationErrorKind::NotFound,
@@ -251,17 +322,18 @@ fn fetch_host_image_refuses_a_response_over_the_size_cap() {
 fn fetch_host_image_refuses_a_non_image_content_type() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
-    let stub = ImageStub::start(png_body(2048), "text/html");
+    let key = host_key("wrong-content-type");
+    let stub = ImageStub::start(png_body(2048, 0x44), "text/html");
     let runtime = foreign_runtime();
 
     let error = runtime
-        .block_on(app.fetch_host_image(HOST_KEY.to_string(), stub.url(), None))
+        .block_on(app.fetch_host_image(key.clone(), stub.url(), None))
         .expect_err("a non-image response must be refused");
 
     assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
     assert_eq!(
         runtime
-            .block_on(app.read_host_image(HOST_KEY.to_string()))
+            .block_on(app.read_host_image(key.clone()))
             .unwrap_err()
             .kind,
         ApplicationErrorKind::NotFound
@@ -275,15 +347,12 @@ fn fetch_host_image_refuses_a_non_image_content_type() {
 fn fetch_host_image_on_behalf_of_a_plugin_goes_through_that_plugins_network_policy() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
-    let stub = ImageStub::start(png_body(2048), "image/png");
+    let key = host_key("plugin-network-policy");
+    let stub = ImageStub::start(png_body(2048, 0x55), "image/png");
     let runtime = foreign_runtime();
 
     let error = runtime
-        .block_on(app.fetch_host_image(
-            HOST_KEY.to_string(),
-            stub.url(),
-            Some("not-installed".to_string()),
-        ))
+        .block_on(app.fetch_host_image(key.clone(), stub.url(), Some("not-installed".to_string())))
         .expect_err("a plugin with no network policy must be refused");
 
     assert_eq!(error.kind, ApplicationErrorKind::Backend);
@@ -305,10 +374,10 @@ fn fetch_host_image_on_behalf_of_a_plugin_goes_through_that_plugins_network_poli
 fn fetch_host_image_refuses_a_key_naming_a_plugin_namespace() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
-    let stub = ImageStub::start(png_body(2048), "image/png");
+    let stub = ImageStub::start(png_body(2048, 0x66), "image/png");
     let runtime = foreign_runtime();
     let victim_key = "plugin-image:victim-plugin:secret".to_string();
-    let victim_bytes = png_body(1200);
+    let victim_bytes = png_body(1200, 0x67);
     runtime
         .block_on(app.write_plugin_image(
             "victim-plugin".to_string(),
@@ -352,11 +421,12 @@ fn fetch_host_image_refuses_a_key_naming_a_plugin_namespace() {
 fn fetch_plugin_image_refuses_host_owned_and_foreign_keys() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
-    let stub = ImageStub::start(png_body(2048), "image/png");
+    let key = host_key("plugin-door");
+    let stub = ImageStub::start(png_body(2048, 0x77), "image/png");
     let runtime = foreign_runtime();
 
     let host_owned = runtime
-        .block_on(app.fetch_plugin_image("attacker".to_string(), HOST_KEY.to_string(), stub.url()))
+        .block_on(app.fetch_plugin_image("attacker".to_string(), key.clone(), stub.url()))
         .expect_err("a host-owned key must be refused by the plugin surface");
     assert_eq!(host_owned.kind, ApplicationErrorKind::NotFound);
 
@@ -386,7 +456,7 @@ fn fetch_plugin_image_refuses_host_owned_and_foreign_keys() {
     );
     assert_eq!(
         runtime
-            .block_on(app.read_host_image(HOST_KEY.to_string()))
+            .block_on(app.read_host_image(key.clone()))
             .unwrap_err()
             .kind,
         ApplicationErrorKind::NotFound,
@@ -402,10 +472,10 @@ fn fetch_plugin_image_refuses_host_owned_and_foreign_keys() {
 fn fetch_plugin_image_serves_the_plugins_own_namespace_without_refetching() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
-    let stub = ImageStub::start(png_body(2048), "image/png");
+    let stub = ImageStub::start(png_body(2048, 0x88), "image/png");
     let runtime = foreign_runtime();
     let key = "plugin-image:demo-plugin:cover:RJ1".to_string();
-    let bytes = png_body(1500);
+    let bytes = png_body(1500, 0x89);
     runtime
         .block_on(app.write_plugin_image(
             "demo-plugin".to_string(),
@@ -469,21 +539,22 @@ fn write_plugin_image_and_the_host_read_disagree_about_nothing_at_the_cap() {
 fn discard_host_image_removes_the_entry_once_and_reports_whether_it_did() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);
-    let stub = ImageStub::start(png_body(2048), "image/png");
+    let key = host_key("discard");
+    let stub = ImageStub::start(png_body(2048, 0x99), "image/png");
     let runtime = foreign_runtime();
     runtime
-        .block_on(app.fetch_host_image(HOST_KEY.to_string(), stub.url(), None))
+        .block_on(app.fetch_host_image(key.clone(), stub.url(), None))
         .expect("seed the host namespace through a fetch");
 
     assert!(runtime
-        .block_on(app.discard_host_image(HOST_KEY.to_string()))
+        .block_on(app.discard_host_image(key.clone()))
         .expect("discarding a present entry must succeed"));
     assert!(!runtime
-        .block_on(app.discard_host_image(HOST_KEY.to_string()))
+        .block_on(app.discard_host_image(key.clone()))
         .expect("discarding a missing entry is not an error"));
     assert_eq!(
         runtime
-            .block_on(app.read_host_image(HOST_KEY.to_string()))
+            .block_on(app.read_host_image(key.clone()))
             .unwrap_err()
             .kind,
         ApplicationErrorKind::NotFound
@@ -523,7 +594,7 @@ fn materialized_resource_limit_is_readable_without_a_runtime() {
 /// run.
 #[test]
 fn the_stub_counts_requests_rather_than_connections() {
-    let stub = ImageStub::start(png_body(2048), "image/png");
+    let stub = ImageStub::start(png_body(2048, 0xAA), "image/png");
 
     drop(TcpStream::connect(stub.address).expect("connect without sending a request"));
     std::thread::sleep(Duration::from_millis(200));

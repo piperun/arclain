@@ -505,13 +505,19 @@ impl Drop for ImageStub {
 /// A decodable PNG large enough to clear the fetch path's "real images are
 /// >1KB" floor. The size assertion is not decoration: a smaller payload
 /// would make the fetch fail for a reason this test is not about.
-fn fetchable_png() -> Vec<u8> {
+///
+/// `tint` keeps each test's bytes distinct. Cache blobs are
+/// content-addressed in a store every bootstrapped application shares (the
+/// cache root ignores `paths_override` — see this task's report), so two
+/// tests with identical bytes would share one physical blob and could
+/// delete it out from under each other.
+fn fetchable_png(tint: u8) -> Vec<u8> {
     let image = image::RgbaImage::from_fn(64, 64, |x, y| {
         image::Rgba([
             (x * 7 + y * 13) as u8,
             (x * 29 + 11) as u8,
             (y * 31 + 5) as u8,
-            255,
+            tint,
         ])
     });
     let mut bytes = std::io::Cursor::new(Vec::new());
@@ -557,9 +563,9 @@ fn the_image_store_fetches_host_keys_where_it_reads_them_from_inside_a_runtime_t
     // Built exactly as production does (`SharedState::new`), so this
     // exercises the real routing rather than a test-only source.
     let store = ImageAssetStore::new(app.clone(), runtime.clone());
-    let png = fetchable_png();
+    let png = fetchable_png(255);
     let stub = ImageStub::start(png.clone());
-    let key = "dlsite:image:RJ000002".to_string();
+    let key = "dlsite:image:host-fetch-round-trip".to_string();
 
     runtime.block_on({
         let store = store.clone();
@@ -600,7 +606,7 @@ fn the_image_store_fetches_host_keys_where_it_reads_them_from_inside_a_runtime_t
     wait_until(|| store.is_decoded(&key));
 
     fn key_for_read() -> String {
-        "dlsite:image:RJ000002".to_string()
+        "dlsite:image:host-fetch-round-trip".to_string()
     }
 }
 
@@ -620,7 +626,7 @@ fn the_image_store_resolves_plugin_keys_through_the_plugins_own_namespace() {
     let runtime = runtime();
     let store = ImageAssetStore::new(app.clone(), runtime.clone());
     let key = "plugin-image:ui-demo:cover:RJ000002".to_string();
-    let png = fetchable_png();
+    let png = fetchable_png(254);
 
     runtime.block_on({
         let store = store.clone();
