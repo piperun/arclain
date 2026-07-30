@@ -43,10 +43,11 @@ use eframe::egui;
 /// own direct request path.
 ///
 /// Returns whether a fetch was actually dispatched. Callers are
-/// fire-and-forget and ignore it; it exists so the two refusal paths
-/// below (a key naming another plugin's namespace, and nothing able to
-/// store the result) are observable from a test rather than being
-/// silent early returns that a regression could delete unnoticed.
+/// fire-and-forget and ignore it; it exists so the three refusal paths
+/// below (a key naming another plugin's namespace, nothing able to store
+/// the result, and a key the application has already refused
+/// permanently) are observable from a test rather than being silent early
+/// returns that a regression could delete unnoticed.
 ///
 /// [`ImageAssetStore::can_store`]: crate::shared::image_assets::ImageAssetStore::can_store
 /// [`ImageAssetStore::fetch_into_cache`]: crate::shared::image_assets::ImageAssetStore::fetch_into_cache
@@ -72,6 +73,14 @@ pub fn trigger_image_fetch(
         return false;
     }
     if !shared.image_assets.can_store(&key) {
+        return false;
+    }
+    // The second refusal, and the reason an oversized or non-image asset
+    // stops costing a request every 30 s: the application already refused
+    // this key permanently, so another identical request cannot end
+    // differently. Checked here rather than only at the call sites because
+    // this is the one point all three of them share.
+    if !shared.image_assets.fetch_may_help(&key) {
         return false;
     }
 

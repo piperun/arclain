@@ -106,6 +106,14 @@ pub(super) fn maybe_trigger_fetch(
     let (Some(url), Some(shared)) = (url, ctx.shared_state) else {
         return;
     };
+    // Declining to re-arm at all, rather than re-arming and being refused:
+    // once the application has permanently refused this key (an oversized
+    // body, a non-image content type), every later pass through here would
+    // otherwise reset the throttle and schedule another attempt that can
+    // only fail the same way.
+    if !shared.image_assets.fetch_may_help(key) {
+        return;
+    }
     let fetch_id = egui::Id::new(("image_fetch", key));
     let now = std::time::Instant::now();
     let last_fired: Option<std::time::Instant> = ui.data(|data| data.get_temp(fetch_id));

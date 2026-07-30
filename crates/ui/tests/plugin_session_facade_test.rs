@@ -450,7 +450,7 @@ struct ImageStub {
 }
 
 impl ImageStub {
-    fn start(body: Vec<u8>) -> Self {
+    fn start(body: Vec<u8>, content_type: &'static str) -> Self {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the image stub");
         let address = listener.local_addr().expect("read the stub address");
@@ -478,7 +478,7 @@ impl ImageStub {
                     continue;
                 }
                 let header = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n\
                      Content-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len(),
                 );
@@ -564,7 +564,7 @@ fn the_image_store_fetches_host_keys_where_it_reads_them_from_inside_a_runtime_t
     // exercises the real routing rather than a test-only source.
     let store = ImageAssetStore::new(app.clone(), runtime.clone());
     let png = fetchable_png(255);
-    let stub = ImageStub::start(png.clone());
+    let stub = ImageStub::start(png.clone(), "image/png");
     let key = "dlsite:image:host-fetch-round-trip".to_string();
 
     runtime.block_on({
@@ -662,6 +662,98 @@ fn the_image_store_resolves_plugin_keys_through_the_plugins_own_namespace() {
         ImageAssetState::Loading
     ));
     wait_until(|| store.is_decoded(&key));
+}
+
+/// The renderer's 30 s retry must obey the application's own verdict --
+/// both ways.
+///
+/// The application already classifies a non-image body (like an oversized
+/// one) as `Recoverability::Fatal`, but that classification used to be
+/// flattened into a bare message at this frontend's error boundary, one
+/// call before the only code that could act on it. So an asset the
+/// application would never accept was re-fetched every 30 s forever. This
+/// drives the whole chain -- facade verdict, `ImageFetchError`, the
+/// asset's recorded state, and `trigger_image_fetch`'s refusal -- and
+/// pins the other direction too, because "stop after any failure" would
+/// break every transient retry.
+#[test]
+fn a_permanently_refused_image_stops_refetching_while_a_transient_one_does_not() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "ui-demo");
+    let mut shared = common::create_test_shared_state();
+    let runtime = shared.services.tokio_runtime.clone();
+    shared.facade = Some(app.clone());
+    shared.image_assets = ImageAssetStore::new(app, runtime.clone());
+    let ctx = egui::Context::default();
+
+    // A body the application refuses permanently: right size, wrong type.
+    let refused = ImageStub::start(fetchable_png(253), "text/html");
+    // An address nothing is listening on: a transport failure, which is
+    // exactly the kind that *should* keep retrying.
+    let unreachable = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        format!("http://{address}/cover.png")
+    };
+
+    for (key, url, may_help_after, note) in [
+        (
+            "dlsite:image:permanently-refused",
+            refused.url(),
+            false,
+            "a fatally refused asset must stop asking",
+        ),
+        (
+            "dlsite:image:transiently-failed",
+            unreachable,
+            true,
+            "a transport failure must still retry",
+        ),
+    ] {
+        // A fetch is only attempted once the read has failed, so put the
+        // asset in the state production would put it in.
+        shared.image_assets.request(
+            ImageOwner::plugin_panel("ui-demo", "properties", TabId(1)),
+            key,
+            ctx.clone(),
+        );
+        wait_until(|| {
+            matches!(
+                shared.image_assets.state(key),
+                Some(ImageAssetState::Failed(_))
+            )
+        });
+        assert!(
+            shared.image_assets.fetch_may_help(key),
+            "the first attempt must always be allowed: {note}"
+        );
+
+        runtime
+            .block_on(
+                shared
+                    .image_assets
+                    .fetch_into_cache(None, key.to_string(), url, ctx.clone()),
+            )
+            .expect_err("both fixtures fail");
+
+        assert_eq!(
+            shared.image_assets.fetch_may_help(key),
+            may_help_after,
+            "{note}"
+        );
+        assert_eq!(
+            arclain_ui::shared::image_fetcher::trigger_image_fetch(
+                &shared,
+                None,
+                "https://example.invalid/c.png".to_string(),
+                key.to_string(),
+                ctx.clone(),
+            ),
+            may_help_after,
+            "the fetch choke point must agree with the recorded verdict: {note}"
+        );
+    }
 }
 
 /// A plugin cannot write into another plugin's cache namespace by

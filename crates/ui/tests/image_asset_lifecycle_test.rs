@@ -20,7 +20,9 @@
 //! free-space probe, so nothing here depends on the machine's headroom.
 
 use arclain_ui::core::tabs::TabId;
-use arclain_ui::shared::image_assets::{ImageAssetState, ImageAssetStore, ImageBytes, ImageOwner};
+use arclain_ui::shared::image_assets::{
+    ImageAssetState, ImageAssetStore, ImageBytes, ImageFetchError, ImageOwner,
+};
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
@@ -71,7 +73,12 @@ impl ImageBytes for CountingImageBytes {
         Ok(self.entries.lock().get(key).cloned())
     }
 
-    fn fetch(&self, _plugin_id: Option<&str>, _key: &str, _url: &str) -> anyhow::Result<()> {
+    fn fetch(
+        &self,
+        _plugin_id: Option<&str>,
+        _key: &str,
+        _url: &str,
+    ) -> Result<(), ImageFetchError> {
         Ok(())
     }
 
@@ -110,7 +117,12 @@ impl ImageBytes for HeldFirstReadImageBytes {
         Ok(snapshot)
     }
 
-    fn fetch(&self, _plugin_id: Option<&str>, _key: &str, _url: &str) -> anyhow::Result<()> {
+    fn fetch(
+        &self,
+        _plugin_id: Option<&str>,
+        _key: &str,
+        _url: &str,
+    ) -> Result<(), ImageFetchError> {
         Ok(())
     }
 
@@ -388,6 +400,104 @@ fn cache_ready_during_loading_serializes_a_restart_after_the_stale_miss() {
         2,
         "the stale load must finish before exactly one cache-ready restart"
     );
+}
+
+/// A source whose reads always miss and whose fetches fail with a
+/// caller-chosen verdict.
+struct RefusingImageBytes {
+    retryable: bool,
+    fetches: AtomicUsize,
+}
+
+impl ImageBytes for RefusingImageBytes {
+    fn get(&self, _key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    fn fetch(
+        &self,
+        _plugin_id: Option<&str>,
+        _key: &str,
+        _url: &str,
+    ) -> Result<(), ImageFetchError> {
+        self.fetches.fetch_add(1, Ordering::SeqCst);
+        Err(ImageFetchError {
+            message: "refused".to_string(),
+            retryable: self.retryable,
+        })
+    }
+
+    fn remove(&self, _key: &str) {}
+
+    fn can_store(&self, _key: &str) -> bool {
+        true
+    }
+}
+
+fn failed_asset_after_a_refused_fetch(
+    retryable: bool,
+) -> (ImageAssetStore, Arc<RefusingImageBytes>) {
+    let source = Arc::new(RefusingImageBytes {
+        retryable,
+        fetches: AtomicUsize::new(0),
+    });
+    let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
+    let store = ImageAssetStore::from_source(source.clone(), runtime.clone());
+    let ctx = eframe::egui::Context::default();
+    store.request(
+        ImageOwner::plugin_page("plugin", "page", TabId(1)),
+        "asset",
+        ctx.clone(),
+    );
+    wait_until(|| matches!(store.state("asset"), Some(ImageAssetState::Failed(_))));
+
+    runtime
+        .block_on(store.fetch_into_cache(
+            None,
+            "asset".to_string(),
+            "https://example.invalid/a.png".to_string(),
+            ctx,
+        ))
+        .expect_err("the fixture's fetch always fails");
+    assert_eq!(source.fetches.load(Ordering::SeqCst), 1);
+    (store, source)
+}
+
+/// A permanently refused asset must stop asking. The application already
+/// classifies an oversized body or a non-image content type as fatal;
+/// this is the half that makes the renderer's 30 s loop obey it.
+#[test]
+fn a_fatal_fetch_failure_stops_the_retry_loop() {
+    let (store, _source) = failed_asset_after_a_refused_fetch(false);
+
+    assert!(
+        !store.fetch_may_help("asset"),
+        "a fatally refused key must not be re-fetched"
+    );
+    assert!(
+        matches!(store.state("asset"), Some(ImageAssetState::Failed(message)) if message == "refused"),
+        "the refusal's own message must reach the failure state"
+    );
+}
+
+/// ...and a transient failure must keep retrying exactly as before, which
+/// is the half a blanket "stop after one failure" would have broken.
+#[test]
+fn a_retryable_fetch_failure_leaves_the_loop_armed() {
+    let (store, _source) = failed_asset_after_a_refused_fetch(true);
+
+    assert!(
+        store.fetch_may_help("asset"),
+        "a transient failure must still be retried"
+    );
+}
+
+/// A key with no failure recorded at all is fetchable -- the guard must
+/// not refuse the very first attempt.
+#[test]
+fn an_untried_key_is_always_fetchable() {
+    let fixture = fixture();
+    assert!(fixture.store.fetch_may_help("never-seen"));
 }
 
 fn read_if_present(root: &Path, relative: &str) -> Option<String> {

@@ -166,6 +166,32 @@ pub enum ImageAssetState {
     Failed(String),
 }
 
+/// Why a URL-fallback fetch failed, and whether trying again could ever
+/// help.
+///
+/// The `retryable` flag is the whole reason this is not an
+/// `anyhow::Error`. The application already classifies an oversized body
+/// or a non-image content type as a *permanent* refusal, but flattening
+/// that into a message threw the classification away one call before the
+/// only code that could act on it -- so the renderer's 30 s retry kept
+/// re-fetching a URL that could never be accepted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageFetchError {
+    pub message: String,
+    /// `false` when the application refused the asset permanently. A
+    /// transport failure -- unreachable host, timeout, backend hiccup --
+    /// stays `true` and retries exactly as before.
+    pub retryable: bool,
+}
+
+impl std::fmt::Display for ImageFetchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ImageFetchError {}
+
 /// Where this store reads image bytes from, removes them from, and --
 /// critically -- fills them from a URL.
 ///
@@ -196,7 +222,7 @@ pub trait ImageBytes: Send + Sync {
     /// by re-reading it through [`Self::get`] (see
     /// [`ImageAssetStore::cache_ready`]), which is what keeps a fetch
     /// completing mid-load from racing the load already in flight.
-    fn fetch(&self, plugin_id: Option<&str>, key: &str, url: &str) -> anyhow::Result<()>;
+    fn fetch(&self, plugin_id: Option<&str>, key: &str, url: &str) -> Result<(), ImageFetchError>;
     fn remove(&self, key: &str);
     /// Whether a successful [`Self::fetch`] for `key` would actually
     /// retain anything. `false` lets callers skip work whose result has
@@ -265,12 +291,17 @@ impl ImageBytes for FacadeImageBytes {
     /// image path funnels through -- [`ImageAssetStore::request`] for reads
     /// and `crate::shared::image_fetcher::trigger_image_fetch` for fetches
     /// -- so neither half alone has to be perfect.
-    fn fetch(&self, plugin_id: Option<&str>, key: &str, url: &str) -> anyhow::Result<()> {
+    fn fetch(&self, plugin_id: Option<&str>, key: &str, url: &str) -> Result<(), ImageFetchError> {
         let fetched = if is_plugin_scoped_image_key(key) {
             let Some(plugin_id) = plugin_id else {
-                anyhow::bail!(
-                    "refusing to fetch a plugin-namespaced image with no owning plugin known"
-                );
+                // Nothing about the URL is wrong, but this frontend can
+                // never supply the missing owner either, so retrying is
+                // pointless.
+                return Err(ImageFetchError {
+                    message: "refusing to fetch a plugin-namespaced image with no owning                               plugin known"
+                        .to_string(),
+                    retryable: false,
+                });
             };
             self.block_on(self.facade.fetch_plugin_image(
                 plugin_id.to_string(),
@@ -284,9 +315,15 @@ impl ImageBytes for FacadeImageBytes {
                 plugin_id.map(str::to_string),
             ))
         };
-        fetched
-            .map(|_| ())
-            .map_err(|error| anyhow::anyhow!(error.summary))
+        fetched.map(|_| ()).map_err(|error| ImageFetchError {
+            message: error.summary,
+            // `recoverability`, not `retryable`: the envelope's boolean
+            // defaults to false and is not kept in step with the
+            // classification, so reading it would make every transient
+            // backend failure look permanent and silently stop the
+            // retries this must preserve.
+            retryable: error.recoverability != arclain_app::error::Recoverability::Fatal,
+        })
     }
 
     fn remove(&self, key: &str) {
@@ -327,7 +364,12 @@ impl ImageBytes for EmptyImageBytes {
     /// here at all -- see
     /// `crate::shared::image_fetcher::trigger_image_fetch`'s storability
     /// guard.
-    fn fetch(&self, _plugin_id: Option<&str>, _key: &str, _url: &str) -> anyhow::Result<()> {
+    fn fetch(
+        &self,
+        _plugin_id: Option<&str>,
+        _key: &str,
+        _url: &str,
+    ) -> Result<(), ImageFetchError> {
         Ok(())
     }
 
@@ -356,6 +398,12 @@ enum ImageAsset {
     Failed {
         message: String,
         owners: HashSet<ImageOwner>,
+        /// Whether re-fetching this key could ever produce a different
+        /// outcome. `false` once the application has refused the asset
+        /// permanently -- an oversized body, a non-image content type --
+        /// which is what stops the renderer's 30 s retry from running
+        /// forever against a URL that will never be acceptable.
+        fetch_may_help: bool,
     },
 }
 
@@ -518,17 +566,72 @@ impl ImageAssetStore {
         key: String,
         url: String,
         ctx: egui::Context,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), ImageFetchError> {
         let inner = self.inner.clone();
         let fetch_key = key.clone();
-        inner
+        let joined = inner
             .runtime
             .clone()
             .spawn_blocking(move || inner.source.fetch(plugin_id.as_deref(), &fetch_key, &url))
-            .await
-            .map_err(|error| anyhow::anyhow!("image store worker failed: {error}"))??;
+            .await;
+        let fetched = match joined {
+            Ok(fetched) => fetched,
+            // A panicked worker says nothing about the URL, so this stays
+            // retryable.
+            Err(error) => Err(ImageFetchError {
+                message: format!("image store worker failed: {error}"),
+                retryable: true,
+            }),
+        };
+        if let Err(error) = fetched {
+            self.record_fetch_failure(&key, &error);
+            return Err(error);
+        }
         self.cache_ready(&key, ctx);
         Ok(())
+    }
+
+    /// Records a permanent fetch refusal against the asset, so the
+    /// renderer stops re-arming its retry for a URL that can never be
+    /// accepted.
+    ///
+    /// Only a `Failed` asset is marked, and only downwards: a fetch is
+    /// attempted precisely when the read already failed, so that is the
+    /// state this always finds. Anything else means the asset recovered
+    /// while the fetch was in flight, and a stale verdict must not
+    /// override it.
+    fn record_fetch_failure(&self, key: &str, error: &ImageFetchError) {
+        if error.retryable {
+            return;
+        }
+        let mut assets = self.inner.assets.lock();
+        if let Some(ImageAsset::Failed {
+            message,
+            fetch_may_help,
+            ..
+        }) = assets.get_mut(key)
+        {
+            *fetch_may_help = false;
+            message.clone_from(&error.message);
+        }
+    }
+
+    /// Whether a URL-fallback fetch for `key` could still achieve
+    /// anything.
+    ///
+    /// `false` once the application has permanently refused the asset.
+    /// The renderer consults this before re-arming its 30 s retry, which
+    /// is what turns "the application classified this as fatal" into the
+    /// loop actually stopping -- classifying it and then discarding the
+    /// classification one call earlier is exactly the bug this closes.
+    pub fn fetch_may_help(&self, key: &str) -> bool {
+        !matches!(
+            self.inner.assets.lock().get(key),
+            Some(ImageAsset::Failed {
+                fetch_may_help: false,
+                ..
+            })
+        )
     }
 
     /// Whether a fetch for `key` has anywhere to land -- see
@@ -635,6 +738,9 @@ impl ImageAssetStore {
                         Err(error) => ImageAsset::Failed {
                             message: error.to_string(),
                             owners,
+                            // A read miss says nothing about the URL, so a
+                            // URL-fallback fetch is still worth trying.
+                            fetch_may_help: true,
                         },
                     };
                     None
@@ -662,6 +768,7 @@ impl ImageAssetStore {
         let placeholder = ImageAsset::Failed {
             message: "texture upload interrupted".to_string(),
             owners: HashSet::new(),
+            fetch_may_help: true,
         };
         let decoded = std::mem::replace(asset, placeholder);
         let ImageAsset::Decoded { size, rgba, owners } = decoded else {

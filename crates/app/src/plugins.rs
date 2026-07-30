@@ -753,11 +753,9 @@ pub(crate) fn fetch_plugin_image(
 ///
 /// Because the ceiling is enforced during the read, an oversized body
 /// never reaches the checks below -- it comes back as
-/// `HttpError::ResponseTooLarge`, which [`image_fetch_error`] maps to a
-/// *permanent* refusal. A post-hoc `body.len() > max_bytes` check here
-/// would be unreachable, and reporting a size refusal as a retryable
-/// transport failure is what made an oversized asset re-fetch every 30 s
-/// forever.
+/// `HttpError::ResponseTooLarge`, which [`image_fetch_error`] classifies
+/// as a *permanent* refusal. A post-hoc `body.len() > max_bytes` check
+/// here would be unreachable.
 ///
 /// The three response checks are the pre-facade frontend's, moved here
 /// intact: a 200 status, a body over [`MIN_FETCHED_IMAGE_BYTES`], and an
@@ -817,10 +815,17 @@ fn fetch_display_image(
 /// from "the network misbehaved".
 ///
 /// The distinction is the difference between a broken image and a hot
-/// loop: a renderer retries a `Retry` failure every 30 s forever, and an
-/// oversized asset is exactly as oversized on the next attempt. Size
-/// refusals are therefore `InvalidInput` and `Fatal`, so the asset fails
-/// once and stays failed.
+/// loop: an oversized asset is exactly as oversized on the next attempt,
+/// while an unreachable host may well not be. Size refusals are therefore
+/// `InvalidInput` with `Recoverability::Fatal`, everything else stays
+/// `Backend` with `Recoverability::Retry`.
+///
+/// This classification is only half the fix -- a caller has to *act* on
+/// it. `arclain_ui`'s image store keeps the recoverability across its own
+/// error boundary and refuses to re-arm the renderer's 30 s retry for a
+/// key refused as `Fatal`; see `ImageFetchError` there. Classifying
+/// without that was the earlier bug: correct at this boundary, discarded
+/// one call before the only code that could use it.
 fn image_fetch_error(error: arclain_network::HttpError) -> ApplicationError {
     match error {
         arclain_network::HttpError::ResponseTooLarge { limit } => ApplicationError::new(
@@ -831,7 +836,12 @@ fn image_fetch_error(error: arclain_network::HttpError) -> ApplicationError {
         .with_recoverability(Recoverability::Fatal),
         other => ApplicationError::new(ApplicationErrorKind::Backend, "image fetch failed")
             .with_diagnostic(other.to_string())
-            .with_recoverability(Recoverability::Retry),
+            .with_recoverability(Recoverability::Retry)
+            // `with_recoverability` does not touch `retryable`, which
+            // defaults to false -- leaving the two halves of the envelope
+            // contradicting each other for exactly the case where a caller
+            // most wants to trust them.
+            .with_retryable(true),
     }
 }
 
