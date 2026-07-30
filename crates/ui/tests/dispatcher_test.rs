@@ -333,19 +333,49 @@ mod process_page {
     }
 
     #[test]
-    fn save_presets_persists_state_via_save_path() {
-        // SavePresets is filesystem IO not DB; we can exercise the
-        // dispatcher's routing without needing a real presets file —
-        // save_presets() no-ops cleanly when presets_path is None
-        // (which is the default for a fresh ProcessPageState).
+    fn load_presets_with_no_facade_sets_an_empty_list() {
         let shared = create_test_shared_state();
         let mut state = ProcessPageState::default();
-        // presets_path is None by default — save_presets() should
-        // log and return without panicking.
 
-        handle_process_action(&mut state, ProcessAction::SavePresets, &shared);
-        // No assertions on disk state; the assertion is "does not
-        // panic." Routing test, not behavior test.
+        handle_process_action(&mut state, ProcessAction::LoadPresets, &shared);
+
+        let presets = state
+            .presets
+            .as_ref()
+            .expect("LoadPresets must seat the list (even if empty)");
+        assert!(
+            presets.is_empty(),
+            "without a facade there is nothing to list"
+        );
+    }
+
+    #[test]
+    fn preset_writes_with_no_facade_are_a_no_op_rather_than_a_panic() {
+        // Preset persistence lives entirely behind the facade now, so
+        // the facade-less branch has nothing to do. This is a routing
+        // test -- the assertion is "does not panic and touches no
+        // state" -- with the real save/delete behaviour covered against
+        // a real application in `process_page_facade_test.rs`.
+        let shared = create_test_shared_state();
+        let mut state = ProcessPageState::default();
+
+        handle_process_action(
+            &mut state,
+            ProcessAction::SavePreset {
+                name: "Flatten then zip".to_string(),
+            },
+            &shared,
+        );
+        handle_process_action(
+            &mut state,
+            ProcessAction::DeletePreset {
+                name: "Flatten then zip".to_string(),
+            },
+            &shared,
+        );
+
+        assert!(state.presets.is_none());
+        assert!(state.active_preset_name.is_none());
     }
 }
 

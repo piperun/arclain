@@ -48,15 +48,6 @@ pub struct AppState {
     pub pass_rules: Vec<PassRule>,
     pub backend_selector: BackendSelector,
     pub fallback_backend: SevenZipCli, // Keep for plugin compatibility
-    /// Dead weight since the browser's duplicate listing pipeline was
-    /// deleted: nothing writes this anymore (the relist used to stamp
-    /// the just-listed archive's entry paths here for the auto-password
-    /// matcher's entry-filename rung, which the facade's own ladders now
-    /// cover with the session's real paths), and its one remaining
-    /// reader is the unreachable pre-facade `convert_archive`. Dies with
-    /// that function's process-page migration.
-    pub last_entries: Vec<String>,
-
     pub encrypted_crc_policy: String,
     // DB-backed settings and secrets (optional; falls back to JSON if unavailable)
     pub db_paths: Option<DbPaths>,

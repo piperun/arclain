@@ -6,17 +6,29 @@ use arclain_theme::AppTheme;
 use arclain_widgets::{ButtonSize, Text, TextButton};
 use eframe::egui;
 
+/// What the user asked of the dialog this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessProgressResult {
+    /// Cancel the in-flight run. The caller routes this to
+    /// `crate::core::operations::process_runner::cancel_pipeline_run`,
+    /// which reaches the operation registry — the dialog itself never
+    /// touches the application.
+    Cancel,
+    /// Dismiss the completed run's summary.
+    Close,
+}
+
 pub fn render(
     ctx: &egui::Context,
     theme: &AppTheme,
     state: &ProcessRunState,
-    close_requested: &mut bool,
-) {
+) -> Option<ProcessProgressResult> {
     // Only show when running OR when just completed (so user sees the summary)
     if !state.is_running && !state.completed {
-        return;
+        return None;
     }
 
+    let mut result = None;
     let params = ModalParams {
         width_frac: 0.45,
         height_frac: 0.35,
@@ -36,67 +48,79 @@ pub fn render(
                 Text::new("Processing").size(18.0).strong().show(ui);
                 ui.add_space(6.0);
                 let file_line = format!(
-                    "File {} of {}: {}",
+                    "File {} of {}",
                     (state.files_done + 1).min(state.files_total.max(1)),
                     state.files_total.max(1),
-                    state.current_file
                 );
                 Text::new(&file_line).show(ui);
-                let step_line = format!("Step: {}", state.current_step);
-                Text::new(&step_line).show(ui);
+                Text::new(&state.message).show(ui);
                 ui.add_space(8.0);
-                ui.add(egui::ProgressBar::new(state.step_percent as f32 / 100.0).show_percentage());
-                if state.files_failed > 0 {
-                    ui.add_space(4.0);
-                    let failed_line = format!("{} failed so far", state.files_failed);
-                    Text::new(&failed_line).color(theme.colors.error).show(ui);
-                }
-            } else {
-                // Completed
-                Text::new("Complete").size(18.0).strong().show(ui);
-                ui.add_space(6.0);
-                let summary_suffix = if state.warnings.is_empty() {
-                    String::new()
+                // The batch fraction, straight off the operation's own
+                // completed/total units. The pre-facade bar showed a
+                // per-step percentage instead; that number now arrives
+                // only inside the human-readable message, and re-parsing
+                // it back out would be a guess about the application's
+                // wording rather than a reading of its data.
+                let fraction = if state.files_total == 0 {
+                    0.0
                 } else {
-                    format!(" — {} warning(s)", state.warnings.len())
+                    state.files_done as f32 / state.files_total as f32
                 };
+                ui.add(egui::ProgressBar::new(fraction).show_percentage());
+            } else {
+                Text::new(if state.cancelled {
+                    "Cancelled"
+                } else {
+                    "Complete"
+                })
+                .size(18.0)
+                .strong()
+                .show(ui);
+                ui.add_space(6.0);
                 if let Some(ref summary) = state.summary {
-                    Text::new(&format!("{}{}", summary, summary_suffix)).show(ui);
-                } else if !summary_suffix.is_empty() {
-                    Text::new(summary_suffix.trim_start_matches(" — ")).show(ui);
+                    Text::new(summary).show(ui);
                 }
-                if !state.warnings.is_empty() {
-                    ui.add_space(10.0);
-                    Text::new("Warnings").strong().show(ui);
-                    ui.add_space(4.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(180.0)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            for w in &state.warnings {
-                                Text::new(w).color(theme.colors.warning).show(ui);
-                            }
-                        });
-                }
+            }
+
+            if !state.log.is_empty() {
+                ui.add_space(10.0);
+                Text::new("Log").strong().show(ui);
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("process_progress_log")
+                    .max_height(180.0)
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for line in &state.log {
+                            Text::new(line).size(11.0).monospace().show(ui);
+                        }
+                    });
             }
         },
         |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let btn_label = if state.is_running {
-                    "Minimize"
+                // One button, and it does what it says. The pre-facade
+                // dialog offered "Minimize" while running, wired to the
+                // same handler as "Close" -- which only cleared the
+                // *completed* flag, so pressing it during a run did
+                // nothing at all. There was no cancellation to offer
+                // then; there is now, so the running state offers it
+                // instead of an inert button.
+                let (label, outcome) = if state.is_running {
+                    ("Cancel", ProcessProgressResult::Cancel)
                 } else {
-                    "Close"
+                    ("Close", ProcessProgressResult::Close)
                 };
                 if ui
-                    .add(
-                        TextButton::new(btn_label, ButtonSize::Small)
-                            .with_theme_colors(&theme.colors),
-                    )
+                    .add(TextButton::new(label, ButtonSize::Small).with_theme_colors(&theme.colors))
                     .clicked()
                 {
-                    *close_requested = true;
+                    result = Some(outcome);
                 }
             });
         },
     );
+
+    result
 }

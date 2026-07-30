@@ -3,7 +3,6 @@
 use super::state::ProcessPageState;
 use super::view::ProcessAction;
 use crate::shared::SharedState;
-use arclain_core::SavedPreset;
 use arclain_widgets::{ButtonSize, Text, TextButton, ThemedDropdown};
 use eframe::egui;
 
@@ -22,7 +21,7 @@ pub fn render(
             .clone()
             .unwrap_or_else(|| "— custom —".to_string());
 
-        let presets_snapshot = state.presets.clone();
+        let presets_snapshot = state.presets().to_vec();
 
         ThemedDropdown::new("process_preset_dropdown", selected_text)
             .with_theme_colors(&shared.theme.colors)
@@ -36,12 +35,9 @@ pub fn render(
                         )
                         .clicked()
                     {
-                        // Apply preset: preserve current input, take steps + output
-                        let current_input = state.pipeline.input.clone();
-                        state.pipeline = preset.pipeline.clone();
-                        state.pipeline.input = current_input;
-                        state.active_preset_name = Some(preset.name.clone());
-                        state.mark_dirty();
+                        // Applying takes the preset's steps and output
+                        // settings and preserves the current input.
+                        state.apply_preset(preset);
                     }
                 }
             });
@@ -56,13 +52,15 @@ pub fn render(
             )
             .clicked()
         {
-            let name = format!("Preset {}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
-            state.presets.push(SavedPreset {
-                name: name.clone(),
-                pipeline: state.pipeline.clone(),
+            // Saving over the selected preset's own name is the point
+            // of having it selected: the application upserts by name, so
+            // this edits it in place instead of leaving a second entry
+            // the dropdown renders identically. With nothing selected,
+            // fall back to a timestamped name.
+            let name = state.active_preset_name.clone().unwrap_or_else(|| {
+                format!("Preset {}", chrono::Local::now().format("%Y-%m-%d %H:%M"))
             });
-            state.active_preset_name = Some(name);
-            emitted = Some(ProcessAction::SavePresets);
+            emitted = Some(ProcessAction::SavePreset { name });
         }
 
         let active = state.active_preset_name.clone();
@@ -77,9 +75,7 @@ pub fn render(
                 )
                 .clicked()
             {
-                state.presets.retain(|p| p.name != name);
-                state.active_preset_name = None;
-                emitted = Some(ProcessAction::SavePresets);
+                emitted = Some(ProcessAction::DeletePreset { name });
             }
         }
     });

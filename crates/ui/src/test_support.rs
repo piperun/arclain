@@ -90,7 +90,6 @@ pub fn app_state_from_facade(facade: &arclain_app::ArclainApp) -> AppState {
         pass_rules: legacy.pass_rules,
         backend_selector: legacy.backend_selector,
         fallback_backend: legacy.fallback_backend,
-        last_entries: vec![],
         encrypted_crc_policy: legacy.encrypted_crc_policy,
         db_paths: legacy.db_paths,
         dbs: legacy.dbs,

@@ -1,5 +1,4 @@
-use crate::core::tabs::{OpGuard, TabState};
-use arclain_core::backends::sevenz_cli::ProgressUpdate;
+use crate::core::tabs::TabState;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
@@ -12,41 +11,32 @@ pub struct ArchiveOperationsState {
     // `crate::core::operation_bridge` drives progress/completion onto
     // `TabState::extraction_dialog()`/`active_extraction_operation`
     // directly. See `crate::core::operations::extraction`.
-
-    // Conversion progress state
-    pub conversion_rx: Option<Receiver<ProgressUpdate>>,
-    pub conversion_child: Option<std::process::Child>,
-    pub conversion_minimized: bool,
-    pub conversion_started: Option<Instant>,
-    /// RAII counter: incremented when conversion starts, dropped when it ends.
-    pub conversion_op_guard: Option<OpGuard>,
-    /// The tab that originated this conversion. Checked for `tab_cancel` in
-    /// `update_conversion_progress` to implement cooperative cancellation.
-    pub conversion_origin_tab: Option<Arc<TabState>>,
-
-    // Drag-out progress state. Carries the drag layer's own progress
-    // type (not core's `ProgressUpdate`): drag-out is facade-routed and
-    // its platform layer no longer speaks `arclain_core` types.
+    //
+    // The conversion counterpart (conversion_rx/conversion_child/
+    // conversion_started/conversion_op_guard/conversion_origin_tab) is
+    // gone for the same reason, one step later: its only writer was the
+    // pre-facade `convert_archive` bypass, which spawned the 7-Zip CLI
+    // itself and pumped a `std::sync::mpsc` channel from the render
+    // loop. Conversion is `ArclainApp::start_convert`/`start_pipeline`
+    // now, and the Process page projects that operation's event stream
+    // onto its own modal -- see
+    // `crate::core::operations::process_runner`.
+    /// Drag-out progress state. Carries the drag layer's own progress
+    /// type (not core's `ProgressUpdate`): drag-out is facade-routed and
+    /// its platform layer no longer speaks `arclain_core` types.
     pub drag_rx: Option<Receiver<crate::platform::drag_source::DragProgressUpdate>>,
     pub drag_started: Option<Instant>,
     /// The tab that originated this drag-out op. Captured at spawn time
     /// so `update_drag_progress` can route progress events to the
     /// originating tab's `drag_dialog` slot after the dialog migrated
     /// from `AppSignals.progress_dialogs` to `TabState.progress_dialogs`
-    /// in the 2026-05-20 B3 reframed slice 2. Mirrors
-    /// `extraction_origin_tab` / `conversion_origin_tab`.
+    /// in the 2026-05-20 B3 reframed slice 2.
     pub drag_origin_tab: Option<Arc<TabState>>,
 }
 
 impl Default for ArchiveOperationsState {
     fn default() -> Self {
         Self {
-            conversion_rx: None,
-            conversion_child: None,
-            conversion_minimized: false,
-            conversion_started: None,
-            conversion_op_guard: None,
-            conversion_origin_tab: None,
             drag_rx: None,
             drag_started: None,
             drag_origin_tab: None,

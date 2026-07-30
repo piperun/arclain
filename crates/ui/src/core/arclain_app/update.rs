@@ -354,11 +354,12 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         ctx,
     );
 
-    // Handle conversion/drag-out progress from CLI backends. Extraction
-    // progress no longer needs a per-frame poll here: it is an
-    // application-facade operation now, driven reactively onto
-    // `TabState::extraction_dialog()` by `crate::core::operation_bridge`.
-    app.archive_operations.update_conversion_progress(ctx);
+    // Handle drag-out progress from CLI backends. Extraction and
+    // conversion progress no longer need a per-frame poll here: both are
+    // application-facade operations now, driven reactively onto
+    // `TabState::extraction_dialog()` by `crate::core::operation_bridge`
+    // and (for a Process page pipeline) onto the `process_run` signal by
+    // `crate::core::operations::process_runner`.
     app.archive_operations.update_drag_progress(ctx);
 
     // Process pending file opens (double-click on file in archive).

@@ -1,27 +1,99 @@
-//! Process page state — current pipeline, preview cache, run status, presets.
+//! Process page state — the pipeline draft the editor mutates, the
+//! preview the application computed for it, run status, and presets.
+//!
+//! Everything here speaks the application's own pipeline vocabulary
+//! (`arclain_app::operations::pipeline`'s DTOs) rather than
+//! `arclain_core::Pipeline`. The draft below is deliberately shaped so
+//! that [`ProcessPageState::preview_request`] can assemble a
+//! [`PipelinePreviewRequest`] from it with no further decisions, because
+//! that request converts into the run request the page then dispatches
+//! (`PipelineRequest::from`) — the preview and the run are one
+//! description, not two that have to be kept in step by hand.
+//!
+//! ## No metadata here, deliberately
+//!
+//! The pre-facade page carried a `last_previewed_metadata_key` and fed
+//! the active tab's plugin-reported `GameMetadata` into every preview.
+//! That predicted one name for a whole batch, because one blob applied
+//! to N inputs derives the same output stem N times, while the run
+//! resolves each input's metadata separately. `preview_pipeline` now
+//! resolves metadata per input exactly as the executor does and takes no
+//! metadata parameter at all, so there is nothing for this state to
+//! carry and nothing to invalidate a cached preview on.
 
+use arclain_app::operations::pipeline::{
+    OutputArtifactDto, OutputCollisionPolicyDto, PipelineDestinationDto, PipelineInputsDto,
+    PipelineSpecDto, PipelineStepDto,
+};
 use arclain_app::organization::OrganizationRuleSummary;
-use arclain_core::{GameMetadata, Pipeline, PipelinePreview, SavedPreset};
+use arclain_app::process::{PipelinePresetSummary, PipelinePreviewDto, PipelinePreviewRequest};
+
+/// How many interrupted runs the banner asks the application for.
+///
+/// `interrupted_pipeline_runs` bounds the *answer*, not the query, and
+/// nothing ever clears an interrupted run — so asking from `0` returns
+/// every one ever recorded in this profile and that set only grows. The
+/// banner therefore reports a bounded count and says so when it is
+/// saturated (see [`ProcessPageState::interrupted_run_label`]) rather
+/// than pretending the number is exact.
+pub const INTERRUPTED_RUN_QUERY_LIMIT: u32 = 50;
+
+/// The editable pipeline the Process page builds, in the application's
+/// own request vocabulary.
+///
+/// Split out from [`ProcessPageState`] so the whole draft can be
+/// replaced wholesale when a preset is applied, without disturbing the
+/// page's caches (presets list, organization rules, run status).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PipelineDraft {
+    pub inputs: PipelineInputsDto,
+    pub steps: Vec<PipelineStepDto>,
+    pub destination: PipelineDestinationDto,
+    pub collision_policy: Option<OutputCollisionPolicyDto>,
+    pub output_artifact: OutputArtifactDto,
+}
+
+impl Default for PipelineDraft {
+    fn default() -> Self {
+        Self {
+            // "No input selected" is an empty file list rather than an
+            // `Option`: a preview accepts empty inputs and answers with
+            // its own global warning, so the page has nothing to
+            // special-case.
+            inputs: PipelineInputsDto::Files { paths: Vec::new() },
+            steps: Vec::new(),
+            destination: PipelineDestinationDto::SameFolder,
+            collision_policy: None,
+            output_artifact: OutputArtifactDto::default(),
+        }
+    }
+}
+
+impl PipelineDraft {
+    /// True when no input has been chosen yet.
+    pub fn has_no_input(&self) -> bool {
+        matches!(&self.inputs, PipelineInputsDto::Files { paths } if paths.is_empty())
+    }
+}
 
 #[derive(Default)]
 pub struct ProcessPageState {
-    pub pipeline: Pipeline,
-    /// Cached preview — rebuilt whenever pipeline OR the selected
-    /// metadata changes.
-    pub preview: PipelinePreview,
+    pub draft: PipelineDraft,
+    /// The application's answer for the current draft. Recomputed
+    /// through `ArclainApp::preview_pipeline` whenever
+    /// [`Self::preview_dirty`] is set — never derived here, so what the
+    /// page shows is what the run was told.
+    pub preview: PipelinePreviewDto,
     pub preview_dirty: bool,
-    /// Identity of the metadata used for the most recent preview run.
-    /// Stored as a cheap fingerprint so a metadata-only change
-    /// invalidates the cached preview without us having to re-hash
-    /// the whole `GameMetadata` struct each frame.
-    last_previewed_metadata_key: Option<String>,
     pub is_running: bool,
     pub last_result_summary: Option<String>,
-    pub presets: Vec<SavedPreset>,
+    /// Saved presets as the application reports them. `None` = not yet
+    /// loaded; the page emits a `LoadPresets` action on first render.
+    pub presets: Option<Vec<PipelinePresetSummary>>,
     pub active_preset_name: Option<String>,
-    pub presets_path: Option<std::path::PathBuf>,
-    /// Count of interrupted pipeline runs detected at app startup. Shown as
-    /// a banner until the user dismisses it. `None` = not yet queried.
+    /// Count of interrupted pipeline runs the application reported,
+    /// bounded by [`INTERRUPTED_RUN_QUERY_LIMIT`]. Shown as a banner
+    /// until the user dismisses it. `None` = not yet queried.
     pub interrupted_run_count: Option<usize>,
     pub interrupted_banner_dismissed: bool,
     /// Cached organization rules for the Organize step picker. `None` =
@@ -34,69 +106,62 @@ pub struct ProcessPageState {
 
 impl ProcessPageState {
     pub fn new() -> Self {
-        let mut me = Self::default();
-        me.load_presets();
-        me
-    }
-
-    pub fn load_presets(&mut self) {
-        self.presets_path = arclain_core::default_presets_path();
-        if let Some(ref p) = self.presets_path {
-            self.presets = arclain_core::load_presets(p);
-        } else {
-            self.presets = arclain_core::builtin_presets();
-        }
-    }
-
-    pub fn save_presets(&self) {
-        if let Some(ref p) = self.presets_path {
-            if let Err(e) = arclain_core::save_presets(p, &self.presets) {
-                tracing::error!("[process] failed to save presets: {}", e);
-            }
-        }
+        Self::default()
     }
 
     pub fn mark_dirty(&mut self) {
         self.preview_dirty = true;
     }
 
-    pub fn refresh_preview(&mut self, metadata: Option<&GameMetadata>) {
-        // Re-run the preview when either the pipeline OR the selected
-        // metadata changed since the last run, so the displayed output
-        // path matches what the executor will actually write to.
-        let current_key = metadata.map(metadata_cache_key);
-        if current_key != self.last_previewed_metadata_key {
-            self.preview_dirty = true;
-        }
-        if self.preview_dirty {
-            self.preview = arclain_core::preview_pipeline_with_metadata(&self.pipeline, metadata);
-            self.last_previewed_metadata_key = current_key;
-            self.preview_dirty = false;
+    /// The one description the preview and the run share.
+    ///
+    /// [`PipelineRequest::from`](arclain_app::operations::PipelineRequest)
+    /// turns exactly this into the run request, so the page never
+    /// assembles a second description of the same pipeline.
+    pub fn preview_request(&self) -> PipelinePreviewRequest {
+        PipelinePreviewRequest {
+            inputs: self.draft.inputs.clone(),
+            destination: self.draft.destination.clone(),
+            pipeline: PipelineSpecDto::Steps {
+                steps: self.draft.steps.clone(),
+                output_artifact: self.draft.output_artifact,
+            },
+            collision_policy: self.draft.collision_policy,
         }
     }
 
-    /// Lazily load the interrupted-run count from the DB on first access.
-    /// The count surfaces a banner until the user dismisses it (session-local).
-    pub fn ensure_interrupted_count(
-        &mut self,
-        config_db: Option<&std::sync::Arc<arclain_core::SqliteDb>>,
-    ) {
-        if self.interrupted_run_count.is_some() {
-            return;
-        }
-        let count = match config_db {
-            Some(db) => db
-                .with_connection(|conn| Ok(arclain_core::list_interrupted_since(conn, 0)?.len()))
-                .unwrap_or(0),
-            None => 0,
-        };
-        self.interrupted_run_count = Some(count);
+    /// Applies a saved preset: its steps, destination, collision policy
+    /// and output artifact replace the draft's, while the currently
+    /// chosen input is preserved (the pre-facade page did the same —
+    /// a preset describes *what to do*, not *what to do it to*, and a
+    /// saved preset carries no input at all through this facade).
+    pub fn apply_preset(&mut self, preset: &PipelinePresetSummary) {
+        self.draft.steps = preset.steps.clone();
+        self.draft.destination = preset.destination.clone();
+        self.draft.collision_policy = preset.collision_policy;
+        self.draft.output_artifact = preset.output_artifact;
+        self.active_preset_name = Some(preset.name.clone());
+        self.mark_dirty();
     }
-}
 
-/// Build a small cache key from the fields the preview actually uses
-/// for output naming. Cheap to compute, cheap to compare; avoids
-/// re-running the preview when an unrelated metadata field changes.
-fn metadata_cache_key(meta: &GameMetadata) -> String {
-    format!("{}|{}", meta.product_id, meta.title)
+    /// Presets as the page renders them; empty until the first
+    /// `LoadPresets` dispatch lands.
+    pub fn presets(&self) -> &[PipelinePresetSummary] {
+        self.presets.as_deref().unwrap_or_default()
+    }
+
+    /// How the interrupted-run banner names its count.
+    ///
+    /// Saturating the query limit is reported as "N+" rather than as an
+    /// exact N: the application bounds the answer, not the query, so a
+    /// full page means "at least this many", and claiming otherwise
+    /// would be a number the page cannot stand behind.
+    pub fn interrupted_run_label(&self) -> String {
+        let count = self.interrupted_run_count.unwrap_or(0);
+        if count >= INTERRUPTED_RUN_QUERY_LIMIT as usize {
+            format!("{count}+")
+        } else {
+            count.to_string()
+        }
+    }
 }

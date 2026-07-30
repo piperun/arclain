@@ -93,9 +93,8 @@ impl AppState {
     /// this is the one place that pulls the result back afterward,
     /// closing the loop the facade's own `take_legacy_composition` doc
     /// comment describes -- call this once, right after any such facade
-    /// call succeeds. `backend_selector`/`fallback_backend`/
-    /// `last_entries` are untouched: no settings/vault mutation ever
-    /// changes them.
+    /// call succeeds. `backend_selector`/`fallback_backend` are
+    /// untouched: no settings/vault mutation ever changes them.
     ///
     /// Blocks briefly on `runtime` -- see `vault_ops.rs`'s own module
     /// doc comment for why that's the right choice from a synchronous

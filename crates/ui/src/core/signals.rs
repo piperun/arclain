@@ -32,24 +32,60 @@ pub enum ServerConnectionStatus {
     Error(String),
 }
 
-/// Live state of a Process page pipeline run. Updated by the background
-/// runner via signal.
+/// Live state of a Process page pipeline run, projected from the
+/// application's operation-event stream by
+/// `crate::core::operations::process_runner`.
+///
+/// Every field here comes from structured event data
+/// (`OperationState::Progress`'s `completed_units`/`total_units`/
+/// `message`, and the terminal state) — nothing is re-derived by
+/// parsing the application's human-readable messages apart. The
+/// pre-facade shape carried a per-step percentage and separate
+/// failed/skipped tallies because it read `PipelineProgress` variants
+/// directly; those counts now arrive inside the run's own closing
+/// message, so [`Self::summary`] reports them verbatim rather than the
+/// page re-counting them.
 #[derive(Clone, Debug, Default)]
 pub struct ProcessRunState {
+    /// The registered operation, so a Cancel reaches the operation
+    /// registry rather than a UI-local flag. `None` before dispatch and
+    /// after the run reaches a terminal state.
+    pub operation_id: Option<arclain_app::ids::OperationId>,
+    /// The tab whose in-flight counter this run holds, so closing that
+    /// tab can cancel the run instead of orphaning it.
+    pub origin_tab: Option<crate::core::tabs::TabId>,
     pub is_running: bool,
-    pub current_file: String,
-    pub current_step: String,
-    pub files_done: usize,
-    pub files_total: usize,
-    pub files_failed: usize,
-    pub files_skipped: usize,
-    pub step_percent: u8,
+    /// Inputs finished, out of [`Self::files_total`] — the operation's
+    /// own `completed_units`/`total_units`.
+    pub files_done: u64,
+    pub files_total: u64,
+    /// The most recent progress message the operation reported.
+    pub message: String,
+    /// Recent progress messages, oldest first. Bounded by
+    /// [`PROCESS_RUN_LOG_LIMIT`]: a batch of a few thousand archives
+    /// emits several messages per input, and this signal is cloned on
+    /// every read.
+    pub log: Vec<String>,
     pub completed: bool,
+    pub cancelled: bool,
     pub summary: Option<String>,
-    /// Pre-formatted read-only warnings emitted by pipeline steps
-    /// (currently only Flatten). Each entry is one warning ready for
-    /// display — see `arclain_core::WarningKind::human()`.
-    pub warnings: Vec<String>,
+}
+
+/// Upper bound on [`ProcessRunState::log`]. Oldest lines are dropped
+/// once it is reached.
+pub const PROCESS_RUN_LOG_LIMIT: usize = 200;
+
+impl ProcessRunState {
+    /// Appends one progress message, trimming the oldest lines past
+    /// [`PROCESS_RUN_LOG_LIMIT`].
+    pub fn push_message(&mut self, message: String) {
+        if self.log.len() >= PROCESS_RUN_LOG_LIMIT {
+            let overflow = self.log.len() + 1 - PROCESS_RUN_LOG_LIMIT;
+            self.log.drain(0..overflow);
+        }
+        self.message = message.clone();
+        self.log.push(message);
+    }
 }
 
 /// State for extraction progress dialog

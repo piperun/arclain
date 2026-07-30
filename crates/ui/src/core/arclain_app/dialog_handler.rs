@@ -175,28 +175,12 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         .extraction_dialog()
         .set_if_changed(ext_dialog);
 
-    // Render Conversion Progress Dialog (now per-tab — read from active tab)
-    let mut conv_dialog = active_tab_for_progress.conversion_dialog().get();
-    if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
-        ctx,
-        &app.shared_state.theme,
-        &mut conv_dialog,
-    ) {
-        match result {
-            dialogs::progress::ExtractionDialogResult::Cancelled => {
-                app.shared_state
-                    .signals()
-                    .extraction_cancel
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                // Note: Conversion cancellation logic needs to be implemented in ArchiveOperations if different
-                // For now assuming it uses similar mechanism or child process kill
-            }
-            _ => {}
-        }
-    }
-    active_tab_for_progress
-        .conversion_dialog()
-        .set_if_changed(conv_dialog);
+    // No conversion progress dialog: the per-tab `conversion_dialog()`
+    // slot had exactly one writer, the pre-facade `convert_archive`
+    // bypass, and that is gone. Conversion runs through
+    // `ArclainApp::start_convert`/`start_pipeline` now, and a Process
+    // page pipeline reports into its own modal further down this
+    // function.
 
     // Render Drag Progress Dialog (now per-tab — read from active tab)
     let mut drag_dialog = active_tab_for_progress.drag_dialog().get();
@@ -304,37 +288,22 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 );
             }
 
+            // A Process page pipeline run holds this tab's in-flight
+            // counter (that is why the confirmation appeared at all), so
+            // it is just as orphaned as an extraction once the tab is
+            // gone -- and, like every other operation, the facade cannot
+            // notice the tab closing. Cancel it through the registry.
+            if app.shared_state.signals().process_run.get().origin_tab == Some(id) {
+                crate::core::operations::process_runner::cancel_pipeline_run(&app.shared_state);
+            }
+
             let mut col = app.shared_state.signals().tabs.get();
             col.force_close(id);
             app.shared_state.signals().tabs.set(col);
             // ACID best-effort cancellation: force_close fires the tab's
             // `tab_cancel` flag before removing the tab. Background ops that
             // captured Arc<TabState> at spawn observe the flag on their next
-            // periodic check and kill their subprocess.
-            //
-            // In addition, if this tab is the origin of the active
-            // conversion, immediately kill the subprocess here so the
-            // process dies promptly without waiting for the next update tick.
-            // (Extraction's own cleanup happened above, before force_close,
-            // since it needs the tab's own signals -- conversion is not yet
-            // migrated onto the facade, so it still uses the pre-facade
-            // captured-Arc pattern.)
-            {
-                let ops = app.archive_operations.state_mut();
-                let origin_matches_id =
-                    |tab: &Option<std::sync::Arc<crate::core::tabs::TabState>>| {
-                        tab.as_ref().map(|t| t.id == id).unwrap_or(false)
-                    };
-                if origin_matches_id(&ops.conversion_origin_tab) {
-                    if let Some(mut child) = ops.conversion_child.take() {
-                        let _ = child.kill();
-                    }
-                    ops.conversion_rx = None;
-                    ops.conversion_started = None;
-                    ops.conversion_op_guard = None;
-                    ops.conversion_origin_tab = None;
-                }
-            }
+            // periodic check and abort.
         }
     }
 
@@ -641,19 +610,20 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
 
     // Process page progress dialog (when a pipeline is running or just completed)
     {
+        use crate::features::process::progress_dialog::ProcessProgressResult;
         let run = app.shared_state.signals().process_run.get();
-        let mut close = false;
-        crate::features::process::progress_dialog::render(
-            ctx,
-            &app.shared_state.theme,
-            &run,
-            &mut close,
-        );
-        if close {
-            let mut s = run.clone();
-            s.completed = false;
-            s.summary = None;
-            app.shared_state.signals().process_run.set(s);
+        match crate::features::process::progress_dialog::render(ctx, &app.shared_state.theme, &run)
+        {
+            Some(ProcessProgressResult::Cancel) => {
+                crate::core::operations::process_runner::cancel_pipeline_run(&app.shared_state);
+            }
+            Some(ProcessProgressResult::Close) => {
+                app.shared_state.signals().process_run.update(|state| {
+                    state.completed = false;
+                    state.summary = None;
+                });
+            }
+            None => {}
         }
     }
 

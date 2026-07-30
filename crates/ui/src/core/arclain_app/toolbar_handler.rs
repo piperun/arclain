@@ -2,8 +2,31 @@
 
 use super::ArclainApp;
 use crate::core::{operations, signals::ToolbarContext};
+use crate::features::process::state::{PipelineDraft, ProcessPageState};
 use crate::shared::components;
+use arclain_app::operations::pipeline::{CompressionLevelDto, PipelineInputsDto, PipelineStepDto};
 use eframe::egui;
+
+/// Seeds the Process page with a fresh single-Convert-step draft over
+/// `inputs`, replacing whatever the page held.
+///
+/// Both convert toolbar actions do exactly this and differ only in what
+/// they point it at, so the shape lives in one place -- and it is one
+/// place that has to agree with the application's step vocabulary
+/// rather than two.
+fn seed_convert_draft(state: &mut ProcessPageState, inputs: Option<PipelineInputsDto>) {
+    let mut draft = PipelineDraft::default();
+    if let Some(inputs) = inputs {
+        draft.inputs = inputs;
+    }
+    draft.steps.push(PipelineStepDto::Convert {
+        format: "zip".to_string(),
+        compression: CompressionLevelDto::Normal,
+    });
+    state.draft = draft;
+    state.active_preset_name = None;
+    state.mark_dirty();
+}
 
 pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
     // Render Toolbar (only on Main page AND when Archive context is active)
@@ -210,20 +233,15 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 }
                 if actions.convert_to_7z {
                     // Navigate to Process page pre-populated with a Convert step.
-                    use arclain_core::{
-                        CompressionLevel, ConvertFormat, Pipeline, PipelineInput, PipelineStep,
-                    };
-                    app.process_state.pipeline = Pipeline::default();
-                    app.process_state.pipeline.steps.push(PipelineStep::Convert {
-                        format: ConvertFormat::Zip,
-                        compression: CompressionLevel::Normal,
-                        password: None,
-                    });
-                    if let Some(ap) = shared_state.signals().tabs.get().active().archive_path.get() {
-                        app.process_state.pipeline.input =
-                            Some(PipelineInput::Files(vec![ap]));
-                    }
-                    app.process_state.mark_dirty();
+                    let inputs = shared_state
+                        .signals()
+                        .tabs
+                        .get()
+                        .active()
+                        .archive_path
+                        .get()
+                        .map(|path| PipelineInputsDto::Files { paths: vec![path] });
+                    seed_convert_draft(&mut app.process_state, inputs);
                     app.page_navigator
                         .navigate_to(crate::core::navigation::AppPage::Process);
                 }
@@ -244,17 +262,14 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         .set_title("Select folder of archives")
                         .pick_folder()
                     {
-                        use arclain_core::{
-                            CompressionLevel, ConvertFormat, Pipeline, PipelineInput, PipelineStep,
-                        };
-                        app.process_state.pipeline = Pipeline::default();
-                        app.process_state.pipeline.input = Some(PipelineInput::Folder(folder));
-                        app.process_state.pipeline.steps.push(PipelineStep::Convert {
-                            format: ConvertFormat::Zip,
-                            compression: CompressionLevel::Normal,
-                            password: None,
-                        });
-                        app.process_state.mark_dirty();
+                        // Seeded as a folder, not as the archives in it
+                        // right now: the run expands a folder itself, so
+                        // anything added between here and Execute is
+                        // still picked up.
+                        seed_convert_draft(
+                            &mut app.process_state,
+                            Some(PipelineInputsDto::Folder { path: folder }),
+                        );
                         app.page_navigator
                             .navigate_to(crate::core::navigation::AppPage::Process);
                     }
