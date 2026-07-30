@@ -30,7 +30,7 @@ use common::create_test_shared_state;
 use arclain_app::archive::{ArchivePath, EntryPage, ListEntriesRequest};
 use arclain_app::ids::EntryId;
 use arclain_ui::core::operations::browser_rows::{folder_paths, rows_in_directory};
-use arclain_ui::core::tabs::{TabListing, TabState};
+use arclain_ui::core::tabs::{RequestStatus, TabListing, TabState};
 use arclain_ui::core::utils::file_entry_from_dto;
 use arclain_ui::shared::models::file_entry::FileEntry;
 use arclain_ui::shared::SharedState;
@@ -328,7 +328,8 @@ fn a_fresh_tab_browses_the_archive_root_with_nothing_listed_yet() {
 
     assert_eq!(listing.directory(), &ArchivePath::root());
     assert_eq!(listing.current_path(), "");
-    assert!(listing.page().is_none());
+    assert_eq!(listing.status(), &RequestStatus::Idle);
+    assert_eq!(tab.inventory.get().entry_count(), 0);
     assert!(tab.archive_snapshot.get().is_none());
     assert!(tab.archive_session_id.get().is_none());
 }
@@ -463,9 +464,11 @@ fn a_zip_entrys_modified_date_survives_the_trip_through_the_dto() {
 }
 
 /// The tab's listing is bound to the session the open stamped, and the
-/// page it seats answers the directory the cursor names.
+/// request it carries names the directory the cursor moved to -- so the
+/// session's own answer to that request is the directory the user is
+/// looking at, not the one the tab started on.
 #[test]
-fn a_tabs_listing_is_bound_to_its_session_and_answers_its_own_directory() {
+fn a_tabs_listing_is_bound_to_its_session_and_requests_its_own_directory() {
     let fixture = open_fixture();
 
     let mut listing = fixture.tab.listing.get();
@@ -474,14 +477,16 @@ fn a_tabs_listing_is_bound_to_its_session_and_answers_its_own_directory() {
         fixture.tab.archive_session_id.get(),
         "the open must have bound the tab's listing to the session it holds"
     );
-    assert!(listing.descend("game"));
-    let generation = listing.begin_loading();
-    let page = list(&fixture, listing.request());
-    assert!(listing.adopt_page(generation, page));
+    assert_eq!(
+        listing.status(),
+        &RequestStatus::Idle,
+        "the open's own listing answered"
+    );
 
-    let seated = listing.page().expect("the adopted page must be held");
-    assert_eq!(seated.directory.as_str(), "game");
-    let mut paths: Vec<&str> = seated
+    assert!(listing.descend("game"));
+    let answered = list(&fixture, listing.request());
+    assert_eq!(answered.directory.as_str(), "game");
+    let mut paths: Vec<&str> = answered
         .entries
         .iter()
         .map(|entry| entry.path.as_str())

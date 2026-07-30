@@ -5,10 +5,14 @@
 //!
 //! Everything here drives the *real* pieces together: a real ZIP (or 7z)
 //! fixture, a real bootstrapped `ArclainApp`, the real operation bridge,
-//! and the real relist/refresh functions -- so the seams part 1 pinned in
-//! isolation (`begin_loading`/`adopt_page`/`fail`, and the
+//! and the real relist/refresh functions -- so the seams pinned in
+//! isolation (`begin_loading`/`succeed`/`fail`, and the
 //! keep-rows-on-failed-refresh semantics) are exercised through the same
 //! code production runs.
+//!
+//! Assertions about what the user sees are stated against the tab's
+//! published browser rows (`TabState::browser_entries`), because those
+//! are what the browser draws.
 
 mod common;
 use common::create_test_shared_state;
@@ -83,6 +87,18 @@ fn wait_until(message: &str, predicate: impl Fn() -> bool) {
     }
 }
 
+/// The rows the browser is actually drawing for the folder on screen --
+/// what a relist republishes, and the axis every assertion below about
+/// "what the user sees" is stated against.
+fn drawn_paths(tab: &TabState) -> Vec<String> {
+    tab.browser_entries
+        .get()
+        .entries
+        .iter()
+        .map(|row| row.archive_path.clone())
+        .collect()
+}
+
 struct OpenedFixture {
     _temp: tempfile::TempDir,
     app: arclain_app::ArclainApp,
@@ -150,19 +166,19 @@ fn a_mutation_relists_the_navigated_directory_and_selection_survives() {
     ]);
     let tab = &fixture.tab;
 
-    // Open seated the root page from the session.
+    // Open seated the session's rows and drew the root from them.
     {
         let listing = tab.listing.get();
         assert_eq!(listing.session(), tab.archive_session_id.get());
-        let page = listing.page().expect("the open must seat the root page");
-        assert_eq!(page.directory, ArchivePath::root());
-        assert_eq!(page.revision, 1);
+        assert_eq!(listing.directory(), &ArchivePath::root());
         assert_eq!(listing.status(), &RequestStatus::Idle);
+        assert_eq!(tab.inventory.get().revision(), Some(1));
         assert_eq!(
             tab.inventory.get().entry_count(),
             4,
             "three files plus the synthesized `subdir` directory"
         );
+        assert_eq!(drawn_paths(tab), ["root.txt", "subdir"]);
     }
 
     // The user browses into `subdir`, selects a file, and has the tree
@@ -177,6 +193,7 @@ fn a_mutation_relists_the_navigated_directory_and_selection_survives() {
         tab.browser_view_state.set(view_state);
     }
     let tree_state_before = tab.browser_view_state.get().tree_state.clone();
+    let drawn_revision_before = tab.browser_entries.get().revision;
 
     // A real mutation through the facade, routed back by the real bridge.
     let new_file = fixture._temp.path().join("added.txt");
@@ -193,29 +210,21 @@ fn a_mutation_relists_the_navigated_directory_and_selection_survives() {
         "the mutation never relisted the tab through the bridge",
         || tab.inventory.get().revision() == Some(2),
     );
-    wait_until(
-        "the refresh never seated the navigated directory's fresh page",
-        || {
-            let listing = tab.listing.get();
-            listing
-                .page()
-                .is_some_and(|page| page.revision == 2 && page.directory.as_str() == "subdir")
-        },
-    );
+    wait_until("the refresh never republished the browser's rows", || {
+        tab.browser_entries.get().revision != drawn_revision_before
+    });
 
-    // The cursor stayed where the user was browsing.
+    // The cursor stayed where the user was browsing, and the republished
+    // rows answer *that* directory rather than the root the tab opened on
+    // -- the added file landed at the root, so a root-scoped republish
+    // would be visible here as three rows including `added.txt`.
     let listing = tab.listing.get();
     assert_eq!(listing.current_path(), "subdir");
+    assert_eq!(listing.status(), &RequestStatus::Idle);
     assert_eq!(
-        listing
-            .page()
-            .unwrap()
-            .entries
-            .iter()
-            .map(|entry| entry.path.as_str())
-            .collect::<Vec<_>>(),
-        vec!["subdir/keep.txt", "subdir/second.txt"],
-        "the refreshed page answers the navigated directory"
+        drawn_paths(tab),
+        ["subdir/keep.txt", "subdir/second.txt"],
+        "the refreshed rows answer the navigated directory"
     );
 
     // Selection and expansion survived the refresh.
@@ -307,10 +316,6 @@ fn a_listing_that_fails_at_open_reaches_the_status_bar_not_an_empty_folder() {
 
     let listing = tab.listing.get();
     assert!(
-        listing.page().is_none(),
-        "nothing is known about the directory -- no page was ever seated"
-    );
-    assert!(
         matches!(listing.status(), RequestStatus::Failed(_)),
         "the listing records the failure instead of masquerading as empty"
     );
@@ -318,7 +323,12 @@ fn a_listing_that_fails_at_open_reaches_the_status_bar_not_an_empty_folder() {
         listing.failure().is_some(),
         "the failure envelope is observable for a renderer to offer a retry"
     );
-    assert_eq!(tab.inventory.get().entry_count(), 0);
+    assert_eq!(
+        tab.inventory.get().entry_count(),
+        0,
+        "nothing is known about the archive -- no rows were ever seated"
+    );
+    assert!(drawn_paths(&tab).is_empty());
 }
 
 /// The auto-password ladder is the facade's alone now: a
@@ -474,8 +484,8 @@ fn a_failed_refresh_keeps_the_rows_and_records_the_failure() {
     let fixture = open_fixture(&[("a.txt", b"content"), ("b.txt", b"more")]);
     let tab = &fixture.tab;
     let session_id = tab.archive_session_id.get().unwrap();
-    let rows_before = tab.listing.get().page().unwrap().entries.len();
-    assert!(rows_before > 0);
+    let rows_before = drawn_paths(tab);
+    assert_eq!(rows_before, ["a.txt", "b.txt"]);
 
     let runtime = fixture.shared.services.tokio_runtime.clone();
     runtime.block_on({
@@ -500,8 +510,8 @@ fn a_failed_refresh_keeps_the_rows_and_records_the_failure() {
 
     let listing = tab.listing.get();
     assert_eq!(
-        listing.page().map(|page| page.entries.len()),
-        Some(rows_before),
+        drawn_paths(tab),
+        rows_before,
         "the rows on screen are the session's last good answer and must survive"
     );
     assert!(

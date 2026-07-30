@@ -326,53 +326,53 @@ fn archive_error_kind(kind: arclain_app::error::ApplicationErrorKind) -> Archive
     }
 }
 
-/// Fetches the whole-archive inventory and the current directory's page
-/// from `session_id`'s session and seats both onto `tab` -- the one
-/// fetch-and-adopt sequence every relist (a fresh open, a post-mutation
-/// refresh, a CRC-backfill catch-up) runs.
+/// Fetches the whole-archive inventory from `session_id`'s session and
+/// seats it onto `tab` -- the one fetch-and-adopt sequence every relist
+/// (a fresh open, a post-mutation refresh, a CRC-backfill catch-up) runs.
+///
+/// One fetch, not two. The browser draws a folder by scoping this
+/// inventory, so the directory-scoped `list_entries` page a previous
+/// shape also fetched here had no reader at all -- and the status axis
+/// never depended on it, because the `begin_loading`/`succeed`/`fail`
+/// bracket below is the same one either fetch would have carried.
 ///
 /// The write path for every seam `TabListing`/`TabInventory` expose:
 /// `begin_loading` marks the attempt and mints the generation its reply
-/// must present, `adopt_page`/`adopt` seat the answers behind their
-/// session/revision guards, and a fetch error is recorded through
-/// `fail` -- so a failed first listing is distinguishable from an empty
-/// directory, a failed *refresh* keeps its rows per that type's
-/// documented semantics, and a superseded request's late reply (either
-/// direction) is dropped by its own token instead of applied.
+/// must present, `adopt` seats the rows behind its session/revision
+/// guards, and the attempt is closed through `succeed` or `fail` -- so a
+/// failed listing is distinguishable from an empty directory, a failed
+/// *refresh* keeps its rows per that type's documented semantics, and a
+/// superseded request's late reply (either direction) is dropped by its
+/// own token instead of applied.
 ///
-/// The two fetches are immediate in-memory queries against the session's
-/// index (no backend I/O -- the facade's session already holds the
-/// listing the pre-facade code used to re-derive with its own second
-/// `backend.list()` call), so awaiting them inline on the bridge's event
-/// loop is fine. The `O(entries)` DTO-to-legacy conversion runs here on
-/// the calling task, off the tab's signal locks (see
-/// `AdoptedInventory::prepare`).
-async fn fetch_and_adopt_listing(
+/// The fetch is an immediate in-memory query against the session's index
+/// (no backend I/O -- the facade's session already holds the listing the
+/// pre-facade code used to re-derive with its own second `backend.list()`
+/// call), so awaiting it inline on the bridge's event loop is fine. The
+/// `O(entries)` DTO-to-legacy conversion runs here on the calling task,
+/// off the tab's signal locks (see `AdoptedInventory::prepare`).
+async fn fetch_and_adopt_inventory(
     app: &ArclainApp,
     tab: &crate::core::tabs::TabState,
     session_id: arclain_app::ids::ArchiveSessionId,
 ) -> Result<(), arclain_app::error::ApplicationError> {
     let mut generation = None;
-    let mut request = None;
+    let mut directory = None;
     tab.listing.update(|listing| {
         generation = Some(listing.begin_loading());
-        request = Some(listing.request().clone());
+        directory = Some(listing.directory().clone());
     });
-    let (generation, request) = (
+    let (generation, directory) = (
         generation.expect("update ran"),
-        request.expect("update ran"),
+        directory.expect("update ran"),
     );
-
-    let record_failure = |error: &arclain_app::error::ApplicationError| {
-        tab.listing.update(|listing| {
-            listing.fail(generation, session_id, &request.directory, error.clone());
-        });
-    };
 
     let inventory = match app.list_all_entries(session_id).await {
         Ok(inventory) => inventory,
         Err(error) => {
-            record_failure(&error);
+            tab.listing.update(|listing| {
+                listing.fail(generation, session_id, &directory, error.clone());
+            });
             return Err(error);
         }
     };
@@ -380,16 +380,8 @@ async fn fetch_and_adopt_listing(
     tab.inventory.update(|inventory| {
         inventory.adopt(prepared);
     });
-
-    let page = match app.list_entries(session_id, request.clone()).await {
-        Ok(page) => page,
-        Err(error) => {
-            record_failure(&error);
-            return Err(error);
-        }
-    };
     tab.listing.update(|listing| {
-        listing.adopt_page(generation, page);
+        listing.succeed(generation, session_id, &directory);
     });
     Ok(())
 }
@@ -400,7 +392,7 @@ async fn fetch_and_adopt_listing(
 /// inventory to that session (so any reply still in flight for the
 /// archive this one replaced is refused rather than seated), resets the
 /// browse cursor to the archive root, clears the selection, and seats
-/// the session's own rows via [`fetch_and_adopt_listing`].
+/// the session's own rows via [`fetch_and_adopt_inventory`].
 ///
 /// `pub` for the same reason `OperationOrigins::register` is: production
 /// code must reach this only through the bridge's own event handling,
@@ -450,7 +442,7 @@ pub async fn relist_for_browser_signals(
     // still writes `tab.current_password` is the password dialog, which
     // is where a user-typed password legitimately enters the UI.
 
-    fetch_and_adopt_listing(&app, tab, session_id).await?;
+    fetch_and_adopt_inventory(&app, tab, session_id).await?;
 
     crate::core::operations::browser_rows::publish_browsed_directory_for_tab(
         shared.signals(),
@@ -852,20 +844,22 @@ fn handle_organize_terminal(
 
 /// Re-seats `tab`'s browser model from its session after the archive's
 /// contents changed (an `ArchiveModify` completion, or a CRC backfill
-/// that bumped the revision): fetches the fresh inventory and the
-/// *current* directory's page and adopts both, so it *does* write
-/// `listing` (its rows, status, and generation) -- unlike a fresh open's
-/// `relist_for_browser_signals`, it never rebinds the session, resets
-/// the cursor, clears the selection, or touches `archive_extras`/
-/// `current_password`, because a mutation changes none of the things
-/// those describe. The browse cursor, selection, and folder expansion
-/// survive; selection entries whose path no longer exists anywhere in
-/// the archive are pruned, so deleting one selected file does not also
-/// silently deselect every other one.
+/// that bumped the revision): fetches the fresh inventory and adopts it,
+/// so it *does* write `listing` (its status and generation) -- unlike a
+/// fresh open's `relist_for_browser_signals`, it never rebinds the
+/// session, resets the cursor, clears the selection or the published
+/// rows, or touches `archive_extras`/`current_password`, because a
+/// mutation changes none of the things those describe. The browse cursor,
+/// selection, and folder expansion survive; selection entries whose path
+/// no longer exists anywhere in the archive are pruned, so deleting one
+/// selected file does not also silently deselect every other one.
 ///
 /// A failed refresh reaches the user through the caller's status-bar
-/// report while the previous rows stay on screen -- `TabListing::fail`'s
-/// documented keep-the-rows semantics, exercised through this real path.
+/// report *and* the browser panel, while the previous rows stay on screen
+/// -- `TabListing::fail`'s documented keep-the-rows semantics, exercised
+/// through this real path. It is the one case where rows and a recorded
+/// failure legitimately coexist: they are the same archive's last good
+/// answer, so the browser marks them stale rather than discarding them.
 ///
 /// `pub` for two callers outside this module's own event handling:
 /// `crate::core::operations::archive::finish_archive_load`, whose
@@ -883,7 +877,7 @@ pub async fn refresh_entries_after_mutation(
             "no application facade available",
         ));
     };
-    fetch_and_adopt_listing(&app, tab, session_id).await?;
+    fetch_and_adopt_inventory(&app, tab, session_id).await?;
 
     // Prune selections whose entry the mutation removed. Path-keyed
     // against the whole fresh inventory (files and folders alike --

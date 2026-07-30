@@ -7,10 +7,9 @@
 //! re-filtering the whole archive's entry list on every navigation. The
 //! application facade already models the same thing properly -- a
 //! directory-scoped, sorted, filtered, paginated
-//! [`ListEntriesRequest`] answered with an [`EntryPage`] of
-//! [`arclain_app::archive::ArchiveEntryDto`] rows -- so a tab holds
-//! *that* instead, and navigation is simply which directory the request
-//! names.
+//! [`ListEntriesRequest`] answered with the session's own
+//! `arclain_app::archive::ArchiveEntryDto` rows -- so a tab holds *that*
+//! instead, and navigation is simply which directory the request names.
 //!
 //! [`ArchiveNavigation`] keeps the pre-facade breadcrumb and
 //! back/forward semantics exactly (its tests pin each one against the
@@ -18,7 +17,7 @@
 //! cursor: an [`ArchivePath`], validated once, instead of a string
 //! re-normalized at every call site.
 
-use arclain_app::archive::{ArchiveEntryDto, ArchivePath, EntryPage, ListEntriesRequest};
+use arclain_app::archive::{ArchivePath, ListEntriesRequest};
 use arclain_app::error::ApplicationError;
 use arclain_app::ids::ArchiveSessionId;
 use std::sync::Arc;
@@ -219,16 +218,19 @@ impl ArchiveNavigation {
 
 /// What the tab's most recent listing request is doing.
 ///
-/// Deliberately separate from *whether the tab holds rows* (see
-/// [`TabListing::page`]), because those are independent facts and the
-/// states that matter are their combinations:
+/// Deliberately separate from *whether the tab has rows to show*. The rows
+/// are the browser rows published for the browsed directory
+/// (`TabState::browser_entries`, scoped out of the whole-archive
+/// [`TabInventory`] by `crate::core::operations::browser_rows`); this says
+/// what the fetch behind them is doing. Those are independent facts, and
+/// the states that matter are their combinations:
 ///
 /// | rows | status | means |
 /// | --- | --- | --- |
-/// | none | `Idle` | nothing asked yet -- no archive open, or navigation just moved |
-/// | none | `Loading` | first listing of this directory in flight |
-/// | none | `Failed` | listing this directory failed; its contents are *unknown* |
-/// | some | `Idle` | the session answered; zero rows means the folder really is empty |
+/// | none | `Idle` | nothing has been listed yet, or the browsed directory really is empty |
+/// | none | `Loading` | the archive's listing is in flight; its contents are not known yet |
+/// | none | `Failed` | the listing failed; the contents are *unknown*, not empty |
+/// | some | `Idle` | the session answered and these are its rows |
 /// | some | `Loading` | refreshing, with the previous answer still on screen |
 /// | some | `Failed` | a refresh failed; these rows are the last good answer |
 ///
@@ -236,15 +238,16 @@ impl ArchiveNavigation {
 /// did -- makes the bottom two rows unnameable. A renderer then cannot
 /// draw a spinner over existing rows, and cannot mark rows as
 /// "couldn't refresh", even in principle: the failure has nowhere to live
-/// once the decision is made to keep the rows. And with a single
-/// `Option<EntryPage>` the top row and the fourth become the same value,
-/// so a listing that *failed* renders as an ordinary empty folder -- the
-/// silent-empty-view failure mode, arriving by construction rather than by
-/// accident.
+/// once the decision is made to keep the rows. And it makes the first and
+/// fourth rows the same value, so a listing that *failed* renders as an
+/// ordinary empty folder -- the silent-empty-view failure mode, arriving
+/// by construction rather than by accident.
 ///
-/// Kept explicit now, while nothing renders any of this yet: the
-/// alternative is discovering it after the render tree is built on top of
-/// the collapsed shape.
+/// `crate::features::archive_browser::presentation::views::browser_page::
+/// browser_body` is the reader that turns this table into what the browser
+/// panel draws.
+///
+/// [`TabInventory`]: super::inventory::TabInventory
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum RequestStatus {
     /// No request is outstanding: either none has been made, or the last
@@ -263,50 +266,57 @@ pub enum RequestStatus {
 /// Names one listing request so its eventual reply -- success or failure
 /// -- can be told apart from a newer request's. Minted by
 /// [`TabListing::begin_loading`] and handed back to
-/// [`TabListing::adopt_page`]/[`TabListing::fail`]; a reply carrying a
+/// [`TabListing::succeed`]/[`TabListing::fail`]; a reply carrying a
 /// superseded token is dropped rather than applied.
 ///
 /// Identity is scoped to one `TabListing` *value*: the counter restarts
 /// when a tab rebinds to a new session via [`TabListing::for_session`],
 /// so a token minted against the old value can numerically collide with
 /// the new value's counter. That is deliberate and safe -- the session
-/// guard [`TabListing::adopt_page`] applies after the generation check
-/// refuses any cross-session reply regardless, so the token only needs
-/// to order requests *within* one binding, which a per-value counter
-/// does exactly.
+/// guard both replies apply after the generation check refuses any
+/// cross-session reply regardless, so the token only needs to order
+/// requests *within* one binding, which a per-value counter does exactly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ListingGeneration(u64);
 
 /// One tab's archive listing: which session it is listing, where it is
-/// browsing, the request that describes what its browser is showing, the
-/// rows the session last returned for it, and what the latest request is
-/// doing.
+/// browsing, the request that describes what its browser is showing, and
+/// what the fetch behind that is doing.
+///
+/// The rows themselves are deliberately *not* here. A tab holds its
+/// archive's whole entry tree once ([`TabInventory`]) and the browser
+/// draws one folder by scoping it, which is what makes navigation
+/// repaint without a round trip; `crates/ui/tests/tab_archive_model_test.rs`
+/// asserts that scoping equals the session's own answer to
+/// [`Self::request`] row for row, field for field, which is what licenses
+/// the arrangement. An earlier shape kept a second, per-relist
+/// `list_entries` page here as well -- nothing ever read it, and the
+/// status axis never depended on it, because the same
+/// [`Self::begin_loading`]/[`Self::fail`] pair brackets the inventory
+/// fetch.
 ///
 /// `request.directory` always equals `navigation.current()` -- callers
 /// change it by navigating, never by editing the request -- and every
-/// navigation discards both rows and status, because a reply answers the
-/// directory it was requested for and nothing else.
+/// navigation discards the status, because a reply answers the directory
+/// it was requested for and nothing else.
+///
+/// [`TabInventory`]: super::inventory::TabInventory
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabListing {
     /// The archive session this listing belongs to, `None` before the
     /// tab has an archive open. Load-bearing rather than informational:
-    /// it is what [`Self::adopt_page`] checks a page against, and an
-    /// `EntryId` is only unique *within* its own session -- a page from
-    /// a superseded session could otherwise seat rows whose ids name
-    /// entirely different entries in the session the tab now holds, and
-    /// those ids are what an extract or a delete is addressed by.
+    /// it is what [`Self::succeed`] and [`Self::fail`] check a reply
+    /// against, so a listing made for the archive the tab held *before*
+    /// this one can neither clear nor deface the status of the one it
+    /// holds now.
     session: Option<ArchiveSessionId>,
     navigation: ArchiveNavigation,
     request: ListEntriesRequest,
-    /// The rows the session last returned for `request.directory`, behind
-    /// an `Arc` so a renderer reading this signal every frame clones a
-    /// refcount rather than every row of the directory it is showing.
-    rows: Option<Arc<EntryPage>>,
     status: RequestStatus,
     /// Which request the listing currently cares about -- bumped by
     /// [`Self::begin_loading`] (a new fetch) and by every successful
     /// navigation (whatever was in flight no longer answers what is
-    /// being browsed). The reply-ordering guard [`Self::adopt_page`] and
+    /// being browsed). The reply-ordering guard [`Self::succeed`] and
     /// [`Self::fail`] compare their token against.
     generation: u64,
 }
@@ -331,7 +341,6 @@ impl TabListing {
             session,
             navigation: ArchiveNavigation::default(),
             request: ListEntriesRequest::whole_directory(ArchivePath::root()),
-            rows: None,
             status: RequestStatus::Idle,
             generation: 0,
         }
@@ -354,33 +363,33 @@ impl TabListing {
         self.navigation.current_path()
     }
 
-    /// The request this tab's browser is showing the answer to -- what a
-    /// caller hands `ArclainApp::list_entries` to refresh it.
+    /// The request this tab's browser is showing the answer to -- the
+    /// exact [`ListEntriesRequest`] a caller hands
+    /// `ArclainApp::list_entries` to get the session's own answer for the
+    /// browsed directory.
+    ///
+    /// Nothing on the render path issues it, because the browser draws
+    /// the same answer by scoping the whole-archive inventory (see this
+    /// type's own doc comment). It is what that equivalence is stated
+    /// *against*: `tab_archive_model_test` lists this request for real and
+    /// compares it to the rows the browser draws, so a drift between the
+    /// two is a test failure rather than a silent display regression.
     pub fn request(&self) -> &ListEntriesRequest {
         &self.request
     }
 
     /// What the latest listing request for this directory is doing.
     ///
-    /// Orthogonal to whether rows are held -- a renderer must consult both
-    /// before deciding what to draw. See [`RequestStatus`] for the full
-    /// table of combinations.
+    /// Orthogonal to whether the tab has rows to show -- a renderer must
+    /// consult both before deciding what to draw. See [`RequestStatus`]
+    /// for the full table of combinations.
     pub fn status(&self) -> &RequestStatus {
         &self.status
     }
 
-    /// The rows the session last returned for the directory being browsed,
-    /// or `None` when it has not returned any yet.
-    ///
-    /// `Some` with zero entries means the folder really is empty. A `None`
-    /// here says only "no rows"; [`Self::status`] says *why*.
-    pub fn page(&self) -> Option<&EntryPage> {
-        self.rows.as_deref()
-    }
-
     /// The error the last listing of this directory failed with, if it
-    /// failed. Independent of whether rows are held: a refresh that fails
-    /// over a directory already on screen reports both.
+    /// failed. Independent of whether the tab has rows to show: a refresh
+    /// that fails over a directory already on screen reports both.
     pub fn failure(&self) -> Option<&ApplicationError> {
         match &self.status {
             RequestStatus::Failed(error) => Some(error),
@@ -394,92 +403,37 @@ impl TabListing {
         matches!(self.status, RequestStatus::Loading)
     }
 
-    /// The current directory's rows -- empty until the session returns
-    /// some.
+    /// Records that a listing for the current request is in flight and
+    /// mints the [`ListingGeneration`] naming this attempt -- the token
+    /// its eventual [`Self::succeed`]/[`Self::fail`] must present.
     ///
-    /// TRANSITIONAL(browser-page-fetch): **no production caller.** The
-    /// browser draws the tab's whole-archive inventory scoped to the
-    /// browsed directory instead (`crate::core::operations::browser_rows`),
-    /// because that repaints on navigation without a round trip, so
-    /// nothing reads the page a relist seats here. This accessor, and the
-    /// per-relist `list_entries` fetch that fills it, live or die
-    /// together with that decision: either the fetch goes and
-    /// `TabListing` keeps only the cursor, the request and the request
-    /// status, or the renderer moves onto pages and fetches on navigate.
-    /// Whoever settles that owns this method.
-    ///
-    /// **The warning below is the specification of a renderer that does
-    /// not exist yet, and is the reason this doc comment is worth
-    /// keeping.** An empty slice here is not "this folder is empty"
-    /// unless [`Self::page`] is also `Some`; [`Self::status`] is what
-    /// turns the other cases into a spinner or an error instead of a
-    /// blank folder. Nothing renders that distinction today -- see the
-    /// task report's concern on the missing `Failed` renderer.
-    pub fn entries(&self) -> &[ArchiveEntryDto] {
-        match &self.rows {
-            Some(page) => &page.entries,
-            None => &[],
-        }
-    }
-
-    /// Records that a listing for the current request is in flight,
-    /// without touching the rows, and mints the [`ListingGeneration`]
-    /// naming this attempt -- the token its eventual
-    /// [`Self::adopt_page`]/[`Self::fail`] must present.
-    ///
-    /// Whether the previous answer stays on screen while it runs is the
-    /// caller's choice, not this type's: rows and status are independent
-    /// fields, so "refreshing, previous rows still shown" is a state the
-    /// model can hold. Navigation is the one thing that clears rows on its
-    /// own, because a new directory's listing has nothing to keep.
+    /// Whether the rows already on screen stay there while it runs is the
+    /// caller's choice, not this type's: the rows live on the tab's own
+    /// signals, so "refreshing, previous answer still shown" is a state
+    /// the model can hold. A relist that rebinds the tab to a *different*
+    /// archive clears them, because none of them describe it.
     pub fn begin_loading(&mut self) -> ListingGeneration {
         self.generation += 1;
         self.status = RequestStatus::Loading;
         ListingGeneration(self.generation)
     }
 
-    /// Stores `page` as the answer to the request `generation` names.
+    /// Records that the listing attempt `generation` names -- made
+    /// against `session_id` for `directory` -- answered, returning the
+    /// status to [`RequestStatus::Idle`]. A successful listing supersedes
+    /// whatever the previous attempt was doing, including a failure.
     ///
-    /// Refuses (reporting `false`) any page that cannot be the answer to
-    /// what is being browsed now:
-    ///
-    /// * one whose `generation` a newer [`Self::begin_loading`] or a
-    ///   navigation has superseded -- the late reply of an overtaken
-    ///   request. Without this, a slow request's success could land
-    ///   *after* a newer request already answered (silently replacing
-    ///   fresh rows and erasing the newer request's own status), purely
-    ///   on reply order;
-    /// * one from a session this listing does not belong to -- a reply
-    ///   for the archive the tab held *before* the current one, whose
-    ///   `EntryId`s are meaningless (and actively dangerous, being
-    ///   session-scoped) against the session it holds now. This guard is
-    ///   also what makes the per-value generation counter sufficient:
-    ///   a token minted against a previous binding cannot smuggle a
-    ///   foreign page in through a numeric collision;
-    /// * one listing a different directory, from an in-flight reply
-    ///   racing the very navigation that superseded it;
-    /// * one older than the rows already held, from a refresh overtaken
-    ///   by a newer one that already answered.
-    ///
-    /// An accepted page also returns the status to
-    /// [`RequestStatus::Idle`]: a successful listing supersedes whatever
-    /// the previous attempt was doing, including a failure.
-    pub fn adopt_page(&mut self, generation: ListingGeneration, page: EntryPage) -> bool {
-        if generation.0 != self.generation {
+    /// Refused (`false`) under [`Self::answers_current_request`]'s three
+    /// guards, exactly as [`Self::fail`] is.
+    pub fn succeed(
+        &mut self,
+        generation: ListingGeneration,
+        session_id: ArchiveSessionId,
+        directory: &ArchivePath,
+    ) -> bool {
+        if !self.answers_current_request(generation, session_id, directory) {
             return false;
         }
-        if self.session != Some(page.session_id) {
-            return false;
-        }
-        if page.directory != self.request.directory {
-            return false;
-        }
-        if let Some(held) = &self.rows {
-            if page.revision < held.revision {
-                return false;
-            }
-        }
-        self.rows = Some(Arc::new(page));
         self.status = RequestStatus::Idle;
         true
     }
@@ -488,34 +442,25 @@ impl TabListing {
     /// against `session_id` -- failed for `directory`, and reports
     /// whether that failure is about what is being browsed now.
     ///
-    /// Refused (`false`) when a newer [`Self::begin_loading`] or a
-    /// navigation has superseded `generation`, when `session_id` is not
-    /// the session this listing is bound to (the same guard
-    /// [`Self::adopt_page`] applies, for the same reason: after a rebind
-    /// the fresh value's generation counter restarts, so a numerically
-    /// colliding token from the previous binding must not let the old
-    /// session's failure deface the new session's status), or when
-    /// `directory` is no longer the one being browsed. The generation
-    /// guard is what [`Self::adopt_page`] has always needed mirrored
-    /// here: an `ApplicationError` carries no revision, so without a
-    /// request identity a superseded request's late failure would mark
-    /// rows a *newer* request just refreshed as failed -- and its
-    /// mirror, a late failure erasing a newer request's genuine
-    /// `Loading`, is the same hole from the other side.
+    /// Refused (`false`) under [`Self::answers_current_request`]'s three
+    /// guards, exactly as [`Self::succeed`] is.
     ///
-    /// **Rows already held are kept.** They are the session's last
-    /// successful answer for this exact directory, and replacing them with
-    /// "contents unknown" because a *refresh* failed loses information the
-    /// user can still act on -- while the failure itself is recorded in the
-    /// status either way, so a renderer can mark the rows stale rather than
-    /// having to choose between showing them and reporting the error.
+    /// **Rows already on screen are left alone.** They are the session's
+    /// last successful answer for this exact directory, and blanking them
+    /// because a *refresh* failed loses information the user can still act
+    /// on -- while the failure itself is recorded in the status either
+    /// way, so a renderer can mark the rows stale rather than having to
+    /// choose between showing them and reporting the error.
     ///
     /// Keeping them is safe, not merely convenient: acting on a stale row
     /// cannot reach the wrong entry, because the `EntryId` it carries is
     /// validated against the owning session on every facade call that takes
     /// one. A superseded-revision id resolves to nothing rather than to
     /// some other entry, so the worst case is a refused operation, not a
-    /// wrong-file delete.
+    /// wrong-file delete. That reasoning covers a *stale* row of the same
+    /// archive; it is not a licence to leave a previous *archive's* rows up
+    /// under a new archive's name, which is why the relist clears them when
+    /// it rebinds the tab.
     pub fn fail(
         &mut self,
         generation: ListingGeneration,
@@ -523,17 +468,42 @@ impl TabListing {
         directory: &ArchivePath,
         error: ApplicationError,
     ) -> bool {
-        if generation.0 != self.generation {
-            return false;
-        }
-        if self.session != Some(session_id) {
-            return false;
-        }
-        if directory != &self.request.directory {
+        if !self.answers_current_request(generation, session_id, directory) {
             return false;
         }
         self.status = RequestStatus::Failed(Arc::new(error));
         true
+    }
+
+    /// Whether a reply presenting `generation`, made against `session_id`
+    /// for `directory`, is the answer to what is being browsed now.
+    ///
+    /// Three guards, each closing a distinct hole:
+    ///
+    /// * `generation` -- a newer [`Self::begin_loading`] or a navigation
+    ///   has superseded this request, so its reply is an overtaken one.
+    ///   An `ApplicationError` carries no revision to order failures by,
+    ///   so without a request identity a slow attempt's late failure would
+    ///   mark a listing a *newer* attempt just refreshed as failed; and
+    ///   its mirror, a late success erasing a newer attempt's genuine
+    ///   `Loading`, is the same hole from the other side.
+    /// * `session_id` -- a reply for the archive the tab held *before*
+    ///   this one says nothing about the one it holds now. This is also
+    ///   what makes the per-value generation counter sufficient: a rebind
+    ///   restarts that counter, so a numerically colliding token from the
+    ///   previous binding must not be able to clear or deface the new
+    ///   session's status.
+    /// * `directory` -- an in-flight reply racing the very navigation that
+    ///   superseded it.
+    fn answers_current_request(
+        &self,
+        generation: ListingGeneration,
+        session_id: ArchiveSessionId,
+        directory: &ArchivePath,
+    ) -> bool {
+        generation.0 == self.generation
+            && self.session == Some(session_id)
+            && directory == &self.request.directory
     }
 
     /// Descends into `folder`, relative to the current directory -- a
@@ -574,13 +544,18 @@ impl TabListing {
     }
 
     /// Runs one navigation and, if it moved, re-points the request at the
-    /// new directory and discards whatever answered the old one -- rows,
-    /// an in-flight marker, or a failure alike, since none of them say
-    /// anything about the directory now being browsed. The generation
-    /// advances too: a reply still in flight for the old directory is a
-    /// superseded request's reply now, dropped by its own token rather
-    /// than relying solely on the directory comparison (which a
-    /// navigate-away-and-back would defeat).
+    /// new directory and discards whatever answered the old one -- an
+    /// in-flight marker or a failure alike, since neither says anything
+    /// about the directory now being browsed. The generation advances
+    /// too: a reply still in flight for the old directory is a superseded
+    /// request's reply now, dropped by its own token rather than relying
+    /// solely on the directory comparison (which a navigate-away-and-back
+    /// would defeat).
+    ///
+    /// The browser's rows are republished by the navigation service in the
+    /// same step, out of the inventory the tab already holds, so a move
+    /// never leaves the old directory's rows under the new directory's
+    /// breadcrumb and never costs a frame of emptiness.
     fn navigated<A>(
         &mut self,
         navigate: impl FnOnce(&mut ArchiveNavigation, A) -> bool,
@@ -591,7 +566,6 @@ impl TabListing {
         }
         self.request.directory = self.navigation.current().clone();
         self.request.offset = 0;
-        self.rows = None;
         self.status = RequestStatus::Idle;
         self.generation += 1;
         true
