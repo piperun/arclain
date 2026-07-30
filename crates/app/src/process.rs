@@ -33,7 +33,9 @@
 //!   with [`PipelineInputsDto`], the very type
 //!   [`crate::operations::PipelineRequest`] takes, and takes no other
 //!   parameter of its own: everything that shapes the prediction is
-//!   something the run is given too.
+//!   something the run is given too. That equality is enforced by the
+//!   compiler, not by prose -- see
+//!   `impl From<PipelinePreviewRequest> for PipelineRequest`.
 //! - **Interrupted runs** ([`InterruptedPipelineRunDto`]) are
 //!   database-persisted across restarts and are emphatically *not*
 //!   [`crate::ArclainApp::recent_operations`], which is in-memory and
@@ -56,7 +58,7 @@ use std::path::PathBuf;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::operations::pipeline::{
     OutputArtifactDto, OutputCollisionPolicyDto, PipelineDestinationDto, PipelineInputsDto,
-    PipelineSpecDto, PipelineStepDto,
+    PipelineRequest, PipelineSpecDto, PipelineStepDto,
 };
 
 // ============================================================================
@@ -188,6 +190,53 @@ pub struct PipelinePreviewRequest {
     /// the preview so the collision warning describes the run's real
     /// policy rather than a hardcoded one.
     pub collision_policy: Option<OutputCollisionPolicyDto>,
+}
+
+/// Runs what was previewed: turns a preview request into the
+/// [`PipelineRequest`] describing the identical run.
+///
+/// # This conversion is the enforcement, not a convenience
+///
+/// The property this whole surface rests on is that
+/// [`PipelinePreviewRequest`] is *exactly*
+/// [`PipelineRequest`]'s field set. Prose cannot hold that: a field added
+/// to one type and not the other would silently reopen the
+/// preview-describes-something-else divergence, and no test would notice
+/// because no test can know about a field it was not written to check.
+///
+/// This function makes the compiler notice instead. It **destructures**
+/// the preview request by naming every field, and **constructs** the run
+/// request by naming every field:
+///
+/// * a new field on [`PipelinePreviewRequest`] fails the pattern
+///   (`E0027`, "pattern does not mention field");
+/// * a new field on [`PipelineRequest`] fails the literal (`E0063`,
+///   "missing field in initializer").
+///
+/// Either way the build stops until both types agree again. **Do not add
+/// `..` to either side** -- a rest pattern or a struct-update base would
+/// make both errors disappear and turn the guarantee back into a comment.
+///
+/// Being useful is a bonus: a frontend that previews continuously and
+/// then runs already holds the preview request, so this is the natural
+/// hand-off. Note that a preview accepts two things a run refuses -- no
+/// inputs and no steps -- so the result still has to pass
+/// [`crate::ArclainApp::start_pipeline`]'s own validation.
+impl From<PipelinePreviewRequest> for PipelineRequest {
+    fn from(preview: PipelinePreviewRequest) -> Self {
+        let PipelinePreviewRequest {
+            inputs,
+            destination,
+            pipeline,
+            collision_policy,
+        } = preview;
+        Self {
+            inputs,
+            destination,
+            pipeline,
+            collision_policy,
+        }
+    }
 }
 
 /// What the pipeline would do to one input file. Mirrors
@@ -528,6 +577,34 @@ mod tests {
     }
 
     // ── preview conversion ──────────────────────────────────────────────
+
+    /// The conversion's *value* behaviour. Its real job -- failing the
+    /// build when the two request types stop agreeing -- is done by the
+    /// compiler and cannot be asserted from here; see the `impl`'s own
+    /// doc comment. This pins that it moves every field across
+    /// unchanged, so the run really is the previewed one.
+    #[test]
+    fn a_preview_request_converts_into_the_identical_run_request() {
+        let preview = PipelinePreviewRequest {
+            inputs: PipelineInputsDto::Folder {
+                path: PathBuf::from("/batch"),
+            },
+            destination: PipelineDestinationDto::Folder {
+                path: PathBuf::from("/out"),
+            },
+            pipeline: PipelineSpecDto::Steps {
+                steps: preset_input().steps,
+                output_artifact: OutputArtifactDto::Folder,
+            },
+            collision_policy: Some(OutputCollisionPolicyDto::Overwrite),
+        };
+        let run = PipelineRequest::from(preview.clone());
+
+        assert_eq!(run.inputs, preview.inputs);
+        assert_eq!(run.destination, preview.destination);
+        assert_eq!(run.pipeline, preview.pipeline);
+        assert_eq!(run.collision_policy, preview.collision_policy);
+    }
 
     #[test]
     fn a_core_preview_entry_maps_field_for_field() {
