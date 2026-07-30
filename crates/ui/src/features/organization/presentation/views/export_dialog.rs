@@ -1,5 +1,5 @@
 use crate::shared::components::preview_tree::PreviewTreeNode;
-use arclain_core::features::organization::GameMetadata;
+use arclain_app::archive::ProductMetadataSummary;
 use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 use serde::Serialize;
@@ -53,7 +53,7 @@ impl ExportTreeDialog {
         ctx: &egui::Context,
         original_tree: &[PreviewTreeNode],
         organized_tree: &[PreviewTreeNode],
-        metadata: Option<&GameMetadata>,
+        metadata: Option<&ProductMetadataSummary>,
     ) {
         if !self.is_open {
             return;
@@ -119,7 +119,7 @@ impl ExportTreeDialog {
 
                 if metadata.is_some() {
                     ui.checkbox(&mut self.include_metadata, "Include Metadata")
-                        .on_hover_text("Include the full metadata in the export");
+                        .on_hover_text("Include this archive's product metadata in the export");
                 } else {
                     ui.add_enabled(false, egui::Checkbox::new(&mut false, "Include Metadata"))
                         .on_hover_text("No metadata available for this archive");
@@ -158,7 +158,7 @@ impl ExportTreeDialog {
         &self,
         original_tree: &[PreviewTreeNode],
         organized_tree: &[PreviewTreeNode],
-        metadata: Option<&GameMetadata>,
+        metadata: Option<&ProductMetadataSummary>,
     ) {
         let (content, extension, filter_name) = match self.format {
             ExportFormat::Text => (
@@ -196,7 +196,7 @@ impl ExportTreeDialog {
         &self,
         original_tree: &[PreviewTreeNode],
         organized_tree: &[PreviewTreeNode],
-        metadata: Option<&GameMetadata>,
+        metadata: Option<&ProductMetadataSummary>,
     ) -> String {
         let mut content = String::new();
 
@@ -235,7 +235,7 @@ impl ExportTreeDialog {
         &self,
         original_tree: &[PreviewTreeNode],
         organized_tree: &[PreviewTreeNode],
-        metadata: Option<&GameMetadata>,
+        metadata: Option<&ProductMetadataSummary>,
     ) -> String {
         #[derive(Serialize)]
         struct ExportData<'a> {
@@ -244,7 +244,7 @@ impl ExportTreeDialog {
             #[serde(skip_serializing_if = "Option::is_none")]
             modified_tree: Option<&'a [PreviewTreeNode]>,
             #[serde(skip_serializing_if = "Option::is_none")]
-            metadata: Option<&'a GameMetadata>,
+            metadata: Option<&'a ProductMetadataSummary>,
         }
 
         let data = ExportData {

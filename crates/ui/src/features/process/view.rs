@@ -34,6 +34,22 @@ pub enum ProcessAction {
     SavePresets,
 }
 
+/// The active tab's product metadata, in the shape the core pipeline
+/// preview still takes. TRANSITIONAL, and owned by the pipeline-preview
+/// migration rather than by this page -- see
+/// [`crate::core::tabs::legacy_metadata`].
+fn selected_pipeline_metadata(shared: &SharedState) -> Option<arclain_core::GameMetadata> {
+    shared
+        .signals()
+        .tabs
+        .get()
+        .active()
+        .game_metadata
+        .get()
+        .as_ref()
+        .map(crate::core::tabs::legacy_pipeline_metadata)
+}
+
 pub fn render(
     ctx: &egui::Context,
     shared: &SharedState,
@@ -51,7 +67,7 @@ pub fn render(
         emitted = Some(ProcessAction::LoadOrganizationRules);
     }
 
-    let selected_metadata = shared.signals().tabs.get().active().game_metadata.get();
+    let selected_metadata = selected_pipeline_metadata(shared);
     state.refresh_preview(selected_metadata.as_ref());
 
     // Sync is_running from the signal
@@ -350,7 +366,7 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
 
     if any_changed {
         state.mark_dirty();
-        let selected_metadata = shared.signals().tabs.get().active().game_metadata.get();
+        let selected_metadata = selected_pipeline_metadata(shared);
         state.refresh_preview(selected_metadata.as_ref());
     }
 

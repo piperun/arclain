@@ -426,7 +426,7 @@ fn metadata_for_another_session_never_reaches_the_panel() {
         other_tab
             .game_metadata
             .get()
-            .map(|meta| meta.title)
+            .and_then(|meta| meta.title)
             .as_deref(),
         Some("Other Archive Title"),
         "sanity: the event was processed — it reached its own tab"
@@ -459,7 +459,10 @@ fn metadata_for_another_session_never_reaches_the_panel() {
         .as_mut()
         .expect("the panel is still open");
     assert_eq!(
-        page.panel.metadata.as_ref().map(|meta| meta.title.as_str()),
+        page.panel
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.title.as_deref()),
         Some("Panel Archive Title"),
         "its own session's metadata must reach it, even while another tab is active"
     );

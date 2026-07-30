@@ -117,9 +117,9 @@ pub fn product_metadata_from_document(
 fn summarize_product_metadata(metadata: GameMetadata) -> ProductMetadataSummary {
     ProductMetadataSummary {
         product_id: metadata.product_id,
-        title: present(Some(metadata.title)),
-        creator: present(metadata.creator),
-        release_date: present(metadata.release_date),
+        title: non_blank(Some(metadata.title)),
+        creator: non_blank(metadata.creator),
+        release_date: non_blank(metadata.release_date),
         tags: metadata.tags,
         screenshots: summarize_screenshots(&metadata.screenshots),
     }
@@ -128,7 +128,7 @@ fn summarize_product_metadata(metadata: GameMetadata) -> ProductMetadataSummary 
 /// `None` for a value that is absent, empty, or whitespace-only; the
 /// original string otherwise (untrimmed -- the blank test decides
 /// presence, it does not rewrite a value the plugin reported).
-fn present(value: Option<String>) -> Option<String> {
+fn non_blank(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
 

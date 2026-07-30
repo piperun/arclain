@@ -18,11 +18,14 @@ pub const MAX_FILE_HITS: usize = 50;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabSummary {
     pub id: TabId,
-    /// Product code — `GameMetadata.product_id` (empty when no metadata).
+    /// Product code — `ProductMetadataSummary::product_id` (empty when
+    /// no metadata).
     pub code: String,
-    /// Display title — `GameMetadata.title`, falling back to the file stem.
+    /// Display title — `ProductMetadataSummary::title`, falling back to
+    /// the file stem.
     pub title: String,
-    /// Maker / circle — `GameMetadata.creator` (empty when unknown).
+    /// Maker / circle — `ProductMetadataSummary::creator` (empty when
+    /// unknown).
     pub maker: String,
     /// Archive file name (no directory) of the tab's loaded archive.
     pub file: String,

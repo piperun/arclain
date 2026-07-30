@@ -401,28 +401,14 @@ fn test_edit_file_action() {
     assert_eq!(dialog.name_input, filename);
 }
 
-#[test]
-fn test_metadata_action() {
-    let mut ctx = TestContext::new();
-    let signals = ctx.shared.app_state.lock().signals.clone();
-
-    // Note: circle -> handled by GameMetadata::from_json mapping if creator is missing
-    // But direct JSON deserialization might not run from_json logic if we just parse raw JSON in the action handler.
-    // Let's check Action::Metadata handler in actions.rs.
-    // It calls serde_json::from_str::<GameMetadata>. This uses derived Deserialize, NOT from_json.
-    // So "circle" in JSON won't map to "creator" unless we use custom deserialization or the handler uses from_json.
-    // Checked actions.rs: it calls `serde_json::from_str`.
-    // Valid GameMetadata JSON requires fields matching struct or being optional.
-
-    let json = r#"{"product_id": "RJ1", "source": "dlsite", "title": "Test Game", "tags": [], "metadata_json": "{}", "screenshots": []}"#.to_string();
-    ctx.handle_action(Action::Metadata(json));
-
-    let metadata = signals.tabs.get().active().game_metadata.get();
-    assert!(metadata.is_some());
-    let meta = metadata.unwrap();
-    assert_eq!(meta.title, "Test Game");
-    assert_eq!(meta.product_id, "RJ1");
-}
+// `Action::Metadata` and the controller arm that parsed a plugin's JSON
+// into a tab's metadata are gone. Nothing ever emitted that action, and
+// the arm was a second parser of the same document with different rules
+// (a plain derived deserialize, so it dropped the `circle` -> `creator`
+// mapping) writing to whichever tab happened to be active rather than to
+// the one whose archive the fetch was for. The live arrival path --
+// session write, `MetadataChanged`, tab, views -- is covered by
+// `session_event_bridge_test.rs` and `organize_panel_test.rs`.
 
 /// Organizing opens the panel for the active tab's archive *session*:
 /// the panel is bound to it, so everything it previews and the organize

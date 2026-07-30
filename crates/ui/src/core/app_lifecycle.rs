@@ -205,26 +205,28 @@ pub fn process_metadata_signal(
         };
         tab.metadata.set(None); // Consume
 
-        let json_str = json_val.to_string();
-        let meta = match arclain_core::features::organization::GameMetadata::from_json(&json_str) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("Failed to parse metadata from signal: {}", e);
-                continue;
-            }
+        // Summarized by the application, not parsed here: the same
+        // function the organize planner reads this document through, so
+        // the title a tab displays is the title its plan was built from.
+        let Some(meta) = arclain_app::archive::product_metadata_from_document(Some(json_val))
+        else {
+            tracing::warn!(
+                "Ignoring an unparseable metadata document for tab {:?}",
+                tab.id
+            );
+            continue;
         };
 
         tracing::info!(
-            "Received metadata signal update for tab {:?}: {} (ID: {})",
+            "Received metadata signal update for tab {:?}: {:?} (ID: {})",
             tab.id,
             meta.title,
             meta.product_id
         );
 
-        latest_summary = Some(if !meta.title.is_empty() {
-            format!("Found: {} [{}]", meta.title, meta.product_id)
-        } else {
-            format!("Found metadata for {}", meta.product_id)
+        latest_summary = Some(match meta.title.as_deref() {
+            Some(title) => format!("Found: {} [{}]", title, meta.product_id),
+            None => format!("Found metadata for {}", meta.product_id),
         });
 
         // Populate THIS tab's `game_metadata` — not the active

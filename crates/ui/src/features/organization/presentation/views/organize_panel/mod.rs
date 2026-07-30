@@ -31,6 +31,7 @@ use crate::shared::components::preview_tree::{
     self, build_organized_tree, build_original_tree, PreviewFilter, PreviewTreeState,
 };
 use crate::shared::theme::AppTheme;
+use arclain_app::archive::ProductMetadataSummary;
 use arclain_app::ids::ArchiveSessionId;
 use arclain_app::organization::{
     OrganizationProfileSummary, OrganizationRuleSummary, OrganizePlanPreview,
@@ -99,18 +100,16 @@ pub struct OrganizePanel {
     pub archive_name: String,
     pub rules: Vec<OrganizationRuleSummary>,
     pub profiles: Vec<OrganizationProfileSummary>,
-    /// This session's plugin-reported metadata.
+    /// This session's plugin-reported product metadata, as the facade
+    /// summarizes it.
     ///
-    /// **Boundary note:** the one `arclain_core` type this panel still
-    /// holds, and only because the issues export enumerates the
-    /// screenshot identifiers off it (see
-    /// [`integrity::export_issues_report`]) -- no facade method exposes
-    /// those yet, and the metadata read model is a later task's surface
-    /// to design. Nothing about the *organization* cluster is computed
-    /// from it: the plan, its integrity report and the rules that apply
-    /// all come from the facade, which reads this same metadata from the
-    /// session itself.
-    pub metadata: Option<arclain_core::features::organization::GameMetadata>,
+    /// Nothing about the *organization* cluster is computed from it: the
+    /// plan, its integrity report and the rules that apply all come from
+    /// the facade, which reads this same metadata off the session
+    /// itself. What the panel does with it is display (the fetched-title
+    /// badge) and enumerate (the issues export naming the screenshots a
+    /// plan did not schedule).
+    pub metadata: Option<ProductMetadataSummary>,
     /// The plan for the selected rule, or `None` while one is being
     /// computed for the first time / after a failure.
     preview: Option<OrganizePlanPreview>,
@@ -138,7 +137,7 @@ impl OrganizePanel {
         archive_name: String,
         rules: Vec<OrganizationRuleSummary>,
         profiles: Vec<OrganizationProfileSummary>,
-        metadata: Option<arclain_core::features::organization::GameMetadata>,
+        metadata: Option<ProductMetadataSummary>,
         matching_rule_ids: &[String],
     ) -> Self {
         // Find default profile index
@@ -237,10 +236,7 @@ impl OrganizePanel {
     /// Called when this session's plugin metadata changes: the plan is a
     /// function of that metadata, so the next render asks for a fresh
     /// one.
-    pub fn metadata_changed(
-        &mut self,
-        metadata: Option<arclain_core::features::organization::GameMetadata>,
-    ) {
+    pub fn metadata_changed(&mut self, metadata: Option<ProductMetadataSummary>) {
         self.metadata = metadata;
         self.preview_key = None;
     }
@@ -334,7 +330,9 @@ impl OrganizePanel {
         if let Some(act) = header::render_header(
             ui,
             &self.archive_name,
-            self.metadata.as_ref().map(|meta| meta.title.as_str()),
+            self.metadata
+                .as_ref()
+                .and_then(|meta| meta.title.as_deref()),
             can_apply,
             theme,
         ) {

@@ -3,24 +3,22 @@
 //! Calculates discrepancies between original archive and organized output.
 
 use crate::shared::components::preview_tree;
+use arclain_app::archive::ProductMetadataSummary;
 use arclain_app::organization::OrganizeIntegrityDto;
 
 // Helper functions removed as logic is now in core
 
 /// Export a report of all discrepancies (files filtered out, missing screenshots, etc.)
 ///
-/// **Boundary note:** `metadata` is the one `arclain_core` type left in
-/// the organize panel. The report enumerates the *identifiers* of the
-/// screenshots a plan did not schedule, and no facade method exposes
-/// those yet -- the metadata read model is a later task's surface to
-/// design, so this one read stays where it is rather than being guessed
-/// at here. Every number in the report comes from the facade's own
-/// integrity DTO.
+/// Every number here comes from the facade's own integrity DTO, and the
+/// screenshot identifiers from the facade's product-metadata summary --
+/// which already enumerates each distinct screenshot once, in the order
+/// the plugin reported them, and can name one without its bytes.
 pub fn export_issues_report(
     report: &OrganizeIntegrityDto,
     _original_tree: &[preview_tree::PreviewTreeNode],
     _organized_tree: &[preview_tree::PreviewTreeNode],
-    metadata: Option<&arclain_core::features::organization::GameMetadata>,
+    metadata: Option<&ProductMetadataSummary>,
 ) {
     use std::io::Write;
 
@@ -67,25 +65,14 @@ pub fn export_issues_report(
         content.push_str("## Screenshot Issues\n\n");
 
         if let Some(meta) = metadata {
-            let expected_urls: std::collections::HashSet<_> =
-                meta.screenshots.iter().cloned().collect();
-
             content.push_str(&format!(
                 "Expected {} screenshots from metadata, but only {} are planned for download.\n\n",
                 report.expected_screenshots, report.planned_screenshots
             ));
             content.push_str("Expected screenshot identifiers from metadata:\n\n");
 
-            for data in expected_urls {
-                let identifier = match data {
-                    arclain_core::features::organization::ScreenshotData::FilePath(p) => {
-                        p.display().to_string()
-                    }
-                    arclain_core::features::organization::ScreenshotData::Base64(s) => {
-                        format!("Base64 data ({} bytes)", s.len())
-                    }
-                };
-                content.push_str(&format!("- `{}`\n", identifier));
+            for screenshot in &meta.screenshots {
+                content.push_str(&format!("- `{}`\n", screenshot.identifier()));
             }
         }
         content.push('\n');

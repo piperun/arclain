@@ -79,11 +79,7 @@ pub fn render_header_panel(
                     let (code, title, maker) = match t.game_metadata.get() {
                         Some(m) => (
                             m.product_id,
-                            if m.title.is_empty() {
-                                t.display_title()
-                            } else {
-                                m.title
-                            },
+                            m.title.unwrap_or_else(|| t.display_title()),
                             m.creator.unwrap_or_default(),
                         ),
                         None => (String::new(), t.display_title(), String::new()),

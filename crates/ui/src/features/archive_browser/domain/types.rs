@@ -17,8 +17,6 @@ pub enum Action {
     DeleteFile(String),
     /// Open the organize panel
     Organize,
-    /// Metadata JSON received from a plugin
-    Metadata(String),
     /// Extract a single file to default location
     Extract(String),
     /// Extract a file to a user-selected location

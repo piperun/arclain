@@ -7,9 +7,8 @@ use super::view_state::{BrowserEntriesSnapshot, BrowserViewState};
 use super::TabId;
 use crate::core::operations::archive::{derive_archive_info, ArchiveExtras, ArchiveInfo};
 use crate::core::signals::ToolbarContext;
-use arclain_app::archive::ArchiveSnapshot;
+use arclain_app::archive::{ArchiveSnapshot, ProductMetadataSummary};
 use arclain_app::{Computed, Signal};
-use arclain_core::features::organization::GameMetadata;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
@@ -86,7 +85,17 @@ pub struct TabState {
     /// any consumer (status bar render, properties panel) calls
     /// `.get()`. See audit §4.2 for why this was the right shape.
     pub archive_info: Computed<ArchiveInfo>,
-    pub game_metadata: Signal<Option<GameMetadata>>,
+    /// What a plugin reported about the product this tab's archive
+    /// contains, as [`Self::metadata`]'s raw document summarizes through
+    /// the facade (`arclain_app::archive::product_metadata_from_document`).
+    ///
+    /// The parsed, durable counterpart to the transient inbox above:
+    /// `metadata` is drained on the frame it arrives, this holds what it
+    /// said for as long as the tab does. Read every frame by every tab
+    /// (the command palette's per-tab summary), which is why the summary
+    /// carries no document string and no inline screenshot payloads --
+    /// the pre-facade value held both and cloned them per tab per frame.
+    pub game_metadata: Signal<Option<ProductMetadataSummary>>,
     /// Where this tab is browsing inside its archive, the
     /// directory-scoped listing request that describes it, and the page
     /// the session answered with -- see [`TabListing`].

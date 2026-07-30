@@ -214,6 +214,107 @@ fn metadata_write_with_an_open_archive_lands_on_the_correct_tab_via_the_session_
     );
 }
 
+/// 1b. The other half of the same arrival: the tab's raw inbox is drained
+/// on the next frame into the tab's product-metadata summary, which is
+/// what the views actually read. The summary comes from the application
+/// (`arclain_app::archive::product_metadata_from_document`), so the
+/// frontend applies no parse rule of its own -- proven here by the
+/// `circle` field, which only the application's parse maps onto
+/// `creator`, and which the frontend's own pre-facade
+/// `serde_json::from_str` parse silently dropped.
+///
+/// Also pins that this refresh is driven by `MetadataChanged` alone: the
+/// session's revision is asserted unchanged across the whole arrival, so
+/// nothing here may key off it.
+#[test]
+fn a_metadata_arrival_refreshes_the_tabs_product_metadata_without_bumping_the_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_always_succeeds_app(&temp);
+    let mut shared = create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.clone();
+
+    let tab = shared.signals().tabs.get().active().clone();
+    let tab_id = tab.id;
+
+    let session_id = runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: temp.path().join("fixture.zip"),
+                password: None,
+            })
+            .await
+            .expect("start_open_archive must be accepted");
+        let snapshot = wait_for_open_completion(&app, operation_id).await;
+        arclain_ui::core::operation_bridge::register_operation(&shared, operation_id, tab_id).await;
+        snapshot.session_id
+    });
+    let revision_before = runtime
+        .block_on(app.archive_snapshot(session_id))
+        .expect("snapshot")
+        .revision;
+
+    let bridge = app.active_tab_bridge(|_| panic!("fallback must not run: a session is active"));
+    bridge.set_session_metadata(
+        session_id.into_raw(),
+        Some(serde_json::json!({
+            "product_id": "RJ123456",
+            "source": "dlsite",
+            "title": "Placeholder Title",
+            "circle": "Placeholder Circle",
+            "screenshots": [{"FilePath": "covers/front.png"}],
+        })),
+    );
+    runtime.block_on(arclain_ui::core::operation_bridge::handle_session_event(
+        shared.signals(),
+        &app,
+        SessionEvent::MetadataChanged { session_id },
+    ));
+
+    assert_eq!(
+        tab.game_metadata.get(),
+        None,
+        "the inbox holds the arrival until the next frame drains it"
+    );
+
+    let mut org_feature = arclain_ui::features::organization::OrganizationFeature::new(&shared);
+    arclain_ui::core::app_lifecycle::process_metadata_signal(&shared, &mut org_feature);
+
+    let summary = tab
+        .game_metadata
+        .get()
+        .expect("the drained arrival must land as a summary");
+    assert_eq!(summary.product_id, "RJ123456");
+    assert_eq!(summary.title.as_deref(), Some("Placeholder Title"));
+    assert_eq!(
+        summary.creator.as_deref(),
+        Some("Placeholder Circle"),
+        "the application's parse maps `circle` onto `creator`; the frontend has no parse of its own"
+    );
+    assert_eq!(
+        summary
+            .screenshots
+            .iter()
+            .map(arclain_app::archive::ScreenshotRef::identifier)
+            .collect::<Vec<_>>(),
+        vec![PathBuf::from("covers/front.png").display().to_string()],
+        "screenshots arrive as identifiers, without their bytes"
+    );
+    assert_eq!(
+        tab.metadata.get(),
+        None,
+        "the inbox is consumed, so one arrival refreshes exactly once"
+    );
+    assert_eq!(
+        runtime
+            .block_on(app.archive_snapshot(session_id))
+            .expect("snapshot")
+            .revision,
+        revision_before,
+        "a metadata write does not bump the session revision -- nothing may key the refresh on it"
+    );
+}
+
 /// 2. With no archive session active at all, `set_active_tab_metadata`
 /// must not silently drop the write -- it runs the fallback closure
 /// supplied at bridge-construction time, exactly like `init.rs`'s own

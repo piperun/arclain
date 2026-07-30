@@ -68,9 +68,6 @@ impl BrowserController {
             Action::Organize => {
                 self.handle_organize(shared, organization_feature, page_navigator);
             }
-            Action::Metadata(json) => {
-                self.handle_metadata(shared, json);
-            }
             Action::Extract(file) => {
                 self.file_ops.extract(shared, archive_ops_state, &file);
             }
@@ -161,7 +158,17 @@ impl BrowserController {
                 tracing::warn!("could not resolve matching rules: {}", error.summary);
                 Vec::new()
             });
-        let metadata = org_tab.game_metadata.get();
+        // Read off the session rather than off the tab's own signal: the
+        // session is where a plugin wrote it and where the facade plans
+        // from, so the panel opens on the same metadata its first plan
+        // is built from even when the arrival has not reached the tab
+        // yet (the tab drains its inbox a frame later).
+        let metadata = runtime
+            .block_on(app.product_metadata(session_id))
+            .unwrap_or_else(|error| {
+                tracing::warn!("could not read product metadata: {}", error.summary);
+                None
+            });
 
         organization_feature.organizer_page =
             Some(crate::features::organization::OrganizerPage::new(
@@ -222,23 +229,5 @@ impl BrowserController {
                 }
             })
             .collect()
-    }
-
-    fn handle_metadata(&self, shared: &SharedState, json: String) {
-        match serde_json::from_str::<arclain_core::features::organization::GameMetadata>(&json) {
-            Ok(metadata) => {
-                tracing::info!("Received metadata from plugin: {}", metadata.title);
-                shared
-                    .signals()
-                    .tabs
-                    .get()
-                    .active()
-                    .game_metadata
-                    .set(Some(metadata));
-            }
-            Err(e) => {
-                tracing::warn!("Failed to parse metadata JSON: {}", e);
-            }
-        }
     }
 }

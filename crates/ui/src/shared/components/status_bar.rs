@@ -2,7 +2,7 @@ use crate::core::operations::archive::ArchiveInfo;
 use crate::core::operations::window::format_duration;
 use crate::core::utils::format_size;
 use crate::shared::theme::AppTheme;
-use arclain_core::features::organization::GameMetadata;
+use arclain_app::archive::ProductMetadataSummary;
 use eframe::egui;
 use egui::Widget;
 use std::time::Duration;
@@ -50,7 +50,7 @@ pub fn render(
     info: &StatusBarInfo,
     archive_info: Option<&ArchiveInfo>,
     plugin_info: Option<&PluginStatusInfo>,
-    selected_item: Option<&GameMetadata>,
+    selected_item: Option<&ProductMetadataSummary>,
 ) {
     ui.horizontal_centered(|ui| {
         ui.add_space(12.0);
@@ -146,16 +146,15 @@ pub fn render(
 /// Render the "Item selected" chip with a click-to-show popup of the
 /// metadata fields that both the Organizer and Process pages will
 /// consume.
-fn render_selected_item_chip(ui: &mut egui::Ui, theme: &AppTheme, meta: &GameMetadata) {
+fn render_selected_item_chip(ui: &mut egui::Ui, theme: &AppTheme, meta: &ProductMetadataSummary) {
     // Title is the most informative, with the product code as a
     // fallback when the plugin only had the id. The icon goes through
     // `Chips::icon` rather than being inlined in the label so the
     // phosphor font's baseline tweak doesn't push it out of vertical
     // alignment with the text.
-    let label = if !meta.title.is_empty() {
-        truncate_chars(&meta.title, 40)
-    } else {
-        meta.product_id.clone()
+    let label = match meta.title.as_deref() {
+        Some(title) => truncate_chars(title, 40),
+        None => meta.product_id.clone(),
     };
 
     // U+2713 CHECK MARK as the "selected" indicator. We can't use
@@ -211,9 +210,9 @@ fn render_selected_item_chip(ui: &mut egui::Ui, theme: &AppTheme, meta: &GameMet
                             .show(ui);
                         ui.separator();
 
-                        if !meta.title.is_empty() {
+                        if let Some(title) = meta.title.as_deref() {
                             ui.label(
-                                egui::RichText::new(&meta.title)
+                                egui::RichText::new(title)
                                     .strong()
                                     .color(theme.colors.on_surface),
                             );
