@@ -1516,6 +1516,25 @@ fn invalid_install_path(reason: &str) -> ApplicationError {
     .with_field("wasm_path")
 }
 
+/// Attaches the caller's own `wasm_path` to an install error, so a user
+/// who picked the wrong file is told which one.
+///
+/// Sound because this path is by definition user-chosen -- the exact case
+/// [`ApplicationError::with_path`] exists for -- and it is the only way
+/// the file reaches the user at all: `with_diagnostic` redacts path-like
+/// tokens from free text, so the manager's own "File does not exist"
+/// wording arrives with the filename already scrubbed out.
+///
+/// Skipped for a path over [`MAX_PLUGIN_INSTALL_PATH_BYTES`]: echoing
+/// tens of kilobytes back into an error envelope helps nobody, and the
+/// diagnostic already says what was wrong with it.
+fn with_install_path(error: ApplicationError, wasm_path: &std::path::Path) -> ApplicationError {
+    if wasm_path.as_os_str().as_encoded_bytes().len() > MAX_PLUGIN_INSTALL_PATH_BYTES {
+        return error;
+    }
+    error.with_path(wasm_path)
+}
+
 /// Structural validation of an install request, before any file is opened.
 ///
 /// Deliberately *not* an existence check: whether the file is there is
@@ -1542,8 +1561,9 @@ pub(crate) fn validate_install_path(wasm_path: &std::path::Path) -> Result<(), A
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("wasm"))
     {
-        return Err(invalid_install_path(
-            "a plugin must be installed from a .wasm file",
+        return Err(with_install_path(
+            invalid_install_path("a plugin must be installed from a .wasm file"),
+            wasm_path,
         ));
     }
     Ok(())
@@ -1559,6 +1579,9 @@ pub(crate) fn validate_install_path(wasm_path: &std::path::Path) -> Result<(), A
 /// `Plugin` failure the user must act on, with the manager's own wording
 /// carried verbatim in the (bounded, path-redacted) diagnostic -- except
 /// the variants that genuinely mean something more specific.
+///
+/// The caller's own path is attached separately (see
+/// [`with_install_path`]), because the diagnostic's redaction removes it.
 fn plugin_install_error(error: PluginError) -> ApplicationError {
     let kind = match error {
         // A manifest this plugin's own metadata export produced is
@@ -1762,7 +1785,7 @@ impl PluginSessionStore {
         manager
             .lock()
             .install_plugin(wasm_path)
-            .map_err(plugin_install_error)
+            .map_err(|error| with_install_path(plugin_install_error(error), wasm_path))
     }
 
     /// Backs [`crate::ArclainApp::plugin_chrome`]. Blocking: reading the
@@ -4440,6 +4463,40 @@ mod chrome_and_network_log_tests {
 
         assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
         assert_eq!(error.field.as_deref(), Some("wasm_path"));
+        assert_eq!(
+            error.path, None,
+            "an absurd path must not be echoed back into the envelope",
+        );
+    }
+
+    /// The user's own path is the only channel that survives: the
+    /// diagnostic's path redaction scrubs the filename out of the
+    /// backend's wording, so without the `path` field a user would never
+    /// learn which file failed.
+    #[test]
+    fn install_failures_name_the_file_the_caller_chose() {
+        let picked = std::path::Path::new("/downloads/rj123456-helper.wasm");
+
+        let rejected_shape = validate_install_path(std::path::Path::new("/downloads/notes.txt"))
+            .expect_err("a non-wasm file must be refused");
+        let rejected_content = with_install_path(
+            plugin_install_error(PluginError::LoadError("File does not exist".to_string())),
+            picked,
+        );
+
+        assert_eq!(
+            rejected_shape.path.as_deref(),
+            Some(std::path::Path::new("/downloads/notes.txt")),
+        );
+        assert_eq!(rejected_content.path.as_deref(), Some(picked));
+        assert!(
+            !rejected_content
+                .diagnostic
+                .as_deref()
+                .unwrap_or_default()
+                .contains("rj123456"),
+            "the diagnostic must stay path-redacted; `path` is the vetted channel",
+        );
     }
 
     /// The install error envelope: a plugin-side rejection is reported as
