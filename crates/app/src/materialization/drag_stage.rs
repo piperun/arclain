@@ -85,8 +85,13 @@ pub struct DragStageRequest {
 /// (`ArclainApp::cancel_operation`) while this thread is still blocked.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DragStageEvent {
-    Started { operation_id: OperationId },
-    Progress { percent: u8, message: Option<String> },
+    Started {
+        operation_id: OperationId,
+    },
+    Progress {
+        percent: u8,
+        message: Option<String>,
+    },
 }
 
 /// An RAII handle to a successfully staged drag payload.
@@ -205,7 +210,11 @@ pub(crate) fn find_common_directory(file_paths: &[String]) -> Option<String> {
     let first_parts: Vec<&str> = first.split('/').collect();
     if first_parts.len() <= 1 {
         let all_in_root = normalized.iter().all(|p| !p.contains('/'));
-        return if all_in_root { Some(String::new()) } else { None };
+        return if all_in_root {
+            Some(String::new())
+        } else {
+            None
+        };
     }
     let mut common_parts = &first_parts[..first_parts.len() - 1];
     for path in normalized.iter().skip(1) {
@@ -542,16 +551,17 @@ pub(crate) async fn run_drag_stage(
     // The staging ROOT is the lease's local_path -- see the module doc
     // comment for why a multi-entry stage commits the root rather than
     // any one entry's own path.
-    let lease = match inner
-        .materialization()
-        .commit(reserved, dest_dir, size, super::current_unix_ms())
-    {
-        Ok(lease) => lease,
-        Err(error) => {
-            fail(&inner, operation_id, error).await;
-            return;
-        }
-    };
+    let lease =
+        match inner
+            .materialization()
+            .commit(reserved, dest_dir, size, super::current_unix_ms())
+        {
+            Ok(lease) => lease,
+            Err(error) => {
+                fail(&inner, operation_id, error).await;
+                return;
+            }
+        };
 
     let _ = inner
         .operations()

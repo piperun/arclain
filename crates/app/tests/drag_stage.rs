@@ -113,10 +113,7 @@ struct RecordingBackend {
 }
 
 impl RecordingBackend {
-    fn new(
-        entries: Vec<arclain_core::ArchiveEntry>,
-        contents: &[(&str, &[u8])],
-    ) -> Arc<Self> {
+    fn new(entries: Vec<arclain_core::ArchiveEntry>, contents: &[(&str, &[u8])]) -> Arc<Self> {
         Arc::new(Self {
             entries,
             contents: contents
@@ -181,7 +178,12 @@ impl arclain_core::ArchiveBackend for RecordingBackend {
             encryption_method: None,
         })
     }
-    fn extract_all(&self, _path: &Path, dest: &Path, _password: Option<&str>) -> anyhow::Result<()> {
+    fn extract_all(
+        &self,
+        _path: &Path,
+        dest: &Path,
+        _password: Option<&str>,
+    ) -> anyhow::Result<()> {
         self.calls.lock().unwrap().push(ExtractCall::All);
         if let Some(message) = &self.fail_with {
             anyhow::bail!("{message}");
@@ -253,7 +255,12 @@ impl arclain_core::ArchiveBackend for RecordingBackend {
     fn add_files(&self, _archive: &Path, _files: &[PathBuf]) -> anyhow::Result<()> {
         unimplemented!()
     }
-    fn create_archive(&self, _dest: &Path, _files: &[PathBuf], _format: &str) -> anyhow::Result<()> {
+    fn create_archive(
+        &self,
+        _dest: &Path,
+        _files: &[PathBuf],
+        _format: &str,
+    ) -> anyhow::Result<()> {
         unimplemented!()
     }
     fn read_text_file(

@@ -1,18 +1,28 @@
-//! CF_HDROP-based drag data object with 7-Zip style deferred extraction.
+//! CF_HDROP-based drag data object with 7-Zip style deferred staging.
 //!
 //! This implementation uses the same mechanism as 7-Zip:
-//! 1. During drag/hover: Returns HDROP with just the temp folder path
-//! 2. On actual drop: Extracts files, then returns HDROP with real paths
+//! 1. During drag/hover: Returns HDROP with just a placeholder temp
+//!    folder path -- **no staging, no facade calls, no archive I/O**
+//! 2. On actual drop: Stages the dragged selection through the
+//!    [`DragPayloadSource`] (which blocks this STA thread on the
+//!    application facade's drag-stage operation), then returns HDROP
+//!    with the real staged paths
 //!
-//! This ensures smooth drag cursor and extraction only on drop.
+//! This ensures a smooth drag cursor and staging only on drop. The
+//! shell frequently queries a drag target's data without ever dropping
+//! (Explorer calls `GetData(CF_HDROP)` during hover to inspect paths);
+//! the pre-HDROP is what answers those queries for free -- see this
+//! file's own tests, which pin exactly that against a counting fake
+//! source.
+//!
+//! All archive knowledge lives behind [`DragPayloadSource`]; this file
+//! is pure COM/shell mechanics and holds no `arclain_core` (or even
+//! `arclain_app`) types beyond what the payload seam re-exports.
 
 use super::drop_source::DragState;
-use super::types::ExtractionCache;
-use super::utils::{
-    extract_with_progress_dialog, find_common_directory, MAX_FILES_FOR_EXTRACT_FILES,
+use crate::platform::drag_source::payload::{
+    DragPayloadSource, DragProgressUpdate, StagedDragPayload,
 };
-use arclain_core::backends::sevenz_cli::ProgressUpdate;
-use arclain_core::{ArchiveBackend, ArchiveEntry};
 use parking_lot::RwLock;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -22,7 +32,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 use windows::core::{implement, HRESULT};
-use windows::Win32::Foundation::HGLOBAL;
+use windows::Win32::Foundation::{GlobalFree, HGLOBAL};
 use windows::Win32::Foundation::{BOOL, DV_E_FORMATETC, E_NOTIMPL, E_UNEXPECTED, S_FALSE, S_OK};
 use windows::Win32::System::Com::{
     IAdviseSink, IEnumSTATDATA, DATADIR_GET, DVASPECT_CONTENT, FORMATETC, STGMEDIUM, TYMED_HGLOBAL,
@@ -108,61 +118,76 @@ impl windows::Win32::System::Com::IEnumFORMATETC_Impl for HDropFormatEnumerator 
     }
 }
 
-/// CF_HDROP-based data object with 7-Zip style deferred extraction.
+/// CF_HDROP-based data object with 7-Zip style deferred staging.
 ///
 /// Uses dual-HDROP mechanism:
-/// - `hdrop_pre`: Contains just the temp folder (returned during hover)
-/// - `hdrop_final`: Contains actual file paths (returned after extraction)
+/// - `hdrop_pre`: Contains just a placeholder temp folder (returned
+///   during hover, built eagerly at construction -- cheap, an empty dir)
+/// - `hdrop_final`: Contains the actual staged paths (built once staging
+///   has run at drop time)
 #[implement(windows::Win32::System::Com::IDataObject)]
 pub struct HDropDataObject {
-    backend: Arc<dyn ArchiveBackend>,
-    archive_path: PathBuf,
-    entries: Vec<ArchiveEntry>,
-    password: Option<String>,
-    cache: RwLock<Option<ExtractionCache>>,
-    progress_tx: Option<Sender<ProgressUpdate>>,
+    /// Stages the dragged selection on demand -- the one seam to the
+    /// application. Never invoked during hover.
+    source: Arc<dyn DragPayloadSource>,
+
+    /// Archive-root-relative paths of the rows the user dragged, used
+    /// to shape the final HDROP's top-level items under the staging
+    /// root. Folder rows appear as themselves (their staged subtree
+    /// lands beneath them), so the selection alone determines the
+    /// HDROP's top level.
+    selection_paths: Vec<String>,
+
+    progress_tx: Option<Sender<DragProgressUpdate>>,
 
     /// Shared state with DropSourceWithState
     drag_state: Arc<DragState>,
 
-    /// Pre-built HDROP with just temp folder (for hover)
+    /// Pre-built HDROP with just the placeholder folder (for hover)
     hdrop_pre: RwLock<Option<HGLOBAL>>,
 
-    /// Pre-built HDROP with final file paths (for after extraction)
+    /// Pre-built HDROP with final staged paths (for after staging)
     hdrop_final: RwLock<Option<HGLOBAL>>,
 
-    /// Temp directory path (created immediately, not extracted yet)
-    temp_dir_path: RwLock<Option<PathBuf>>,
+    /// Placeholder directory the pre-HDROP names. Nothing is ever
+    /// written into it; it exists so the hover-time HDROP names a real
+    /// path. Removed by `TempDir`'s own Drop when the shell releases
+    /// this object.
+    pre_placeholder: RwLock<Option<tempfile::TempDir>>,
+
+    /// The staged payload, present once a drop has triggered staging.
+    /// Owns the staged files (for the facade-backed source, a
+    /// self-renewing materialization lease released when this object is
+    /// released by the shell).
+    staged: RwLock<Option<StagedDragPayload>>,
 }
 
 impl HDropDataObject {
     pub fn new(
-        backend: Arc<dyn ArchiveBackend>,
-        archive_path: PathBuf,
-        entries: Vec<ArchiveEntry>,
-        password: Option<String>,
-        progress_tx: Option<Sender<ProgressUpdate>>,
+        source: Arc<dyn DragPayloadSource>,
+        selection_paths: Vec<String>,
+        progress_tx: Option<Sender<DragProgressUpdate>>,
         drag_state: Arc<DragState>,
     ) -> Self {
         info!(
-            "[hdrop] Creating HDropDataObject for {} entries (deferred extraction)",
-            entries.len()
+            "[hdrop] Creating HDropDataObject for {} selected paths (deferred staging)",
+            selection_paths.len()
         );
 
-        let mut obj = Self {
-            backend,
-            archive_path,
-            entries,
-            password,
-            cache: RwLock::new(None),
+        let obj = Self {
+            source,
+            selection_paths,
             progress_tx,
             drag_state,
             hdrop_pre: RwLock::new(None),
             hdrop_final: RwLock::new(None),
-            temp_dir_path: RwLock::new(None),
+            pre_placeholder: RwLock::new(None),
+            staged: RwLock::new(None),
         };
 
-        // Build the pre-HDROP immediately (just temp folder path)
+        // Build the pre-HDROP immediately (just a placeholder folder
+        // path) so hover-time GetData calls have an answer that costs
+        // no archive I/O.
         if let Err(e) = obj.build_pre_hdrop() {
             warn!("[hdrop] Failed to build pre-HDROP: {}", e);
         }
@@ -170,32 +195,23 @@ impl HDropDataObject {
         obj
     }
 
-    /// Build the "pre" HDROP containing just the temp folder path.
-    /// This is returned during hover so Explorer doesn't see missing files.
-    fn build_pre_hdrop(&mut self) -> Result<(), String> {
-        // Create temp directory
-        let temp_dir =
+    /// Build the "pre" HDROP containing just a placeholder folder path.
+    /// This is returned during hover so Explorer doesn't see missing
+    /// files.
+    fn build_pre_hdrop(&self) -> Result<(), String> {
+        let placeholder =
             tempfile::tempdir().map_err(|e| format!("Failed to create temp dir: {}", e))?;
-        let temp_path = temp_dir.path().to_path_buf();
+        let placeholder_path = placeholder.path().to_path_buf();
 
         info!(
-            "[hdrop] Created temp dir for pre-HDROP: {}",
-            temp_path.display()
+            "[hdrop] Created placeholder dir for pre-HDROP: {}",
+            placeholder_path.display()
         );
 
-        // Build HDROP with just the temp folder
-        let hdrop = self.build_hdrop_for_paths(&[temp_path.clone()])?;
+        let hdrop = self.build_hdrop_for_paths(&[placeholder_path])?;
 
-        // Store temp dir (keeps it alive) and HDROP
-        *self.temp_dir_path.write() = Some(temp_path);
+        *self.pre_placeholder.write() = Some(placeholder);
         *self.hdrop_pre.write() = Some(hdrop);
-
-        // Store the TempDir in cache to keep it alive
-        *self.cache.write() = Some(ExtractionCache {
-            temp_dir,
-            extracted: false,
-        });
-
         Ok(())
     }
 
@@ -250,139 +266,85 @@ impl HDropDataObject {
         Ok(hglobal)
     }
 
-    /// Extract files and build the "final" HDROP.
-    fn do_extraction(&self) -> Result<(), String> {
-        // Check if already extracted
-        {
-            let cache_guard = self.cache.read();
-            if cache_guard.as_ref().map(|c| c.extracted).unwrap_or(false) {
-                return Ok(()); // Already extracted
-            }
-            if cache_guard.is_none() {
-                return Err("No temp dir".to_string());
-            }
+    /// Stage the dragged selection and build the "final" HDROP. Runs on
+    /// the drag STA thread, at drop time only. Idempotent: a second call
+    /// (the shell can ask for CF_HDROP more than once while processing
+    /// the drop) reuses the already-staged payload.
+    ///
+    /// Reentrancy note: COM calls arrive on this object's STA thread
+    /// one at a time, and staging does not pump messages while it
+    /// blocks, so the check-then-stage below cannot interleave with
+    /// itself.
+    fn do_staging(&self) -> Result<(), String> {
+        if self.staged.read().is_some() {
+            return Ok(()); // Already staged
         }
 
         let start = Instant::now();
-        let temp_dir = self
-            .cache
-            .read()
-            .as_ref()
-            .map(|c| c.temp_dir.path().to_path_buf())
-            .ok_or("Cache cleared between check and use")?;
         info!(
-            "[hdrop] Starting extraction to temp: {}",
-            temp_dir.display()
+            "[hdrop] Drop committed - staging {} selected paths",
+            self.selection_paths.len()
         );
 
-        let file_paths: Vec<String> = self
-            .entries
-            .iter()
-            .filter(|e| !e.is_dir)
-            .map(|e| e.path.clone())
-            .collect();
-
-        let file_count = file_paths.len();
-
-        if let Some(tx) = &self.progress_tx {
-            let _ = tx.send(ProgressUpdate {
-                percent: 0,
-                message: Some(format!("Extracting {} files...", file_count)),
-            });
-        }
-
-        // Use batch extraction
-        let use_extract_all = file_count > MAX_FILES_FOR_EXTRACT_FILES;
-        if use_extract_all {
-            let common_dir = find_common_directory(&file_paths);
-            if let Some(dir_path) = common_dir {
-                self.backend
-                    .extract_directory(
-                        &self.archive_path,
-                        &temp_dir,
-                        &dir_path,
-                        self.password.as_deref(),
-                    )
-                    .map_err(|e| format!("extract_directory failed: {}", e))?;
-            } else {
-                self.backend
-                    .extract_all(&self.archive_path, &temp_dir, self.password.as_deref())
-                    .map_err(|e| format!("extract_all failed: {}", e))?;
+        let staged = match &self.progress_tx {
+            Some(tx) => {
+                // Progress flows to the egui drag dialog through the
+                // same channel shape the pre-facade extraction used.
+                let tx = tx.clone();
+                let mut forward = move |update: DragProgressUpdate| {
+                    let _ = tx.send(update);
+                };
+                self.source.stage_blocking(&mut forward)?
             }
-        } else if let Some(tx) = &self.progress_tx {
-            let tx_clone = tx.clone();
-            self.backend
-                .extract_files_with_progress(
-                    &self.archive_path,
-                    &temp_dir,
-                    &file_paths,
-                    self.password.as_deref(),
-                    Some(&move |p| {
-                        let _ = tx_clone.send(ProgressUpdate {
-                            percent: p.percent,
-                            message: Some(format!("Extracting: {}", p.current_file)),
-                        });
-                    }),
-                    None,
-                )
-                .map_err(|e| format!("extract_files_with_progress failed: {}", e))?;
-        } else {
-            extract_with_progress_dialog(
-                Arc::clone(&self.backend),
-                &self.archive_path,
-                &temp_dir,
-                &file_paths,
-                self.password.as_deref(),
-            )?;
-        }
+            None => {
+                // No frontend progress channel: drive a native Windows
+                // progress dialog instead (the pre-facade fallback,
+                // preserved).
+                crate::platform::drag_source::native_progress::stage_with_native_progress(
+                    Arc::clone(&self.source),
+                    self.selection_paths.len(),
+                )?
+            }
+        };
 
         if let Some(tx) = &self.progress_tx {
-            let _ = tx.send(ProgressUpdate {
+            let _ = tx.send(DragProgressUpdate {
                 percent: 100,
-                message: Some("Extraction complete".to_string()),
+                message: Some("Staging complete".to_string()),
             });
         }
 
         info!(
-            "[hdrop] Extraction complete in {:.2}s",
-            start.elapsed().as_secs_f64()
+            "[hdrop] Staging complete in {:.2}s at {}",
+            start.elapsed().as_secs_f64(),
+            staged.root().display()
         );
 
-        // Mark as extracted
-        if let Some(cache) = self.cache.write().as_mut() {
-            cache.extracted = true;
-        }
-
-        // Now build the final HDROP with actual file paths
-        self.build_final_hdrop()?;
-
+        self.build_final_hdrop(&staged)?;
+        *self.staged.write() = Some(staged);
         Ok(())
     }
 
-    /// Build the "final" HDROP with actual extracted file paths.
-    fn build_final_hdrop(&self) -> Result<(), String> {
-        let cache_guard = self.cache.read();
-        let temp_dir = cache_guard
-            .as_ref()
-            .map(|c| c.temp_dir.path())
-            .ok_or("No temp dir")?;
+    /// Build the "final" HDROP with the staged top-level paths.
+    fn build_final_hdrop(&self, staged: &StagedDragPayload) -> Result<(), String> {
+        let root = staged.root();
 
-        // Find the common root folder for all entries
-        let all_paths: Vec<String> = self.entries.iter().map(|e| e.path.clone()).collect();
-
-        // Determine what to include in CF_HDROP
-        let hdrop_paths: Vec<PathBuf> = if let Some(root_folder) = self.find_root_folder(&all_paths)
-        {
-            let folder_path = temp_dir.join(&root_folder);
-            if folder_path.exists() && folder_path.is_dir() {
-                info!("[hdrop] Final HDROP: root folder {}", folder_path.display());
-                vec![folder_path]
+        let hdrop_paths: Vec<PathBuf> =
+            if let Some(root_folder) = self.find_root_folder(&self.selection_paths) {
+                let folder_path = root.join(&root_folder);
+                if folder_path.exists() && folder_path.is_dir() {
+                    info!("[hdrop] Final HDROP: root folder {}", folder_path.display());
+                    vec![folder_path]
+                } else {
+                    self.collect_top_level_items(root, &self.selection_paths)
+                }
             } else {
-                self.collect_top_level_items(temp_dir, &all_paths)
-            }
-        } else {
-            self.collect_top_level_items(temp_dir, &all_paths)
-        };
+                self.collect_top_level_items(root, &self.selection_paths)
+            };
+
+        if hdrop_paths.is_empty() {
+            return Err("staging produced no top-level items to hand to the shell".to_string());
+        }
 
         info!(
             "[hdrop] Building final HDROP with {} items",
@@ -390,8 +352,12 @@ impl HDropDataObject {
         );
 
         let hdrop = self.build_hdrop_for_paths(&hdrop_paths)?;
-        *self.hdrop_final.write() = Some(hdrop);
-
+        let previous = self.hdrop_final.write().replace(hdrop);
+        if let Some(previous) = previous {
+            // Unreachable in practice (staging runs once), but never
+            // leak a master allocation if it somehow ran twice.
+            let _ = unsafe { GlobalFree(previous) };
+        }
         Ok(())
     }
 
@@ -427,10 +393,11 @@ impl HDropDataObject {
         None
     }
 
-    /// Collect top-level items (files and folders at root of extraction).
+    /// Collect top-level items (files and folders at root of the staged
+    /// payload).
     fn collect_top_level_items(
         &self,
-        temp_dir: &std::path::Path,
+        staged_root: &std::path::Path,
         paths: &[String],
     ) -> Vec<PathBuf> {
         let mut top_level: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
@@ -445,7 +412,7 @@ impl HDropDataObject {
                 .next()
                 .unwrap_or(&normalized);
 
-            let full_path = temp_dir.join(first_component);
+            let full_path = staged_root.join(first_component);
             if full_path.exists() {
                 top_level.insert(full_path);
             }
@@ -465,11 +432,11 @@ impl HDropDataObject {
             use_pre, need_extract, extract_done
         );
 
-        // Check if we need to extract (drop was triggered)
+        // Check if we need to stage (drop was triggered)
         if need_extract && !extract_done {
-            info!("[hdrop] Drop detected - starting extraction");
-            if let Err(e) = self.do_extraction() {
-                warn!("[hdrop] Extraction failed: {}", e);
+            info!("[hdrop] Drop detected - staging selection");
+            if let Err(e) = self.do_staging() {
+                warn!("[hdrop] Staging failed: {}", e);
                 return Err(windows::core::Error::from(E_UNEXPECTED));
             }
             self.drag_state.extract_done.store(true, Ordering::SeqCst);
@@ -477,13 +444,13 @@ impl HDropDataObject {
 
         // Return appropriate HDROP
         let hglobal = if use_pre {
-            debug!("[hdrop] Returning pre-HDROP (temp folder only)");
+            debug!("[hdrop] Returning pre-HDROP (placeholder folder only)");
             self.hdrop_pre.read().ok_or_else(|| {
                 warn!("[hdrop] Pre-HDROP not built");
                 windows::core::Error::from(E_UNEXPECTED)
             })?
         } else {
-            debug!("[hdrop] Returning final HDROP (extracted files)");
+            debug!("[hdrop] Returning final HDROP (staged files)");
             self.hdrop_final.read().ok_or_else(|| {
                 warn!("[hdrop] Final HDROP not built");
                 windows::core::Error::from(E_UNEXPECTED)
@@ -530,6 +497,22 @@ impl HDropDataObject {
 
             Ok(dest)
         }
+    }
+}
+
+impl Drop for HDropDataObject {
+    fn drop(&mut self) {
+        // The pre/final HDROP masters are ours (only their duplicates
+        // are handed to callers) -- free them rather than leaking one
+        // pair of GlobalAlloc blocks per drag, which the pre-facade
+        // version silently did.
+        for slot in [&self.hdrop_pre, &self.hdrop_final] {
+            if let Some(hglobal) = slot.write().take() {
+                let _ = unsafe { GlobalFree(hglobal) };
+            }
+        }
+        // `pre_placeholder` and `staged` clean themselves up via their
+        // own Drop impls (TempDir removal; lease release).
     }
 }
 
@@ -600,5 +583,278 @@ impl windows::Win32::System::Com::IDataObject_Impl for HDropDataObject {
 
     fn EnumDAdvise(&self) -> windows::core::Result<IEnumSTATDATA> {
         Err(windows::core::Error::from(E_NOTIMPL))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! COM-level tests against a counting fake [`DragPayloadSource`] --
+    //! what lets "a target queried but never dropped must not stage" be
+    //! pinned against the real `IDataObject` state machine without a
+    //! live shell. Method calls go straight through the
+    //! `IDataObject_Impl` trait on the struct; no OLE apartment or
+    //! marshaling is involved, which is fine for vtable-free direct
+    //! dispatch.
+
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use windows::Win32::System::Com::IDataObject_Impl;
+
+    /// Counts staging calls; stages by writing the configured files
+    /// under a fresh temp root. `fail` scripts an error instead.
+    struct CountingSource {
+        stage_calls: AtomicUsize,
+        files: Vec<(String, Vec<u8>)>,
+        fail: bool,
+        guard_dropped: Arc<AtomicBool>,
+    }
+
+    impl CountingSource {
+        fn new(files: &[(&str, &[u8])]) -> Arc<Self> {
+            Arc::new(Self {
+                stage_calls: AtomicUsize::new(0),
+                files: files
+                    .iter()
+                    .map(|(p, b)| (p.to_string(), b.to_vec()))
+                    .collect(),
+                fail: false,
+                guard_dropped: Arc::new(AtomicBool::new(false)),
+            })
+        }
+
+        fn failing() -> Arc<Self> {
+            Arc::new(Self {
+                stage_calls: AtomicUsize::new(0),
+                files: Vec::new(),
+                fail: true,
+                guard_dropped: Arc::new(AtomicBool::new(false)),
+            })
+        }
+
+        fn calls(&self) -> usize {
+            self.stage_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    /// Flags its owner's `guard_dropped` when the staged payload is
+    /// dropped -- pins that releasing the COM object releases whatever
+    /// owns the staged files.
+    struct DropFlag(Arc<AtomicBool>);
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl DragPayloadSource for CountingSource {
+        fn stage_blocking(
+            &self,
+            on_progress: &mut dyn FnMut(DragProgressUpdate),
+        ) -> Result<StagedDragPayload, String> {
+            self.stage_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err("scripted staging failure".to_string());
+            }
+            on_progress(DragProgressUpdate {
+                percent: 50,
+                message: Some("staging".to_string()),
+            });
+            let root = tempfile::tempdir().expect("create fake staging root");
+            for (path, bytes) in &self.files {
+                let target = root.path().join(path);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).unwrap();
+                }
+                std::fs::write(target, bytes).unwrap();
+            }
+            let root_path = root.path().to_path_buf();
+            Ok(StagedDragPayload::new(
+                root_path,
+                (root, DropFlag(self.guard_dropped.clone())),
+            ))
+        }
+
+        fn request_cancel(&self) {}
+    }
+
+    fn hdrop_format() -> FORMATETC {
+        FORMATETC {
+            cfFormat: CF_HDROP,
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL.0 as u32,
+        }
+    }
+
+    /// Reads the wide paths out of a CF_HDROP STGMEDIUM and frees the
+    /// duplicated HGLOBAL the object handed us ownership of.
+    fn paths_of(medium: STGMEDIUM) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        unsafe {
+            let hglobal = medium.u.hGlobal;
+            let base = GlobalLock(hglobal) as *const u8;
+            assert!(!base.is_null());
+            let dropfiles = &*(base as *const DROPFILES);
+            assert!(dropfiles.fWide.as_bool());
+            let mut cursor = base.add(dropfiles.pFiles as usize) as *const u16;
+            loop {
+                let mut wide = Vec::new();
+                while *cursor != 0 {
+                    wide.push(*cursor);
+                    cursor = cursor.add(1);
+                }
+                cursor = cursor.add(1); // skip the string's own null
+                if wide.is_empty() {
+                    break; // double null: list end
+                }
+                out.push(PathBuf::from(String::from_utf16(&wide).unwrap()));
+            }
+            let _ = GlobalUnlock(hglobal);
+            let _ = GlobalFree(hglobal);
+        }
+        out
+    }
+
+    fn dropped_state(state: &Arc<DragState>) {
+        state.use_pre_global.store(false, Ordering::SeqCst);
+        state.need_extract.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn hover_queries_are_served_from_the_placeholder_and_never_stage() {
+        // THE pinned optimization: the shell frequently queries a drag
+        // target's CF_HDROP without ever dropping. In the default
+        // (hover) drag state, GetData/QueryGetData/EnumFormatEtc must
+        // all answer without a single staging call.
+        let source = CountingSource::new(&[("RJ123456/scene_a.dat", b"bytes")]);
+        let state = DragState::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let obj = HDropDataObject::new(
+            source.clone(),
+            vec!["RJ123456/scene_a.dat".to_string()],
+            Some(tx),
+            Arc::clone(&state),
+        );
+
+        let fmt = hdrop_format();
+        assert_eq!(obj.QueryGetData(&fmt), S_OK);
+        let _ = obj.EnumFormatEtc(DATADIR_GET.0 as u32).unwrap();
+        for _ in 0..5 {
+            let medium = obj
+                .GetData(&fmt)
+                .expect("hover-time GetData must succeed from the placeholder");
+            let paths = paths_of(medium);
+            assert_eq!(paths.len(), 1, "hover HDROP names only the placeholder");
+        }
+
+        assert_eq!(
+            source.calls(),
+            0,
+            "a target queried but never dropped must not stage/extract anything"
+        );
+    }
+
+    #[test]
+    fn a_committed_drop_stages_exactly_once_and_serves_the_staged_top_level() {
+        let source = CountingSource::new(&[
+            ("RJ123456/scene_a.dat", b"aaaa".as_slice()),
+            ("RJ123456/img/cover.png", b"bb".as_slice()),
+        ]);
+        let state = DragState::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let obj = HDropDataObject::new(
+            source.clone(),
+            vec![
+                "RJ123456/scene_a.dat".to_string(),
+                "RJ123456/img/cover.png".to_string(),
+            ],
+            Some(tx),
+            Arc::clone(&state),
+        );
+
+        dropped_state(&state);
+        let fmt = hdrop_format();
+
+        let first = paths_of(obj.GetData(&fmt).expect("drop-time GetData must stage"));
+        // Both selected paths share the "RJ123456" first component, so
+        // the final HDROP is that single root folder under the staged
+        // root -- and its content is what staging wrote.
+        assert_eq!(first.len(), 1);
+        assert!(first[0].ends_with("RJ123456"), "got {first:?}");
+        assert_eq!(
+            std::fs::read(first[0].join("scene_a.dat")).unwrap(),
+            b"aaaa"
+        );
+        assert_eq!(
+            std::fs::read(first[0].join("img/cover.png")).unwrap(),
+            b"bb"
+        );
+
+        // The shell may ask again while processing the drop: served from
+        // the same staged payload, no second stage.
+        let second = paths_of(obj.GetData(&fmt).unwrap());
+        assert_eq!(second, first);
+        assert_eq!(source.calls(), 1, "staging must run exactly once per drag");
+
+        // Progress reached the frontend channel.
+        let updates: Vec<DragProgressUpdate> = rx.try_iter().collect();
+        assert!(
+            updates.iter().any(|u| u.percent == 50),
+            "the staging progress tick must reach the drag progress channel"
+        );
+        assert!(
+            updates.iter().any(|u| u.percent == 100),
+            "a final 100% update must reach the drag progress channel"
+        );
+    }
+
+    #[test]
+    fn a_failed_stage_surfaces_as_a_com_error_without_panicking() {
+        let source = CountingSource::failing();
+        let state = DragState::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let obj = HDropDataObject::new(
+            source.clone(),
+            vec!["RJ123456/scene_a.dat".to_string()],
+            Some(tx),
+            Arc::clone(&state),
+        );
+
+        dropped_state(&state);
+        let error = match obj.GetData(&hdrop_format()) {
+            Err(error) => error,
+            Ok(_) => panic!("a failed stage must fail the GetData call"),
+        };
+        assert_eq!(error.code(), E_UNEXPECTED);
+        assert_eq!(source.calls(), 1);
+    }
+
+    #[test]
+    fn dropping_the_data_object_drops_the_staged_payload_guard() {
+        let source = CountingSource::new(&[("RJ123456/scene_a.dat", b"x")]);
+        let state = DragState::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let obj = HDropDataObject::new(
+            source.clone(),
+            vec!["RJ123456/scene_a.dat".to_string()],
+            Some(tx),
+            Arc::clone(&state),
+        );
+
+        dropped_state(&state);
+        let medium = obj.GetData(&hdrop_format()).unwrap();
+        let staged_paths = paths_of(medium);
+        assert!(!source.guard_dropped.load(Ordering::SeqCst));
+
+        drop(obj);
+
+        assert!(
+            source.guard_dropped.load(Ordering::SeqCst),
+            "releasing the data object must drop the staged payload's keep-alive guard \
+             (for the facade source: release the materialization lease)"
+        );
+        // And the fake's TempDir-backed staging root is gone with it.
+        assert!(!staged_paths[0].exists());
     }
 }

@@ -24,8 +24,10 @@ pub struct ArchiveOperationsState {
     /// `update_conversion_progress` to implement cooperative cancellation.
     pub conversion_origin_tab: Option<Arc<TabState>>,
 
-    // Drag-out progress state
-    pub drag_rx: Option<Receiver<ProgressUpdate>>,
+    // Drag-out progress state. Carries the drag layer's own progress
+    // type (not core's `ProgressUpdate`): drag-out is facade-routed and
+    // its platform layer no longer speaks `arclain_core` types.
+    pub drag_rx: Option<Receiver<crate::platform::drag_source::DragProgressUpdate>>,
     pub drag_started: Option<Instant>,
     /// The tab that originated this drag-out op. Captured at spawn time
     /// so `update_drag_progress` can route progress events to the

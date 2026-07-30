@@ -123,49 +123,47 @@ impl Drop for NativeProgressDialog {
     }
 }
 
-/// Extract files with a native Windows progress dialog
+/// Stage a drag payload with a native Windows progress dialog.
 ///
-/// Shows a native Windows progress dialog (IProgressDialog) during extraction.
-/// Per-file progress is delivered by running the extraction on a worker thread
-/// and streaming `ExtractionProgress` events back through a channel; the main
-/// thread (which owns the COM-bound dialog) drains the channel and forwards
-/// updates to the dialog. Cancellation is wired both directions: the dialog's
-/// own cancel button flips an `Arc<AtomicBool>` that the worker honors via the
-/// backend's `CancellationToken`.
+/// The fallback progress UI for drags started without a frontend
+/// progress channel: shows a native Windows progress dialog
+/// (IProgressDialog) while the payload source stages the dragged
+/// selection. Staging runs on a spawned worker thread (a plain OS
+/// thread -- satisfying `DragPayloadSource::stage_blocking`'s
+/// non-runtime-thread contract) and streams `DragProgressUpdate`s back
+/// through a channel; the calling thread (which owns the COM-bound
+/// dialog) drains the channel and forwards updates to the dialog.
+/// Cancellation is wired through the source: the dialog's cancel button
+/// triggers `DragPayloadSource::request_cancel`, which cancels the
+/// facade's staging operation and unblocks the worker with an error.
 ///
-/// If creating the dialog fails (e.g. headless / RDP weirdness) we fall back
-/// to the plain `extract_files` call without progress UI.
-pub fn extract_with_native_progress(
-    backend: std::sync::Arc<dyn arclain_core::ArchiveBackend>,
-    archive_path: &std::path::Path,
-    dest_dir: &std::path::Path,
-    file_paths: &[String],
-    password: Option<&str>,
-) -> Result<(), String> {
-    let file_count = file_paths.len();
-
-    // For very small file counts, skip the dialog entirely — the COM
-    // round-trip + worker-thread setup costs more than the extraction itself.
-    if file_count <= 2 {
+/// If creating the dialog fails (e.g. headless / RDP weirdness) we fall
+/// back to staging without progress UI.
+pub fn stage_with_native_progress(
+    source: std::sync::Arc<dyn crate::platform::drag_source::DragPayloadSource>,
+    item_count: usize,
+) -> Result<crate::platform::drag_source::StagedDragPayload, String> {
+    // For very small selections, skip the dialog entirely — the COM
+    // round-trip + worker-thread setup costs more than it is worth, and
+    // the pre-facade code took the same shortcut.
+    if item_count <= 2 {
         debug!(
-            "[native_progress] Small file count ({}), extracting without dialog",
-            file_count
+            "[native_progress] Small selection ({}), staging without dialog",
+            item_count
         );
-        return backend
-            .extract_files(archive_path, dest_dir, file_paths, password)
-            .map_err(|e| format!("Extraction failed: {}", e));
+        return source.stage_blocking(&mut |_| {});
     }
 
     info!(
-        "[native_progress] Starting extraction of {} files with native dialog",
-        file_count
+        "[native_progress] Staging {} dragged items with native dialog",
+        item_count
     );
 
     // Create the progress dialog (apartment-threaded COM, lives on this
-    // thread). If creation fails we still want the extraction to run.
+    // thread). If creation fails we still want the staging to run.
     let dialog = match NativeProgressDialog::new(
-        &format!("Extracting {} files", file_count),
-        file_count as u32,
+        &format!("Extracting {} items", item_count),
+        item_count as u32,
     ) {
         Ok(d) => Some(d),
         Err(e) => {
@@ -177,66 +175,45 @@ pub fn extract_with_native_progress(
         }
     };
 
-    if let Some(ref d) = dialog {
-        d.update(0, file_count as u32, "Starting extraction...");
-    }
-
     // No dialog → no point spinning up a worker thread to feed nothing.
-    // Just run synchronously.
+    // Just stage synchronously on this thread.
     let Some(ref d) = dialog else {
-        return backend
-            .extract_files(archive_path, dest_dir, file_paths, password)
-            .map_err(|e| format!("Extraction failed: {}", e));
+        return source.stage_blocking(&mut |_| {});
     };
 
-    let cancel_token: arclain_core::CancellationToken = d.cancel_token();
+    d.update(0, 100, "Starting extraction...");
 
-    // The ProgressCallback trait requires `Send + Sync`, but mpsc::Sender
-    // is `!Sync`. Wrap it in a Mutex so the closure satisfies the bounds.
-    // Only one thread (the worker) ever calls it, so contention is nil.
-    let (tx, rx) = std::sync::mpsc::channel::<arclain_core::ExtractionProgress>();
-    let tx_for_worker = std::sync::Mutex::new(tx);
+    let (tx, rx) = std::sync::mpsc::channel::<crate::platform::drag_source::DragProgressUpdate>();
 
-    // Move owned copies of the borrowed args into the worker. `backend`
-    // is already an Arc; clone it for the thread.
-    let archive_path_owned = archive_path.to_path_buf();
-    let dest_dir_owned = dest_dir.to_path_buf();
-    let file_paths_owned: Vec<String> = file_paths.to_vec();
-    let password_owned: Option<String> = password.map(|s| s.to_string());
-    let backend_for_worker = std::sync::Arc::clone(&backend);
-    let cancel_for_worker = std::sync::Arc::clone(&cancel_token);
-
+    let source_for_worker = std::sync::Arc::clone(&source);
     let handle = std::thread::spawn(move || {
-        let cb = move |p: arclain_core::ExtractionProgress| {
-            // Silent on send failure — main thread will have stopped
-            // listening only if it bailed out (e.g. cancel), and the
-            // worker already sees that via `cancel_for_worker`.
-            let _ = tx_for_worker.lock().unwrap().send(p);
+        let mut cb = move |p: crate::platform::drag_source::DragProgressUpdate| {
+            // Silent on send failure — the pump only stops listening once
+            // staging has already finished.
+            let _ = tx.send(p);
         };
-        backend_for_worker.extract_files_with_progress(
-            &archive_path_owned,
-            &dest_dir_owned,
-            &file_paths_owned,
-            password_owned.as_deref(),
-            Some(&cb),
-            Some(&cancel_for_worker),
-        )
+        source_for_worker.stage_blocking(&mut cb)
     });
 
-    // Main thread drains progress events and forwards them to the dialog.
-    // 50ms timeout keeps cancellation responsive (HasUserCancelled is
-    // touched every loop iteration via `d.is_cancelled()`).
+    // This thread drains progress events and forwards them to the
+    // dialog. 50ms timeout keeps cancellation responsive
+    // (HasUserCancelled is touched every loop iteration via
+    // `d.is_cancelled()`).
+    let mut cancel_requested = false;
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(50)) {
             Ok(p) => {
-                d.update(p.current as u32, p.total as u32, &p.current_file);
+                d.update(
+                    u32::from(p.percent),
+                    100,
+                    p.message.as_deref().unwrap_or("Extracting..."),
+                );
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                // Touch the dialog to pick up cancel-button presses. The
-                // call updates `cancel_token` which the worker checks
-                // between files.
-                if d.is_cancelled() {
-                    debug!("[native_progress] User cancelled — signalling worker");
+                if d.is_cancelled() && !cancel_requested {
+                    debug!("[native_progress] User cancelled — cancelling the staging operation");
+                    cancel_requested = true;
+                    source.request_cancel();
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -247,17 +224,16 @@ pub fn extract_with_native_progress(
 
     let worker_result = match handle.join() {
         Ok(r) => r,
-        Err(_) => return Err("Extraction worker thread panicked".to_string()),
+        Err(_) => return Err("Staging worker thread panicked".to_string()),
     };
-    let result = worker_result.map_err(|e| format!("Extraction failed: {}", e));
 
-    if result.is_ok() {
-        d.update(file_count as u32, file_count as u32, "Complete!");
+    if worker_result.is_ok() {
+        d.update(100, 100, "Complete!");
     }
 
     if let Some(d) = dialog {
         d.close();
     }
 
-    result
+    worker_result
 }

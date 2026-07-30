@@ -1,47 +1,91 @@
 //! Drag and drop application service.
 //!
-//! Deliberately **not** routed through `arclain_app::materialization` in
-//! this task, unlike `file_opener::open_file_from_archive`. Investigated
-//! and rejected, rather than silently left alone:
+//! Routed through the application facade's drag-stage surface
+//! (`arclain_app::ArclainApp::{start_drag_stage, stage_drag_payload_blocking}`),
+//! closing the last place this crate reached `arclain_core` through
+//! `tab.opened_archive` for a backend handle. The division of labor:
 //!
-//! - **No leak exists here to fix.** This function reaches
-//!   `crate::platform::drag_source::start_deferred_drag`, whose Windows
-//!   implementation (`platform::drag_source::windows::{data_object,
-//!   hdrop_data_object}`) already owns its own temp directory via
-//!   `tempfile::TempDir` -- ordinary RAII, cleaned up when the OS releases
-//!   the `IDataObject` COM object after `DoDragDrop` returns. There is no
-//!   `std::mem::forget` (or equivalent unbounded retention) anywhere in
-//!   that path; verified by reading the implementation, not assumed.
-//! - **Migrating it anyway would require a real redesign, not a small
-//!   change.** The Windows drag objects extract *lazily*, on demand,
-//!   inside a `GetData` callback invoked by the OS shell during the drag
-//!   gesture itself (`HDropDataObject`'s dual-HDROP: a placeholder path
-//!   during hover, the real extracted files only once an actual drop
-//!   happens) -- a deliberate, working responsiveness optimization.
-//!   Routing that through `start_materialization` would mean either
-//!   eagerly materializing the whole selection before the OS drag even
-//!   starts (giving up the "don't extract until actually dropped"
-//!   behavior), or bridging a synchronous, OS-invoked COM callback into
-//!   the facade's async operation model with no render loop on the other
-//!   end to hand off to -- a harder version of the same "can't block the
-//!   render thread on an async challenge" problem `start_open_archive`'s
-//!   own background-worker bridge exists to solve, except here there is no
-//!   egui frame loop backing the callback thread at all.
-//! - **The one real, pre-existing architectural gap** -- this function
-//!   reads `tab.opened_archive` directly for `backend_arc()`/`password_ref()`,
-//!   bypassing the facade entirely (flagged by an earlier task's own
-//!   report as a known, deliberately deferred item) -- is not created by
-//!   this task and is not fixed by it either: the facade has no API that
-//!   hands back a raw backend handle for a UI-driven lazy extraction to
-//!   use (by design), so closing this gap needs the redesign above, not a
-//!   small follow-up.
+//! - **This service** (drag start, synchronous): snapshots the active
+//!   tab's `archive_session_id`, hands the drag progress channel to the
+//!   per-frame updater, and spawns one async task that resolves the
+//!   dragged paths to facade `EntryId`s (a single `list_entries` of the
+//!   browsed directory -- every draggable row lives in it) before
+//!   starting the OS drag thread.
+//! - **The platform layer** (`crate::platform::drag_source`): owns all
+//!   COM mechanics. During hover it serves a placeholder HDROP and makes
+//!   **no** facade calls -- the hover-then-extract optimization is
+//!   untouched by the cutover. Only when the shell commits to a drop
+//!   does the drag's own STA thread call the facade's blocking staging
+//!   affordance through [`FacadeDragPayloadSource`].
 //!
-//! Given no leak to fix and a disproportionate, high-risk redesign to
-//! reach full architectural parity, this file is unchanged. Full
-//! unification remains a named, surfaced follow-up.
+//! Folder rows are passed as their own single `EntryId`; the facade
+//! expands them to their subtrees server-side (the prefix-matching this
+//! service used to do against `tab.entries` moved behind the facade with
+//! the extraction it fed).
+
+use std::sync::Arc;
 
 use crate::features::archive_operations::ArchiveOperationsState;
+use crate::platform::drag_source::{DragPayloadSource, FacadeDragPayloadSource};
 use crate::shared::SharedState;
+use arclain_app::archive::ArchivePath;
+use arclain_app::ids::{ArchiveSessionId, EntryId};
+use arclain_app::ArclainApp;
+
+/// The parent directory (archive-root-relative, forward-slash form) the
+/// dragged rows live in. Every row of one drag gesture comes from the
+/// single directory the browser is showing, so the first path's parent
+/// is everyone's parent.
+fn parent_directory(files: &[String]) -> String {
+    let first = files
+        .first()
+        .map(|path| path.replace('\\', "/"))
+        .unwrap_or_default();
+    match first.rfind('/') {
+        Some(pos) => first[..pos].to_string(),
+        None => String::new(),
+    }
+}
+
+/// Resolves each dragged archive-root path to the `EntryId` naming it,
+/// through one listing of the browsed directory. A path naming both a
+/// file and a directory at the same level (a real, allowed collision --
+/// see `arclain_app::archive`'s entry-identity notes) contributes both
+/// ids, mirroring the pre-facade prefix matcher which also picked up
+/// both.
+async fn resolve_selection_entry_ids(
+    app: &ArclainApp,
+    session_id: ArchiveSessionId,
+    files: &[String],
+) -> Result<Vec<EntryId>, String> {
+    let directory = ArchivePath::parse(parent_directory(files))
+        .map_err(|error| format!("invalid drag directory: {error:?}"))?;
+    let page = app
+        .list_entries(
+            session_id,
+            crate::core::tabs::TabListing::whole_directory_request(directory),
+        )
+        .await
+        .map_err(|error| error.summary)?;
+
+    let mut entry_ids = Vec::with_capacity(files.len());
+    for file in files {
+        let normalized = file.replace('\\', "/");
+        let mut found = false;
+        for entry in &page.entries {
+            if entry.path.as_str() == normalized {
+                entry_ids.push(entry.id);
+                found = true;
+            }
+        }
+        if !found {
+            return Err(format!(
+                "{normalized} is not in the current directory listing"
+            ));
+        }
+    }
+    Ok(entry_ids)
+}
 
 pub struct DragDropService;
 
@@ -54,96 +98,103 @@ impl DragDropService {
     ) {
         tracing::info!("[DragExtract] Starting with files: {}", files.join(", "));
 
-        // Get archive handle. The drag dialog (per-tab post 2026-05-20 B3
-        // reframed slice 2) also lives on this same tab — the drag op is
-        // initiated by selecting rows in the active tab's archive list.
         let tab = shared.signals().tabs.get().active().clone();
-        let archive_guard = tab.opened_archive.read();
-        let archive_arc_opt = archive_guard.as_ref().cloned();
-        drop(archive_guard);
-
-        if let Some(archive_arc) = archive_arc_opt {
-            let archive = archive_arc.read();
-
-            // Collect entries matching the dragged files (or directory contents)
-            let all_entries = tab.entries.get();
-            tracing::info!(
-                "[DragExtract] Total entries in archive: {}",
-                all_entries.len()
-            );
-
-            // Match entries: exact match OR starts with "folder/" OR starts with "folder\"
-            let entries: Vec<arclain_core::ArchiveEntry> = all_entries
-                .iter()
-                .filter(|e| {
-                    files.iter().any(|f| {
-                        if e.path == *f {
-                            return true;
-                        }
-                        if e.path.starts_with(&format!("{}/", f)) {
-                            return true;
-                        }
-                        if e.path.starts_with(&format!("{}\\", f)) {
-                            return true;
-                        }
-                        false
-                    })
-                })
-                .cloned()
-                .collect();
-
-            tracing::info!("[DragExtract] Matched {} entries for drag", entries.len());
-
-            let backend = archive.backend_arc();
-            let archive_path = archive.path().to_path_buf();
-            let password = archive.password_ref().map(|p| p.to_string());
-
-            drop(archive); // Release lock before drag loop blocks
-
-            if entries.is_empty() {
-                tracing::warn!("[DragExtract] No matching entries found");
-                return;
-            }
-
-            // Start the drag operation
-            match crate::platform::drag_source::start_deferred_drag(
-                backend,
-                archive_path,
-                entries,
-                password,
-            ) {
-                Ok(rx) => {
-                    tracing::info!("[DragExtract] Drag operation started in background");
-                    shared.signals().status_bar.update(|s| {
-                        s.message = "Drag started...".to_string();
-                    });
-
-                    ops_state.drag_rx = Some(rx);
-                    // Capture the origin tab so the background drag updater
-                    // can route progress writes back to this tab's dialog
-                    // slot (post 2026-05-20 B3 reframed slice 2).
-                    ops_state.drag_origin_tab = Some(tab.clone());
-
-                    let mut dialog = tab.drag_dialog().get();
-                    dialog.show = false;
-                    dialog.percent = 0;
-                    dialog.file_action = "Preparing drag...".to_string();
-                    tab.drag_dialog().set(dialog);
-
-                    ops_state.drag_started = Some(std::time::Instant::now());
-                }
-                Err(e) => {
-                    tracing::warn!("[DragExtract] Drag failed: {}", e);
-                    shared.signals().status_bar.update(|s| {
-                        s.message = format!("Drag failed: {}", e);
-                    });
-                }
-            }
-        } else {
+        let Some(session_id) = tab.archive_session_id.get() else {
             tracing::warn!("[DragExtract] No archive session open");
             shared.signals().status_bar.update(|s| {
                 s.message = "No archive open".to_string();
             });
+            return;
+        };
+        let Some(app) = shared.facade.clone() else {
+            tracing::error!("[DragExtract] No application facade available");
+            return;
+        };
+        if files.is_empty() {
+            tracing::warn!("[DragExtract] Empty drag selection");
+            return;
         }
+
+        // Progress channel + origin tab are installed synchronously, so
+        // the per-frame updater (`update_drag_progress`) owns the drag
+        // dialog from this frame on -- the exact pre-facade shape. The
+        // channel disconnecting (every sender dropped, including on the
+        // failure paths below) is its cleanup signal.
+        let (tx, rx) = std::sync::mpsc::channel();
+        ops_state.drag_rx = Some(rx);
+        ops_state.drag_origin_tab = Some(tab.clone());
+        ops_state.drag_started = Some(std::time::Instant::now());
+
+        let mut dialog = tab.drag_dialog().get();
+        dialog.show = false;
+        dialog.percent = 0;
+        dialog.file_action = "Preparing drag...".to_string();
+        tab.drag_dialog().set(dialog);
+
+        shared.signals().status_bar.update(|s| {
+            s.message = "Drag started...".to_string();
+        });
+
+        let runtime_handle = shared.services.tokio_runtime.handle().clone();
+        let shared_for_task = shared.clone();
+        shared.services.tokio_runtime.clone().spawn(async move {
+            let entry_ids = match resolve_selection_entry_ids(&app, session_id, &files).await {
+                Ok(entry_ids) => entry_ids,
+                Err(message) => {
+                    tracing::warn!("[DragExtract] Failed to resolve dragged entries: {message}");
+                    shared_for_task.signals().status_bar.update(|s| {
+                        s.message = format!("Drag failed: {message}");
+                    });
+                    return; // `tx` drops; the updater sees disconnect.
+                }
+            };
+
+            tracing::info!(
+                "[DragExtract] Resolved {} entry ids for drag",
+                entry_ids.len()
+            );
+
+            let source: Arc<dyn DragPayloadSource> = Arc::new(FacadeDragPayloadSource::new(
+                app,
+                runtime_handle,
+                session_id,
+                entry_ids,
+            ));
+
+            match crate::platform::drag_source::start_deferred_drag(source, files, tx) {
+                Ok(()) => {
+                    tracing::info!("[DragExtract] Drag operation started in background");
+                }
+                Err(e) => {
+                    tracing::warn!("[DragExtract] Drag failed: {}", e);
+                    shared_for_task.signals().status_bar.update(|s| {
+                        s.message = format!("Drag failed: {}", e);
+                    });
+                }
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parent_directory;
+
+    #[test]
+    fn parent_directory_of_root_level_rows_is_the_archive_root() {
+        assert_eq!(parent_directory(&["readme.txt".to_string()]), "");
+    }
+
+    #[test]
+    fn parent_directory_of_nested_rows_is_their_containing_directory() {
+        assert_eq!(
+            parent_directory(&["game/data/save.dat".to_string()]),
+            "game/data"
+        );
+        // Backslash-separated paths normalize the same way.
+        assert_eq!(
+            parent_directory(&["game\\data\\save.dat".to_string()]),
+            "game/data"
+        );
     }
 }

@@ -139,25 +139,6 @@ fn is_cursor_over_own_window() -> bool {
     }
 }
 
-// Keep the old simple DropSource for backwards compatibility
-/// Simple drop source that tracks drag state (legacy, no deferred extraction)
-#[implement(windows::Win32::System::Ole::IDropSource)]
-pub struct DropSource;
-
-impl windows::Win32::System::Ole::IDropSource_Impl for DropSource {
-    fn QueryContinueDrag(&self, fescapepressed: BOOL, grfkeystate: MODIFIERKEYS_FLAGS) -> HRESULT {
-        if fescapepressed.as_bool() {
-            info!("[drag] QueryContinueDrag: Escape pressed, cancelling");
-            DRAGDROP_S_CANCEL
-        } else if (grfkeystate.0 & MK_LBUTTON.0) == 0 {
-            info!("[drag] QueryContinueDrag: LButton released, dropping");
-            DRAGDROP_S_DROP
-        } else {
-            S_OK
-        }
-    }
-
-    fn GiveFeedback(&self, _dweffect: DROPEFFECT) -> HRESULT {
-        DRAGDROP_S_USEDEFAULTCURSORS
-    }
-}
+// The legacy plain `DropSource` (no deferred-staging state) was removed
+// together with the unreachable `FileContents`/`IStream` drag strategy
+// that was its only consumer -- see the drag_source module doc comment.

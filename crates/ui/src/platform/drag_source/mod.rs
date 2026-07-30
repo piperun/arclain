@@ -1,21 +1,37 @@
 //! Platform-specific drag source abstraction
 //!
-//! Enables dragging files from Arclain to external applications (Explorer, etc.)
-//! Uses native Windows COM APIs for deferred extraction with IProgressDialog,
-//! or `drag` crate fallback for non-Windows platforms.
+//! Enables dragging files from Arclain to external applications
+//! (Explorer, etc.) using native Windows COM APIs with 7-Zip style
+//! deferred extraction: the shell is handed a CF_HDROP data object whose
+//! hover answer is a pre-built placeholder, and the dragged selection is
+//! only staged onto disk -- through the application facade's drag-stage
+//! surface, see [`payload`] -- at the moment the shell commits to a
+//! drop. No archive I/O happens for a drag that hovers targets and never
+//! drops.
+//!
+//! The former `FileContents`/`IStream` strategy (`LazyArchiveDataObject`
+//! plus a chunk-pipe `IStream` that streamed bytes during extraction)
+//! was removed in the facade cutover: it had been unreachable for as
+//! long as `start_deferred_drag` has hardcoded the HDROP strategy, and
+//! porting it would have meant building a facade streaming surface for
+//! code nothing can select. If virtual drop targets (mail clients
+//! accepting `FileContents`) are ever wanted, the shape to build is
+//! stage-then-stream: stage through the same facade surface used here,
+//! then serve `IStream` reads from the staged lease (whose bounded
+//! `read_materialization_range` API already exists).
+
+pub mod payload;
 
 #[cfg(target_os = "windows")]
 pub mod native_progress;
 #[cfg(target_os = "windows")]
-pub mod stream;
-#[cfg(target_os = "windows")]
 pub mod windows;
-// pub mod windows_native; // Deprecated/Removed
 
-use arclain_core::backends::sevenz_cli::ProgressUpdate;
-use arclain_core::{ArchiveBackend, ArchiveEntry};
-use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
+pub use payload::{
+    DragPayloadSource, DragProgressUpdate, FacadeDragPayloadSource, StagedDragPayload,
+};
+
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 /// Error during drag operation
@@ -43,40 +59,31 @@ impl std::error::Error for DragError {}
 
 /// Start a deferred drag operation using native Windows APIs.
 ///
-/// Architecture (like 7-Zip):
-/// 1. Show progress dialog while extracting in background
-/// 2. After extraction completes, call DoDragDrop with temp files
-///
-/// This is simpler than trying to show progress during DoDragDrop.
+/// `source` stages the dragged content on demand (drop time, never
+/// hover time); `selection_paths` are the archive-root-relative paths
+/// of the rows the user dragged, used only to shape the final HDROP's
+/// top-level items. Progress lands on `progress_tx` (drained by the
+/// per-frame drag-dialog updater); the channel disconnecting is the
+/// "drag finished" signal, exactly as before the facade cutover.
 #[cfg(target_os = "windows")]
 pub fn start_deferred_drag(
-    backend: Arc<dyn ArchiveBackend>,
-    archive_path: PathBuf,
-    entries: Vec<ArchiveEntry>,
-    password: Option<String>,
-) -> Result<Receiver<ProgressUpdate>, DragError> {
-    // Use HDrop strategy (fast CF_HDROP-based transfer, like WinRAR/7-Zip)
-    use windows::{start_drag, DragStrategy};
-
-    match start_drag(
-        backend,
-        archive_path,
-        entries,
-        password,
-        DragStrategy::HDrop,
-    ) {
-        Ok(rx) => Ok(rx),
-        Err(e) => Err(DragError::PlatformError(e)),
+    source: Arc<dyn DragPayloadSource>,
+    selection_paths: Vec<String>,
+    progress_tx: Sender<DragProgressUpdate>,
+) -> Result<(), DragError> {
+    if selection_paths.is_empty() {
+        return Err(DragError::NoFiles);
     }
+    windows::start_hdrop_drag(source, selection_paths, progress_tx)
+        .map_err(DragError::PlatformError)
 }
 
 #[cfg(not(target_os = "windows"))]
 pub fn start_deferred_drag(
-    _backend: Arc<dyn ArchiveBackend>,
-    _archive_path: PathBuf,
-    _entries: Vec<ArchiveEntry>,
-    _password: Option<String>,
-) -> Result<Receiver<ProgressUpdate>, DragError> {
+    _source: Arc<dyn DragPayloadSource>,
+    _selection_paths: Vec<String>,
+    _progress_tx: Sender<DragProgressUpdate>,
+) -> Result<(), DragError> {
     Err(DragError::PlatformError(
         "Deferred drag not supported on this platform. Please extract first.".into(),
     ))
