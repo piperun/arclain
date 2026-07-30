@@ -257,16 +257,17 @@ fn render_returns_while_log_read_is_blocked() {
     let (started_tx, started_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let (render_returned_tx, render_returned_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
     let io = Arc::new(BlockingLogIo {
         read_started: Mutex::new(Some(started_tx)),
         read_release: Mutex::new(release_rx),
     });
 
     std::thread::scope(|scope| {
-        scope.spawn(move || {
+        let render_thread = scope.spawn(move || {
             let state = LogsPageState::with_session_and_io(session(), io);
             let theme = AppTheme::new(false);
-            let _harness = Harness::builder()
+            let harness = Harness::builder()
                 .with_size(egui::vec2(640.0, 320.0))
                 .build_ui_state(
                     move |ui, state| {
@@ -275,13 +276,42 @@ fn render_returns_while_log_read_is_blocked() {
                     state,
                 );
             render_returned_tx.send(()).unwrap();
+            // Keep the harness -- and with it the log worker's result
+            // receiver -- alive until the main thread finishes the whole
+            // handshake, the way a real app keeps the page alive across
+            // frames. Dropping it as soon as render returned used to
+            // destroy the worker pipeline out from under the already
+            // queued (but not yet executed) session read: the worker's
+            // first result send fails against the dropped receiver and
+            // the worker exits before ever reaching the blocking read, so
+            // on any scheduling where this thread finished before the
+            // freshly spawned worker first ran, `started_rx` below
+            // reported `Disconnected` with nothing actually wrong.
+            let _ = done_rx.recv();
+            drop(harness);
         });
 
-        started_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("log read never started");
+        match started_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(()) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // The `started` sender lives inside the worker's own `io`
+                // handle, and with the harness held alive above, the worker
+                // can only be gone this early if the render thread itself
+                // died -- join it and propagate its own panic as the real
+                // failure instead of misreporting it as a missing read.
+                match render_thread.join() {
+                    Err(panic) => std::panic::resume_unwind(panic),
+                    Ok(()) => panic!("render finished without the log read ever running"),
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = done_tx.send(());
+                panic!("log read never started within its 1s budget");
+            }
+        }
         let render_returned = render_returned_rx.recv_timeout(Duration::from_millis(200));
         release_tx.send(()).unwrap();
+        let _ = done_tx.send(());
         assert!(
             render_returned.is_ok(),
             "render waited for the blocked log read"
