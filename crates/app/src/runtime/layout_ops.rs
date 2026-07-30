@@ -23,12 +23,15 @@
 //! Because those rows share a store with settings, the mutating functions
 //! here take `AppRuntime::settings_write_lock` for their whole duration,
 //! exactly as `runtime::settings_ops` and `runtime::organization_ops` do.
-//! A layout save is a *batch* of upserts and a display-options save is
-//! six independent key writes, so without the lock a second concurrent
-//! save could interleave its statements with the first and leave the
-//! stored layout a blend of two different arrangements -- SQLite
-//! serializes individual statements, not sequences of them. Read-only
-//! functions never take it.
+//! A layout save is a *batch* of upserts, so without the lock a second
+//! concurrent save could interleave its statements with the first and
+//! leave the stored layout a blend of two different arrangements --
+//! SQLite serializes individual statements, not sequences of them. A
+//! display-options save is one transaction over its six keys (they are
+//! one logical value, and a failure partway must not strand a mix), so
+//! the transaction already makes it atomic; it keeps taking the lock
+//! anyway, for the same cross-writer ordering discipline every other
+//! settings mutation here observes. Read-only functions never take it.
 //!
 //! ## Last write wins, deliberately
 //!
@@ -207,6 +210,10 @@ pub(super) async fn run_save_ui_display_options(
         .map_err(internal_join_error)?
 }
 
+/// One connection, one transaction: the six keys are one logical value
+/// (see [`UiDisplayOptionsDto`]'s whole-value contract), so a failure
+/// on any of them must leave all of them at their stored values rather
+/// than a mix of old and new.
 fn write_display_options(
     service: &UiService,
     options: UiDisplayOptionsDto,
@@ -237,12 +244,13 @@ fn write_display_options(
             options.show_button_labels.to_string(),
         ),
     ];
-    for (key, value) in writes {
-        service
-            .set_display_option(key, &value)
-            .map_err(|error| backend_error("saving a layout display option", error))?;
-    }
-    Ok(())
+    let entries: Vec<(&str, &str)> = writes
+        .iter()
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect();
+    service
+        .set_display_options(&entries)
+        .map_err(|error| backend_error("saving the layout display options", error))
 }
 
 // ============================================================================

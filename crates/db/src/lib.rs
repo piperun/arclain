@@ -72,8 +72,8 @@ pub use user_config::UserConfig;
 mod ui;
 pub use ui::{
     delete_item, ensure_ui_tables, get_display_option, list_items_by_region,
-    seed_defaults_if_empty, set_display_option, sync_host_item, upsert_item, ActionType,
-    DisplayMode, UiItem, UiRegion, UiRegionConfig,
+    seed_defaults_if_empty, set_display_option, set_display_options, sync_host_item, upsert_item,
+    ActionType, DisplayMode, UiItem, UiRegion, UiRegionConfig,
 };
 
 mod domain_whitelist;

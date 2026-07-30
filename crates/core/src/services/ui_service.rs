@@ -5,8 +5,8 @@
 
 use anyhow::Result;
 use arclain_db::{
-    delete_item, get_display_option, list_items_by_region, set_display_option, sync_host_item,
-    upsert_item, DieselPool, UiItem, UiRegion,
+    delete_item, get_display_option, list_items_by_region, set_display_option, set_display_options,
+    sync_host_item, upsert_item, DieselPool, UiItem, UiRegion,
 };
 
 /// Service for managing UI configuration items
@@ -94,6 +94,16 @@ impl UiService {
     pub fn set_display_option(&self, key: &str, value: &str) -> Result<()> {
         self.pool
             .with_conn(|conn| set_display_option(conn, key, value))
+    }
+
+    /// Set several display options on one connection, in one
+    /// transaction: every entry lands or none does. For entries that
+    /// form one logical value -- a settings page saving all of its
+    /// keys as one edit must not leave a mix of old and new behind a
+    /// failure partway through.
+    pub fn set_display_options(&self, entries: &[(&str, &str)]) -> Result<()> {
+        self.pool
+            .with_conn(|conn| set_display_options(conn, entries))
     }
 }
 

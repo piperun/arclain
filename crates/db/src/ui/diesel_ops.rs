@@ -192,6 +192,22 @@ pub fn set_display_option(
     Ok(())
 }
 
+/// Set several display options in one transaction: every entry lands
+/// or none does. For callers whose entries are one logical value (the
+/// display-options settings page saves all of its keys as one edit) --
+/// a failure on any key must not leave the earlier ones written.
+pub fn set_display_options(
+    conn: &mut diesel::SqliteConnection,
+    entries: &[(&str, &str)],
+) -> Result<()> {
+    conn.transaction(|conn| {
+        for (opt_key, opt_value) in entries {
+            set_display_option(conn, opt_key, opt_value)?;
+        }
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::types::ActionType;
@@ -269,6 +285,59 @@ mod tests {
         set_display_option(&mut conn, "test_key", "new_value").unwrap();
         let val = get_display_option(&mut conn, "test_key").unwrap();
         assert_eq!(val, Some("new_value".to_string()));
+    }
+
+    #[test]
+    fn set_display_options_lands_every_entry_together() {
+        let mut conn = setup_db();
+
+        set_display_options(&mut conn, &[("alpha", "1"), ("beta", "2")]).unwrap();
+        assert_eq!(
+            get_display_option(&mut conn, "alpha").unwrap().as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            get_display_option(&mut conn, "beta").unwrap().as_deref(),
+            Some("2")
+        );
+
+        // And updates existing keys in place, like the single-key call.
+        set_display_options(&mut conn, &[("alpha", "3")]).unwrap();
+        assert_eq!(
+            get_display_option(&mut conn, "alpha").unwrap().as_deref(),
+            Some("3")
+        );
+    }
+
+    /// A failure on any entry of the batch (here: an ABORT trigger on
+    /// one key) must roll back the entries written before it.
+    #[test]
+    fn a_failed_entry_rolls_back_the_whole_display_option_batch() {
+        let mut conn = setup_db();
+        set_display_options(&mut conn, &[("alpha", "old"), ("poisoned", "old")]).unwrap();
+
+        diesel::sql_query(
+            "CREATE TRIGGER poison_update BEFORE UPDATE ON ui_display_options
+             WHEN NEW.key = 'poisoned'
+             BEGIN SELECT RAISE(ABORT, 'induced failure'); END",
+        )
+        .execute(&mut conn)
+        .unwrap();
+
+        set_display_options(&mut conn, &[("alpha", "new"), ("poisoned", "new")])
+            .expect_err("the poisoned entry must fail the batch");
+
+        assert_eq!(
+            get_display_option(&mut conn, "alpha").unwrap().as_deref(),
+            Some("old"),
+            "the entry written before the failure must be rolled back"
+        );
+        assert_eq!(
+            get_display_option(&mut conn, "poisoned")
+                .unwrap()
+                .as_deref(),
+            Some("old")
+        );
     }
 
     /// Pins [`sync_host_item`]'s column split: an existing row takes the

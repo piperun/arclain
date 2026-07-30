@@ -535,6 +535,83 @@ fn a_refused_display_option_write_leaves_the_stored_options_alone() {
     );
 }
 
+/// The six display-option keys are one logical value, so a save must
+/// land all of them or none of them. Induce a failure partway through
+/// the batch -- ABORT triggers on the last-written key
+/// (`show_button_labels`), installed on the same database file through
+/// a second connection -- and assert the refused save left every key
+/// at its stored value, including the ones written before the failure.
+#[test]
+fn a_display_option_save_that_fails_midway_lands_none_of_its_keys() {
+    let temp = tempfile::tempdir().expect("create temp profile");
+    let paths = support::temp_paths(temp.path());
+    let sevenzip = support::create_dummy_executable(temp.path(), sevenzip_exe_name());
+    support::seed_working_sevenzip_config(&paths, &sevenzip);
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths.clone()),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .expect("bootstrap the application");
+    let runtime = foreign_runtime();
+
+    // A stored baseline that is not the defaults, so "rolled back to
+    // the baseline" and "reset to a fresh profile" are distinguishable.
+    let baseline = UiDisplayOptionsDto {
+        tree_panel_visible: false,
+        properties_panel_width: 333.0,
+        ..UiDisplayOptionsDto::default()
+    };
+    runtime
+        .block_on(app.save_ui_display_options(baseline))
+        .expect("save the baseline");
+
+    // Make any further write of the batch's *last* key fail, whichever
+    // upsert branch it takes.
+    let config_db = support::databases_dir(&paths).join("config.sqlite");
+    arclain_core::config::ConfigDb::open(&config_db)
+        .expect("open the config database on a second connection")
+        .into_sqlite_db()
+        .with_connection(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER induced_display_option_insert_failure
+                 BEFORE INSERT ON ui_display_options
+                 WHEN NEW.key = 'show_button_labels'
+                 BEGIN SELECT RAISE(ABORT, 'induced display-option failure'); END;
+                 CREATE TRIGGER induced_display_option_update_failure
+                 BEFORE UPDATE ON ui_display_options
+                 WHEN NEW.key = 'show_button_labels'
+                 BEGIN SELECT RAISE(ABORT, 'induced display-option failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install the poison triggers");
+
+    // The refused save edits the first-written key (the view mode), a
+    // middle one (the tree width), and the poisoned last one.
+    let edited = UiDisplayOptionsDto {
+        default_view_mode: UiViewModeDto::Grid,
+        tree_panel_width: 321.5,
+        show_button_labels: true,
+        ..baseline
+    };
+    let error = runtime
+        .block_on(app.save_ui_display_options(edited))
+        .expect_err("the poisoned key must fail the save");
+    assert_eq!(error.kind, ApplicationErrorKind::Backend);
+
+    assert_eq!(
+        runtime
+            .block_on(app.ui_display_options())
+            .expect("re-read the display options"),
+        baseline,
+        "a save that failed partway must land none of its keys"
+    );
+}
+
 // ============================================================================
 // Serialization and concurrency.
 // ============================================================================
