@@ -226,6 +226,30 @@ pub struct ArchiveInventory {
     pub entries: Vec<ArchiveEntryDto>,
 }
 
+/// What one [`crate::ArclainApp::backfill_encrypted_crcs`] call did and
+/// found -- everything a frontend's post-open choreography needs in one
+/// answer.
+///
+/// * `computed` -- how many file rows had a CRC-32 filled in. Non-zero
+///   means the session's rows changed and `revision` was bumped, so a
+///   frontend should refetch whatever listing it holds.
+/// * `revision` -- the session revision the answer describes (bumped
+///   when `computed > 0`, unchanged otherwise).
+/// * `password_available` -- whether any password was in hand: the one
+///   the session was opened with, or one a stored password rule matched
+///   (against the archive's name or its own entry paths). `false` with
+///   `any_encrypted` true is the state a `prompt_on_open` policy turns
+///   into a password prompt.
+/// * `any_encrypted` -- whether any entry in the session is flagged
+///   encrypted at all.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct EncryptedCrcBackfill {
+    pub computed: u64,
+    pub revision: u64,
+    pub password_available: bool,
+    pub any_encrypted: bool,
+}
+
 /// A request to open and index an archive, the argument to
 /// [`crate::ArclainApp::start_open_archive`]. Not `Clone`/`Serialize`/
 /// `Deserialize`: `password`, when present, carries a live

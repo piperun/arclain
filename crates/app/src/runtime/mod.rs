@@ -326,6 +326,17 @@ impl AppRuntime {
         self.archive_backend_override.clone()
     }
 
+    /// The 7-Zip CLI fallback backend bootstrap detected -- the one
+    /// backend that can stream-and-hash *decrypted* entry content for
+    /// any archive format, which is why the encrypted-CRC backfill
+    /// computes through it rather than a format's primary backend
+    /// (whose `crc32_of_entry` may return the stored header value:
+    /// zeroed for AES zip entries). Cheap: `SevenZipCli` clones its
+    /// resolved executable path.
+    pub(crate) fn fallback_backend(&self) -> arclain_core::backends::sevenz_cli::SevenZipCli {
+        self.session.fallback_backend.clone()
+    }
+
     pub(crate) fn extract_runner(&self) -> Arc<dyn crate::operations::extract::ExtractRunner> {
         self.extract_runner.clone()
     }
@@ -675,6 +686,37 @@ impl ArclainApp {
         self.dispatch_async(move |inner| async move {
             let session = inner.archive_sessions().get(session_id).await?;
             Ok(session.snapshot())
+        })
+        .await?
+    }
+
+    /// Computes the CRC-32 of every encrypted file entry whose listing
+    /// carried none, writes the results into the session's own index
+    /// (bumping its revision so cached pages/inventories refetch), and
+    /// reports what happened -- see
+    /// [`crate::archive::EncryptedCrcBackfill`] for the answer's fields
+    /// and `runtime::archive_ops::run_backfill_encrypted_crcs` for the
+    /// password ladder and the deliberate carried-over behaviors.
+    ///
+    /// Mechanism, not policy: whether to call this at all (the
+    /// `encrypted_crc_policy` setting -- `on_access` skips it entirely,
+    /// `prompt_on_open` follows a `password_available: false` answer
+    /// with a prompt) stays the caller's decision, exactly where the
+    /// pre-facade UI kept it.
+    ///
+    /// Reads and hashes every targeted entry's *decrypted content*
+    /// through the CLI backend -- for a large archive of encrypted files
+    /// this can run for a long time, so call it from a background task,
+    /// never a render path. Per-entry failures (wrong password included)
+    /// are skipped, surfacing as `computed: 0`. A mutation that lands
+    /// mid-computation invalidates the whole batch rather than applying
+    /// stale sums. `NotFound` for an unknown or already-closed session.
+    pub async fn backfill_encrypted_crcs(
+        &self,
+        session_id: ArchiveSessionId,
+    ) -> Result<crate::archive::EncryptedCrcBackfill, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            archive_ops::run_backfill_encrypted_crcs(inner, session_id).await
         })
         .await?
     }

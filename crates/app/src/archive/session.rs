@@ -622,6 +622,72 @@ impl EntryIndex {
             .map(|dto| dto.path.as_str().to_string())
             .collect()
     }
+
+    /// Writes computed CRC-32s into file entries the backend's listing
+    /// left without one, then recomputes every directory's aggregate CRC
+    /// over the updated file set (sizes are untouched -- a CRC backfill
+    /// changes no byte counts). Returns how many file rows were patched.
+    ///
+    /// A patch lands only on a row that still *needs* it -- same path,
+    /// `encrypted`, and no `crc32` -- so re-applying a stale computation
+    /// to a row a newer listing already filled is a no-op rather than an
+    /// overwrite. When a malformed archive carries duplicate rows at one
+    /// path, every still-empty duplicate receives the sum: the value was
+    /// computed for that path, and the duplicates are indistinguishable
+    /// by anything a path-addressed computation can see. (The pre-facade
+    /// UI patched whichever duplicate its flat list happened to order
+    /// first; "all of them" is the deterministic reading of the same
+    /// intent.)
+    ///
+    /// The directory pass mirrors [`Self::build`]'s aggregation exactly:
+    /// one ancestors walk over every file that now carries a CRC, then
+    /// [`FolderTotals::finalize_crc`] per directory -- so a folder's
+    /// aggregate after a backfill is identical to what a fresh index
+    /// built from the patched listing would report.
+    fn apply_crc32_backfill(&mut self, computed: &[(String, String)]) -> usize {
+        let mut patched = 0usize;
+        for (path, sum) in computed {
+            for dto in self.by_id.values_mut() {
+                if dto.kind != EntryKind::Directory
+                    && dto.path.as_str() == path
+                    && dto.encrypted
+                    && dto.crc32.is_none()
+                {
+                    dto.crc32 = Some(sum.clone());
+                    patched += 1;
+                }
+            }
+        }
+        if patched == 0 {
+            return 0;
+        }
+
+        let mut folder_crcs: HashMap<String, FolderTotals> = HashMap::new();
+        for dto in self.by_id.values() {
+            if dto.kind == EntryKind::Directory {
+                continue;
+            }
+            let Some(crc) = &dto.crc32 else {
+                continue;
+            };
+            let shared_path: Arc<str> = Arc::from(dto.path.as_str());
+            for ancestor in ancestors(dto.path.as_str()) {
+                folder_crcs
+                    .entry(ancestor)
+                    .or_default()
+                    .crc_pairs
+                    .push((shared_path.clone(), crc.to_uppercase()));
+            }
+        }
+        for dto in self.by_id.values_mut() {
+            if dto.kind == EntryKind::Directory {
+                dto.crc32 = folder_crcs
+                    .remove(dto.path.as_str())
+                    .and_then(FolderTotals::finalize_crc);
+            }
+        }
+        patched
+    }
 }
 
 #[cfg(test)]
@@ -1157,6 +1223,69 @@ impl ArchiveSession {
     /// resolve in that case, only "every file this archive would write".
     pub(crate) fn all_file_paths(&self) -> Vec<String> {
         self.entry_index.read().file_paths()
+    }
+
+    /// What an encrypted-CRC backfill would have to compute for this
+    /// session right now: the revision the answer belongs to, the paths
+    /// of every file entry that is encrypted (or lives in a
+    /// headers-encrypted archive) and lacks a CRC-32, and whether *any*
+    /// entry is flagged encrypted at all (the fact a
+    /// prompt-for-password-on-open policy turns on). Read under one index
+    /// guard, so the triple is internally consistent.
+    pub(crate) fn encrypted_crc_backfill_targets(&self) -> (u64, Vec<String>, bool) {
+        let index = self.entry_index.read();
+        let revision = self.revision();
+        let headers_encrypted = self.encryption.headers_encrypted;
+        let mut targets = Vec::new();
+        let mut any_encrypted = false;
+        for dto in index.by_id.values() {
+            any_encrypted |= dto.encrypted;
+            if dto.kind != EntryKind::Directory
+                && (dto.encrypted || headers_encrypted)
+                && dto.crc32.is_none()
+            {
+                targets.push(dto.path.as_str().to_string());
+            }
+        }
+        // `by_id` iterates in arbitrary order; sort so the computation
+        // (and any log a failure leaves behind) is deterministic.
+        targets.sort();
+        (revision, targets, any_encrypted)
+    }
+
+    /// Applies a computed CRC backfill to this session's *current* index
+    /// and bumps `revision`, or refuses it entirely.
+    ///
+    /// `expected_revision` is the revision
+    /// [`Self::encrypted_crc_backfill_targets`] reported when the
+    /// computation started. If the session has moved past it -- a
+    /// mutation relisted and reindexed while the CRCs were being read --
+    /// the whole batch is dropped (`None`): the sums were computed from
+    /// archive bytes that may no longer exist, and a stale checksum
+    /// silently attached to fresh rows is worse than a missing one.
+    ///
+    /// Callers must hold [`Self::mutation_lock`] across this call. That
+    /// is what makes the check-then-patch race-free: every other
+    /// revision-advancing sequence (mutate-relist-reindex, and
+    /// [`Self::mark_desynced`] on its failure path) runs entirely under
+    /// the same lock, so the revision cannot move between the comparison
+    /// and the patch landing.
+    pub(crate) fn apply_crc32_backfill(
+        &self,
+        expected_revision: u64,
+        computed: &[(String, String)],
+    ) -> Option<(usize, u64)> {
+        let mut index = self.entry_index.write();
+        if self.revision() != expected_revision {
+            return None;
+        }
+        let patched = index.apply_crc32_backfill(computed);
+        if patched == 0 {
+            return Some((0, expected_revision));
+        }
+        drop(index);
+        let revision = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
+        Some((patched, revision))
     }
 
     /// This session's whole entry tree as an [`ArchiveInventory`] -- see
@@ -1979,6 +2108,173 @@ mod tests {
             .collect();
         assert_eq!(twins.len(), 2);
         assert_ne!(twins[0].id, twins[1].id);
+    }
+
+    /// The folder-aggregate hash `EntryIndex::build` and the backfill's
+    /// recompute pass must both produce: sorted `path:CRC\n` pairs.
+    fn expected_folder_crc(pairs: &[(&str, &str)]) -> String {
+        let mut sorted: Vec<_> = pairs.to_vec();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+        let mut hasher = crc32fast::Hasher::new();
+        for (path, crc) in sorted {
+            hasher.update(path.as_bytes());
+            hasher.update(b":");
+            hasher.update(crc.to_uppercase().as_bytes());
+            hasher.update(b"\n");
+        }
+        format!("{:08X}", hasher.finalize())
+    }
+
+    #[test]
+    fn crc_backfill_fills_the_file_and_recomputes_its_folders_aggregate() {
+        let entries = vec![
+            file_with_crc32("dir/plain.txt", "AAAA1111"),
+            encrypted_file("dir/secret.bin"),
+        ];
+        let session = session_with(&entries);
+
+        let (revision, targets, any_encrypted) = session.encrypted_crc_backfill_targets();
+        assert_eq!(revision, 1);
+        assert_eq!(targets, vec!["dir/secret.bin".to_string()]);
+        assert!(any_encrypted);
+
+        // Before: the folder aggregate covers only the file that has a
+        // CRC, exactly as build left it.
+        let dir_before = session
+            .list_entries(&request(""))
+            .entries
+            .into_iter()
+            .find(|dto| dto.path.as_str() == "dir")
+            .unwrap();
+        assert_eq!(
+            dir_before.crc32.as_deref(),
+            Some(expected_folder_crc(&[("dir/plain.txt", "AAAA1111")]).as_str())
+        );
+
+        let applied = session
+            .apply_crc32_backfill(
+                revision,
+                &[("dir/secret.bin".to_string(), "BBBB2222".to_string())],
+            )
+            .expect("an un-superseded backfill must apply");
+        assert_eq!(applied, (1, 2), "one row patched, revision bumped to 2");
+
+        let page = session.list_entries(&request("dir"));
+        let secret = page
+            .entries
+            .iter()
+            .find(|dto| dto.path.as_str() == "dir/secret.bin")
+            .unwrap();
+        assert_eq!(secret.crc32.as_deref(), Some("BBBB2222"));
+        assert_eq!(page.revision, 2);
+
+        let dir_after = session
+            .list_entries(&request(""))
+            .entries
+            .into_iter()
+            .find(|dto| dto.path.as_str() == "dir")
+            .unwrap();
+        assert_eq!(
+            dir_after.crc32.as_deref(),
+            Some(
+                expected_folder_crc(&[
+                    ("dir/plain.txt", "AAAA1111"),
+                    ("dir/secret.bin", "BBBB2222"),
+                ])
+                .as_str()
+            ),
+            "the folder aggregate must be recomputed over the patched file set, \
+             identically to what a fresh index build would report"
+        );
+
+        // Nothing left to compute now.
+        let (_, targets_after, _) = session.encrypted_crc_backfill_targets();
+        assert!(targets_after.is_empty());
+    }
+
+    #[test]
+    fn crc_backfill_is_dropped_wholesale_when_a_mutation_moved_the_session() {
+        let entries = vec![encrypted_file("secret.bin")];
+        let session = session_with(&entries);
+        let (revision, targets, _) = session.encrypted_crc_backfill_targets();
+        assert_eq!(targets.len(), 1);
+
+        // A mutation relists and reindexes while the CRCs were being read.
+        session.reindex(&entries);
+
+        assert_eq!(
+            session
+                .apply_crc32_backfill(revision, &[("secret.bin".to_string(), "AAAA".to_string())]),
+            None,
+            "sums computed against a superseded listing must never land"
+        );
+        let page = session.list_entries(&request(""));
+        assert_eq!(page.entries[0].crc32, None, "the row must stay untouched");
+    }
+
+    #[test]
+    fn crc_backfill_patches_only_rows_that_still_need_the_value() {
+        let entries = vec![
+            file_with_crc32("already.txt", "AAAA1111"),
+            file("plain.txt", 1, 1),
+            encrypted_file("secret.bin"),
+        ];
+        let session = session_with(&entries);
+        let (revision, _, _) = session.encrypted_crc_backfill_targets();
+
+        let applied = session
+            .apply_crc32_backfill(
+                revision,
+                &[
+                    // Not encrypted: refused even though it lacks a CRC? It
+                    // has one -- both guards are exercised below.
+                    ("already.txt".to_string(), "XXXX0000".to_string()),
+                    ("plain.txt".to_string(), "YYYY0000".to_string()),
+                    ("secret.bin".to_string(), "BBBB2222".to_string()),
+                ],
+            )
+            .unwrap();
+        assert_eq!(applied.0, 1, "only the encrypted, CRC-less row is patched");
+
+        let page = session.list_entries(&request(""));
+        let by_path = |path: &str| {
+            page.entries
+                .iter()
+                .find(|dto| dto.path.as_str() == path)
+                .unwrap()
+                .crc32
+                .clone()
+        };
+        assert_eq!(by_path("already.txt").as_deref(), Some("AAAA1111"));
+        assert_eq!(by_path("plain.txt"), None);
+        assert_eq!(by_path("secret.bin").as_deref(), Some("BBBB2222"));
+    }
+
+    #[test]
+    fn crc_backfill_targets_include_the_headers_encrypted_rung() {
+        // Entries not individually flagged, in an archive whose headers
+        // are -- the compute filter includes them (pre-facade parity),
+        // even though the patch will only ever land on `encrypted` rows.
+        let entries = vec![file("a.txt", 1, 1)];
+        let session = ArchiveSession::new(
+            ArchiveSessionId::from_raw(1),
+            PathBuf::from("a.7z"),
+            "7z".to_string(),
+            dummy_archive(),
+            &entries,
+            SessionEncryption {
+                encrypted: false,
+                headers_encrypted: true,
+                encryption_method: None,
+            },
+        );
+        let (_, targets, any_encrypted) = session.encrypted_crc_backfill_targets();
+        assert_eq!(targets, vec!["a.txt".to_string()]);
+        assert!(
+            !any_encrypted,
+            "any_encrypted reports per-entry flags, matching the prompt condition \
+             the pre-facade UI evaluated"
+        );
     }
 
     #[test]

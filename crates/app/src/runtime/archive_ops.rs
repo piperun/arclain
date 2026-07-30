@@ -567,6 +567,128 @@ pub(super) async fn run_open_archive(
     }
 }
 
+/// The `ArclainApp::backfill_encrypted_crcs` worker: resolves a password
+/// for `session_id`'s archive, computes the CRC-32 of every encrypted
+/// file entry the open-time listing left without one, and writes the
+/// results back into the session's own index (bumping its revision) --
+/// the computation the pre-facade UI's `finish_archive_load` ran against
+/// its private flat entry list, now owned by the session store the rows
+/// actually live in.
+///
+/// The password ladder is the finish-time one, not the open-time one: the
+/// session's own opened password first, then the stored rules matched
+/// against the archive's *name and this session's own entry paths* -- the
+/// entry-filename rung `attempt_initial` deliberately dropped for the
+/// open (see its doc comment on cross-archive `last_entries` coupling)
+/// is meaningful here, because the paths consulted are this archive's
+/// own.
+///
+/// Two behaviors carried over deliberately rather than corrected:
+/// computation targets include every file in a headers-encrypted archive
+/// while the patch lands only on rows individually flagged `encrypted`
+/// (the pre-facade compute/write filters had exactly this asymmetry),
+/// and per-entry failures are skipped silently (a wrong password yields
+/// `computed: 0`, not an error). There is no cancellation: the
+/// pre-facade code had none either, and the batch runs on a blocking
+/// thread without holding any session lock -- but unlike then, a
+/// mutation landing mid-computation no longer corrupts anything: the
+/// apply is revision-gated (see `ArchiveSession::apply_crc32_backfill`)
+/// and the whole batch is dropped instead.
+pub(super) async fn run_backfill_encrypted_crcs(
+    inner: Arc<AppRuntime>,
+    session_id: crate::ids::ArchiveSessionId,
+) -> Result<crate::archive::EncryptedCrcBackfill, ApplicationError> {
+    let session = inner.archive_sessions().get(session_id).await?;
+    let (revision, targets, any_encrypted) = session.encrypted_crc_backfill_targets();
+
+    let source_path = session.source_path();
+    let password = {
+        let archive = session.archive_arc();
+        let held = archive.lock().password_ref().map(str::to_string);
+        held
+    }
+    .or_else(|| {
+        auto_password_for(
+            &inner.pass_rules(),
+            source_path.to_str(),
+            &session.all_file_paths(),
+        )
+    });
+    let password_available = password.is_some();
+
+    let unchanged = crate::archive::EncryptedCrcBackfill {
+        computed: 0,
+        revision,
+        password_available,
+        any_encrypted,
+    };
+    let (Some(password), false) = (password, targets.is_empty()) else {
+        return Ok(unchanged);
+    };
+    let Some(handle) = inner.tokio_handle() else {
+        return Ok(unchanged);
+    };
+
+    // The pre-facade computation went through `AppState::fallback_backend`
+    // (the 7-Zip CLI, which streams-and-hashes decrypted content for any
+    // format) rather than the archive's own primary backend (whose
+    // `crc32_of_entry` may return the *stored* header value -- zeroed for
+    // AES zip entries). Mirrored here; a bootstrap-injected override
+    // backend wins for the same reason it wins in `resolve_backend`.
+    let backend: Arc<dyn ArchiveBackend> = match inner.archive_backend_override() {
+        Some(backend) => backend,
+        None => Arc::new(inner.fallback_backend()),
+    };
+    let archive_path = source_path.clone();
+    let computed: Vec<(String, String)> = handle
+        .spawn_blocking(move || {
+            targets
+                .into_iter()
+                .filter_map(|path| {
+                    backend
+                        .crc32_of_entry(&archive_path, &path, Some(&password))
+                        .ok()
+                        .map(|sum| (path, sum))
+                })
+                .collect()
+        })
+        .await
+        .map_err(|join_error| {
+            ApplicationError::new(
+                ApplicationErrorKind::Internal,
+                "the CRC computation task failed",
+            )
+            .with_diagnostic(join_error.to_string())
+            .with_archive_session_id(session_id)
+        })?;
+
+    if computed.is_empty() {
+        return Ok(unchanged);
+    }
+
+    // See `ArchiveSession::apply_crc32_backfill`: the mutation lock is
+    // what makes its revision check race-free against a concurrent
+    // mutate-relist-reindex sequence.
+    let _guard = session.mutation_lock().lock().await;
+    match session.apply_crc32_backfill(revision, &computed) {
+        Some((patched, revision)) => Ok(crate::archive::EncryptedCrcBackfill {
+            computed: patched as u64,
+            revision,
+            password_available,
+            any_encrypted,
+        }),
+        // A mutation moved the session past the listing the sums were
+        // computed from; report the *current* revision so a caller that
+        // refetches converges on fresh rows either way.
+        None => Ok(crate::archive::EncryptedCrcBackfill {
+            computed: 0,
+            revision: session.revision(),
+            password_available,
+            any_encrypted,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

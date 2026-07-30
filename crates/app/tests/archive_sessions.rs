@@ -516,9 +516,121 @@ impl arclain_core::ArchiveBackend for FakeEncryptedBackend {
         &self,
         _archive: &Path,
         _path_in_archive: &str,
+        password: Option<&str>,
+    ) -> anyhow::Result<String> {
+        match password {
+            Some(candidate) if candidate == self.correct_password => Ok(FAKE_ENTRY_CRC.to_string()),
+            _ => Err(anyhow::anyhow!("Wrong password for archive")),
+        }
+    }
+}
+
+/// The CRC-32 both fake backends report for a correctly-unlocked entry.
+const FAKE_ENTRY_CRC: &str = "0BADF00D";
+
+/// Deterministic fake backend for the encrypted-CRC backfill tests:
+/// *listing* succeeds without any password (a content-encrypted archive
+/// with plain headers -- names and flags are readable, per-entry CRCs are
+/// not), while reading an entry's content (`crc32_of_entry`) demands the
+/// correct password, exactly the split the backfill exists for.
+struct FakeContentEncryptedBackend {
+    correct_password: String,
+}
+
+impl arclain_core::ArchiveBackend for FakeContentEncryptedBackend {
+    fn name(&self) -> &str {
+        "fake-content-encrypted"
+    }
+    fn capabilities(&self) -> arclain_core::archive::BackendCapabilities {
+        arclain_core::archive::BackendCapabilities::read_only()
+    }
+    fn identify(&self, _path: &Path) -> anyhow::Result<arclain_core::archive::ArchiveKind> {
+        Ok(arclain_core::archive::ArchiveKind::Zip)
+    }
+    fn list(
+        &self,
+        _path: &Path,
+        _password: Option<&str>,
+    ) -> anyhow::Result<arclain_core::ArchiveInfo> {
+        Ok(fake_backend_info())
+    }
+    fn extract_all(
+        &self,
+        _path: &Path,
+        _dest: &Path,
+        _password: Option<&str>,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn extract_files(
+        &self,
+        _path: &Path,
+        _dest: &Path,
+        _files: &[String],
+        _password: Option<&str>,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn extract_directory(
+        &self,
+        _path: &Path,
+        _dest: &Path,
+        _dir_path: &str,
+        _password: Option<&str>,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn recompress_7z(&self, _source: &Path, _dest_7z: &Path) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn add_files(&self, _archive: &Path, _files: &[PathBuf]) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn create_archive(
+        &self,
+        _dest: &Path,
+        _files: &[PathBuf],
+        _format: &str,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn read_text_file(
+        &self,
+        _archive: &Path,
+        _path_in_archive: &str,
         _password: Option<&str>,
     ) -> anyhow::Result<String> {
         unimplemented!()
+    }
+    fn delete_files(&self, _archive: &Path, _files: &[String]) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn add_or_update_file_from_str(
+        &self,
+        _archive: &Path,
+        _path_in_archive: &str,
+        _content: &str,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn convert_to_7z(
+        &self,
+        _source: &arclain_core::Archive,
+        _dest: &Path,
+        _temp_dir: &Path,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn crc32_of_entry(
+        &self,
+        _archive: &Path,
+        _path_in_archive: &str,
+        password: Option<&str>,
+    ) -> anyhow::Result<String> {
+        match password {
+            Some(candidate) if candidate == self.correct_password => Ok(FAKE_ENTRY_CRC.to_string()),
+            _ => Err(anyhow::anyhow!("Wrong password for archive")),
+        }
     }
 }
 
@@ -526,6 +638,32 @@ fn bootstrap_app_with_fake_backend(temp: &tempfile::TempDir, correct_password: &
     let paths = support::temp_paths(temp.path());
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
     let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(FakeEncryptedBackend {
+        correct_password: correct_password.to_string(),
+    });
+    ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: Some(backend),
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .expect("bootstrap must succeed")
+}
+
+/// Bootstraps with [`FakeContentEncryptedBackend`], optionally seeding
+/// one stored password rule first (pattern, password).
+fn bootstrap_app_with_content_encrypted_backend(
+    temp: &tempfile::TempDir,
+    correct_password: &str,
+    seeded_rule: Option<(&str, &str)>,
+) -> ArclainApp {
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
+    if let Some((pattern, password)) = seeded_rule {
+        support::seed_pass_rule(&paths, pattern, password);
+    }
+    let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(FakeContentEncryptedBackend {
         correct_password: correct_password.to_string(),
     });
     ArclainApp::bootstrap(BootstrapConfig {
@@ -1169,4 +1307,153 @@ fn list_all_entries_rejects_a_reconstructed_unknown_session_id() {
 
     let error = runtime.block_on(app.list_all_entries(unknown)).unwrap_err();
     assert_eq!(error.kind, ApplicationErrorKind::NotFound);
+}
+
+/// The backfill computes with the password the session was opened with
+/// and writes the result into the session's own rows -- the pre-facade
+/// UI computed the same sums but could only write them into its private
+/// flat list, which no other consumer of the session ever saw.
+#[test]
+fn backfill_encrypted_crcs_uses_the_sessions_own_password_and_updates_the_rows() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_fake_backend(&temp, "sesame");
+    let fake_path = temp.path().join("fake-encrypted.zip");
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: fake_path,
+                password: Some(SecretInput::new("sesame".to_string())),
+            })
+            .await
+            .unwrap();
+        let snapshot = wait_for_archive_opened(&app, operation_id).await;
+        assert!(snapshot.encrypted, "the fake listing reports encryption");
+
+        let report = app
+            .backfill_encrypted_crcs(snapshot.session_id)
+            .await
+            .expect("backfill must succeed for an open session");
+        assert_eq!(report.computed, 1);
+        assert_eq!(report.revision, 2, "a landed backfill bumps the revision");
+        assert!(report.password_available);
+        assert!(report.any_encrypted);
+
+        let page = app
+            .list_entries(
+                snapshot.session_id,
+                ListEntriesRequest {
+                    directory: ArchivePath::root(),
+                    sort_key: EntrySortKey::Name,
+                    sort_direction: SortDirection::Ascending,
+                    name_filter: None,
+                    offset: 0,
+                    limit: u32::MAX,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.revision, 2);
+        assert_eq!(
+            page.entries[0].crc32.as_deref(),
+            Some(FAKE_ENTRY_CRC),
+            "the computed CRC must be visible to every consumer of the session's rows"
+        );
+
+        // Idempotent: nothing left to compute, nothing bumps.
+        let again = app
+            .backfill_encrypted_crcs(snapshot.session_id)
+            .await
+            .unwrap();
+        assert_eq!(again.computed, 0);
+        assert_eq!(again.revision, 2);
+    });
+}
+
+/// The backfill's password ladder consults stored rules against the
+/// archive's *own entry paths*, not only its filename -- the rung the
+/// open-time ladder deliberately dropped (its pre-facade input was the
+/// *previous* archive's entries), restored here where it is meaningful.
+#[test]
+fn backfill_encrypted_crcs_matches_a_stored_rule_against_the_archives_own_entries() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    // The rule's pattern matches the entry `secret.txt` the fake listing
+    // carries -- and nothing about the archive's own filename.
+    let app = bootstrap_app_with_content_encrypted_backend(
+        &temp,
+        "rule-password",
+        Some(("secret\\.txt", "rule-password")),
+    );
+    let fake_path = temp.path().join("fake-plain-name.zip");
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: fake_path,
+                password: None,
+            })
+            .await
+            .unwrap();
+        let snapshot = wait_for_archive_opened(&app, operation_id).await;
+
+        let report = app
+            .backfill_encrypted_crcs(snapshot.session_id)
+            .await
+            .unwrap();
+        assert!(
+            report.password_available,
+            "the entry-filename rung must find the stored rule"
+        );
+        assert_eq!(report.computed, 1);
+        assert_eq!(report.revision, 2);
+    });
+}
+
+/// No password anywhere: the report carries exactly the facts a
+/// prompt-on-open policy needs -- encrypted content exists and no
+/// password was available -- and touches nothing.
+#[test]
+fn backfill_encrypted_crcs_reports_the_prompt_material_when_no_password_is_known() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_content_encrypted_backend(&temp, "never-found", None);
+    let fake_path = temp.path().join("fake-plain-name.zip");
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: fake_path,
+                password: None,
+            })
+            .await
+            .unwrap();
+        let snapshot = wait_for_archive_opened(&app, operation_id).await;
+
+        let report = app
+            .backfill_encrypted_crcs(snapshot.session_id)
+            .await
+            .unwrap();
+        assert_eq!(report.computed, 0);
+        assert_eq!(report.revision, 1, "nothing landed, nothing bumps");
+        assert!(!report.password_available);
+        assert!(report.any_encrypted);
+
+        let page = app
+            .list_entries(
+                snapshot.session_id,
+                ListEntriesRequest {
+                    directory: ArchivePath::root(),
+                    sort_key: EntrySortKey::Name,
+                    sort_direction: SortDirection::Ascending,
+                    name_filter: None,
+                    offset: 0,
+                    limit: u32::MAX,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.entries[0].crc32, None, "rows stay untouched");
+    });
 }
