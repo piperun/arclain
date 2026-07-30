@@ -22,6 +22,16 @@ use crate::plugins::PluginUiUpdate;
 pub enum OperationKind {
     ArchiveModify,
     Convert,
+    /// Staging archive content onto local disk for an OS drag-out --
+    /// `crate::ArclainApp::start_drag_stage`. Deliberately its own kind
+    /// rather than folded into `Materialize`: a drag stage takes a
+    /// multi-entry selection (which `start_materialization` rejects),
+    /// never raises a password `Challenge` (the OS shell is synchronously
+    /// blocked waiting on it -- see `crate::materialization::drag_stage`'s
+    /// module doc comment), and its lease's lifecycle belongs to the drag
+    /// source that started it, not to whatever generic handling a
+    /// frontend gives `Materialize` completions.
+    DragStage,
     Extract,
     Materialize,
     /// Combining a split multi-part archive set into a single archive --

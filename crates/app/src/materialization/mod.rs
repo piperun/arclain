@@ -30,8 +30,10 @@
 //! `Challenge`/`ChallengeWaiters` machinery), and completes with
 //! `OperationResult::Materialized { lease }`.
 
+pub mod drag_stage;
 pub(crate) mod store;
 
+pub use drag_stage::{DragStageEvent, DragStageRequest, DragStagingLease};
 pub(crate) use store::MaterializationStore;
 
 use std::path::{Path, PathBuf};

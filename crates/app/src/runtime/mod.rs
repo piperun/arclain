@@ -29,6 +29,7 @@
 /// keeping a fourth copy of that string list.
 pub(crate) mod archive_ops;
 mod bootstrap;
+mod drag_stage_ops;
 mod layout_ops;
 mod organization_ops;
 mod paths;
