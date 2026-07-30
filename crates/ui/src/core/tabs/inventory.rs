@@ -15,7 +15,9 @@
 //! `EntryId`s minted and validated server-side, folder rows carrying the
 //! index's aggregates -- so the browser's whole-archive reads can no
 //! longer drift from what the facade's id-consuming operations resolve
-//! against.
+//! against. (Drag-out, once on this list, resolves its selection through
+//! `list_entries` and the facade's drag-stage surface instead -- it
+//! reads nothing here.)
 
 use crate::core::utils::core_entry_from_dto;
 use arclain_app::archive::{ArchiveEntryDto, ArchiveInventory};
@@ -42,11 +44,11 @@ pub struct AdoptedInventory {
     /// TRANSITIONAL(4c): the same rows converted down to the pre-facade
     /// flat shape, memoized here (once per adoption, never per read) for
     /// the consumers that still speak it -- the legacy browser
-    /// projections in `crate::core::operations::navigation_view`,
-    /// drag-out's platform hand-off, and the plugin ABI's
-    /// `EventContext.entries` (`Arc<Vec<arclain_core::ArchiveEntry>>` by
-    /// contract in another crate, which is why this is an `Arc`: the
-    /// bridge hands it out verbatim, zero-copy). A derived, immutable
+    /// projections in `crate::core::operations::navigation_view`, and
+    /// the plugin ABI's `EventContext.entries`
+    /// (`Arc<Vec<arclain_core::ArchiveEntry>>` by contract in another
+    /// crate, which is why this is an `Arc`: the bridge hands it out
+    /// verbatim, zero-copy). A derived, immutable
     /// projection of the facade rows above -- never a store anything
     /// writes into; the encrypted-CRC backfill that used to mutate the
     /// flat list now writes into the session and arrives here as a

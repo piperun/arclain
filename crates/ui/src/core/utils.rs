@@ -119,9 +119,9 @@ pub fn file_entry_from_dto(dto: &ArchiveEntryDto) -> FileEntry {
 /// TRANSITIONAL(4c): one pre-facade flat entry rebuilt from a facade
 /// listing row, for the consumers that still speak the
 /// `arclain_core::ArchiveEntry` shape -- the legacy browser projections
-/// in `crate::core::operations::navigation_view`, drag-out's platform
-/// hand-off, and the plugin ABI's `EventContext.entries` (whose blast
-/// radius is a different crate, so it may outlive the other two).
+/// in `crate::core::operations::navigation_view`, and the plugin ABI's
+/// `EventContext.entries` (whose blast radius is a different crate, so
+/// it may outlive the projections).
 ///
 /// Three deliberate differences from a raw backend row, shared with
 /// `AppState::get_current_entries`'s identical conversion: `modified` is

@@ -10,7 +10,6 @@ fn default_state_signals_are_initialized() {
     assert!(tab.archive_path.get().is_none());
     assert_eq!(tab.inventory.get().entry_count(), 0);
     assert!(tab.metadata.get().is_none());
-    assert!(tab.opened_archive.get().is_none());
     assert!(tab.pending_challenge.get().is_empty());
     assert!(tab.pending_open_operation.get().is_none());
     assert_eq!(tab.in_flight_ops.load(Ordering::SeqCst), 0);

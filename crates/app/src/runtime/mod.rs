@@ -694,16 +694,16 @@ impl ArclainApp {
     /// the frontend-neutral facade, exactly like [`Self::active_tab_bridge`].
     /// A Flutter bridge must never call it.
     ///
-    /// Hands out the session's own `arclain_core::Archive` handle -- the
-    /// backend plus the password the open resolved (typed, auto-matched,
-    /// or challenge-answered). The egui frontend's drag-out extraction
-    /// still performs its own lazy, OS-callback-driven extraction
-    /// through a raw backend handle (`platform::drag_source`), and its
-    /// synchronous file-edit read still needs the resolved password;
+    /// Hands out the session's own `arclain_core::Archive` handle. Its
+    /// one remaining consumer peeks `password_ref()` and drops it: the
+    /// egui bridge stamps the resolved password (typed, auto-matched, or
+    /// challenge-answered) onto the tab for the synchronous file-edit
+    /// read and the plugin event context, which have not migrated yet --
     /// before this method, the frontend re-listed the archive itself
-    /// just to re-derive a handle and password the facade already held.
-    /// Dies when drag-out moves onto `start_materialization` and the
-    /// read path onto a facade read surface.
+    /// just to re-derive that password. (Drag-out, this method's other
+    /// original consumer, has since moved onto the drag-stage surface
+    /// and no longer takes a backend handle at all.) Dies when the
+    /// file-edit read moves onto a facade read surface.
     ///
     /// `NotFound` for an unknown or already-closed session id.
     pub async fn session_archive_handle(

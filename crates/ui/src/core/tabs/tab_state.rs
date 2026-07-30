@@ -10,7 +10,6 @@ use crate::core::signals::ToolbarContext;
 use arclain_app::archive::ArchiveSnapshot;
 use arclain_app::{Computed, Signal};
 use arclain_core::features::organization::GameMetadata;
-use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
@@ -104,17 +103,6 @@ pub struct TabState {
     pub listing: Signal<TabListing>,
     pub current_password: Signal<Option<String>>,
     pub selection_count: Signal<usize>,
-    /// TRANSITIONAL(4c): the direct backend handle a drag-out extraction
-    /// still reads `backend_arc()`/`password_ref()` off
-    /// (`crate::features::archive_browser::application::drag_drop_service`).
-    /// Since the relist cutover this is the *session's own* handle
-    /// (`ArclainApp::session_archive_handle`) rather than a UI-built
-    /// duplicate, so the backend and resolved password drag-out extracts
-    /// with are exactly the ones the facade's operations use. Every other
-    /// archive I/O path goes through the facade's own session (see
-    /// [`Self::archive_session_id`]); this dies when drag-out moves onto
-    /// `start_materialization`.
-    pub opened_archive: Signal<Option<Arc<Mutex<arclain_core::Archive>>>>,
     /// The application facade's session id for this tab's open archive
     /// (`None` when no archive is open in this tab). Set once the
     /// `start_open_archive` operation reaches `Completed { ArchiveOpened }`
@@ -124,11 +112,8 @@ pub struct TabState {
     /// `arclain_app`'s per-session archive read model
     /// (`ArclainApp::list_entries`/`list_all_entries`/`archive_snapshot`)
     /// is keyed by this id, which a tab uses as the stable handle to
-    /// reach it. `opened_archive` above carries the same session's
-    /// direct backend handle for the not-yet-migrated drag-out path --
-    /// both are stamped by `crate::core::operation_bridge` once
-    /// `start_open_archive` completes, from the one session, so they can
-    /// never describe different archives.
+    /// reach it. Stamped by `crate::core::operation_bridge` once
+    /// `start_open_archive` completes.
     pub archive_session_id: Signal<Option<arclain_app::ids::ArchiveSessionId>>,
     /// The [`ArchiveSnapshot`] the facade reported for
     /// [`Self::archive_session_id`]'s session -- its revision, source
@@ -327,7 +312,6 @@ impl TabState {
             listing: Signal::new(TabListing::default()).with_name("listing"),
             current_password: Signal::new(None).with_name("current_password"),
             selection_count: Signal::new(0).with_name("selection_count"),
-            opened_archive: Signal::new(None).with_name("opened_archive"),
             archive_session_id: Signal::new(None).with_name("archive_session_id"),
             archive_snapshot: Signal::new(None).with_name("archive_snapshot"),
             pending_challenge: Signal::new(Vec::new()).with_name("pending_challenge"),
@@ -398,7 +382,6 @@ impl TabState {
         sig_ctx.bind_named(&self.listing, "tab.listing");
         sig_ctx.bind_named(&self.current_password, "tab.current_password");
         sig_ctx.bind_named(&self.selection_count, "tab.selection_count");
-        sig_ctx.bind_named(&self.opened_archive, "tab.opened_archive");
         sig_ctx.bind_named(&self.archive_session_id, "tab.archive_session_id");
         sig_ctx.bind_named(&self.archive_snapshot, "tab.archive_snapshot");
         sig_ctx.bind_named(&self.pending_challenge, "tab.pending_challenge");

@@ -473,19 +473,24 @@ impl TabListing {
         true
     }
 
-    /// Records that the listing attempt `generation` names failed for
-    /// `directory`, and reports whether that failure is about what is
-    /// being browsed now.
+    /// Records that the listing attempt `generation` names -- made
+    /// against `session_id` -- failed for `directory`, and reports
+    /// whether that failure is about what is being browsed now.
     ///
     /// Refused (`false`) when a newer [`Self::begin_loading`] or a
-    /// navigation has superseded `generation`, or when `directory` is no
-    /// longer the one being browsed. The generation guard is what
-    /// [`Self::adopt_page`] has always needed mirrored here: an
-    /// `ApplicationError` carries no revision, so without a request
-    /// identity a superseded request's late failure would mark rows a
-    /// *newer* request just refreshed as failed -- and its mirror, a late
-    /// failure erasing a newer request's genuine `Loading`, is the same
-    /// hole from the other side.
+    /// navigation has superseded `generation`, when `session_id` is not
+    /// the session this listing is bound to (the same guard
+    /// [`Self::adopt_page`] applies, for the same reason: after a rebind
+    /// the fresh value's generation counter restarts, so a numerically
+    /// colliding token from the previous binding must not let the old
+    /// session's failure deface the new session's status), or when
+    /// `directory` is no longer the one being browsed. The generation
+    /// guard is what [`Self::adopt_page`] has always needed mirrored
+    /// here: an `ApplicationError` carries no revision, so without a
+    /// request identity a superseded request's late failure would mark
+    /// rows a *newer* request just refreshed as failed -- and its
+    /// mirror, a late failure erasing a newer request's genuine
+    /// `Loading`, is the same hole from the other side.
     ///
     /// **Rows already held are kept.** They are the session's last
     /// successful answer for this exact directory, and replacing them with
@@ -503,10 +508,14 @@ impl TabListing {
     pub fn fail(
         &mut self,
         generation: ListingGeneration,
+        session_id: ArchiveSessionId,
         directory: &ArchivePath,
         error: ApplicationError,
     ) -> bool {
         if generation.0 != self.generation {
+            return false;
+        }
+        if self.session != Some(session_id) {
             return false;
         }
         if directory != &self.request.directory {

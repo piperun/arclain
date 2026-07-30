@@ -372,6 +372,7 @@ fn a_failed_listing_is_distinguishable_from_an_empty_directory() {
     let generation = failed.begin_loading();
     assert!(failed.fail(
         generation,
+        ArchiveSessionId::from_raw(1),
         &ArchivePath::root(),
         listing_error("backend exploded")
     ));
@@ -413,6 +414,7 @@ fn stale_rows_and_the_failure_that_stranded_them_are_both_observable() {
     assert!(
         listing.fail(
             generation,
+            ArchiveSessionId::from_raw(1),
             &ArchivePath::root(),
             listing_error("refresh failed")
         ),
@@ -462,6 +464,7 @@ fn a_recorded_failure_and_a_refused_one_are_distinguishable() {
     assert!(
         !listing.fail(
             generation,
+            ArchiveSessionId::from_raw(1),
             &left_behind,
             listing_error("root failed, too late")
         ),
@@ -470,7 +473,12 @@ fn a_recorded_failure_and_a_refused_one_are_distinguishable() {
     assert!(listing.is_loading(), "a refused failure changes nothing");
     assert_eq!(listing.failure(), None);
 
-    assert!(listing.fail(generation, &current, listing_error("game failed")));
+    assert!(listing.fail(
+        generation,
+        ArchiveSessionId::from_raw(1),
+        &current,
+        listing_error("game failed")
+    ));
     assert_eq!(
         listing.failure().map(|error| error.summary.as_str()),
         Some("game failed")
@@ -503,6 +511,7 @@ fn a_page_arriving_clears_both_the_in_flight_marker_and_an_earlier_failure() {
     let generation = listing.begin_loading();
     assert!(listing.fail(
         generation,
+        ArchiveSessionId::from_raw(1),
         &ArchivePath::root(),
         listing_error("first attempt")
     ));
@@ -526,6 +535,7 @@ fn navigating_discards_the_rows_and_the_status_together() {
     let generation = listing.begin_loading();
     assert!(listing.fail(
         generation,
+        ArchiveSessionId::from_raw(1),
         &ArchivePath::root(),
         listing_error("root refresh failed")
     ));
@@ -549,12 +559,14 @@ fn a_retry_that_also_fails_replaces_the_earlier_failure() {
     let generation = listing.begin_loading();
     assert!(listing.fail(
         generation,
+        ArchiveSessionId::from_raw(1),
         &ArchivePath::root(),
         listing_error("first attempt")
     ));
     let generation = listing.begin_loading();
     assert!(listing.fail(
         generation,
+        ArchiveSessionId::from_raw(1),
         &ArchivePath::root(),
         listing_error("second attempt")
     ));
@@ -585,6 +597,7 @@ fn a_superseded_requests_late_failure_does_not_mark_fresh_rows_failed() {
     assert!(
         !listing.fail(
             first,
+            ArchiveSessionId::from_raw(1),
             &ArchivePath::root(),
             listing_error("request 1, very late")
         ),
@@ -615,6 +628,36 @@ fn a_superseded_requests_late_success_does_not_erase_a_newer_requests_loading() 
     assert!(listing.page().is_none());
 }
 
+/// `fail` refuses a foreign session exactly as `adopt_page` does: a
+/// rebind restarts the generation counter, so a numerically colliding
+/// token from the previous binding must not let the old session's
+/// failure deface the new session's status.
+#[test]
+fn a_failure_from_another_session_is_refused_even_on_a_colliding_token() {
+    let mut listing = listing();
+    let stale = listing.begin_loading();
+
+    listing = TabListing::for_session(Some(ArchiveSessionId::from_raw(2)));
+    let fresh = listing.begin_loading();
+    // Same numeric token value, different binding.
+    assert_eq!(stale, fresh);
+
+    assert!(
+        !listing.fail(
+            stale,
+            ArchiveSessionId::from_raw(1),
+            &ArchivePath::root(),
+            listing_error("old session, very late")
+        ),
+        "a failure made against the previous session must be dropped"
+    );
+    assert!(
+        listing.is_loading(),
+        "the new session's attempt is untouched"
+    );
+    assert_eq!(listing.failure(), None);
+}
+
 /// Navigating supersedes whatever was in flight -- including when the
 /// user navigates away and back, which restores the *directory* the
 /// stale reply answers. The directory guard alone cannot catch that
@@ -632,7 +675,12 @@ fn navigating_away_and_back_still_drops_the_in_flight_replies_it_left_behind() {
         "the round trip restored the directory, but not the request"
     );
     assert!(
-        !listing.fail(stale, &ArchivePath::root(), listing_error("stale failure")),
+        !listing.fail(
+            stale,
+            ArchiveSessionId::from_raw(1),
+            &ArchivePath::root(),
+            listing_error("stale failure")
+        ),
         "same for the failure side"
     );
     assert!(listing.page().is_none());

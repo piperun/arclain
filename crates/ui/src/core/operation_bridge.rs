@@ -365,7 +365,7 @@ async fn fetch_and_adopt_listing(
 
     let record_failure = |error: &arclain_app::error::ApplicationError| {
         tab.listing.update(|listing| {
-            listing.fail(generation, &request.directory, error.clone());
+            listing.fail(generation, session_id, &request.directory, error.clone());
         });
     };
 
@@ -400,11 +400,10 @@ async fn fetch_and_adopt_listing(
 /// inventory to that session (so any reply still in flight for the
 /// archive this one replaced is refused rather than seated), resets the
 /// browse cursor to the archive root, clears the selection, seats the
-/// session's own rows via [`fetch_and_adopt_listing`], and re-stamps the
-/// two transitional handles (`opened_archive`, `current_password`) from
-/// the session's own archive handle -- the backend and resolved password
-/// the pre-facade code re-derived by running a second, duplicate
-/// `backend.list()` with its own auto-password ladder.
+/// session's own rows via [`fetch_and_adopt_listing`], and re-stamps
+/// `current_password` from the session's own archive handle -- the
+/// resolved password the pre-facade code re-derived by running a second,
+/// duplicate `backend.list()` with its own auto-password ladder.
 ///
 /// `pub` for the same reason `OperationOrigins::register` is: production
 /// code must reach this only through the bridge's own event handling,
@@ -445,20 +444,21 @@ pub async fn relist_for_browser_signals(
     }
     tab.selection_count.set_if_changed(0);
 
-    // The session's own archive handle carries the backend and the
-    // password the open actually resolved (typed, rule-matched, or
-    // challenge-answered). Stamping `current_password` from it is what
-    // keeps the password-consuming paths that have not migrated yet --
-    // the file-edit read, the plugin event context -- working for an
-    // auto-unlocked archive, where no dialog ever ran UI-side to write
-    // the signal.
+    // The session's own archive handle carries the password the open
+    // actually resolved (typed, rule-matched, or challenge-answered).
+    // Stamping `current_password` from it is what keeps the two
+    // password-consuming paths that have not migrated yet -- the
+    // synchronous file-edit read and the plugin event context -- working
+    // for an auto-unlocked archive, where no dialog ever ran UI-side to
+    // write the signal. (The handle itself is peeked and dropped: since
+    // drag-out moved onto the facade's drag-stage surface, no UI code
+    // holds a backend handle anymore.)
     match app.session_archive_handle(session_id).await {
         Ok(handle) => {
             let resolved_password = handle.lock().password_ref().map(str::to_string);
             if resolved_password.is_some() {
                 tab.current_password.set(resolved_password);
             }
-            tab.opened_archive.set(Some(handle));
         }
         Err(error) => {
             // The session vanished between the completion event and this
@@ -870,30 +870,18 @@ fn handle_organize_terminal(
     }
 }
 
-/// Re-lists `path` directly through the backend selector to refresh
-/// `tab`'s flat `entries`/`browser_entries` signals after a successful
-/// archive mutation (`OperationKind::ArchiveModify` reaching
-/// `Completed`) -- a deliberate cousin of `relist_for_browser_signals`
-/// (used for a fresh `OpenArchive` completion), not a reuse of it: a
-/// mutation never changes which archive is open, which folder the user
-/// is viewing, or its encryption status, so none of `archive_extras`/
-/// `listing`/`current_password`/`opened_archive` are touched here,
-/// unlike that function's own full reset.
-///
-/// Selection is pruned to just the paths still present in the fresh
-/// listing rather than cleared outright: path-stable identity is what
-/// the facade's own `EntryId` guarantees across a mutation-triggered
-/// reindex (see `arclain_app::operations::archive_mutation`'s own doc
-/// comment) -- pruning by path here is this flat, not-yet-`EntryId`-aware
-/// browser model's practical equivalent of that guarantee, so deleting
-/// one selected file does not also silently deselect every other one.
 /// Re-seats `tab`'s browser model from its session after the archive's
 /// contents changed (an `ArchiveModify` completion, or a CRC backfill
 /// that bumped the revision): fetches the fresh inventory and the
-/// *current* directory's page -- the browse cursor, selection, and
-/// folder expansion survive, unlike a fresh open's root reset -- and
-/// prunes selection entries whose path no longer exists anywhere in the
-/// archive.
+/// *current* directory's page and adopts both, so it *does* write
+/// `listing` (its rows, status, and generation) -- unlike a fresh open's
+/// `relist_for_browser_signals`, it never rebinds the session, resets
+/// the cursor, clears the selection, or touches `archive_extras`/
+/// `current_password`, because a mutation changes none of the things
+/// those describe. The browse cursor, selection, and folder expansion
+/// survive; selection entries whose path no longer exists anywhere in
+/// the archive are pruned, so deleting one selected file does not also
+/// silently deselect every other one.
 ///
 /// A failed refresh reaches the user through the caller's status-bar
 /// report while the previous rows stay on screen -- `TabListing::fail`'s
