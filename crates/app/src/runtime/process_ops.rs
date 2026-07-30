@@ -53,7 +53,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
-use crate::ids::ArchiveSessionId;
 use crate::process::{
     self, InterruptedPipelineRunDto, PipelinePresetInput, PipelinePresetSummary,
     PipelinePreviewDto, PipelinePreviewRequest,
@@ -140,12 +139,19 @@ pub(super) async fn run_save_pipeline_preset(
 
     let _write_guard = inner.settings_write_lock.lock().await;
     let mut presets = load_presets(inner).await?;
+    // Compared on the *trimmed* stored name, against an already-trimmed
+    // new one. A presets file written before this facade existed can
+    // hold `"  Padded  "`, which a frontend then shows -- and offers to
+    // edit -- as `"Padded"`; an exact comparison would miss it and push
+    // a second row the dropdown renders identically to the first, which
+    // is precisely the duplicate this upsert exists to prevent.
     match presets
         .iter()
-        .position(|candidate| candidate.name == preset.name)
+        .position(|candidate| candidate.name.trim() == preset.name)
     {
         // Replaced in place, so re-saving a preset does not shuffle it
-        // to the bottom of the user's dropdown.
+        // to the bottom of the user's dropdown -- and a legacy padded
+        // name is normalized by the same write.
         Some(index) => presets[index] = preset,
         None => presets.push(preset),
     }
@@ -181,52 +187,123 @@ pub(super) async fn run_preview_pipeline(
     inner: &Arc<AppRuntime>,
     request: PipelinePreviewRequest,
 ) -> Result<PipelinePreviewDto, ApplicationError> {
-    let metadata = resolve_preview_metadata(inner, request.metadata).await?;
     // Resolved by the *same* function `start_pipeline` resolves its own
     // spec with, so a preview and the run it predicts can never turn one
     // spec into two different pipelines.
-    let mut pipeline =
+    let mut template =
         super::processing_ops::resolve_pipeline_spec(inner, &request.pipeline).await?;
-    pipeline.input = Some(request.inputs.to_core());
-    pipeline.output = request.destination.to_core();
+    template.output = request.destination.to_core();
     if let Some(policy) = request.collision_policy {
-        pipeline.collision_policy = Some(policy.to_core());
+        template.collision_policy = Some(policy.to_core());
     }
 
-    // `arclain_core`'s preview stats every predicted output and, for a
-    // folder input, reads the directory -- filesystem work, so it runs
-    // on the blocking pool rather than on an async worker. Awaited here,
-    // so nothing outlives this call.
+    let inputs = request.inputs.to_core();
+    let services = inner.core_services().clone();
+
+    // Everything below touches the filesystem (a stat per predicted
+    // output, a directory read for a folder input) and the configuration
+    // database, so it runs on the blocking pool rather than on an async
+    // worker -- and it is awaited here, so nothing outlives this call.
     handle_for(inner)?
-        .spawn_blocking(move || {
-            process::preview_to_dto(arclain_core::preview_pipeline_with_metadata(
-                &pipeline,
-                metadata.as_ref(),
-            ))
-        })
+        .spawn_blocking(move || preview_blocking(template, inputs, &services))
         .await
         .map_err(internal_join_error)
 }
 
-/// The plugin-reported metadata of the session a preview names, read
-/// through the same [`crate::organization::session_metadata_for_planning`]
-/// every other planner in this crate reads it with.
+/// Builds the preview: one `arclain_core` preview call **per input**,
+/// each with that input's own resolved metadata.
 ///
-/// An unknown session id is a `NotFound` rather than a silent fallback
-/// to "no metadata": the metadata decides the predicted output *names*,
-/// so downgrading a stale session id to `None` would quietly show a
-/// caller a completely different set of paths than it asked about.
-async fn resolve_preview_metadata(
-    inner: &Arc<AppRuntime>,
-    session_id: Option<ArchiveSessionId>,
-) -> Result<Option<arclain_core::GameMetadata>, ApplicationError> {
-    let Some(session_id) = session_id else {
-        return Ok(None);
+/// # Why per input rather than one call for the batch
+///
+/// The predicted output *name* is a function of the metadata, and
+/// `arclain_core::execute_pipeline` resolves that metadata separately
+/// for every file it processes, from a product code detected in that
+/// file's own name. A preview that resolved one blob for the whole batch
+/// would predict the same name for every input -- which is not merely
+/// imprecise, it is the wrong answer in a way that hides a collision:
+/// N inputs shown as N identical output paths are N writes to one path.
+/// Looping here mirrors `processing_ops::run_pipeline_over_inputs`,
+/// which already calls `execute_pipeline` once per file for its own
+/// reasons, so the two loops line up one-to-one.
+fn preview_blocking(
+    mut template: arclain_core::Pipeline,
+    input: arclain_core::PipelineInput,
+    services: &arclain_core::services::Services,
+) -> PipelinePreviewDto {
+    // The collision ladder, completed. `arclain_core`'s preview resolves
+    // an unset policy to a hardcoded `Smart`, while its executor resolves
+    // one to the user's `default_collision_policy` setting -- so a
+    // profile that set `Overwrite` had the preview predict a failure the
+    // run did not have. Materializing the setting here, from the same
+    // read `processing_ops::build_pipeline_context` performs for the run,
+    // makes both ends resolve the identical policy. Left `None` when the
+    // setting is unset, which is exactly when the executor's own
+    // `unwrap_or(Smart)` and the preview's hardcoded `Smart` agree.
+    if template.collision_policy.is_none() {
+        template.collision_policy = super::processing_ops::configured_collision_policy(services);
+    }
+
+    // A folder is expanded by one metadata-less pass through core: its
+    // entry list *is* core's own expansion and its global warnings are
+    // core's own words for an unreadable or archive-less directory, so
+    // neither is re-derived here. A file list needs no such pass.
+    let (paths, mut global_warnings) = match &input {
+        arclain_core::PipelineInput::Files(paths) => (paths.clone(), None),
+        arclain_core::PipelineInput::Folder(_) => {
+            let mut scout = template.clone();
+            scout.input = Some(input.clone());
+            let scouted = arclain_core::preview_pipeline_with_metadata(&scout, None);
+            (
+                scouted
+                    .entries
+                    .into_iter()
+                    .map(|entry| entry.input)
+                    .collect(),
+                Some(scouted.global_warnings),
+            )
+        }
     };
-    let session = inner.archive_sessions().get(session_id).await?;
-    Ok(crate::organization::session_metadata_for_planning(
-        session.metadata(),
-    ))
+
+    let mut entries = Vec::with_capacity(paths.len());
+    for path in &paths {
+        let metadata = super::processing_ops::resolve_metadata(
+            // The executor keys its lookup on the input's file name
+            // (`executor.rs::run_one`), so this does too -- keying on
+            // anything else would detect a different product code and
+            // resolve different metadata.
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(""),
+            services.library_service.as_ref(),
+        );
+        let mut per_file = template.clone();
+        per_file.input = Some(arclain_core::PipelineInput::Files(vec![path.clone()]));
+        let mut preview =
+            arclain_core::preview_pipeline_with_metadata(&per_file, metadata.as_ref());
+        // Identical for every input (they depend on the step list alone),
+        // so the first one answers for the batch.
+        if global_warnings.is_none() {
+            global_warnings = Some(std::mem::take(&mut preview.global_warnings));
+        }
+        entries.extend(
+            preview
+                .entries
+                .into_iter()
+                .map(process::preview_entry_to_dto),
+        );
+    }
+
+    PipelinePreviewDto {
+        entries,
+        global_warnings: global_warnings.unwrap_or_else(|| {
+            // An empty file list: core still has something to say about
+            // the pipeline itself (an empty step list), and asking it
+            // costs nothing when there is no file to stat.
+            let mut probe = template;
+            probe.input = Some(arclain_core::PipelineInput::Files(Vec::new()));
+            arclain_core::preview_pipeline_with_metadata(&probe, None).global_warnings
+        }),
+    }
 }
 
 // ============================================================================
@@ -236,6 +313,7 @@ async fn resolve_preview_metadata(
 pub(super) async fn run_interrupted_pipeline_runs(
     inner: &Arc<AppRuntime>,
     since_unix: i64,
+    limit: u32,
 ) -> Result<Vec<InterruptedPipelineRunDto>, ApplicationError> {
     // Empty (not an error) when no configuration database is open, the
     // same treatment the pre-facade page gave a missing one -- and the
@@ -251,6 +329,10 @@ pub(super) async fn run_interrupted_pipeline_runs(
             config_db.with_connection(|conn| {
                 Ok(arclain_core::list_interrupted_since(conn, since_unix)?
                     .into_iter()
+                    // Newest first, so a bounded read keeps the rows a
+                    // caller would actually show -- the underlying query
+                    // orders by `completed_at DESC`.
+                    .take(limit as usize)
                     .filter_map(|run| {
                         // The query filters `completed_at IS NOT NULL`,
                         // so this is unreachable; a row that somehow had

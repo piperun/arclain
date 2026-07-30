@@ -293,6 +293,44 @@ pub enum PipelineSpecDto {
     },
 }
 
+/// What a pipeline runs over. Mirrors `arclain_core::PipelineInput`
+/// variant for variant, and is shared by
+/// [`PipelineRequest`] and
+/// [`crate::process::PipelinePreviewRequest`] on purpose: the preview
+/// and the run must describe their inputs in the one vocabulary, or the
+/// set of files each of them talks about can drift.
+///
+/// [`Self::Folder`] is expanded by `arclain_core`'s own definition of
+/// "an archive directly inside this directory"
+/// (`conversion::flatten::find_archive_files`), never by a frontend
+/// re-deriving it, and it is expanded **at run time** -- the same moment
+/// `arclain_core::execute_pipeline` expands it. That timing is the whole
+/// point of having the variant at all: expanding it earlier (previewing
+/// a folder and handing the resulting file list to the run) would
+/// silently drop files added between the two, make a run depend on a
+/// prior successful preview, and turn "no archives in this folder" from
+/// a preview warning into a rejected request.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PipelineInputsDto {
+    Files {
+        paths: Vec<PathBuf>,
+    },
+    /// Every archive directly inside this directory; not recursive.
+    Folder {
+        path: PathBuf,
+    },
+}
+
+impl PipelineInputsDto {
+    pub(crate) fn to_core(&self) -> arclain_core::PipelineInput {
+        match self {
+            Self::Files { paths } => arclain_core::PipelineInput::Files(paths.clone()),
+            Self::Folder { path } => arclain_core::PipelineInput::Folder(path.clone()),
+        }
+    }
+}
+
 /// Runs either a saved preset or an ad-hoc step list over a batch of
 /// inputs, writing results to `destination`. `collision_policy`
 /// overrides the resolved pipeline's own collision policy when set,
@@ -302,7 +340,7 @@ pub enum PipelineSpecDto {
 /// choice already does).
 #[derive(Debug)]
 pub struct PipelineRequest {
-    pub inputs: Vec<PathBuf>,
+    pub inputs: PipelineInputsDto,
     pub destination: PipelineDestinationDto,
     pub pipeline: PipelineSpecDto,
     pub collision_policy: Option<OutputCollisionPolicyDto>,
@@ -310,15 +348,22 @@ pub struct PipelineRequest {
 
 impl PipelineRequest {
     /// The purely-structural, no-I/O checks this request needs: a
-    /// non-empty input list, and (for [`PipelineSpecDto::Steps`]) a
+    /// non-empty file list, and (for [`PipelineSpecDto::Steps`]) a
     /// non-empty step list whose every step's own fields parse. Whether
     /// a [`PipelineSpecDto::Preset`] id actually names a known preset
     /// requires reading the presets file, so
     /// [`crate::runtime::ArclainApp::start_pipeline`] resolves that
     /// separately (see `processing_ops::resolve_pipeline_spec`) after
     /// this passes.
+    ///
+    /// A [`PipelineInputsDto::Folder`] is deliberately *not* checked for
+    /// emptiness: whether it holds any archive is a question about the
+    /// disk at the moment the run starts, and `arclain_core` answers it
+    /// then by processing nothing. Rejecting the request here would need
+    /// a directory read this structural pass must not do, and would
+    /// answer it at a different moment than the run does.
     pub(crate) fn validate(&self) -> Result<(), ApplicationError> {
-        if self.inputs.is_empty() {
+        if matches!(&self.inputs, PipelineInputsDto::Files { paths } if paths.is_empty()) {
             return Err(empty_inputs_error());
         }
         if let PipelineSpecDto::Steps { steps, .. } = &self.pipeline {
@@ -352,9 +397,9 @@ mod tests {
     use super::*;
     use crate::error::ApplicationErrorKind;
 
-    fn request(inputs: Vec<PathBuf>, pipeline: PipelineSpecDto) -> PipelineRequest {
+    fn request(paths: Vec<PathBuf>, pipeline: PipelineSpecDto) -> PipelineRequest {
         PipelineRequest {
-            inputs,
+            inputs: PipelineInputsDto::Files { paths },
             destination: PipelineDestinationDto::SameFolder,
             pipeline,
             collision_policy: None,
@@ -373,6 +418,45 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
         assert_eq!(err.field.as_deref(), Some("inputs"));
+    }
+
+    /// Whether a folder holds any archive is a question about the disk
+    /// at the moment the run starts, and the run answers it then. A
+    /// structural pass that guessed at it here would answer it at a
+    /// different moment than the run does -- the exact class of
+    /// preview/run drift this surface exists to close.
+    #[test]
+    fn a_folder_input_is_never_rejected_for_emptiness() {
+        PipelineRequest {
+            inputs: PipelineInputsDto::Folder {
+                path: PathBuf::from("/no/such/folder"),
+            },
+            destination: PipelineDestinationDto::SameFolder,
+            pipeline: PipelineSpecDto::Preset {
+                id: "RE Mod Cleanup".to_string(),
+            },
+            collision_policy: None,
+        }
+        .validate()
+        .expect("a folder input is resolved at run time, not validated here");
+    }
+
+    #[test]
+    fn inputs_dto_translates_to_the_matching_core_input() {
+        assert_eq!(
+            PipelineInputsDto::Files {
+                paths: vec![PathBuf::from("/a.zip")]
+            }
+            .to_core(),
+            arclain_core::PipelineInput::Files(vec![PathBuf::from("/a.zip")])
+        );
+        assert_eq!(
+            PipelineInputsDto::Folder {
+                path: PathBuf::from("/dir")
+            }
+            .to_core(),
+            arclain_core::PipelineInput::Folder(PathBuf::from("/dir"))
+        );
     }
 
     #[test]

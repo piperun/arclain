@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 
 use arclain_app::operations::pipeline::{
-    OutputCollisionPolicyDto, PipelineDestinationDto, PipelineSpecDto,
+    OutputCollisionPolicyDto, PipelineDestinationDto, PipelineInputsDto, PipelineSpecDto,
 };
 use arclain_app::operations::PipelineRequest;
 use arclain_app::ArclainApp;
@@ -91,7 +91,14 @@ async fn run(app: &ArclainApp, args: &RunArgs, ctx: &super::Invocation) -> i32 {
     let mut events = app.subscribe_operations();
     let operation_id = match app
         .start_pipeline(PipelineRequest {
-            inputs,
+            // `PipelineInputsDto` also has a `Folder` variant, which the
+            // run expands as it starts. This command deliberately does
+            // not surface it: its positional arguments are archive
+            // files, a shell already expands a glob into exactly that,
+            // and adding a folder flag is the same "grow a flag surface"
+            // scope call this module's own doc comment makes about
+            // ad-hoc step lists.
+            inputs: PipelineInputsDto::Files { paths: inputs },
             destination,
             pipeline: PipelineSpecDto::Preset {
                 id: args.preset.clone(),

@@ -283,11 +283,20 @@ pub(super) async fn run_convert(
 /// overridden by [`crate::runtime::ArclainApp::start_pipeline`]; only
 /// `.input` is left for [`run_pipeline_over_inputs`] to fill in per
 /// file.
+///
+/// `inputs` is resolved here, inside the operation, rather than by the
+/// caller: a [`crate::operations::pipeline::PipelineInputsDto::Folder`]
+/// is expanded at **run time**, which is where `arclain_core`'s own
+/// `execute_pipeline` expands it (`resolve_inputs`), through the very
+/// same `find_archive_files`. Expanding it any earlier -- when the
+/// request was built, or when a preview last ran -- would run over the
+/// files that were in the folder *then*, silently dropping anything
+/// added since.
 pub(super) async fn run_pipeline(
     inner: Arc<AppRuntime>,
     operation_id: OperationId,
     template: Pipeline,
-    inputs: Vec<PathBuf>,
+    inputs: crate::operations::pipeline::PipelineInputsDto,
 ) {
     if inner
         .operations()
@@ -297,7 +306,63 @@ pub(super) async fn run_pipeline(
     {
         return;
     }
+    let inputs = match resolve_run_inputs(&inner, operation_id, inputs).await {
+        Some(inputs) => inputs,
+        None => return,
+    };
     run_pipeline_over_inputs(&inner, operation_id, &template, inputs).await;
+}
+
+/// Expands a run's inputs, on the blocking pool because a folder means a
+/// directory read.
+///
+/// `None` means this function already transitioned the operation to a
+/// terminal state and the caller must stop -- an unreadable folder is a
+/// whole-batch failure (nothing can be processed), unlike the per-file
+/// failures the loop below folds into its own counters. An *empty*
+/// folder is not a failure: `arclain_core` processes nothing and reports
+/// success for exactly that case, and this mirrors it.
+async fn resolve_run_inputs(
+    inner: &Arc<AppRuntime>,
+    operation_id: OperationId,
+    inputs: crate::operations::pipeline::PipelineInputsDto,
+) -> Option<Vec<PathBuf>> {
+    use crate::operations::pipeline::PipelineInputsDto;
+
+    let folder = match inputs {
+        PipelineInputsDto::Files { paths } => return Some(paths),
+        PipelineInputsDto::Folder { path } => path,
+    };
+    let Some(handle) = inner.tokio_handle() else {
+        return None;
+    };
+    let scan = handle
+        .spawn_blocking(move || {
+            arclain_core::features::conversion::flatten::find_archive_files(&folder)
+        })
+        .await;
+
+    let error = match scan {
+        Ok(Ok(paths)) => return Some(paths),
+        Ok(Err(error)) => ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "could not read the input folder",
+        )
+        .with_diagnostic(format!("{error:#}"))
+        .with_recoverability(Recoverability::UserAction)
+        .with_field("inputs"),
+        Err(join_error) => internal_join_error(join_error),
+    };
+    let _ = inner
+        .operations()
+        .transition(
+            operation_id,
+            OperationState::Failed {
+                error: error.with_operation_id(operation_id),
+            },
+        )
+        .await;
+    None
 }
 
 /// The shared per-file execution loop underneath `run_convert`/
@@ -312,10 +377,23 @@ async fn run_pipeline_over_inputs(
 ) {
     let total = inputs.len() as u64;
     if total == 0 {
-        // `ConvertRequest`/`PipelineRequest::validate` already reject an
-        // empty `inputs` before an operation is ever registered, so this
-        // is unreachable in practice; handled defensively rather than
-        // assumed.
+        // Reachable exactly one way: a `PipelineInputsDto::Folder` that
+        // held no archive when the run started. `arclain_core` treats
+        // that as a successful batch of zero rather than an error
+        // (`execute_pipeline` simply iterates nothing), and so does
+        // this -- the same answer the preview gives for the same folder,
+        // where it surfaces as a "No archives found" warning. An empty
+        // *file list* cannot reach here: `ConvertRequest`/
+        // `PipelineRequest::validate` reject one before an operation is
+        // ever registered.
+        emit_progress(
+            inner,
+            operation_id,
+            0,
+            0,
+            Some("0 succeeded, 0 skipped, 0 failed".to_string()),
+        )
+        .await;
         let _ = inner
             .operations()
             .transition(
@@ -603,11 +681,7 @@ fn build_pipeline_context(inner: &Arc<AppRuntime>) -> PipelineContext {
     let services = inner.core_services().clone();
     let backend_selector = inner.backend_selector();
     let override_backend = inner.archive_backend_override();
-    let default_collision_policy = services
-        .config_service
-        .as_ref()
-        .and_then(|service| service.get(COLLISION_POLICY_CONFIG_KEY).ok().flatten())
-        .and_then(|value| OutputCollisionPolicy::from_settings_str(&value));
+    let default_collision_policy = configured_collision_policy(&services);
 
     PipelineContext {
         organization_service: services.organization_service.clone(),
@@ -618,6 +692,26 @@ fn build_pipeline_context(inner: &Arc<AppRuntime>) -> PipelineContext {
         config_db: services.config_db.clone(),
         default_collision_policy,
     }
+}
+
+/// The application-wide `default_collision_policy` setting, or `None`
+/// when it was never set (or no configuration service is composed), in
+/// which case `arclain_core` falls back to `Smart`.
+///
+/// Shared with `process_ops`'s pipeline preview on purpose: that setting
+/// decides whether a colliding output is skipped, overwritten or failed,
+/// and the preview is what tells the user which. Two independent reads
+/// of the same key would be two chances to drift; this is one. Reads the
+/// configuration database under a blocking mutex, so callers invoke it
+/// from a blocking context.
+pub(super) fn configured_collision_policy(
+    services: &arclain_core::services::Services,
+) -> Option<OutputCollisionPolicy> {
+    services
+        .config_service
+        .as_ref()
+        .and_then(|service| service.get(COLLISION_POLICY_CONFIG_KEY).ok().flatten())
+        .and_then(|value| OutputCollisionPolicy::from_settings_str(&value))
 }
 
 /// Resolves the extraction backend for one path: `override_backend`
@@ -669,7 +763,14 @@ fn resolve_backend(
 /// The duplication between the two copies is itself left alone this
 /// round -- deliberately not deduplicated into one shared function,
 /// flagged as its own follow-up rather than folded into this fix.
-fn resolve_metadata(
+///
+/// Shared with `process_ops`'s pipeline preview, which must resolve each
+/// input's metadata *exactly* the way the executor resolves it or the
+/// output name it predicts is not the name the run writes. That makes
+/// this the single copy on this side of the boundary; `executor.rs`'s
+/// own remains the second, still guarded by
+/// `start_organize_and_start_pipeline_agree_on_the_metadata_driven_stem`.
+pub(super) fn resolve_metadata(
     archive_name: &str,
     library_service: Option<&Arc<LibraryService>>,
 ) -> Option<GameMetadata> {

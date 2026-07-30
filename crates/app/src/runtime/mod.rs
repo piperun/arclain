@@ -1166,11 +1166,21 @@ impl ArclainApp {
 
     /// Starts running either a saved preset or an ad-hoc step list over a
     /// batch of inputs as a cancellable, event-broadcasting operation.
-    /// Rejects an empty `inputs` list (or a malformed ad-hoc step) the
+    /// Rejects an empty file list (or a malformed ad-hoc step) the
     /// same way [`Self::start_convert`] does, and resolves a
     /// [`crate::operations::pipeline::PipelineSpecDto::Preset`] id against
     /// the saved presets file before registering an operation -- see
     /// [`crate::operations::PipelineRequest`]'s own doc comment.
+    ///
+    /// A [`crate::operations::pipeline::PipelineInputsDto::Folder`] is
+    /// expanded once the operation has started, by `arclain_core`'s own
+    /// definition of an archive in a directory -- so "process this
+    /// folder" means the folder as it is when the run begins, not as it
+    /// was when the request was built. A folder that cannot be read
+    /// fails the operation; one that holds no archive completes having
+    /// processed nothing, which is what `arclain_core` does with the
+    /// same folder and what [`Self::preview_pipeline`] warns about
+    /// beforehand.
     pub async fn start_pipeline(
         &self,
         request: PipelineRequest,
@@ -1716,65 +1726,66 @@ impl ArclainApp {
     /// pass [`crate::operations::pipeline::PipelineSpecDto::Steps`],
     /// which is what its own state already is.
     ///
-    /// # Metadata: this preview and `start_pipeline` do not agree
+    /// # It predicts what the run does, from the same two ladders
     ///
-    /// **The known divergence, mirrored rather than manufactured or
-    /// hidden.** Predicted output *names* come from `arclain_core`'s
-    /// `stem_from`: a sanitized metadata title if there is one, else a
-    /// product code detected in the input's own file name, else the
-    /// input's stem. The two ends resolve that metadata from different
-    /// places:
+    /// Every prediction here is computed the way
+    /// [`Self::start_pipeline`] computes the real thing, and the two
+    /// places that decide a predicted path are resolved deliberately,
+    /// not incidentally:
     ///
-    /// * **This preview** uses the archive session named by
-    ///   [`crate::process::PipelinePreviewRequest::metadata`] -- one
-    ///   plugin-reported blob, applied to every input, read through the
-    ///   same function [`Self::preview_organize_plan`] and a
-    ///   session-bound [`Self::start_organize`] read it with. That is
-    ///   what the pre-facade Process page previewed with (it passed the
-    ///   active tab's fetched metadata, whatever files the pipeline was
-    ///   pointed at).
-    /// * **[`Self::start_pipeline`]** uses `arclain_core`'s executor,
-    ///   which looks each input up *individually* in the DLsite library,
-    ///   keyed on a product code detected in that input's own file name.
-    ///   It never sees a session.
+    /// * **Metadata: per input, from the DLsite library.** The predicted
+    ///   name is `arclain_core`'s `stem_from` -- a sanitized metadata
+    ///   title if there is one, else a product code detected in the
+    ///   input's own file name, else its stem. This resolves the
+    ///   metadata half **separately for every input**, through the same
+    ///   library lookup keyed on that input's own file name that
+    ///   `arclain_core`'s executor performs, by calling the same
+    ///   function. That is why this method takes no metadata parameter:
+    ///   there is nothing a caller could supply that the run would also
+    ///   be given.
+    /// * **Collision policy: the request's, else the pipeline's, else
+    ///   the setting.** `arclain_core`'s preview resolves an unset
+    ///   policy to a hardcoded `Smart` while its executor resolves one
+    ///   to the application-wide `default_collision_policy`, so a
+    ///   profile that changed that setting had the preview warn about a
+    ///   failure the run did not have. This completes the ladder before
+    ///   asking core, so the warning describes the policy that will
+    ///   actually apply.
     ///
-    /// So a predicted output path here can legitimately differ from the
-    /// path the run writes -- a session's plugin blob and the library's
-    /// row for the same product are separate records that nothing
-    /// reconciles, and an input the session has nothing to do with is
-    /// still named from the session's title. Closing this means giving
-    /// [`crate::operations::PipelineRequest`] a session binding the way
-    /// [`crate::operations::OrganizeRequest::archive_session_id`] has
-    /// one, so both ends read the one source; that is a change to what
-    /// `start_pipeline` accepts, not something this preview can decide
-    /// on its own.
+    /// An earlier shape of this method took one caller-supplied archive
+    /// session's plugin metadata and applied it to every input, which is
+    /// what the pre-facade Process page did (it passed the active tab's
+    /// fetched metadata, whatever files the pipeline was pointed at).
+    /// That is wrong for a batch in a way worth recording: one blob
+    /// across N inputs makes the name derivation return the *same* name
+    /// for all N, so the preview shows N outputs collapsed onto one
+    /// path. Per-input resolution is not merely the more faithful
+    /// choice, it is the only one that can describe a batch at all.
+    ///
+    /// The two ends can disagree at all only because plugin-reported
+    /// session metadata is never persisted into the library the executor
+    /// reads. Making the preview honest does not fix that; a plugin's
+    /// freshly fetched title still will not name an output until it
+    /// reaches the library.
     ///
     /// # What a preview accepts that a run does not
     ///
-    /// Three asymmetries with [`crate::operations::PipelineRequest`],
-    /// each deliberate, because a half-built pipeline still has to be
-    /// previewable:
-    ///
-    /// * **No inputs** and **no steps** are accepted here and refused
-    ///   there. Core answers both with a `global_warnings` entry rather
-    ///   than an error, which is what an editor shows before the user has
-    ///   finished.
-    /// * A **folder** input is accepted here and cannot be expressed
-    ///   there at all. The preview's own entry list is the bridge -- it
-    ///   is that folder expanded, in order, which is exactly the file
-    ///   list `start_pipeline` wants. See
-    ///   [`crate::process::PipelinePreviewInputsDto`].
+    /// Two asymmetries with [`crate::operations::PipelineRequest`], both
+    /// deliberate, because a half-built pipeline still has to be
+    /// previewable: **no inputs** and **no steps** are accepted here and
+    /// refused there. Core answers both with a `global_warnings` entry
+    /// rather than an error, which is what an editor shows before the
+    /// user has finished. Inputs themselves are the same
+    /// [`crate::operations::pipeline::PipelineInputsDto`] a run takes,
+    /// folder variant included.
     ///
     /// # Errors
     ///
-    /// `NotFound` for an unknown preset id, or for a
-    /// `metadata` session id that names no open session -- the latter is
-    /// deliberately not downgraded to "no metadata", which would quietly
-    /// report a different set of paths than the caller asked about.
-    /// `InvalidInput` for a malformed ad-hoc step (an unknown convert
-    /// format, a non-numeric organize rule id) -- the one thing a
-    /// preview validates as strictly as a run, since a step that cannot
-    /// be translated has no behavior to predict.
+    /// `NotFound` for an unknown preset id. `InvalidInput` for a
+    /// malformed ad-hoc step (an unknown convert format, a non-numeric
+    /// organize rule id) -- the one thing a preview validates as
+    /// strictly as a run, since a step that cannot be translated has no
+    /// behavior to predict.
     pub async fn preview_pipeline(
         &self,
         request: crate::process::PipelinePreviewRequest,
@@ -1810,25 +1821,36 @@ impl ArclainApp {
     /// another live Arclain process is mislabelled interrupted if a
     /// second instance starts while it is past the hour.
     ///
-    /// # `since_unix`, and the fact that nothing clears these
+    /// # `since_unix`, `limit`, and the fact that nothing clears these
     ///
     /// `since_unix` filters on the *sweep* time above -- when the run was
     /// declared interrupted -- not when it started or when it actually
-    /// died, which nothing records. Passing `0` therefore returns
-    /// **every interrupted run ever recorded in this profile**, and that
-    /// set only ever grows: no code path deletes these rows, clears the
-    /// marker, or acknowledges them. A caller that wants "since I last
-    /// looked" must remember a timestamp itself and pass it here; one
-    /// that passes `0` and renders a banner will render that banner on
-    /// every launch, forever, however long ago the crash was.
+    /// died, which nothing records. Passing `0` therefore means **every
+    /// interrupted run ever recorded in this profile**, and that set only
+    /// ever grows: no code path deletes these rows, clears the marker, or
+    /// acknowledges them. A caller that wants "since I last looked" must
+    /// remember a timestamp itself and pass it here; one that passes `0`
+    /// and renders a banner will render that banner on every launch,
+    /// forever, however long ago the crash was.
+    ///
+    /// `limit` bounds the answer, the same way
+    /// [`Self::recent_operations`]'s does, and exists precisely because
+    /// of the growth above -- a caller that only wants a count or the
+    /// last handful must not be handed an unbounded list. Rows come
+    /// newest-first, so a bounded read keeps the ones worth showing.
+    /// **The bound is on the answer, not on the query**: `arclain_db`'s
+    /// statement has no `LIMIT`, so the full matching set is still
+    /// materialized inside the database layer before being truncated
+    /// here. Bounding it properly needs a `crates/db` change.
     ///
     /// Empty (not an error) when no configuration database is open.
     pub async fn interrupted_pipeline_runs(
         &self,
         since_unix: i64,
+        limit: u32,
     ) -> Result<Vec<crate::process::InterruptedPipelineRunDto>, ApplicationError> {
         self.dispatch_async(move |inner| async move {
-            process_ops::run_interrupted_pipeline_runs(&inner, since_unix).await
+            process_ops::run_interrupted_pipeline_runs(&inner, since_unix, limit).await
         })
         .await?
     }

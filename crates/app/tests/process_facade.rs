@@ -25,12 +25,10 @@ use arclain_app::event::{OperationResult, OperationState};
 use arclain_app::ids::ArchiveSessionId;
 use arclain_app::operations::pipeline::{
     CompressionLevelDto, OutputArtifactDto, OutputCollisionPolicyDto, PipelineDestinationDto,
-    PipelineSpecDto, PipelineStepDto,
+    PipelineInputsDto, PipelineSpecDto, PipelineStepDto,
 };
 use arclain_app::operations::PipelineRequest;
-use arclain_app::process::{
-    PipelinePresetInput, PipelinePresetSummary, PipelinePreviewInputsDto, PipelinePreviewRequest,
-};
+use arclain_app::process::{PipelinePresetInput, PipelinePresetSummary, PipelinePreviewRequest};
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 
 // ============================================================================
@@ -147,6 +145,74 @@ fn report_plugin_title(app: &ArclainApp, session_id: ArchiveSessionId, title: &s
     );
 }
 
+/// Seeds DLsite library rows -- the metadata source `arclain_core`'s
+/// pipeline executor resolves output names from, and therefore the one
+/// `preview_pipeline` resolves from too. `take_legacy_composition` is a
+/// one-time take, so every row a test needs is seeded in one call.
+fn seed_library_titles(app: &ArclainApp, rows: &[(&str, &str)]) {
+    let library_service = app
+        .take_legacy_composition()
+        .expect("take_legacy_composition must succeed for a freshly bootstrapped app")
+        .core_services
+        .library_service
+        .clone()
+        .expect("library_service must be composed for a freshly bootstrapped app");
+    for (product_id, title) in rows {
+        let mut product =
+            gameta_core::ProductMetadata::new(gameta_core::MetadataSource::DLSite, product_id);
+        product.title = Some((*title).to_string());
+        library_service
+            .save_metadata(&product)
+            .expect("seeding library metadata must succeed");
+    }
+}
+
+/// Sets the application-wide `default_collision_policy`, through the
+/// facade's own settings surface -- the same stored value
+/// `start_pipeline` reads for a run.
+async fn set_default_collision_policy(app: &ArclainApp, policy: &str) {
+    use arclain_app::settings::{ArchiveSettingsPatch, PatchValue, SettingsPatch};
+    app.update_settings(SettingsPatch {
+        expected_revision: 0,
+        archive: Some(ArchiveSettingsPatch {
+            backend_mode: PatchValue::Keep,
+            cache_directory: PatchValue::Keep,
+            temp_directory: PatchValue::Keep,
+            transfer_directory: PatchValue::Keep,
+            sevenzip_path: PatchValue::Keep,
+            default_collision_policy: PatchValue::Set(policy.to_string()),
+        }),
+        network: None,
+        security: None,
+        general: None,
+    })
+    .await
+    .expect("setting the default collision policy must succeed");
+}
+
+/// Runs `request` to a terminal state, panicking on failure.
+async fn run_pipeline_to_completion(app: &ArclainApp, request: PipelineRequest) {
+    let mut events = app.subscribe_operations();
+    let operation_id = app
+        .start_pipeline(request)
+        .await
+        .expect("start_pipeline must be accepted");
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(30), events.recv())
+            .await
+            .expect("a pipeline event must arrive within 30s")
+            .expect("the operation channel must not close");
+        if event.operation_id != operation_id {
+            continue;
+        }
+        match event.state {
+            OperationState::Completed { .. } => return,
+            OperationState::Failed { error } => panic!("the pipeline run failed: {error:?}"),
+            _ => {}
+        }
+    }
+}
+
 fn preset_input(name: &str) -> PipelinePresetInput {
     PipelinePresetInput {
         name: name.to_string(),
@@ -175,14 +241,13 @@ fn shipped_names() -> Vec<String> {
 /// metadata -- the shape a step editor recomputes.
 fn steps_preview(inputs: Vec<PathBuf>, steps: Vec<PipelineStepDto>) -> PipelinePreviewRequest {
     PipelinePreviewRequest {
-        inputs: PipelinePreviewInputsDto::Files { paths: inputs },
+        inputs: PipelineInputsDto::Files { paths: inputs },
         destination: PipelineDestinationDto::SameFolder,
         pipeline: PipelineSpecDto::Steps {
             steps,
             output_artifact: OutputArtifactDto::Archive,
         },
         collision_policy: None,
-        metadata: None,
     }
 }
 
@@ -473,6 +538,57 @@ fn a_preset_whose_stored_name_has_surrounding_whitespace_is_still_deletable() {
     });
 }
 
+/// The save side of the same legacy case. A frontend shows a padded
+/// stored name trimmed and offers to edit it under that trimmed name; an
+/// exact comparison would then miss the stored row and push a second one
+/// the dropdown renders identically -- the precise duplicate name-keyed
+/// upsert exists to prevent.
+#[test]
+fn editing_a_preset_whose_stored_name_is_padded_replaces_it_rather_than_duplicating() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let paths = test_paths(&temp);
+    std::fs::create_dir_all(&paths.config_dir).unwrap();
+    arclain_core::save_presets(
+        &paths.config_dir.join("pipeline_presets.json"),
+        &[arclain_core::SavedPreset {
+            name: "  Legacy padded  ".to_string(),
+            pipeline: arclain_core::Pipeline {
+                input: None,
+                steps: vec![arclain_core::PipelineStep::Flatten {
+                    strip_common_prefix: false,
+                    max_depth: 1,
+                }],
+                output: arclain_core::PipelineOutput::SameFolder,
+                collision_policy: None,
+                output_artifact: arclain_core::OutputArtifact::Folder,
+            },
+        }],
+    )
+    .unwrap();
+    let app = bootstrap_with_paths(&temp, paths);
+
+    runtime.block_on(async {
+        let mut edited = preset_input("Legacy padded");
+        edited.steps = vec![PipelineStepDto::Convert {
+            format: "zip".to_string(),
+            compression: CompressionLevelDto::Fast,
+        }];
+        let presets = app.save_pipeline_preset(edited.clone()).await.unwrap();
+
+        assert_eq!(
+            presets.len(),
+            1,
+            "editing the padded row must replace it, not add a second; got {:?}",
+            names(&presets)
+        );
+        // And the write normalizes the stored name, so the duplicate can
+        // never come back.
+        assert_eq!(presets[0].name, "Legacy padded");
+        assert_eq!(presets[0].steps, edited.steps);
+    });
+}
+
 #[test]
 fn an_invalid_preset_is_rejected_and_nothing_is_written() {
     let runtime = foreign_runtime();
@@ -532,7 +648,9 @@ fn a_preset_saved_through_the_facade_is_runnable_by_start_pipeline() {
         let mut events = app.subscribe_operations();
         let operation_id = app
             .start_pipeline(PipelineRequest {
-                inputs: vec![input.clone()],
+                inputs: PipelineInputsDto::Files {
+                    paths: vec![input.clone()],
+                },
                 destination: PipelineDestinationDto::Folder {
                     path: destination.clone(),
                 },
@@ -657,7 +775,7 @@ fn a_folder_input_is_expanded_into_one_entry_per_archive() {
             compression: CompressionLevelDto::Normal,
         }],
     );
-    request.inputs = PipelinePreviewInputsDto::Folder {
+    request.inputs = PipelineInputsDto::Folder {
         path: folder.clone(),
     };
 
@@ -689,7 +807,7 @@ fn an_empty_folder_reports_a_global_warning_rather_than_failing() {
             compression: CompressionLevelDto::Normal,
         }],
     );
-    request.inputs = PipelinePreviewInputsDto::Folder { path: folder };
+    request.inputs = PipelineInputsDto::Folder { path: folder };
 
     let preview = runtime.block_on(app.preview_pipeline(request)).unwrap();
     assert!(preview.entries.is_empty());
@@ -758,111 +876,99 @@ fn a_preview_can_run_a_saved_preset_and_an_unknown_one_is_not_found() {
     });
 }
 
-/// A stale session id must not be silently downgraded to "no metadata":
-/// that would quietly report a completely different set of output paths
-/// than the caller asked about.
+/// The predicted output name comes from the DLsite library, resolved
+/// **per input** by the same lookup the executor performs -- so a
+/// preview and a run name the same file the same way.
 #[test]
-fn a_preview_naming_an_unknown_session_is_not_found() {
+fn library_metadata_names_the_predicted_output_per_input() {
     let runtime = foreign_runtime();
     let temp = scratch_tempdir();
     let app = bootstrap_app(&temp);
-
-    let mut request = steps_preview(
-        vec![temp.path().join("a.rar")],
-        vec![PipelineStepDto::Convert {
-            format: "zip".to_string(),
-            compression: CompressionLevelDto::Normal,
-        }],
+    seed_library_titles(
+        &app,
+        &[("RJ123456", "First Title"), ("RJ654321", "Second Title")],
     );
-    request.metadata = Some(ArchiveSessionId::from_raw(9_999));
 
-    let error = runtime.block_on(app.preview_pipeline(request)).unwrap_err();
-    assert_eq!(error.kind, ApplicationErrorKind::NotFound);
-}
+    let first = temp.path().join("[RJ123456] Placeholder.rar");
+    let second = temp.path().join("[RJ654321] Placeholder.rar");
+    let third = temp.path().join("no-code-here.rar");
 
-/// Named metadata drives the predicted output name -- through
-/// `arclain_core`'s own `stem_from`, from the session's plugin-reported
-/// blob, read with the same function `preview_organize_plan` uses.
-#[test]
-fn session_metadata_names_the_predicted_output() {
-    let runtime = foreign_runtime();
-    let temp = scratch_tempdir();
-    let app = bootstrap_app(&temp);
-    let archive = build_zip_fixture(temp.path(), "session.zip", &[("a.txt", b"a")]);
-    let pipeline_input = temp.path().join("[RJ123456] Placeholder.rar");
-
-    runtime.block_on(async {
-        let session_id = open_session(&app, &archive).await;
-        report_plugin_title(&app, session_id, "Session Title");
-
-        let mut request = steps_preview(
-            vec![pipeline_input.clone()],
+    let preview = runtime
+        .block_on(app.preview_pipeline(steps_preview(
+            vec![first, second, third],
             vec![PipelineStepDto::Convert {
                 format: "zip".to_string(),
                 compression: CompressionLevelDto::Normal,
             }],
-        );
-        request.metadata = Some(session_id);
+        )))
+        .unwrap();
 
-        let preview = app.preview_pipeline(request.clone()).await.unwrap();
-        assert_eq!(
-            preview.entries[0].expected_output,
-            Some(temp.path().join("Session Title.zip"))
-        );
-
-        // Without the session, the detected product code names it
-        // instead -- proving the metadata is what changed the answer.
-        request.metadata = None;
-        let bare = app.preview_pipeline(request).await.unwrap();
-        assert_eq!(
-            bare.entries[0].expected_output,
-            Some(temp.path().join("RJ123456.zip"))
-        );
-    });
+    // Three inputs, three DIFFERENT predicted names. A preview that
+    // resolved one metadata blob for the whole batch would report the
+    // same name three times -- three writes to one path, shown as three
+    // separate outputs.
+    assert_eq!(
+        preview
+            .entries
+            .iter()
+            .map(|entry| entry.expected_output.clone().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            temp.path().join("First Title.zip"),
+            temp.path().join("Second Title.zip"),
+            // No library row and no detectable code: the input's own stem.
+            temp.path().join("no-code-here.zip"),
+        ]
+    );
 }
 
-/// **THE REPORTED DIVERGENCE, made executable.**
-///
-/// This preview and `start_pipeline` resolve metadata from two different
-/// places, and this test pins that they currently disagree:
-///
-/// * the preview names the output from the *session's* plugin-reported
-///   metadata -- one blob, applied to every input, which is what the
-///   pre-facade Process page previewed with;
-/// * `start_pipeline` names it from the *DLsite library*, looked up per
-///   input from a product code detected in that input's own file name.
-///
-/// Seeding the two with different titles for the same product code makes
-/// the disagreement visible: the user is shown one output path and the
-/// run writes another. Nothing here endorses that -- this is a
-/// characterization test, and it is expected to fail the day
-/// `PipelineRequest` gains a session binding the way
-/// `OrganizeRequest::archive_session_id` has one. When it does, the fix
-/// is to assert the two now *agree*, not to loosen the assertion.
+/// A product code with no library row falls back to the bare code --
+/// `arclain_core`'s own `stem_from` ladder, reached through the same
+/// resolution the executor uses.
 #[test]
-fn preview_and_start_pipeline_resolve_metadata_from_different_sources() {
+fn an_input_with_no_library_row_is_named_from_its_detected_code() {
     let runtime = foreign_runtime();
     let temp = scratch_tempdir();
     let app = bootstrap_app(&temp);
 
-    // The library's row for the placeholder product code.
-    let library_service = app
-        .take_legacy_composition()
-        .expect("take_legacy_composition must succeed for a freshly bootstrapped app")
-        .core_services
-        .library_service
-        .clone()
-        .expect("library_service must be composed for a freshly bootstrapped app");
-    let mut product =
-        gameta_core::ProductMetadata::new(gameta_core::MetadataSource::DLSite, "RJ123456");
-    product.title = Some("Library Title".to_string());
-    library_service
-        .save_metadata(&product)
-        .expect("seeding library metadata must succeed");
+    let preview = runtime
+        .block_on(app.preview_pipeline(steps_preview(
+            vec![temp.path().join("[RJ123456] Placeholder.rar")],
+            vec![PipelineStepDto::Convert {
+                format: "zip".to_string(),
+                compression: CompressionLevelDto::Normal,
+            }],
+        )))
+        .unwrap();
+
+    assert_eq!(
+        preview.entries[0].expected_output,
+        Some(temp.path().join("RJ123456.zip"))
+    );
+}
+
+/// **The invariant this surface exists for: what you preview is what
+/// runs.**
+///
+/// An earlier shape of this preview took one caller-supplied archive
+/// session's plugin metadata and applied it to every input, naming
+/// outputs from a source the run never consults. The preview now
+/// resolves per input from the library, exactly as the executor does, so
+/// the predicted path and the written path are one path. This makes that
+/// agreement executable: seed a library title, preview, run, and assert
+/// the run wrote precisely what was predicted.
+///
+/// It also pins that plugin-reported *session* metadata reaches neither
+/// end. A session reporting a different title stays open across both; if
+/// either end ever consults one again, the paths diverge and this fails.
+#[test]
+fn a_preview_predicts_exactly_the_path_start_pipeline_writes() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app(&temp);
+    seed_library_titles(&app, &[("RJ123456", "Library Title")]);
 
     let session_archive = build_zip_fixture(temp.path(), "session.zip", &[("a.txt", b"a")]);
-    // Carries the same product code the library row is keyed by, so the
-    // executor's own lookup finds "Library Title" for it.
     let pipeline_input = build_zip_fixture(
         temp.path(),
         "[RJ123456] Placeholder.zip",
@@ -870,67 +976,246 @@ fn preview_and_start_pipeline_resolve_metadata_from_different_sources() {
     );
     let destination = temp.path().join("out");
 
-    runtime.block_on(async {
+    let inputs = PipelineInputsDto::Files {
+        paths: vec![pipeline_input],
+    };
+    let destination_dto = PipelineDestinationDto::Folder {
+        path: destination.clone(),
+    };
+    let spec = PipelineSpecDto::Steps {
+        steps: vec![PipelineStepDto::Flatten {
+            strip_common_prefix: false,
+            max_depth: 1,
+        }],
+        output_artifact: OutputArtifactDto::Folder,
+    };
+
+    let predicted = runtime.block_on(async {
+        // A session whose plugin metadata says something else entirely,
+        // open across both the preview and the run.
         let session_id = open_session(&app, &session_archive).await;
         report_plugin_title(&app, session_id, "Session Title");
 
-        let mut request = PipelinePreviewRequest {
-            inputs: PipelinePreviewInputsDto::Files {
-                paths: vec![pipeline_input.clone()],
-            },
-            destination: PipelineDestinationDto::Folder {
-                path: destination.clone(),
-            },
-            pipeline: PipelineSpecDto::Steps {
-                steps: vec![PipelineStepDto::Flatten {
-                    strip_common_prefix: false,
-                    max_depth: 1,
-                }],
-                output_artifact: OutputArtifactDto::Folder,
-            },
-            collision_policy: Some(OutputCollisionPolicyDto::Fail),
-            metadata: Some(session_id),
-        };
-
-        let previewed = app
-            .preview_pipeline(request.clone())
+        let predicted = app
+            .preview_pipeline(PipelinePreviewRequest {
+                inputs: inputs.clone(),
+                destination: destination_dto.clone(),
+                pipeline: spec.clone(),
+                collision_policy: Some(OutputCollisionPolicyDto::Fail),
+            })
             .await
             .unwrap()
             .entries
             .remove(0)
             .expected_output
             .expect("a folder artifact always predicts an output");
-        assert_eq!(
-            previewed,
-            destination.join("Session Title"),
-            "the preview names the output from the session's plugin metadata"
+
+        run_pipeline_to_completion(
+            &app,
+            PipelineRequest {
+                inputs,
+                destination: destination_dto,
+                pipeline: spec,
+                collision_policy: Some(OutputCollisionPolicyDto::Fail),
+            },
+        )
+        .await;
+        predicted
+    });
+
+    assert_eq!(predicted, destination.join("Library Title"));
+    assert!(
+        predicted.exists(),
+        "the run must write exactly the path the preview predicted"
+    );
+    assert!(
+        !destination.join("Session Title").exists(),
+        "a plugin session's metadata must reach neither end"
+    );
+}
+
+/// **The second divergence of the same class.** `arclain_core`'s preview
+/// resolves an unset collision policy to a hardcoded `Smart`, while its
+/// executor resolves one to the user's `default_collision_policy`
+/// setting. With that setting on `Overwrite` and a request naming no
+/// policy, an un-fixed preview warns "will fail this file" about a run
+/// that silently overwrites.
+#[test]
+fn an_unset_collision_policy_previews_the_configured_default_not_smart() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app(&temp);
+    let input = temp.path().join("collide.rar");
+    std::fs::write(temp.path().join("collide.zip"), b"already here").unwrap();
+
+    let request = steps_preview(
+        vec![input],
+        vec![PipelineStepDto::Convert {
+            format: "zip".to_string(),
+            compression: CompressionLevelDto::Normal,
+        }],
+    );
+    assert!(
+        request.collision_policy.is_none(),
+        "this test is about the None case specifically"
+    );
+
+    runtime.block_on(async {
+        // Untouched profile: nothing configured, so both ends fall back
+        // to Smart and the warning says so.
+        let smart = app.preview_pipeline(request.clone()).await.unwrap();
+        assert!(
+            smart.entries[0].warnings[0].contains("will fail"),
+            "got {:?}",
+            smart.entries[0].warnings
         );
 
-        // The same request without the session falls back to the
-        // detected code -- so the preview never consults the library at
-        // all, whatever it is told.
-        request.metadata = None;
-        let without_session = app
-            .preview_pipeline(request)
+        set_default_collision_policy(&app, "overwrite").await;
+
+        let overwrite = app.preview_pipeline(request.clone()).await.unwrap();
+        assert!(
+            overwrite.entries[0].warnings[0].contains("overwritten"),
+            "the preview must describe the configured default, not a hardcoded Smart; got {:?}",
+            overwrite.entries[0].warnings
+        );
+
+        // An explicit per-request policy still wins over the setting,
+        // exactly as it does for the run.
+        let mut explicit = request;
+        explicit.collision_policy = Some(OutputCollisionPolicyDto::Skip);
+        let skipped = app.preview_pipeline(explicit).await.unwrap();
+        assert!(
+            skipped.entries[0].warnings[0].contains("skipped"),
+            "got {:?}",
+            skipped.entries[0].warnings
+        );
+    });
+}
+
+/// A folder is expanded at **run time** by the run itself, not handed to
+/// it by a prior preview -- so a file dropped into the folder after the
+/// last preview is still processed.
+#[test]
+fn start_pipeline_expands_a_folder_at_run_time() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app(&temp);
+    let folder = temp.path().join("batch");
+    std::fs::create_dir_all(&folder).unwrap();
+    build_zip_fixture(&folder, "one.zip", &[("one.bin", b"first")]);
+    let destination = temp.path().join("out");
+
+    let inputs = PipelineInputsDto::Folder {
+        path: folder.clone(),
+    };
+    let destination_dto = PipelineDestinationDto::Folder {
+        path: destination.clone(),
+    };
+    let spec = PipelineSpecDto::Steps {
+        steps: vec![PipelineStepDto::Flatten {
+            strip_common_prefix: false,
+            max_depth: 1,
+        }],
+        output_artifact: OutputArtifactDto::Folder,
+    };
+
+    // A preview taken now sees exactly one archive.
+    let previewed = runtime
+        .block_on(app.preview_pipeline(PipelinePreviewRequest {
+            inputs: inputs.clone(),
+            destination: destination_dto.clone(),
+            pipeline: spec.clone(),
+            collision_policy: Some(OutputCollisionPolicyDto::Overwrite),
+        }))
+        .unwrap();
+    assert_eq!(previewed.entries.len(), 1);
+
+    // A second archive arrives afterwards. A run handed the preview's
+    // file list would silently skip it.
+    build_zip_fixture(&folder, "two.zip", &[("two.bin", b"second")]);
+    runtime.block_on(run_pipeline_to_completion(
+        &app,
+        PipelineRequest {
+            inputs,
+            destination: destination_dto,
+            pipeline: spec,
+            collision_policy: Some(OutputCollisionPolicyDto::Overwrite),
+        },
+    ));
+
+    assert!(destination.join("one/one.bin").exists());
+    assert!(
+        destination.join("two/two.bin").exists(),
+        "a folder input must be expanded when the run starts, not when a preview last ran"
+    );
+}
+
+/// An archive-less folder is not an error at either end: the preview
+/// warns, and the run completes having processed nothing -- which is
+/// what `arclain_core` itself does with the same folder.
+#[test]
+fn an_archive_less_folder_warns_in_the_preview_and_completes_the_run() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app(&temp);
+    let folder = temp.path().join("nothing-here");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("notes.txt"), b"not an archive").unwrap();
+
+    let inputs = PipelineInputsDto::Folder {
+        path: folder.clone(),
+    };
+    let spec = PipelineSpecDto::Steps {
+        steps: vec![PipelineStepDto::Flatten {
+            strip_common_prefix: false,
+            max_depth: 1,
+        }],
+        output_artifact: OutputArtifactDto::Folder,
+    };
+
+    runtime.block_on(async {
+        let preview = app
+            .preview_pipeline(PipelinePreviewRequest {
+                inputs: inputs.clone(),
+                destination: PipelineDestinationDto::SameFolder,
+                pipeline: spec.clone(),
+                collision_policy: None,
+            })
             .await
-            .unwrap()
-            .entries
-            .remove(0)
-            .expected_output
             .unwrap();
-        assert_eq!(
-            without_session,
-            destination.join("RJ123456"),
-            "with no session the preview uses the detected code, never the library's title"
-        );
+        assert!(preview.entries.is_empty());
+        assert_eq!(preview.global_warnings.len(), 1);
 
+        run_pipeline_to_completion(
+            &app,
+            PipelineRequest {
+                inputs,
+                destination: PipelineDestinationDto::SameFolder,
+                pipeline: spec,
+                collision_policy: None,
+            },
+        )
+        .await;
+    });
+}
+
+/// A folder that cannot be read is a whole-batch failure, not a silent
+/// no-op: nothing can be processed, so the operation fails rather than
+/// reporting success over zero files.
+#[test]
+fn start_pipeline_fails_when_the_input_folder_cannot_be_read() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app(&temp);
+
+    runtime.block_on(async {
         let mut events = app.subscribe_operations();
         let operation_id = app
             .start_pipeline(PipelineRequest {
-                inputs: vec![pipeline_input],
-                destination: PipelineDestinationDto::Folder {
-                    path: destination.clone(),
+                inputs: PipelineInputsDto::Folder {
+                    path: temp.path().join("no-such-folder"),
                 },
+                destination: PipelineDestinationDto::SameFolder,
                 pipeline: PipelineSpecDto::Steps {
                     steps: vec![PipelineStepDto::Flatten {
                         strip_common_prefix: false,
@@ -938,10 +1223,11 @@ fn preview_and_start_pipeline_resolve_metadata_from_different_sources() {
                     }],
                     output_artifact: OutputArtifactDto::Folder,
                 },
-                collision_policy: Some(OutputCollisionPolicyDto::Fail),
+                collision_policy: None,
             })
             .await
-            .expect("start_pipeline must be accepted");
+            .expect("an unreadable folder is a run-time answer, not a request-level one");
+
         loop {
             let event = tokio::time::timeout(Duration::from_secs(30), events.recv())
                 .await
@@ -951,21 +1237,18 @@ fn preview_and_start_pipeline_resolve_metadata_from_different_sources() {
                 continue;
             }
             match event.state {
-                OperationState::Completed { .. } => break,
-                OperationState::Failed { error } => panic!("the run failed: {error:?}"),
+                OperationState::Failed { error } => {
+                    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+                    assert_eq!(error.field.as_deref(), Some("inputs"));
+                    break;
+                }
+                OperationState::Completed { .. } => {
+                    panic!("an unreadable folder must not complete as a successful empty batch")
+                }
                 _ => {}
             }
         }
     });
-
-    assert!(
-        destination.join("Library Title").exists(),
-        "start_pipeline names the output from the library, not the session"
-    );
-    assert!(
-        !destination.join("Session Title").exists(),
-        "the previewed path is NOT the path the run wrote -- this is the reported divergence"
-    );
 }
 
 // ============================================================================
@@ -1025,7 +1308,9 @@ fn an_abandoned_run_is_reported_after_the_next_launch_and_is_never_cleared() {
     seed_stale_in_progress_run(&paths, "/mods/RJ123456.rar");
 
     let app = bootstrap_with_paths(&temp, paths.clone());
-    let runs = runtime.block_on(app.interrupted_pipeline_runs(0)).unwrap();
+    let runs = runtime
+        .block_on(app.interrupted_pipeline_runs(0, 64))
+        .unwrap();
     assert_eq!(runs.len(), 1, "the startup sweep must have flagged the row");
     assert_eq!(runs[0].input_path, PathBuf::from("/mods/RJ123456.rar"));
     assert_eq!(runs[0].arclain_version, "2.1.0");
@@ -1038,12 +1323,12 @@ fn an_abandoned_run_is_reported_after_the_next_launch_and_is_never_cleared() {
     // or died.
     let after = runs[0].interrupted_at_unix + 1;
     assert!(runtime
-        .block_on(app.interrupted_pipeline_runs(after))
+        .block_on(app.interrupted_pipeline_runs(after, 64))
         .unwrap()
         .is_empty());
     assert_eq!(
         runtime
-            .block_on(app.interrupted_pipeline_runs(runs[0].interrupted_at_unix))
+            .block_on(app.interrupted_pipeline_runs(runs[0].interrupted_at_unix, 64))
             .unwrap()
             .len(),
         1,
@@ -1060,12 +1345,39 @@ fn an_abandoned_run_is_reported_after_the_next_launch_and_is_never_cleared() {
     let reopened = bootstrap_with_paths(&temp, paths);
     assert_eq!(
         runtime
-            .block_on(reopened.interrupted_pipeline_runs(0))
+            .block_on(reopened.interrupted_pipeline_runs(0, 64))
             .unwrap()
             .len(),
         1,
         "nothing clears an interrupted run, so it is still reported after a restart"
     );
+}
+
+/// `limit` bounds the answer. It exists because nothing prunes these
+/// rows (see the test above), so an unbounded read grows without end for
+/// the life of a profile.
+#[test]
+fn interrupted_runs_are_bounded_by_the_requested_limit() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let paths = test_paths(&temp);
+
+    let sevenzip = support::create_dummy_executable(temp.path(), sevenzip_exe_name());
+    support::seed_working_sevenzip_config(&paths, &sevenzip);
+    for index in 0..5 {
+        seed_stale_in_progress_run(&paths, &format!("/mods/RJ12345{index}.rar"));
+    }
+
+    let app = bootstrap_with_paths(&temp, paths);
+    runtime.block_on(async {
+        assert_eq!(app.interrupted_pipeline_runs(0, 64).await.unwrap().len(), 5);
+        assert_eq!(app.interrupted_pipeline_runs(0, 2).await.unwrap().len(), 2);
+        assert!(app
+            .interrupted_pipeline_runs(0, 0)
+            .await
+            .unwrap()
+            .is_empty());
+    });
 }
 
 /// A fresh profile has nothing to report, and a *live* run is not
@@ -1078,7 +1390,7 @@ fn a_fresh_profile_reports_no_interrupted_runs() {
     let app = bootstrap_app(&temp);
 
     assert!(runtime
-        .block_on(app.interrupted_pipeline_runs(0))
+        .block_on(app.interrupted_pipeline_runs(0, 64))
         .unwrap()
         .is_empty());
 }

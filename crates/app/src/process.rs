@@ -29,7 +29,11 @@
 //!   [`PipelinePreviewDto`]) answers "what would this pipeline do?"
 //!   without doing any of it. Recomputed at editing frequency, so it
 //!   never enters the operation registry -- see
-//!   [`crate::ArclainApp::preview_pipeline`].
+//!   [`crate::ArclainApp::preview_pipeline`]. It describes its inputs
+//!   with [`PipelineInputsDto`], the very type
+//!   [`crate::operations::PipelineRequest`] takes, and takes no other
+//!   parameter of its own: everything that shapes the prediction is
+//!   something the run is given too.
 //! - **Interrupted runs** ([`InterruptedPipelineRunDto`]) are
 //!   database-persisted across restarts and are emphatically *not*
 //!   [`crate::ArclainApp::recent_operations`], which is in-memory and
@@ -50,10 +54,9 @@
 use std::path::PathBuf;
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
-use crate::ids::ArchiveSessionId;
 use crate::operations::pipeline::{
-    OutputArtifactDto, OutputCollisionPolicyDto, PipelineDestinationDto, PipelineSpecDto,
-    PipelineStepDto,
+    OutputArtifactDto, OutputCollisionPolicyDto, PipelineDestinationDto, PipelineInputsDto,
+    PipelineSpecDto, PipelineStepDto,
 };
 
 // ============================================================================
@@ -94,7 +97,10 @@ pub struct PipelinePresetSummary {
     /// when the preset is applied, not what the run uses.
     pub destination: PipelineDestinationDto,
     /// `None` means "inherit the application-wide
-    /// `default_collision_policy` setting".
+    /// `default_collision_policy` setting" -- honoured by both the run
+    /// and [`crate::ArclainApp::preview_pipeline`], which completes that
+    /// ladder itself rather than leaving `arclain_core`'s preview to
+    /// assume `Smart`.
     pub collision_policy: Option<OutputCollisionPolicyDto>,
     pub output_artifact: OutputArtifactDto,
     /// Whether this entry is one of the presets the application ships,
@@ -149,54 +155,25 @@ pub struct PipelinePresetInput {
 // Preview DTOs.
 // ============================================================================
 
-/// What a pipeline preview runs over.
-///
-/// Mirrors `arclain_core::PipelineInput`, which is what the preview
-/// itself consumes -- including the `Folder` case, whose expansion (the
-/// set of files in that directory `arclain_core` recognizes as archives)
-/// is core's own definition and must not be re-derived by a frontend.
-///
-/// **`Folder` has no counterpart on
-/// [`crate::operations::PipelineRequest`] today**: that request takes a
-/// plain file list, so `start_pipeline` cannot be handed a directory.
-/// The bridge is this preview's own answer -- every
-/// [`PipelinePreviewEntryDto::input`] is one expanded file, in order, so
-/// a caller that previewed a folder already holds exactly the
-/// `Vec<PathBuf>` `start_pipeline` needs.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum PipelinePreviewInputsDto {
-    Files {
-        paths: Vec<PathBuf>,
-    },
-    /// Every archive directly inside this directory (not recursive).
-    Folder {
-        path: PathBuf,
-    },
-}
-
-impl PipelinePreviewInputsDto {
-    pub(crate) fn to_core(&self) -> arclain_core::PipelineInput {
-        match self {
-            Self::Files { paths } => arclain_core::PipelineInput::Files(paths.clone()),
-            Self::Folder { path } => arclain_core::PipelineInput::Folder(path.clone()),
-        }
-    }
-}
-
 /// One pipeline preview request.
 ///
 /// Field-for-field the same run description
-/// [`crate::operations::PipelineRequest`] carries -- same `destination`,
-/// same [`PipelineSpecDto`], same `collision_policy` -- so a caller can
-/// hand one description to both and cannot accidentally preview
-/// something other than what it is about to run. The two differences are
-/// deliberate and documented: [`Self::inputs`] additionally admits a
-/// folder (see [`PipelinePreviewInputsDto`]), and [`Self::metadata`]
-/// exists only here.
+/// [`crate::operations::PipelineRequest`] carries -- the same
+/// [`PipelineInputsDto`], `destination`, [`PipelineSpecDto`] and
+/// `collision_policy`. A caller hands the one description to both, and
+/// there is deliberately **nothing else on this type**: every input to
+/// the predicted result is an input to the run.
+///
+/// In particular there is no metadata parameter. The names in a
+/// predicted output path come from `arclain_core`'s `stem_from`, and
+/// [`crate::ArclainApp::preview_pipeline`] resolves the metadata half of
+/// that *per input*, through the very lookup the executor performs -- so
+/// this type cannot be told to predict names the run will not produce.
+/// See that method's doc comment for what a caller-supplied-metadata
+/// shape got wrong, and why it was wrong specifically for a batch.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct PipelinePreviewRequest {
-    pub inputs: PipelinePreviewInputsDto,
+    pub inputs: PipelineInputsDto,
     pub destination: PipelineDestinationDto,
     /// [`PipelineSpecDto::Steps`] is the interaction-frequency case: it
     /// is pure, in-memory, and is what a step editor holds. A
@@ -204,35 +181,13 @@ pub struct PipelinePreviewRequest {
     /// so it is a fine way to preview a preset a user just selected, but
     /// not something to recompute on every keystroke.
     pub pipeline: PipelineSpecDto,
+    /// `None` defers to the resolved pipeline's own stored policy, then
+    /// to the application-wide `default_collision_policy` setting, then
+    /// to `Smart` -- the identical ladder
+    /// [`crate::ArclainApp::start_pipeline`] resolves, materialized by
+    /// the preview so the collision warning describes the run's real
+    /// policy rather than a hardcoded one.
     pub collision_policy: Option<OutputCollisionPolicyDto>,
-    /// Which archive session's plugin-reported metadata names the
-    /// outputs, or `None` for no metadata at all.
-    ///
-    /// **Read this before relying on the predicted output path.** The
-    /// preview's output name comes from `arclain_core`'s
-    /// `stem_from`: a sanitized metadata title if there is one, else a
-    /// product code detected in the input's own file name, else the
-    /// input's stem. This field supplies the metadata half -- and it
-    /// supplies *one* blob, applied to every input, exactly as the
-    /// pre-facade Process page did (it passed the active tab's fetched
-    /// `game_metadata`, regardless of which files the pipeline was
-    /// pointed at).
-    ///
-    /// [`crate::ArclainApp::start_pipeline`] resolves metadata from a
-    /// **different source**: `arclain_core`'s executor looks each input
-    /// up individually in the DLsite library, keyed on a product code
-    /// detected in that input's own file name. A session's plugin blob
-    /// and the library's row for the same product routinely differ, and
-    /// nothing reconciles them -- so a predicted output path here can
-    /// legitimately disagree with the path the run writes. That
-    /// divergence predates this facade and is mirrored, not
-    /// manufactured, here; see
-    /// [`crate::ArclainApp::preview_pipeline`]'s own doc comment.
-    ///
-    /// `NotFound` when the session id names no open session -- an
-    /// unknown session is never silently downgraded to "no metadata",
-    /// since that would quietly change every predicted output name.
-    pub metadata: Option<ArchiveSessionId>,
 }
 
 /// What the pipeline would do to one input file. Mirrors
@@ -389,19 +344,16 @@ pub(crate) fn preset_to_core(
     })
 }
 
-pub(crate) fn preview_to_dto(preview: arclain_core::PipelinePreview) -> PipelinePreviewDto {
-    PipelinePreviewDto {
-        entries: preview
-            .entries
-            .into_iter()
-            .map(|entry| PipelinePreviewEntryDto {
-                input: entry.input,
-                operations: entry.operations,
-                expected_output: entry.expected_output,
-                warnings: entry.warnings,
-            })
-            .collect(),
-        global_warnings: preview.global_warnings,
+/// Maps one `arclain_core::PreviewEntry`. Entry-level rather than
+/// whole-preview because [`crate::runtime::process_ops`] assembles the
+/// result from one core preview *per input* -- see
+/// [`crate::ArclainApp::preview_pipeline`] for why the loop lives there.
+pub(crate) fn preview_entry_to_dto(entry: arclain_core::PreviewEntry) -> PipelinePreviewEntryDto {
+    PipelinePreviewEntryDto {
+        input: entry.input,
+        operations: entry.operations,
+        expected_output: entry.expected_output,
+        warnings: entry.warnings,
     }
 }
 
@@ -578,45 +530,19 @@ mod tests {
     // ── preview conversion ──────────────────────────────────────────────
 
     #[test]
-    fn preview_inputs_translate_to_the_matching_core_input() {
-        assert_eq!(
-            PipelinePreviewInputsDto::Files {
-                paths: vec![PathBuf::from("/a.zip")]
-            }
-            .to_core(),
-            arclain_core::PipelineInput::Files(vec![PathBuf::from("/a.zip")])
-        );
-        assert_eq!(
-            PipelinePreviewInputsDto::Folder {
-                path: PathBuf::from("/dir")
-            }
-            .to_core(),
-            arclain_core::PipelineInput::Folder(PathBuf::from("/dir"))
-        );
-    }
-
-    #[test]
-    fn a_core_preview_maps_field_for_field() {
-        let core = arclain_core::PipelinePreview {
-            entries: vec![arclain_core::PreviewEntry {
-                input: PathBuf::from("/in/RJ123456.rar"),
-                operations: vec!["Convert to .zip".to_string()],
-                expected_output: Some(PathBuf::from("/out/RJ123456.zip")),
-                warnings: vec!["Output already exists".to_string()],
-            }],
-            global_warnings: vec!["No operations added".to_string()],
+    fn a_core_preview_entry_maps_field_for_field() {
+        let core = arclain_core::PreviewEntry {
+            input: PathBuf::from("/in/RJ123456.rar"),
+            operations: vec!["Convert to .zip".to_string()],
+            expected_output: Some(PathBuf::from("/out/RJ123456.zip")),
+            warnings: vec!["Output already exists".to_string()],
         };
-        let dto = preview_to_dto(core.clone());
+        let dto = preview_entry_to_dto(core.clone());
 
-        assert_eq!(dto.global_warnings, core.global_warnings);
-        assert_eq!(dto.entries.len(), 1);
-        assert_eq!(dto.entries[0].input, core.entries[0].input);
-        assert_eq!(dto.entries[0].operations, core.entries[0].operations);
-        assert_eq!(
-            dto.entries[0].expected_output,
-            core.entries[0].expected_output
-        );
-        assert_eq!(dto.entries[0].warnings, core.entries[0].warnings);
+        assert_eq!(dto.input, core.input);
+        assert_eq!(dto.operations, core.operations);
+        assert_eq!(dto.expected_output, core.expected_output);
+        assert_eq!(dto.warnings, core.warnings);
     }
 
     // ── serialization ───────────────────────────────────────────────────
@@ -648,10 +574,10 @@ mod tests {
     #[test]
     fn preview_dtos_round_trip_through_json() {
         for inputs in [
-            PipelinePreviewInputsDto::Files {
+            PipelineInputsDto::Files {
                 paths: vec![PathBuf::from("/a.zip"), PathBuf::from("/b.7z")],
             },
-            PipelinePreviewInputsDto::Folder {
+            PipelineInputsDto::Folder {
                 path: PathBuf::from("/dir"),
             },
         ] {
@@ -665,13 +591,12 @@ mod tests {
                     output_artifact: OutputArtifactDto::Folder,
                 },
                 collision_policy: Some(OutputCollisionPolicyDto::Skip),
-                metadata: Some(ArchiveSessionId::from_raw(5)),
             };
             assert_eq!(round_trip(&request), request);
         }
 
         let request = PipelinePreviewRequest {
-            inputs: PipelinePreviewInputsDto::Files { paths: Vec::new() },
+            inputs: PipelineInputsDto::Files { paths: Vec::new() },
             destination: PipelineDestinationDto::Folder {
                 path: PathBuf::from("/out"),
             },
@@ -679,7 +604,6 @@ mod tests {
                 id: "Convert to 7z (Max)".to_string(),
             },
             collision_policy: None,
-            metadata: None,
         };
         assert_eq!(round_trip(&request), request);
 

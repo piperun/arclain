@@ -50,7 +50,7 @@ use arclain_app::operations::convert::ConvertRequest;
 use arclain_app::operations::organize::OrganizeRequest;
 use arclain_app::operations::pipeline::{
     CompressionLevelDto, OutputArtifactDto, OutputCollisionPolicyDto, PipelineDestinationDto,
-    PipelineRequest, PipelineSpecDto, PipelineStepDto,
+    PipelineInputsDto, PipelineRequest, PipelineSpecDto, PipelineStepDto,
 };
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 
@@ -876,7 +876,7 @@ fn start_pipeline_rejects_empty_inputs() {
 
     let err = runtime
         .block_on(app.start_pipeline(PipelineRequest {
-            inputs: vec![],
+            inputs: PipelineInputsDto::Files { paths: vec![] },
             destination: PipelineDestinationDto::SameFolder,
             pipeline: PipelineSpecDto::Preset {
                 id: "RE Mod Cleanup".to_string(),
@@ -898,7 +898,9 @@ fn start_pipeline_rejects_unknown_preset_id() {
 
     let err = runtime
         .block_on(app.start_pipeline(PipelineRequest {
-            inputs: vec![temp.path().join("a.rar")],
+            inputs: PipelineInputsDto::Files {
+                paths: vec![temp.path().join("a.rar")],
+            },
             destination: PipelineDestinationDto::SameFolder,
             pipeline: PipelineSpecDto::Preset {
                 id: "no-such-preset".to_string(),
@@ -923,7 +925,9 @@ fn start_pipeline_rejects_malformed_ad_hoc_step() {
 
     let err = runtime
         .block_on(app.start_pipeline(PipelineRequest {
-            inputs: vec![temp.path().join("a.rar")],
+            inputs: PipelineInputsDto::Files {
+                paths: vec![temp.path().join("a.rar")],
+            },
             destination: PipelineDestinationDto::SameFolder,
             pipeline: PipelineSpecDto::Steps {
                 steps: vec![PipelineStepDto::Convert {
@@ -949,7 +953,9 @@ fn start_pipeline_rejects_an_empty_ad_hoc_step_list() {
 
     let err = runtime
         .block_on(app.start_pipeline(PipelineRequest {
-            inputs: vec![temp.path().join("a.rar")],
+            inputs: PipelineInputsDto::Files {
+                paths: vec![temp.path().join("a.rar")],
+            },
             destination: PipelineDestinationDto::SameFolder,
             pipeline: PipelineSpecDto::Steps {
                 steps: vec![],
@@ -1739,7 +1745,9 @@ fn start_organize_and_start_pipeline_agree_on_the_metadata_driven_stem() {
         let mut receiver = app.subscribe_operations();
         let operation_id = app
             .start_pipeline(PipelineRequest {
-                inputs: vec![pipeline_input],
+                inputs: PipelineInputsDto::Files {
+                    paths: vec![pipeline_input],
+                },
                 destination: PipelineDestinationDto::Folder {
                     path: pipeline_destination.clone(),
                 },
@@ -1992,7 +2000,7 @@ fn start_pipeline_runs_a_saved_preset_end_to_end() {
         let mut receiver = app.subscribe_operations();
         let operation_id = app
             .start_pipeline(PipelineRequest {
-                inputs: vec![input],
+                inputs: PipelineInputsDto::Files { paths: vec![input] },
                 destination: PipelineDestinationDto::Folder {
                     path: destination.clone(),
                 },
@@ -2045,7 +2053,7 @@ fn start_pipeline_runs_an_ad_hoc_step_list_end_to_end_producing_a_folder() {
         let mut receiver = app.subscribe_operations();
         let operation_id = app
             .start_pipeline(PipelineRequest {
-                inputs: vec![input],
+                inputs: PipelineInputsDto::Files { paths: vec![input] },
                 destination: PipelineDestinationDto::Folder {
                     path: destination.clone(),
                 },
@@ -2137,7 +2145,7 @@ fn start_pipeline_runs_an_ad_hoc_step_list_end_to_end_producing_an_archive_when_
         let mut receiver = app.subscribe_operations();
         let operation_id = app
             .start_pipeline(PipelineRequest {
-                inputs: vec![input],
+                inputs: PipelineInputsDto::Files { paths: vec![input] },
                 destination: PipelineDestinationDto::Folder {
                     path: destination.clone(),
                 },
@@ -2198,7 +2206,7 @@ fn start_pipeline_preserves_pre_existing_destination_when_it_is_not_a_recognized
         let mut receiver = app.subscribe_operations();
         let operation_id = app
             .start_pipeline(PipelineRequest {
-                inputs: vec![input],
+                inputs: PipelineInputsDto::Files { paths: vec![input] },
                 destination: PipelineDestinationDto::Folder {
                     path: destination.clone(),
                 },
@@ -2353,7 +2361,7 @@ fn start_pipeline_rollback_removes_partial_output_after_a_genuine_post_write_fai
         let mut receiver = app.subscribe_operations();
         let operation_id = app
             .start_pipeline(PipelineRequest {
-                inputs: vec![input],
+                inputs: PipelineInputsDto::Files { paths: vec![input] },
                 destination: PipelineDestinationDto::Folder {
                     path: destination.clone(),
                 },

@@ -61,9 +61,14 @@
 //! types, and the database-persisted
 //! [`process::InterruptedPipelineRunDto`] query that survives a restart
 //! (unlike `ArclainApp::recent_operations`). The `PipelineRequest` that
-//! actually *runs* a pipeline stays in [`operations`], and both ends
-//! speak the same step/destination/policy DTOs so a caller cannot
-//! preview one description and run another.
+//! actually *runs* a pipeline stays in [`operations`], and the two ends
+//! speak one vocabulary -- the same
+//! [`operations::pipeline::PipelineInputsDto`], step, destination and
+//! collision-policy DTOs -- so a caller cannot preview one description
+//! and run another. The preview resolves the two things that decide a
+//! predicted path (each input's metadata, and the effective collision
+//! policy) exactly as the run resolves them; see
+//! [`ArclainApp::preview_pipeline`].
 //!
 //! [`organization`] owns the organization feature's own surface:
 //! archive-profile and organization-rule CRUD, the output formats a
