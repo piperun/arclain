@@ -4,13 +4,16 @@
 //! Publishing a tab's visible rows *should* be one
 //! `ArclainApp::list_entries` call for the directory the tab's
 //! [`TabListing`] names, converted with
-//! [`crate::core::utils::file_entry_from_dto`]. It is not yet, because the
-//! rows come from `TabState::entries` -- the whole-archive flat list the
-//! bridge's own backend re-list writes (see that field's own doc comment
-//! for why the facade cannot supply it yet). Until the relisting side
-//! feeds the tab real session pages, scoping that flat list to one
-//! directory means re-running the pre-facade filter, and that filter lives
-//! in `arclain_core`.
+//! [`crate::core::utils::file_entry_from_dto`] -- and the tab now holds
+//! exactly such pages, adopted by the bridge on every relist. What keeps
+//! this module alive is *navigation responsiveness*: the renderer's rows
+//! must update the instant the user navigates, and pages are only
+//! fetched on relists today, so navigating scopes the tab's
+//! whole-archive inventory (its `legacy_rows` projection of the
+//! session's own rows) through the pre-facade filter instead. The
+//! render-side migration adds the fetch-on-navigate (with the
+//! loading/failure rendering `TabListing` already models) and deletes
+//! this module whole.
 //!
 //! Every remaining `arclain_core` reference in the browser's navigation
 //! path is therefore collected here rather than spread across the render
@@ -91,10 +94,12 @@ pub fn rows_in_directory(
 /// TRANSITIONAL(4c): every folder in a whole-archive flat listing, for the
 /// tree panel's own projection.
 ///
-/// The facade has no whole-archive listing to derive this from (see
-/// `TabState::entries`), so the pre-facade walk still does it. Free
-/// function rather than a method call on a throwaway `NavigationState`
-/// value: the walk never reads that type's cursor at all.
+/// The input is the inventory's legacy projection now, whose directory
+/// rows already carry `is_dir` for every folder the session synthesized
+/// -- this walk re-derives the same set the pre-facade way until the
+/// tree panel reads DTO rows directly. Free function rather than a
+/// method call on a throwaway `NavigationState` value: the walk never
+/// reads that type's cursor at all.
 pub fn all_folders(entries: &[arclain_core::ArchiveEntry]) -> Vec<String> {
     arclain_core::archive::NavigationState::new().get_all_folders(entries)
 }

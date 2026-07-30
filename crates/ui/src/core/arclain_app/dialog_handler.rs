@@ -64,12 +64,13 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             challenge_id,
             password,
         } => {
-            // Optimistically remember the password so a successful open
-            // can re-list for the flat browser signals with it (see
-            // `crate::core::operation_bridge::relist_for_browser_signals`).
-            // If it turns out to be wrong, the operation raises another
-            // `Challenge::Password` and this simply gets overwritten by
-            // the next submission.
+            // Optimistically remember the password so anything reading
+            // the signal mid-open sees the value just typed. Once the
+            // open completes, the bridge re-stamps it from the session's
+            // own handle regardless (see `crate::core::operation_bridge::
+            // relist_for_browser_signals`); if it turns out to be wrong,
+            // the operation raises another `Challenge::Password` and
+            // this simply gets overwritten by the next submission.
             let tab = shared_state.signals().tabs.get().active().clone();
             tab.current_password.set(Some(password.clone()));
             let facade = shared_state.facade.clone();

@@ -107,9 +107,13 @@ pub struct TabState {
     /// TRANSITIONAL(4c): the direct backend handle a drag-out extraction
     /// still reads `backend_arc()`/`password_ref()` off
     /// (`crate::features::archive_browser::application::drag_drop_service`).
-    /// Every other archive I/O path goes through the facade's own session
-    /// (see [`Self::archive_session_id`]); the render-side consumers are
-    /// what still need this one, so it dies when they move.
+    /// Since the relist cutover this is the *session's own* handle
+    /// (`ArclainApp::session_archive_handle`) rather than a UI-built
+    /// duplicate, so the backend and resolved password drag-out extracts
+    /// with are exactly the ones the facade's operations use. Every other
+    /// archive I/O path goes through the facade's own session (see
+    /// [`Self::archive_session_id`]); this dies when drag-out moves onto
+    /// `start_materialization`.
     pub opened_archive: Signal<Option<Arc<Mutex<arclain_core::Archive>>>>,
     /// The application facade's session id for this tab's open archive
     /// (`None` when no archive is open in this tab). Set once the
@@ -118,15 +122,13 @@ pub struct TabState {
     /// archive is closed/replaced.
     ///
     /// `arclain_app`'s per-session archive read model
-    /// (`ArclainApp::list_entries`/`archive_snapshot`) is keyed by this id,
-    /// which a tab uses as the stable handle to reach it. `opened_archive`
-    /// above still carries the direct backend handle a few not-yet-
-    /// migrated call sites need (drag-out extraction in particular reads
-    /// `backend_arc()`/`password_ref()` off it directly) -- both fields
-    /// are populated together by `crate::core::operation_bridge` once
-    /// `start_open_archive` completes (see its own doc comment for why
-    /// that means a second, UI-owned `list()` call rather than reaching
-    /// into the facade's own indexed session).
+    /// (`ArclainApp::list_entries`/`list_all_entries`/`archive_snapshot`)
+    /// is keyed by this id, which a tab uses as the stable handle to
+    /// reach it. `opened_archive` above carries the same session's
+    /// direct backend handle for the not-yet-migrated drag-out path --
+    /// both are stamped by `crate::core::operation_bridge` once
+    /// `start_open_archive` completes, from the one session, so they can
+    /// never describe different archives.
     pub archive_session_id: Signal<Option<arclain_app::ids::ArchiveSessionId>>,
     /// The [`ArchiveSnapshot`] the facade reported for
     /// [`Self::archive_session_id`]'s session -- its revision, source

@@ -34,11 +34,11 @@ pub fn start_archive_open(
         // Reset for a fresh open (mirrors the pre-facade `list_archive`'s
         // own `tab.current_password.set(None)`); reinstated immediately
         // when `password` is explicitly supplied (the "reopen with a
-        // just-typed password" flow, mirroring `list_with_password`'s
-        // own `set(Some(password))`) so
-        // `crate::core::operation_bridge::relist_for_browser_signals` can
-        // reuse it once the operation completes, without needing to
-        // reach into the facade's own session for the password it used.
+        // just-typed password" flow). Once the open completes, the
+        // bridge re-stamps this from the session's own handle anyway --
+        // covering the typed, rule-matched, and challenge-answered cases
+        // alike -- so this early write only keeps the signal honest for
+        // anything reading it while the open is still in flight.
         tab.current_password.set(password.clone());
     }
     let runtime = shared.services.tokio_runtime.clone();
