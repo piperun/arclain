@@ -899,9 +899,12 @@ fn handle_organize_terminal(
 /// report while the previous rows stay on screen -- `TabListing::fail`'s
 /// documented keep-the-rows semantics, exercised through this real path.
 ///
-/// `pub(crate)` for `crate::core::operations::archive::finish_archive_load`,
-/// whose backfill catch-up runs the same refresh.
-pub(crate) async fn refresh_entries_after_mutation(
+/// `pub` for two callers outside this module's own event handling:
+/// `crate::core::operations::archive::finish_archive_load`, whose
+/// backfill catch-up runs the same refresh, and the integration tests,
+/// which drive the real refresh (and its keep-rows failure path)
+/// directly.
+pub async fn refresh_entries_after_mutation(
     shared: &SharedState,
     tab: &crate::core::tabs::TabState,
     session_id: arclain_app::ids::ArchiveSessionId,
