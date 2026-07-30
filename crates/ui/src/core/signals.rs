@@ -202,11 +202,12 @@ pub struct AppSignals {
 
     // `progress_dialogs` migrated to `TabState` in the 2026-05-20 B3
     // reframed slice 2. Read via `signals.tabs.get().active().extraction_dialog()`
-    // (or `.conversion_dialog()` / `.drag_dialog()`). The A3 slot-struct
-    // + proxy pattern (commit 9975481) is preserved — only the
-    // location changes. Background-thread workers reach the right
-    // dialog through the `extraction_origin_tab` / `conversion_origin_tab`
-    // handles captured at spawn time in ArchiveOperationsState.
+    // (or `.drag_dialog()`). The A3 slot-struct + proxy pattern
+    // (commit 9975481) is preserved — only the location changes.
+    // Extraction reaches the right tab through the operation bridge's
+    // own per-operation origin map; drag-out reaches it through the
+    // `drag_origin_tab` handle captured at spawn time in
+    // ArchiveOperationsState.
 
     /// Live state of a Process page pipeline run
     pub process_run: Signal<ProcessRunState>,
@@ -321,9 +322,9 @@ pub struct AppSignals {
 ///
 /// Post 2026-05-20 B3 reframed slice 2: the proxy now points at a
 /// `TabState`-owned signal rather than `AppSignals`. Callers
-/// determine which tab to address (active for UI-thread paths,
-/// `extraction_origin_tab` / `conversion_origin_tab` for background
-/// workers). The proxy struct itself is unchanged.
+/// determine which tab to address (active for UI-thread paths, the
+/// operation bridge's own origin map or `drag_origin_tab` for
+/// background workers). The proxy struct itself is unchanged.
 pub struct ProgressDialogProxy<'a> {
     parent: &'a Signal<crate::shared::dialogs::ProgressDialogs>,
     kind: ProgressKind,
