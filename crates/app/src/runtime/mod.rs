@@ -636,6 +636,37 @@ impl ArclainApp {
         .await?
     }
 
+    /// Every entry of an open archive session -- files and directories,
+    /// at every depth -- as one [`crate::archive::ArchiveInventory`], in
+    /// depth-first tree order (see that type's own doc comment).
+    ///
+    /// The whole-archive counterpart to [`Self::list_entries`], for the
+    /// consumers that genuinely need the full tree at once: a
+    /// folder-tree panel's directory set (directory rows carry the
+    /// `EntryKind::Directory` flag [`Self::archive_file_paths`]'s
+    /// files-only list cannot), whole-archive aggregate totals, a
+    /// drag-out's recursive folder expansion, and a plugin event's entry
+    /// snapshot. A consumer that needs one directory, a count, or a
+    /// window of paths wants [`Self::list_entries`],
+    /// `ArchiveSnapshot::entry_count`, or [`Self::archive_file_paths`]
+    /// instead.
+    ///
+    /// `O(entries)`: materializes and clones the whole tree, the same
+    /// cost class [`Self::archive_file_paths`] documents for its own
+    /// full-list read. Callers should fetch once per
+    /// `(session, revision)` and cache, not call per frame or per
+    /// keystroke. `NotFound` for an unknown or already-closed session id.
+    pub async fn list_all_entries(
+        &self,
+        session_id: ArchiveSessionId,
+    ) -> Result<crate::archive::ArchiveInventory, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let session = inner.archive_sessions().get(session_id).await?;
+            Ok(session.inventory())
+        })
+        .await?
+    }
+
     /// A point-in-time summary of an open archive session.
     pub async fn archive_snapshot(
         &self,

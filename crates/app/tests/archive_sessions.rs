@@ -1060,3 +1060,113 @@ fn archive_file_paths_rejects_a_reconstructed_unknown_session_id() {
         .unwrap_err();
     assert_eq!(error.kind, ApplicationErrorKind::NotFound);
 }
+
+/// The whole-archive listing the browser's tree/info/plugin consumers are
+/// built from: every file *and* every directory (synthesized ancestors
+/// included), in depth-first tree order, with the directory rows carrying
+/// the kind flag and recursive aggregates a tree panel needs.
+#[test]
+fn list_all_entries_reports_the_whole_tree_including_synthesized_directories() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let archive_path = build_zip_fixture(
+        temp.path(),
+        "fixture.zip",
+        &[
+            ("wrapper/readme.txt", b"read me"),
+            ("wrapper/data/pack.bin", b"packed"),
+            ("wrapper/Game.exe", b"executable"),
+            ("top.txt", b"top level"),
+        ],
+    );
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: archive_path,
+                password: None,
+            })
+            .await
+            .unwrap();
+        let snapshot = wait_for_archive_opened(&app, operation_id).await;
+
+        let inventory = app
+            .list_all_entries(snapshot.session_id)
+            .await
+            .expect("an open session must report its whole entry tree");
+
+        assert_eq!(inventory.session_id, snapshot.session_id);
+        assert_eq!(inventory.revision, snapshot.revision);
+        assert_eq!(
+            inventory.entries.len() as u64,
+            snapshot.entry_count,
+            "the inventory and the snapshot must agree on what an entry is"
+        );
+        assert_eq!(
+            inventory
+                .entries
+                .iter()
+                .map(|dto| dto.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "top.txt",
+                "wrapper",
+                "wrapper/data",
+                "wrapper/data/pack.bin",
+                "wrapper/Game.exe",
+                "wrapper/readme.txt",
+            ],
+            "depth-first tree order: each directory's name-sorted children, parents first"
+        );
+
+        let wrapper = inventory
+            .entries
+            .iter()
+            .find(|dto| dto.path.as_str() == "wrapper")
+            .unwrap();
+        assert_eq!(wrapper.kind, arclain_app::archive::EntryKind::Directory);
+        assert_eq!(
+            wrapper.uncompressed_size,
+            (b"read me".len() + b"packed".len() + b"executable".len()) as u64,
+            "a directory row aggregates every descendant file recursively"
+        );
+
+        // The rows carry the same session-minted ids the paged read model
+        // hands out -- one id space, so a consumer can hand either's ids
+        // to extract/delete/materialize.
+        let root_page = app
+            .list_entries(
+                snapshot.session_id,
+                ListEntriesRequest {
+                    directory: ArchivePath::root(),
+                    sort_key: EntrySortKey::Name,
+                    sort_direction: SortDirection::Ascending,
+                    name_filter: None,
+                    offset: 0,
+                    limit: u32::MAX,
+                },
+            )
+            .await
+            .unwrap();
+        for page_row in &root_page.entries {
+            let inventory_row = inventory
+                .entries
+                .iter()
+                .find(|dto| dto.id == page_row.id)
+                .expect("every paged row must appear in the inventory under the same id");
+            assert_eq!(inventory_row, page_row);
+        }
+    });
+}
+
+#[test]
+fn list_all_entries_rejects_a_reconstructed_unknown_session_id() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let unknown = ArchiveSessionId::from_raw(999_999);
+
+    let error = runtime.block_on(app.list_all_entries(unknown)).unwrap_err();
+    assert_eq!(error.kind, ApplicationErrorKind::NotFound);
+}

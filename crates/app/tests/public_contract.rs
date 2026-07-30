@@ -105,11 +105,18 @@ fn constructs_every_public_dto() {
         revision: 1,
         directory: root,
         total: 1,
+        entries: vec![entry.clone()],
+    };
+
+    let inventory = arclain_app::archive::ArchiveInventory {
+        session_id: archive_session_id,
+        revision: 1,
         entries: vec![entry],
     };
 
     assert_eq!(request.sort_key, EntrySortKey::Name);
     assert_eq!(page.entries.len(), 1);
+    assert_eq!(inventory.entries.len(), 1);
     assert_eq!(snapshot.archive_type, "zip");
 }
 

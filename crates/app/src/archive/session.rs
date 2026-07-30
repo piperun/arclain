@@ -17,8 +17,8 @@ use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 
 use crate::archive::{
-    ArchiveEntryDto, ArchivePath, ArchiveSnapshot, EntryKind, EntryPage, EntrySortKey,
-    ListEntriesRequest, SortDirection,
+    ArchiveEntryDto, ArchiveInventory, ArchivePath, ArchiveSnapshot, EntryKind, EntryPage,
+    EntrySortKey, ListEntriesRequest, SortDirection,
 };
 use crate::ids::{ArchiveSessionId, EntryId};
 
@@ -571,6 +571,43 @@ impl EntryIndex {
         self.sorted_file_ids.len()
     }
 
+    /// Every indexed entry -- files and directories, at every depth --
+    /// cloned in depth-first tree order: each directory's children in the
+    /// same name-sorted order [`Self::build`] stored them (parents before
+    /// their contents, starting from the archive root).
+    ///
+    /// A tree walk over `children` rather than an iteration of `by_id`:
+    /// `HashMap` order varies run to run, and the consumers of a
+    /// whole-archive listing (a folder-tree projection, a deterministic
+    /// plugin snapshot) are better served by an order that is stable for
+    /// an unchanged archive. Every entry is reachable from the root by
+    /// construction -- [`Self::build`] synthesizes every ancestor a path
+    /// implies and parents each entry exactly once -- so the walk is
+    /// complete: its length always equals [`Self::entry_count`].
+    ///
+    /// `O(entries)`: materializes and clones every row. That is the
+    /// correct cost for "give me the whole tree" and the wrong one for a
+    /// count or a window -- see [`Self::file_count`]/
+    /// [`Self::file_paths_page`] for those.
+    fn all_entries(&self) -> Vec<ArchiveEntryDto> {
+        let mut entries = Vec::with_capacity(self.by_id.len());
+        // Reverse-pushed so the stack pops children in their stored
+        // name-sorted order.
+        let mut stack: Vec<EntryId> = self.children_of(&ArchivePath::root()).to_vec();
+        stack.reverse();
+        while let Some(id) = stack.pop() {
+            let Some(dto) = self.by_id.get(&id) else {
+                continue;
+            };
+            entries.push(dto.clone());
+            if dto.kind == EntryKind::Directory {
+                let children = self.children_of(&dto.path);
+                stack.extend(children.iter().rev());
+            }
+        }
+        entries
+    }
+
     /// Clones only the requested page of file paths, in the same stable,
     /// path-sorted order [`Self::file_paths`] does not guarantee --
     /// `O(limit)` beyond an `O(1)` slice to `offset`, never touching (let
@@ -1086,6 +1123,28 @@ impl ArchiveSession {
     /// resolve in that case, only "every file this archive would write".
     pub(crate) fn all_file_paths(&self) -> Vec<String> {
         self.entry_index.read().file_paths()
+    }
+
+    /// This session's whole entry tree as an [`ArchiveInventory`] -- see
+    /// [`EntryIndex::all_entries`] for the order and the `O(entries)`
+    /// cost.
+    ///
+    /// The revision is read while the index guard is held, exactly as
+    /// [`Self::organization_entries`] does and for the same reason: the
+    /// pair is never optimistic. A concurrent [`Self::reindex`] cannot
+    /// swap the index while this read is in flight, and one that swapped
+    /// just before this acquired the guard reports the *older* revision
+    /// alongside the newer entries -- the direction a revision-comparing
+    /// caller reads as "stale, refetch", never as "current" about entries
+    /// that are not.
+    pub(crate) fn inventory(&self) -> ArchiveInventory {
+        let index = self.entry_index.read();
+        let revision = self.revision();
+        ArchiveInventory {
+            session_id: self.id,
+            revision,
+            entries: index.all_entries(),
+        }
     }
 
     /// Number of `File`-kind entries in this session's current index,
@@ -1771,6 +1830,116 @@ mod tests {
         assert_eq!(snapshot.entry_count, 3); // a.txt, dir, dir/b.txt
         assert_eq!(snapshot.total_uncompressed_size, 30);
         assert_eq!(snapshot.revision, 1);
+    }
+
+    #[test]
+    fn inventory_walks_the_whole_tree_depth_first_with_parents_before_contents() {
+        let entries = vec![
+            file("dir/sub/c.txt", 1, 1),
+            file("a.txt", 10, 5),
+            file("dir/b.txt", 20, 15),
+        ];
+        let session = session_with(&entries);
+        let inventory = session.inventory();
+
+        assert_eq!(inventory.session_id, session.id());
+        assert_eq!(inventory.revision, 1);
+        assert_eq!(
+            inventory.entries.len() as u64,
+            session.snapshot().entry_count,
+            "the walk must be complete: every indexed entry, synthesized directories included"
+        );
+        assert_eq!(
+            inventory
+                .entries
+                .iter()
+                .map(|dto| dto.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.txt", "dir", "dir/b.txt", "dir/sub", "dir/sub/c.txt"],
+            "depth-first tree order: each directory's name-sorted children, parents first"
+        );
+    }
+
+    #[test]
+    fn inventory_directory_rows_carry_the_flag_and_aggregates_a_tree_consumer_needs() {
+        let entries = vec![file("dir/b.txt", 20, 15), file("dir/sub/c.txt", 7, 3)];
+        let session = session_with(&entries);
+        let inventory = session.inventory();
+
+        let dir = inventory
+            .entries
+            .iter()
+            .find(|dto| dto.path.as_str() == "dir")
+            .expect("the synthesized directory must appear in the inventory");
+        assert_eq!(dir.kind, EntryKind::Directory);
+        assert_eq!(
+            dir.uncompressed_size, 27,
+            "a directory row aggregates every descendant file recursively"
+        );
+        assert_eq!(dir.compressed_size, Some(18));
+    }
+
+    #[test]
+    fn inventory_preserves_duplicate_paths_and_the_file_directory_split() {
+        // `docs` is simultaneously a real file and the parent the deeper
+        // file implies; `twin.txt` appears twice. Both malformed shapes
+        // must survive the walk as distinct rows with distinct ids.
+        let entries = vec![
+            file("docs", 1, 1),
+            file("docs/inner.txt", 2, 2),
+            file("twin.txt", 3, 3),
+            file("twin.txt", 4, 4),
+        ];
+        let session = session_with(&entries);
+        let inventory = session.inventory();
+
+        assert_eq!(
+            inventory.entries.len() as u64,
+            session.snapshot().entry_count
+        );
+        let docs_rows: Vec<_> = inventory
+            .entries
+            .iter()
+            .filter(|dto| dto.path.as_str() == "docs")
+            .collect();
+        assert_eq!(
+            docs_rows.len(),
+            2,
+            "the file `docs` and the directory `docs` are distinct"
+        );
+        assert_ne!(docs_rows[0].id, docs_rows[1].id);
+        let twins: Vec<_> = inventory
+            .entries
+            .iter()
+            .filter(|dto| dto.path.as_str() == "twin.txt")
+            .collect();
+        assert_eq!(twins.len(), 2);
+        assert_ne!(twins[0].id, twins[1].id);
+    }
+
+    #[test]
+    fn inventory_tracks_a_reindex_and_reports_the_bumped_revision() {
+        let session = session_with(&[file("a.txt", 1, 1)]);
+        let before = session.inventory();
+        assert_eq!(before.revision, 1);
+        let kept_id = before.entries[0].id;
+
+        session.reindex(&[file("a.txt", 1, 1), file("b.txt", 2, 2)]);
+
+        let after = session.inventory();
+        assert_eq!(after.revision, 2);
+        assert_eq!(
+            after
+                .entries
+                .iter()
+                .map(|dto| dto.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.txt", "b.txt"]
+        );
+        assert_eq!(
+            after.entries[0].id, kept_id,
+            "an unchanged path keeps its id across the reindex the inventory reflects"
+        );
     }
 
     fn dummy_archive() -> arclain_core::Archive {

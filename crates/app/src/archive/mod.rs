@@ -193,6 +193,28 @@ pub struct EntryPage {
     pub entries: Vec<ArchiveEntryDto>,
 }
 
+/// Every entry of an open archive session -- files and directories, at
+/// every depth -- alongside the `revision` the list was computed against.
+///
+/// The whole-archive counterpart to [`EntryPage`]: where a page answers
+/// one directory of the tree, this is the tree itself, for the consumers
+/// that genuinely need all of it at once (a folder-tree panel's directory
+/// set, whole-archive aggregate totals, a drag-out's recursive folder
+/// expansion, a plugin event's entry snapshot). Entries are in
+/// depth-first tree order: each directory's children in the same
+/// name-sorted order [`crate::ArclainApp::list_entries`] uses as its
+/// baseline, parents before their contents.
+///
+/// Every row's [`EntryId`] is minted and owned by the session -- a
+/// frontend must never fabricate one, and ids taken from a superseded
+/// `revision` resolve to nothing rather than to some other entry.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ArchiveInventory {
+    pub session_id: ArchiveSessionId,
+    pub revision: u64,
+    pub entries: Vec<ArchiveEntryDto>,
+}
+
 /// A request to open and index an archive, the argument to
 /// [`crate::ArclainApp::start_open_archive`]. Not `Clone`/`Serialize`/
 /// `Deserialize`: `password`, when present, carries a live
