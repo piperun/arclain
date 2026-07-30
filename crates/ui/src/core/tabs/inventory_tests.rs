@@ -82,6 +82,42 @@ fn adopting_seats_the_rows_and_the_derived_legacy_projection_together() {
     }
 }
 
+/// The plugin bridge hands its event context this list verbatim, so its
+/// order and membership are what a plugin guest sees from
+/// `list_archive_files`: every entry the session indexed, directories
+/// included, in the facade's own depth-first order.
+#[test]
+fn adopting_seats_the_entry_paths_in_the_facades_own_order() {
+    let mut inventory = bound_inventory();
+    let mut fetched = inventory_of(1, 1, &["game/data.bin", "readme.txt"]);
+    fetched
+        .entries
+        .insert(0, dto(9, "game", EntryKind::Directory));
+    assert!(inventory.adopt(AdoptedInventory::prepare(fetched)));
+
+    assert_eq!(
+        inventory.entry_paths().as_slice(),
+        ["game", "game/data.bin", "readme.txt"],
+    );
+    assert_eq!(
+        inventory.entry_paths().len(),
+        inventory.entry_count(),
+        "one path per indexed entry -- the count a guest reads is this list's length"
+    );
+}
+
+/// An empty tab's path list keeps one shared identity across reads, for
+/// the same per-frame-allocation reason the legacy projection does.
+#[test]
+fn an_empty_inventorys_entry_paths_keep_a_stable_arc_identity() {
+    let inventory = bound_inventory();
+    assert!(inventory.entry_paths().is_empty());
+    assert!(Arc::ptr_eq(
+        &inventory.entry_paths(),
+        &TabInventory::default().entry_paths()
+    ));
+}
+
 /// The load-bearing guard: rows carry session-scoped `EntryId`s, so a
 /// late answer from the archive the tab held *before* must never seat
 /// under the new binding, however new its revision looks.

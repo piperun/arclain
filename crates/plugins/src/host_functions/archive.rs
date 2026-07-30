@@ -14,12 +14,12 @@ mod tests;
 pub(super) const MAX_ARCHIVE_PAGE_ITEMS: usize = 256;
 const MAX_ARCHIVE_PAGE_BYTES: usize = 1024 * 1024;
 
-pub(super) fn archive_entry_count(entries: &[arclain_core::ArchiveEntry]) -> u64 {
+pub(super) fn archive_entry_count(entries: &[String]) -> u64 {
     u64::try_from(entries.len()).unwrap_or(u64::MAX)
 }
 
 pub(super) fn archive_entry_page(
-    entries: &[arclain_core::ArchiveEntry],
+    entries: &[String],
     offset: u32,
     limit: u32,
 ) -> std::result::Result<Vec<String>, String> {
@@ -32,14 +32,14 @@ pub(super) fn archive_entry_page(
     let offset = usize::try_from(offset).map_err(|_| "archive page offset is invalid")?;
     let mut retained_bytes = 0usize;
     let mut page = Vec::with_capacity(limit.min(entries.len().saturating_sub(offset)));
-    for entry in entries.iter().skip(offset).take(limit) {
+    for path in entries.iter().skip(offset).take(limit) {
         retained_bytes = retained_bytes
-            .checked_add(entry.path.len())
+            .checked_add(path.len())
             .ok_or("archive page text budget overflowed")?;
         if retained_bytes > MAX_ARCHIVE_PAGE_BYTES {
             return Err("archive page exceeds the 1 MiB text budget".to_string());
         }
-        page.push(entry.path.clone());
+        page.push(path.clone());
     }
     Ok(page)
 }

@@ -145,7 +145,7 @@ enum HostMode {
 
 /// Per-event context the dispatch worker installs while a plugin's
 /// event handler runs. Carries snapshots of the *originating session's*
-/// state (archive path, password, entries list, session id), so
+/// state (archive path, password, entry paths, session id), so
 /// host-function calls inside the handler resolve to the session the
 /// event was fired for — never to whatever tab is currently active
 /// when the worker processes the event.
@@ -153,7 +153,15 @@ enum HostMode {
 pub struct EventContext {
     pub archive_path: String,
     pub password: Option<String>,
-    pub entries: Arc<Vec<arclain_core::ArchiveEntry>>,
+    /// In-archive entry paths, in the originating listing's own order --
+    /// exactly what [`crate::ActiveTabBridge::archive_entries`] returns
+    /// for the non-event path, and exactly what the guest can observe
+    /// (`list_archive_files` yields paths; `archive_file_count` yields
+    /// this list's length). Deliberately *not* the listing's full rows:
+    /// a guest can read no other field, so carrying sizes, checksums and
+    /// encryption flags in here would be a snapshot of data that exists
+    /// only to be dropped.
+    pub entries: Arc<Vec<String>>,
     /// The opaque `ArchiveSessionId` (raw `u64`) this event was fired
     /// for. `emit_metadata`'s event-context path resolves this back to
     /// its owning tab (if any) via `ActiveTabBridge::set_session_metadata`

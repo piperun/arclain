@@ -108,8 +108,8 @@ fn split_archive_path(path: &str) -> Result<(ArchivePath, String)> {
         Some(position) => (&normalized[..position], &normalized[position + 1..]),
         None => ("", normalized.as_str()),
     };
-    let directory = ArchivePath::parse(directory.to_string())
-        .map_err(|error| anyhow!("{}", error.summary))?;
+    let directory =
+        ArchivePath::parse(directory.to_string()).map_err(|error| anyhow!("{}", error.summary))?;
     Ok((directory, name.to_string()))
 }
 
@@ -241,11 +241,11 @@ impl FileOpsService {
     /// pre-facade path's own equivalent -- no `archive_path` -- reported
     /// the same way.
     pub fn read_text(&self, shared: &SharedState, origin: Arc<TabState>, path: String) {
-        let io: Arc<dyn TextReadIo> =
-            match (origin.archive_session_id.get(), shared.facade.clone()) {
-                (Some(session_id), Some(app)) => Arc::new(FacadeTextReadIo { app, session_id }),
-                _ => Arc::new(NoSessionTextReadIo),
-            };
+        let io: Arc<dyn TextReadIo> = match (origin.archive_session_id.get(), shared.facade.clone())
+        {
+            (Some(session_id), Some(app)) => Arc::new(FacadeTextReadIo { app, session_id }),
+            _ => Arc::new(NoSessionTextReadIo),
+        };
         self.read_text_with_io(shared, origin, path, io);
     }
 

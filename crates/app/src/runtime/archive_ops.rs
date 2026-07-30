@@ -261,7 +261,7 @@ fn build_archive_opened_event(
     source_path: &Path,
     kind: ArchiveKind,
     password: Option<String>,
-    entries: Arc<Vec<arclain_core::ArchiveEntry>>,
+    entries: Arc<Vec<String>>,
     archive_session_id: u64,
 ) -> PluginEvent {
     PluginEvent::OnArchiveOpen {
@@ -285,7 +285,7 @@ fn dispatch_archive_opened_event(
     source_path: &Path,
     kind: ArchiveKind,
     password: Option<String>,
-    entries: Arc<Vec<arclain_core::ArchiveEntry>>,
+    entries: Arc<Vec<String>>,
     archive_session_id: u64,
 ) {
     let Some(scheduler) = inner.plugin_event_scheduler() else {
@@ -491,7 +491,12 @@ pub(super) async fn run_open_archive(
                     &source_path,
                     info.archive_kind,
                     password_used,
-                    entries,
+                    // The event carries paths, not rows: a plugin guest
+                    // can observe nothing else about an entry (see
+                    // `PluginEvent::OnArchiveOpen::entries`), so the
+                    // projection happens once here rather than the
+                    // dispatch worker re-deriving it per event.
+                    Arc::new(entries.iter().map(|entry| entry.path.clone()).collect()),
                     session.id().into_raw(),
                 );
                 return;

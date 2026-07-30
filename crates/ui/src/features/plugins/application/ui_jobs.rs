@@ -1433,7 +1433,7 @@ mod tests {
         }
     }
 
-    fn origin_context(entries: Arc<Vec<arclain_core::ArchiveEntry>>) -> EventContext {
+    fn origin_context(entries: Arc<Vec<String>>) -> EventContext {
         EventContext {
             archive_path: "archive.zip".to_string(),
             password: Some("secret".to_string()),
@@ -1715,7 +1715,7 @@ mod tests {
         let queue = OrderedJobQueue::new(1);
         let old_entries = Arc::new(Vec::new());
         let new_entries = Arc::new(Vec::new());
-        let context = |entries: Arc<Vec<arclain_core::ArchiveEntry>>| EventContext {
+        let context = |entries: Arc<Vec<String>>| EventContext {
             archive_path: "archive.zip".to_string(),
             password: None,
             entries,

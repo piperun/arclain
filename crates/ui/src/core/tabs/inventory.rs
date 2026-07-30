@@ -33,6 +33,13 @@ fn empty_legacy_rows() -> Arc<Vec<arclain_core::ArchiveEntry>> {
     EMPTY.get_or_init(|| Arc::new(Vec::new())).clone()
 }
 
+/// The "no archive open" path list, shared for the same reason
+/// [`empty_legacy_rows`] is.
+fn empty_entry_paths() -> Arc<Vec<String>> {
+    static EMPTY: OnceLock<Arc<Vec<String>>> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::new(Vec::new())).clone()
+}
+
 /// One adopted whole-archive answer: the facade's rows plus the derived
 /// legacy projection, prepared *outside* any signal lock (see
 /// [`Self::prepare`]) and swapped in as one `Arc`.
@@ -54,11 +61,17 @@ pub struct AdoptedInventory {
     /// flat list now writes into the session and arrives here as a
     /// fresh, higher-revision inventory.
     legacy_rows: Arc<Vec<arclain_core::ArchiveEntry>>,
+    /// Every entry's archive-relative path, in the same depth-first
+    /// order as [`Self::entries`] -- what the plugin bridge's
+    /// `EventContext` carries, and the only shape of this list a plugin
+    /// guest can observe. Memoized here (once per adoption, never per
+    /// event) and handed out zero-copy behind its `Arc`.
+    entry_paths: Arc<Vec<String>>,
 }
 
 impl AdoptedInventory {
     /// Converts one fetched [`ArchiveInventory`] into its adopted form,
-    /// building the legacy projection row by row.
+    /// building the derived projections row by row.
     ///
     /// `O(entries)` with a string allocation per row -- deliberately a
     /// free function a producer runs on its own task *before* taking the
@@ -66,11 +79,19 @@ impl AdoptedInventory {
     /// concurrent render-thread read of the same signal.
     pub fn prepare(inventory: ArchiveInventory) -> Arc<Self> {
         let legacy_rows = Arc::new(inventory.entries.iter().map(core_entry_from_dto).collect());
+        let entry_paths = Arc::new(
+            inventory
+                .entries
+                .iter()
+                .map(|entry| entry.path.as_str().to_string())
+                .collect(),
+        );
         Arc::new(Self {
             session_id: inventory.session_id,
             revision: inventory.revision,
             entries: inventory.entries,
             legacy_rows,
+            entry_paths,
         })
     }
 }
@@ -148,6 +169,16 @@ impl TabInventory {
         match &self.rows {
             Some(rows) => rows.legacy_rows.clone(),
             None => empty_legacy_rows(),
+        }
+    }
+
+    /// Every held entry's archive-relative path in the facade's
+    /// depth-first tree order -- see [`AdoptedInventory::entry_paths`].
+    /// The shared empty list when no rows are held.
+    pub fn entry_paths(&self) -> Arc<Vec<String>> {
+        match &self.rows {
+            Some(rows) => rows.entry_paths.clone(),
+            None => empty_entry_paths(),
         }
     }
 

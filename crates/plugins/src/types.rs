@@ -150,12 +150,18 @@ pub enum PluginEvent {
         path: String,
         kind: ArchiveKind,
         password: Option<String>,
-        /// Listed entries for the originating session's archive, captured
-        /// at fire time. Lets `list_archive_files` in the plugin
-        /// handler return the originating session's entries instead of
-        /// whatever's active in the bridge when the worker gets
-        /// around to processing this event.
-        entries: std::sync::Arc<Vec<arclain_core::ArchiveEntry>>,
+        /// In-archive entry paths for the originating session's archive,
+        /// captured at fire time. Lets `list_archive_files` in the
+        /// plugin handler return the originating session's entries
+        /// instead of whatever's active in the bridge when the worker
+        /// gets around to processing this event.
+        ///
+        /// Paths rather than listing rows because paths are all a guest
+        /// can observe -- `list_archive_files` yields them and
+        /// `archive_file_count` yields this list's length -- and because
+        /// it makes this payload the same shape as the non-event path's
+        /// `ActiveTabBridge::archive_entries`.
+        entries: std::sync::Arc<Vec<String>>,
         /// The opaque `ArchiveSessionId` (raw `u64`) this event was fired
         /// for. See this enum's own doc comment.
         archive_session_id: u64,

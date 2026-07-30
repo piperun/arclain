@@ -8,15 +8,7 @@ use std::sync::Arc;
 #[test]
 fn archive_page_is_bounded_and_uses_stable_offsets() {
     let entries = (0..600)
-        .map(|index| arclain_core::ArchiveEntry {
-            path: format!("folder/file-{index:04}.bin"),
-            size: index as u64,
-            packed_size: index as u64,
-            is_dir: false,
-            encrypted: false,
-            modified: None,
-            crc32: None,
-        })
+        .map(|index| format!("folder/file-{index:04}.bin"))
         .collect::<Vec<_>>();
 
     assert_eq!(archive_entry_count(&entries), 600);
@@ -28,6 +20,62 @@ fn archive_page_is_bounded_and_uses_stable_offsets() {
         ]
     );
     assert!(archive_entry_page(&entries, 0, (MAX_ARCHIVE_PAGE_ITEMS + 1) as u32).is_err());
+}
+
+/// A per-event context answers `list_archive_files`/`archive_file_count`
+/// from the originating session's own entry paths, not from whichever
+/// archive the active-tab bridge happens to be showing when the worker
+/// gets around to the event. That routing is the whole reason the
+/// context carries an entry list at all.
+#[test]
+fn an_event_context_answers_archive_listing_from_its_own_entries() {
+    use crate::host_functions::EventContext;
+
+    let bridge = Arc::new(TestActiveTabBridge::default());
+    bridge.set_archive_path(Some("C:/library/whatever-is-active.zip".to_string()));
+    let capabilities = HashSet::from([PluginCapability::ArchiveMetadataRead]);
+    let directory = tempfile::tempdir().expect("create test directory");
+    let mut host = HostFunctions::new_with_plugin_log_dir(
+        "event-context-listing".to_string(),
+        capabilities,
+        0,
+        HashMap::new(),
+        directory.path(),
+    )
+    .expect("construct host functions");
+    host.set_active_tab_bridge(bridge.clone());
+    host.set_event_context(Some(EventContext {
+        archive_path: "C:/library/the-event-archive.zip".to_string(),
+        password: None,
+        entries: Arc::new(vec![
+            "docs".to_string(),
+            "docs/manual.txt".to_string(),
+            "readme.txt".to_string(),
+        ]),
+        archive_session_id: 7,
+    }));
+
+    assert_eq!(
+        Host::list_archive_files(&mut host).expect("the event context supplies the listing"),
+        vec![
+            "docs".to_string(),
+            "docs/manual.txt".to_string(),
+            "readme.txt".to_string(),
+        ],
+        "the guest must see the event's own entries, in the order they were captured"
+    );
+    assert_eq!(
+        Host::archive_file_count(&mut host).expect("the event context supplies the count"),
+        3,
+        "the count is this list's length -- directories included, as the listing itself is"
+    );
+    assert_eq!(
+        Host::current_archive_info(&mut host)
+            .expect("the event context supplies the archive")
+            .filename,
+        "the-event-archive.zip",
+        "the event's archive wins over whatever the bridge is showing"
+    );
 }
 
 #[test]
