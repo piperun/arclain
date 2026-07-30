@@ -5,10 +5,8 @@ use super::{image, layout, widgets};
 use crate::shared::components::carousel::{Carousel, CarouselEvent};
 use crate::shared::image_assets::ImageOwner;
 use crate::shared::{theme::ThemeColors, SharedState};
-use arclain_core::ContentCache;
 use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
-use std::sync::Arc;
 
 /// Render a plugin UI element and its children
 pub fn render_ui_element<'a, H: UiEventHandler + ?Sized>(
@@ -16,7 +14,6 @@ pub fn render_ui_element<'a, H: UiEventHandler + ?Sized>(
     element: &PluginUiElement,
     event_callback: &'a mut H,
     colors: &'a ThemeColors,
-    _content_cache: Option<&'a Arc<ContentCache>>,
     shared_state: Option<&'a SharedState>,
     plugin_id: Option<&'a str>,
 ) {
@@ -237,7 +234,6 @@ pub fn render_ui_elements<'a, H: UiEventHandler + ?Sized>(
     elements: &[PluginUiElement],
     event_callback: &'a mut H,
     colors: &'a ThemeColors,
-    _content_cache: Option<&'a Arc<ContentCache>>,
     shared_state: Option<&'a SharedState>,
     plugin_id: Option<&'a str>,
 ) {

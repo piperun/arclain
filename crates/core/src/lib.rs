@@ -59,9 +59,16 @@ pub use arclain_db::{
 // Cache + resource surface lives in `arclain_data`. The data crate
 // declares `MetadataReader`/`CacheIndex` traits and we implement them
 // on `LibraryService`/`CacheService` (see `services::library_service`
-// and `services::cache_service`). UI consumers reach this surface
-// through us — no direct `arclain_data` dep needed.
+// and `services::cache_service`). Consumers reach this surface through
+// us — no direct `arclain_data` dep needed.
+//
+// `CacheLimits` used to be re-exported here as well, so `crates/ui`'s
+// image tests could build a cache with the free-space floor zeroed. No
+// frontend builds a cache any more (images resolve through
+// `arclain_app`'s image surface), so the only remaining consumers —
+// `arclain_data`'s and `arclain_plugins`' own tests — name it on
+// `arclain_data` directly, which both crates already depend on.
 pub use arclain_data::{
-    CacheIndex, CacheLimits, ContentCache, DataRequest, DataService, DataSource,
-    DataSourceResolver, MetadataReader, ResolveError, ResourceConfig, ResourceManager,
+    CacheIndex, ContentCache, DataRequest, DataService, DataSource, DataSourceResolver,
+    MetadataReader, ResolveError, ResourceConfig, ResourceManager,
 };

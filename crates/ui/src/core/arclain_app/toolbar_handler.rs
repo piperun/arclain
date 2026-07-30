@@ -70,7 +70,6 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                             elements,
                             &mut callback,
                             theme_colors_ref,
-                            None,
                             Some(shared_ref),
                             Some(pid),
                         );

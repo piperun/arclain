@@ -24,20 +24,13 @@ impl PluginsFeature {
     }
 
     pub fn render(&mut self, ctx: &egui::Context, shared: &SharedState) {
-        let content_cache = shared.services.content_cache.clone();
         crate::features::plugins::application::request_plugin_snapshot(
             shared,
             &mut self.list_state,
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            plugins_page::render(
-                ui,
-                &shared.theme,
-                &mut self.list_state,
-                Some(shared),
-                content_cache,
-            );
+            plugins_page::render(ui, &shared.theme, &mut self.list_state, Some(shared));
         });
     }
 }

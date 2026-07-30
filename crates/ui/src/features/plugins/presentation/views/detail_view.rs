@@ -48,7 +48,6 @@ pub fn render(
     theme: &AppTheme,
     state: &mut PluginsListState,
     shared: Option<&SharedState>,
-    _content_cache: Option<&Arc<arclain_core::ContentCache>>,
 ) -> bool {
     let mut needs_refresh = false;
 

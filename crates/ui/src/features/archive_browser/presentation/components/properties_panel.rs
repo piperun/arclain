@@ -38,9 +38,6 @@ pub fn render(
 ) -> PropertiesPanelAction {
     let action = PropertiesPanelAction::None;
 
-    // Extract content_cache from services (no lock needed)
-    let content_cache = shared.and_then(|s| s.services.content_cache.clone());
-
     ui.vertical(|ui| {
         for (idx, section) in sections.iter().enumerate() {
             if idx > 0 {
@@ -54,7 +51,7 @@ pub fn render(
                         .with_header(PanelHeader::new(&group.title))
                         .with_body(PanelBody::Properties(group.properties.clone()));
 
-                    panel.render(ui, theme, shared, content_cache.as_ref());
+                    panel.render(ui, theme, shared);
                 }
                 PanelSection::Plugin { slot, document } => {
                     let plugin_id = slot.plugin_id();
@@ -80,7 +77,7 @@ pub fn render(
                             document: document.clone(),
                         });
 
-                    panel.render(ui, theme, shared, content_cache.as_ref());
+                    panel.render(ui, theme, shared);
                 }
             }
         }

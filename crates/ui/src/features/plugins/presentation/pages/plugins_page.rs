@@ -10,7 +10,6 @@ use crate::shared::image_assets::{ImageAssetStore, ImageOwner};
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use eframe::egui;
-use std::sync::Arc;
 
 /// Render the Plugin Page (coordinator)
 /// Dispatches to list_view or detail_view based on selection state
@@ -19,7 +18,6 @@ pub fn render(
     theme: &AppTheme,
     state: &mut PluginsListState,
     shared: Option<&SharedState>,
-    content_cache: Option<Arc<arclain_core::ContentCache>>,
 ) -> Option<SettingsAction> {
     let action = None;
     let selected_before_render = state.selected_plugin.clone();
@@ -45,11 +43,7 @@ pub fn render(
     if state.selected_plugin.is_some() {
         // Detail View
         let needs_refresh = crate::features::plugins::presentation::views::detail_view::render(
-            ui,
-            theme,
-            state,
-            shared,
-            content_cache.as_ref(),
+            ui, theme, state, shared,
         );
 
         if needs_refresh {

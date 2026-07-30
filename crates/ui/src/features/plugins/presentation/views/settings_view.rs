@@ -20,9 +20,6 @@ pub fn render(
         crate::features::plugins::application::request_plugin_snapshot(shared, plugins_state);
     }
 
-    // Extract content_cache from services (no lock needed)
-    let content_cache = shared.and_then(|s| s.services.content_cache.clone());
-
     // Render the plugin list
     // Render the unified plugin page
     // Note: plugins_page::render returns Option<SettingsAction>
@@ -31,6 +28,5 @@ pub fn render(
         theme,
         plugins_state,
         shared,
-        content_cache,
     )
 }

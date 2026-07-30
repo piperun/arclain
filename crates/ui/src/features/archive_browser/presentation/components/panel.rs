@@ -81,13 +81,7 @@ impl Panel {
     }
 
     /// Render the panel
-    pub fn render(
-        &self,
-        ui: &mut egui::Ui,
-        theme: &AppTheme,
-        shared: Option<&SharedState>,
-        content_cache: Option<&Arc<arclain_core::ContentCache>>,
-    ) {
+    pub fn render(&self, ui: &mut egui::Ui, theme: &AppTheme, shared: Option<&SharedState>) {
         let panel_frame = egui::Frame::NONE
             .fill(theme.colors.surface)
             .stroke(egui::Stroke::new(1.0, theme.colors.outline))
@@ -98,7 +92,7 @@ impl Panel {
             ui.set_min_width(ui.available_width());
             self.render_header(ui, theme);
             ui.add_space(8.0);
-            self.render_body(ui, theme, shared, content_cache);
+            self.render_body(ui, theme, shared);
         });
     }
 
@@ -137,13 +131,7 @@ impl Panel {
         });
     }
 
-    fn render_body(
-        &self,
-        ui: &mut egui::Ui,
-        theme: &AppTheme,
-        shared: Option<&SharedState>,
-        _content_cache: Option<&Arc<arclain_core::ContentCache>>,
-    ) {
+    fn render_body(&self, ui: &mut egui::Ui, theme: &AppTheme, shared: Option<&SharedState>) {
         for body in &self.body {
             match body {
                 PanelBody::Properties(props) => {
