@@ -82,8 +82,24 @@ pub struct ProcessPageState {
     /// The application's answer for the current draft. Recomputed
     /// through `ArclainApp::preview_pipeline` whenever
     /// [`Self::preview_dirty`] is set — never derived here, so what the
-    /// page shows is what the run was told.
+    /// page shows is what the run was told. Empty when the last preview
+    /// was *refused* rather than answered; see [`Self::preview_error`].
     pub preview: PipelinePreviewDto,
+    /// Why the application refused to preview the draft at all, if it
+    /// did — in practice an Organize step whose rule has not been picked
+    /// yet, which is what the "+ Organize" button produces.
+    ///
+    /// Deliberately its own field rather than an extra entry pushed into
+    /// [`Self::preview`]'s `global_warnings`. A warning is something the
+    /// application *said about* a pipeline it successfully described; a
+    /// refusal is the application declining to describe it at all, and
+    /// the two have different consequences (a warned pipeline is
+    /// runnable, a refused one is not). Forging a `PipelinePreviewDto`
+    /// to carry the refusal would make them indistinguishable to
+    /// everything downstream — including a test that could then no
+    /// longer tell "the application warned" from "the page invented a
+    /// warning".
+    pub preview_error: Option<String>,
     pub preview_dirty: bool,
     pub is_running: bool,
     pub last_result_summary: Option<String>,

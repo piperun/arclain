@@ -14,9 +14,13 @@
 //! * the page's Cancel reaches the operation registry,
 //! * presets and the interrupted-run banner are the application's
 //!   answers, not the page's own file/database reads.
+//!
+//! One test drives the real `render` through a headless egui harness
+//! instead, because what it pins -- that a click beats the frame's own
+//! scheduled work -- only exists in `render`'s return value.
 
 mod common;
-use common::create_test_shared_state_with_facade;
+use common::{create_test_shared_state, create_test_shared_state_with_facade};
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -29,6 +33,8 @@ use arclain_ui::core::operations::process_runner;
 use arclain_ui::features::process::view::{handle_process_action, ProcessAction};
 use arclain_ui::features::process::ProcessPageState;
 use arclain_ui::shared::SharedState;
+use egui_kittest::kittest::Queryable as _;
+use egui_kittest::Harness;
 
 /// Builds a real ZIP at `dir/name`; the pipeline reads it through the
 /// application's own backend selection, so no override is needed.
@@ -218,8 +224,16 @@ fn a_folder_input_is_expanded_at_run_time_not_at_preview_time() {
 /// why, rather than silently blank. Execute is gated on the preview
 /// having entries, so a blank panel would also grey the button out with
 /// no reason attached to it.
+///
+/// The refusal lands in its own field, **not** in the application's
+/// `global_warnings`. A warning is something the application said about
+/// a pipeline it did describe; a refusal is it declining to describe one
+/// at all, and only the first leaves the pipeline runnable. Forging a
+/// `PipelinePreviewDto` to carry the refusal would make the page's own
+/// invention indistinguishable from the application's answer -- and this
+/// test could no longer tell them apart either.
 #[test]
-fn a_step_the_application_refuses_is_reported_in_the_preview() {
+fn a_step_the_application_refuses_is_reported_as_a_refusal_not_a_warning() {
     let (temp, shared) = create_test_shared_state_with_facade();
     let mut state = seeded_page();
 
@@ -237,15 +251,105 @@ fn a_step_the_application_refuses_is_reported_in_the_preview() {
     handle_process_action(&mut state, ProcessAction::RefreshPreview, &shared);
 
     assert!(state.preview.entries.is_empty());
-    assert_eq!(
-        state.preview.global_warnings.len(),
-        1,
-        "the rejection must reach the panel: {:?}",
+    assert!(
+        state.preview_error.is_some(),
+        "the refusal must reach the panel"
+    );
+    assert!(
+        state.preview.global_warnings.is_empty(),
+        "a refusal must not be dressed up as something the application warned about: {:?}",
         state.preview.global_warnings
     );
     assert!(
         !state.preview_dirty,
         "a rejected preview must not re-fire the action every frame"
+    );
+
+    // And it clears once the draft becomes describable again.
+    state.draft.steps.pop();
+    state.mark_dirty();
+    handle_process_action(&mut state, ProcessAction::RefreshPreview, &shared);
+    assert!(state.preview_error.is_none());
+    assert_eq!(state.preview.entries.len(), 1);
+}
+
+// ── which intent wins a frame ───────────────────────────────────────────
+
+/// A click beats the frame's own scheduled work.
+///
+/// `render` returns at most one action per frame, and the page
+/// self-schedules its cache loads and preview refreshes through that
+/// same return value. Holding both in one slot let a self-scheduled
+/// `RefreshPreview` -- armed by *any* draft edit -- take the slot and
+/// drop the user's click on the floor. A load re-fires next frame; a
+/// click does not come back.
+#[test]
+fn a_click_beats_the_frame_s_own_scheduled_refresh() {
+    struct Stage {
+        shared: SharedState,
+        state: ProcessPageState,
+        emitted: Vec<ProcessAction>,
+    }
+
+    // No facade: `render` only reads signals and the theme, and the
+    // point here is what it *returns*, not what a dispatch would do.
+    let mut state = seeded_page();
+    // A preview already answered, so Execute is enabled...
+    state.preview = arclain_app::process::PipelinePreviewDto {
+        entries: vec![arclain_app::process::PipelinePreviewEntryDto {
+            input: PathBuf::from("RJ123456.zip"),
+            operations: vec!["Flatten nested archives".to_string()],
+            expected_output: Some(PathBuf::from("out/RJ123456")),
+            warnings: Vec::new(),
+        }],
+        global_warnings: Vec::new(),
+    };
+    state.draft.steps = vec![PipelineStepDto::Flatten {
+        strip_common_prefix: false,
+        max_depth: 1,
+    }];
+    // ... and an edit since that preview, so the refresh is armed.
+    state.mark_dirty();
+
+    let mut harness = Harness::new_state(
+        |ctx, stage: &mut Stage| {
+            if let Some(action) =
+                arclain_ui::features::process::view::render(ctx, &stage.shared, &mut stage.state)
+            {
+                stage.emitted.push(action);
+            }
+        },
+        Stage {
+            shared: create_test_shared_state(),
+            state,
+            emitted: Vec::new(),
+        },
+    );
+
+    harness.run();
+    assert!(
+        matches!(
+            harness.state().emitted.last(),
+            Some(ProcessAction::RefreshPreview)
+        ),
+        "with nothing clicked, the armed refresh is what render offers: {:?}",
+        harness.state().emitted
+    );
+
+    let before = harness.state().emitted.len();
+    harness.get_by_label_contains("Execute").click();
+    harness.run();
+
+    let after_click = &harness.state().emitted[before..];
+    assert!(
+        after_click
+            .iter()
+            .any(|action| matches!(action, ProcessAction::RunPipeline)),
+        "the Execute click must not be swallowed by the still-armed refresh: {after_click:?}"
+    );
+    assert!(
+        harness.state().state.preview_dirty,
+        "the refresh is still armed and will fire on a later frame -- it is deferred, not lost"
     );
 }
 

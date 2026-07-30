@@ -82,22 +82,30 @@ pub fn render(
     shared: &SharedState,
     state: &mut ProcessPageState,
 ) -> Option<ProcessAction> {
+    // What the user asked for this frame. Kept strictly separate from
+    // the background work below and always allowed to win: `render`
+    // returns one action per frame, so folding the two into one slot
+    // would let a self-scheduled refresh swallow a click. The loads are
+    // idempotent and re-fire on the next frame; a click does not come
+    // back.
     let mut emitted: Option<ProcessAction> = None;
 
-    // Auto-fire initial cache loads and the preview refresh. Each is
-    // idempotent and guarded by its own "already have it" check, so
-    // subsequent renders skip these branches. Only one fires per frame
-    // and the rest follow on later frames — a few frames of warm-up is
+    // Self-scheduled work: initial cache loads and the preview refresh.
+    // Each is guarded by its own "already have it" check, so subsequent
+    // renders skip these branches. Only one is offered per frame and the
+    // rest follow on later frames — a few frames of warm-up is
     // imperceptible.
-    if state.interrupted_run_count.is_none() {
-        emitted = Some(ProcessAction::LoadInterruptedCount);
+    let background = if state.interrupted_run_count.is_none() {
+        Some(ProcessAction::LoadInterruptedCount)
     } else if state.cached_org_rules.is_none() {
-        emitted = Some(ProcessAction::LoadOrganizationRules);
+        Some(ProcessAction::LoadOrganizationRules)
     } else if state.presets.is_none() {
-        emitted = Some(ProcessAction::LoadPresets);
+        Some(ProcessAction::LoadPresets)
     } else if state.preview_dirty {
-        emitted = Some(ProcessAction::RefreshPreview);
-    }
+        Some(ProcessAction::RefreshPreview)
+    } else {
+        None
+    };
 
     // Sync is_running from the signal
     let run_state = shared.signals().process_run.get();
@@ -165,7 +173,8 @@ pub fn render(
 
     egui::CentralPanel::default().show(ctx, |ui| render_pipeline_panel(ui, shared, state));
 
-    emitted
+    // A click beats the frame's own scheduled work, every time.
+    emitted.or(background)
 }
 
 fn render_input_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageState) {
@@ -418,7 +427,21 @@ fn render_preview_panel(
     Text::new("Preview").size(16.0).strong().show(ui);
     ui.add_space(6.0);
 
-    if state.preview.entries.is_empty() && state.preview.global_warnings.is_empty() {
+    // A refusal is rendered as its own thing, not as one more line in
+    // the application's warning list: "this pipeline cannot be described
+    // at all" and "here is a description, with a caveat" are different
+    // answers, and only the second one leaves the pipeline runnable.
+    if let Some(reason) = &state.preview_error {
+        let line = format!(
+            "{} Cannot preview this pipeline: {reason}",
+            egui_phosphor::regular::PROHIBIT
+        );
+        Text::new(&line)
+            .color(shared.theme.colors.error)
+            .strong()
+            .show(ui);
+        ui.add_space(4.0);
+    } else if state.preview.entries.is_empty() && state.preview.global_warnings.is_empty() {
         Text::new("Add input and operations to see preview")
             .muted()
             .show(ui);
@@ -659,20 +682,25 @@ pub fn handle_process_action(
             // must not re-fire this action every frame.
             state.preview_dirty = false;
             match runtime.block_on(app.preview_pipeline(state.preview_request())) {
-                Ok(preview) => state.preview = preview,
+                Ok(preview) => {
+                    state.preview = preview;
+                    state.preview_error = None;
+                }
                 Err(error) => {
                     // A half-built pipeline is previewable, so the only
                     // rejections here are steps that cannot run at all
                     // -- most often an Organize step whose rule has not
-                    // been picked yet. Shown as the panel's own warning
-                    // rather than blanking it: an empty preview would
-                    // also disable Execute, leaving the user with a
-                    // greyed-out button and no reason for it.
+                    // been picked yet. Recorded as a refusal in its own
+                    // right rather than blanking the panel (an empty
+                    // preview would also disable Execute, leaving a
+                    // greyed-out button with no reason attached) and
+                    // rather than being pushed into the application's
+                    // own warning list, which would make the page's
+                    // invention indistinguishable from what the
+                    // application actually said.
                     tracing::debug!("[process] preview_pipeline was rejected: {error:?}");
-                    state.preview = arclain_app::process::PipelinePreviewDto {
-                        entries: Vec::new(),
-                        global_warnings: vec![error.summary.clone()],
-                    };
+                    state.preview = Default::default();
+                    state.preview_error = Some(error.summary.clone());
                 }
             }
         }
