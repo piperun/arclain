@@ -224,7 +224,8 @@ fn a_fresh_listing_requests_the_whole_root_directory_by_name() {
 #[test]
 fn navigating_re_points_the_request_and_drops_the_page_it_no_longer_answers() {
     let mut listing = listing();
-    assert!(listing.adopt_page(page("", 1, 1, &["readme.txt"])));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("", 1, 1, &["readme.txt"])));
     assert_eq!(listing.entries().len(), 1);
 
     assert!(listing.descend("game"));
@@ -240,7 +241,8 @@ fn navigating_re_points_the_request_and_drops_the_page_it_no_longer_answers() {
 fn a_refused_navigation_leaves_the_request_and_page_alone() {
     let mut listing = listing();
     assert!(listing.descend("game"));
-    assert!(listing.adopt_page(page("game", 1, 1, &["Game.exe"])));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("game", 1, 1, &["Game.exe"])));
 
     assert!(!listing.descend(""));
     assert!(!listing.go_to("game"));
@@ -252,9 +254,10 @@ fn a_refused_navigation_leaves_the_request_and_page_alone() {
 fn a_page_for_a_different_directory_is_refused() {
     let mut listing = listing();
     assert!(listing.descend("game"));
+    let generation = listing.begin_loading();
 
     assert!(
-        !listing.adopt_page(page("", 1, 1, &["readme.txt"])),
+        !listing.adopt_page(generation, page("", 1, 1, &["readme.txt"])),
         "a root listing landing late must not be shown as game/'s contents"
     );
     assert!(listing.page().is_none());
@@ -263,15 +266,19 @@ fn a_page_for_a_different_directory_is_refused() {
 #[test]
 fn a_page_older_than_the_one_held_for_the_same_session_is_refused() {
     let mut listing = listing();
-    assert!(listing.adopt_page(page("", 5, 1, &["current.txt"])));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("", 5, 1, &["current.txt"])));
 
-    assert!(!listing.adopt_page(page("", 4, 1, &["stale.txt"])));
+    let generation = listing.begin_loading();
+    assert!(!listing.adopt_page(generation, page("", 4, 1, &["stale.txt"])));
     assert_eq!(listing.entries()[0].name, "current.txt");
 
-    assert!(listing.adopt_page(page("", 5, 1, &["same-revision-refresh.txt"])));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("", 5, 1, &["same-revision-refresh.txt"])));
     assert_eq!(listing.entries()[0].name, "same-revision-refresh.txt");
 
-    assert!(listing.adopt_page(page("", 6, 1, &["newer.txt"])));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("", 6, 1, &["newer.txt"])));
     assert_eq!(listing.entries()[0].name, "newer.txt");
 }
 
@@ -283,9 +290,11 @@ fn a_page_older_than_the_one_held_for_the_same_session_is_refused() {
 #[test]
 fn a_page_from_another_session_is_refused_however_new_it_looks() {
     let mut listing = listing();
-    assert!(listing.adopt_page(page("", 1, 1, &["this-archive.txt"])));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("", 1, 1, &["this-archive.txt"])));
 
-    assert!(!listing.adopt_page(page("", 99, 2, &["other-archive.txt"])));
+    let generation = listing.begin_loading();
+    assert!(!listing.adopt_page(generation, page("", 99, 2, &["other-archive.txt"])));
     assert_eq!(listing.entries()[0].name, "this-archive.txt");
 }
 
@@ -295,7 +304,8 @@ fn a_page_from_another_session_is_refused_however_new_it_looks() {
 fn a_sessionless_listing_adopts_nothing() {
     let mut listing = TabListing::default();
     assert_eq!(listing.session(), None);
-    assert!(!listing.adopt_page(page("", 1, 1, &["anything.txt"])));
+    let generation = listing.begin_loading();
+    assert!(!listing.adopt_page(generation, page("", 1, 1, &["anything.txt"])));
     assert!(listing.page().is_none());
 }
 
@@ -305,10 +315,12 @@ fn a_sessionless_listing_adopts_nothing() {
 #[test]
 fn rebinding_to_a_new_session_lets_its_first_page_seat_at_revision_one() {
     let mut listing = listing();
-    assert!(listing.adopt_page(page("", 7, 1, &["old-archive.txt"])));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("", 7, 1, &["old-archive.txt"])));
 
     listing = TabListing::for_session(Some(ArchiveSessionId::from_raw(2)));
-    assert!(listing.adopt_page(page("", 1, 2, &["new-archive.txt"])));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("", 1, 2, &["new-archive.txt"])));
     assert_eq!(listing.entries()[0].name, "new-archive.txt");
 }
 
@@ -353,10 +365,16 @@ fn the_listing_exposes_the_same_history_predicates_the_toolbar_reads() {
 #[test]
 fn a_failed_listing_is_distinguishable_from_an_empty_directory() {
     let mut empty = listing();
-    assert!(empty.adopt_page(page("", 1, 1, &[])));
+    let generation = empty.begin_loading();
+    assert!(empty.adopt_page(generation, page("", 1, 1, &[])));
 
     let mut failed = listing();
-    assert!(failed.fail(&ArchivePath::root(), listing_error("backend exploded")));
+    let generation = failed.begin_loading();
+    assert!(failed.fail(
+        generation,
+        &ArchivePath::root(),
+        listing_error("backend exploded")
+    ));
 
     // Indistinguishable on the transitional accessor, by design -- that is
     // what keeps un-migrated consumers behaving exactly as before.
@@ -388,10 +406,16 @@ fn a_failed_listing_is_distinguishable_from_an_empty_directory() {
 #[test]
 fn stale_rows_and_the_failure_that_stranded_them_are_both_observable() {
     let mut listing = listing();
-    assert!(listing.adopt_page(page("", 3, 1, &["readme.txt"])));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("", 3, 1, &["readme.txt"])));
 
+    let generation = listing.begin_loading();
     assert!(
-        listing.fail(&ArchivePath::root(), listing_error("refresh failed")),
+        listing.fail(
+            generation,
+            &ArchivePath::root(),
+            listing_error("refresh failed")
+        ),
         "a failure for the directory being browsed must be recorded, not dropped"
     );
 
@@ -410,7 +434,8 @@ fn stale_rows_and_the_failure_that_stranded_them_are_both_observable() {
 #[test]
 fn a_refresh_in_flight_can_keep_the_previous_rows_on_screen() {
     let mut listing = listing();
-    assert!(listing.adopt_page(page("", 1, 1, &["readme.txt"])));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("", 1, 1, &["readme.txt"])));
 
     listing.begin_loading();
 
@@ -430,17 +455,22 @@ fn a_refresh_in_flight_can_keep_the_previous_rows_on_screen() {
 fn a_recorded_failure_and_a_refused_one_are_distinguishable() {
     let mut listing = listing();
     assert!(listing.descend("game"));
+    let generation = listing.begin_loading();
     let current = listing.directory().clone();
     let left_behind = ArchivePath::root();
 
     assert!(
-        !listing.fail(&left_behind, listing_error("root failed, too late")),
+        !listing.fail(
+            generation,
+            &left_behind,
+            listing_error("root failed, too late")
+        ),
         "a failure for a directory no longer browsed must be refused"
     );
-    assert_eq!(listing.status(), &RequestStatus::Idle);
+    assert!(listing.is_loading(), "a refused failure changes nothing");
     assert_eq!(listing.failure(), None);
 
-    assert!(listing.fail(&current, listing_error("game failed")));
+    assert!(listing.fail(generation, &current, listing_error("game failed")));
     assert_eq!(
         listing.failure().map(|error| error.summary.as_str()),
         Some("game failed")
@@ -470,9 +500,14 @@ fn a_first_listing_in_flight_is_neither_empty_nor_failed() {
 #[test]
 fn a_page_arriving_clears_both_the_in_flight_marker_and_an_earlier_failure() {
     let mut listing = listing();
-    assert!(listing.fail(&ArchivePath::root(), listing_error("first attempt")));
-    listing.begin_loading();
-    assert!(listing.adopt_page(page("", 1, 1, &["readme.txt"])));
+    let generation = listing.begin_loading();
+    assert!(listing.fail(
+        generation,
+        &ArchivePath::root(),
+        listing_error("first attempt")
+    ));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("", 1, 1, &["readme.txt"])));
 
     assert!(!listing.is_loading());
     assert_eq!(
@@ -486,8 +521,14 @@ fn a_page_arriving_clears_both_the_in_flight_marker_and_an_earlier_failure() {
 #[test]
 fn navigating_discards_the_rows_and_the_status_together() {
     let mut listing = listing();
-    assert!(listing.adopt_page(page("", 1, 1, &["readme.txt"])));
-    assert!(listing.fail(&ArchivePath::root(), listing_error("root refresh failed")));
+    let generation = listing.begin_loading();
+    assert!(listing.adopt_page(generation, page("", 1, 1, &["readme.txt"])));
+    let generation = listing.begin_loading();
+    assert!(listing.fail(
+        generation,
+        &ArchivePath::root(),
+        listing_error("root refresh failed")
+    ));
 
     assert!(listing.descend("game"));
     assert!(
@@ -505,13 +546,97 @@ fn navigating_discards_the_rows_and_the_status_together() {
 #[test]
 fn a_retry_that_also_fails_replaces_the_earlier_failure() {
     let mut listing = listing();
-    assert!(listing.fail(&ArchivePath::root(), listing_error("first attempt")));
-    assert!(listing.fail(&ArchivePath::root(), listing_error("second attempt")));
+    let generation = listing.begin_loading();
+    assert!(listing.fail(
+        generation,
+        &ArchivePath::root(),
+        listing_error("first attempt")
+    ));
+    let generation = listing.begin_loading();
+    assert!(listing.fail(
+        generation,
+        &ArchivePath::root(),
+        listing_error("second attempt")
+    ));
 
     assert_eq!(
         listing.failure().map(|error| error.summary.as_str()),
         Some("second attempt")
     );
+}
+
+// =========================================================================
+// request identity -- late replies of superseded requests are dropped
+// =========================================================================
+
+/// One direction of the late-reply ordering hole: a slow request fails
+/// *after* a newer request already refreshed the rows. Without the
+/// generation guard the stale failure would mark freshly refreshed rows
+/// as failed -- a renderer would draw "couldn't refresh" over current
+/// data.
+#[test]
+fn a_superseded_requests_late_failure_does_not_mark_fresh_rows_failed() {
+    let mut listing = listing();
+    let first = listing.begin_loading();
+    let second = listing.begin_loading();
+    assert!(listing.adopt_page(second, page("", 9, 1, &["fresh.txt"])));
+    assert_eq!(listing.status(), &RequestStatus::Idle);
+
+    assert!(
+        !listing.fail(
+            first,
+            &ArchivePath::root(),
+            listing_error("request 1, very late")
+        ),
+        "a superseded request's failure must be dropped, not recorded"
+    );
+    assert_eq!(listing.status(), &RequestStatus::Idle);
+    assert_eq!(listing.failure(), None);
+    assert_eq!(listing.entries()[0].name, "fresh.txt");
+}
+
+/// The mirror direction: a slow request *succeeds* after a newer request
+/// already began. Without the generation guard the stale success would
+/// seat its rows and erase the newer request's genuine `Loading`.
+#[test]
+fn a_superseded_requests_late_success_does_not_erase_a_newer_requests_loading() {
+    let mut listing = listing();
+    let first = listing.begin_loading();
+    let _second = listing.begin_loading();
+
+    assert!(
+        !listing.adopt_page(first, page("", 1, 1, &["stale.txt"])),
+        "a superseded request's success must be dropped, not seated"
+    );
+    assert!(
+        listing.is_loading(),
+        "the newer request's in-flight marker must survive the late reply"
+    );
+    assert!(listing.page().is_none());
+}
+
+/// Navigating supersedes whatever was in flight -- including when the
+/// user navigates away and back, which restores the *directory* the
+/// stale reply answers. The directory guard alone cannot catch that
+/// case; the generation does.
+#[test]
+fn navigating_away_and_back_still_drops_the_in_flight_replies_it_left_behind() {
+    let mut listing = listing();
+    let stale = listing.begin_loading();
+    assert!(listing.descend("game"));
+    assert!(listing.back());
+    assert_eq!(listing.directory(), &ArchivePath::root());
+
+    assert!(
+        !listing.adopt_page(stale, page("", 1, 1, &["stale.txt"])),
+        "the round trip restored the directory, but not the request"
+    );
+    assert!(
+        !listing.fail(stale, &ArchivePath::root(), listing_error("stale failure")),
+        "same for the failure side"
+    );
+    assert!(listing.page().is_none());
+    assert_eq!(listing.status(), &RequestStatus::Idle);
 }
 
 // =========================================================================

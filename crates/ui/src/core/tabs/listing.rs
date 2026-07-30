@@ -260,6 +260,23 @@ pub enum RequestStatus {
     Failed(Arc<ApplicationError>),
 }
 
+/// Names one listing request so its eventual reply -- success or failure
+/// -- can be told apart from a newer request's. Minted by
+/// [`TabListing::begin_loading`] and handed back to
+/// [`TabListing::adopt_page`]/[`TabListing::fail`]; a reply carrying a
+/// superseded token is dropped rather than applied.
+///
+/// Identity is scoped to one `TabListing` *value*: the counter restarts
+/// when a tab rebinds to a new session via [`TabListing::for_session`],
+/// so a token minted against the old value can numerically collide with
+/// the new value's counter. That is deliberate and safe -- the session
+/// guard [`TabListing::adopt_page`] applies after the generation check
+/// refuses any cross-session reply regardless, so the token only needs
+/// to order requests *within* one binding, which a per-value counter
+/// does exactly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ListingGeneration(u64);
+
 /// One tab's archive listing: which session it is listing, where it is
 /// browsing, the request that describes what its browser is showing, the
 /// rows the session last returned for it, and what the latest request is
@@ -286,6 +303,12 @@ pub struct TabListing {
     /// refcount rather than every row of the directory it is showing.
     rows: Option<Arc<EntryPage>>,
     status: RequestStatus,
+    /// Which request the listing currently cares about -- bumped by
+    /// [`Self::begin_loading`] (a new fetch) and by every successful
+    /// navigation (whatever was in flight no longer answers what is
+    /// being browsed). The reply-ordering guard [`Self::adopt_page`] and
+    /// [`Self::fail`] compare their token against.
+    generation: u64,
 }
 
 impl Default for TabListing {
@@ -310,6 +333,7 @@ impl TabListing {
             request: ListEntriesRequest::whole_directory(ArchivePath::root()),
             rows: None,
             status: RequestStatus::Idle,
+            generation: 0,
         }
     }
 
@@ -388,38 +412,51 @@ impl TabListing {
     }
 
     /// Records that a listing for the current request is in flight,
-    /// without touching the rows.
+    /// without touching the rows, and mints the [`ListingGeneration`]
+    /// naming this attempt -- the token its eventual
+    /// [`Self::adopt_page`]/[`Self::fail`] must present.
     ///
     /// Whether the previous answer stays on screen while it runs is the
     /// caller's choice, not this type's: rows and status are independent
     /// fields, so "refreshing, previous rows still shown" is a state the
     /// model can hold. Navigation is the one thing that clears rows on its
     /// own, because a new directory's listing has nothing to keep.
-    pub fn begin_loading(&mut self) {
+    pub fn begin_loading(&mut self) -> ListingGeneration {
+        self.generation += 1;
         self.status = RequestStatus::Loading;
+        ListingGeneration(self.generation)
     }
 
-    /// Stores `page` as the answer to the current request.
+    /// Stores `page` as the answer to the request `generation` names.
     ///
     /// Refuses (reporting `false`) any page that cannot be the answer to
     /// what is being browsed now:
     ///
+    /// * one whose `generation` a newer [`Self::begin_loading`] or a
+    ///   navigation has superseded -- the late reply of an overtaken
+    ///   request. Without this, a slow request's success could land
+    ///   *after* a newer request already answered (silently replacing
+    ///   fresh rows and erasing the newer request's own status), purely
+    ///   on reply order;
     /// * one from a session this listing does not belong to -- a reply
     ///   for the archive the tab held *before* the current one, whose
     ///   `EntryId`s are meaningless (and actively dangerous, being
-    ///   session-scoped) against the session it holds now;
-    /// * one listing a different directory, from an in-flight request
-    ///   whose reply lands after navigation moved on;
-    /// * one older than the rows already held, from a refresh overtaken by
-    ///   a newer one.
-    ///
-    /// Without these the browser would flip to a stale archive,
-    /// directory, or revision purely on reply order.
+    ///   session-scoped) against the session it holds now. This guard is
+    ///   also what makes the per-value generation counter sufficient:
+    ///   a token minted against a previous binding cannot smuggle a
+    ///   foreign page in through a numeric collision;
+    /// * one listing a different directory, from an in-flight reply
+    ///   racing the very navigation that superseded it;
+    /// * one older than the rows already held, from a refresh overtaken
+    ///   by a newer one that already answered.
     ///
     /// An accepted page also returns the status to
     /// [`RequestStatus::Idle`]: a successful listing supersedes whatever
     /// the previous attempt was doing, including a failure.
-    pub fn adopt_page(&mut self, page: EntryPage) -> bool {
+    pub fn adopt_page(&mut self, generation: ListingGeneration, page: EntryPage) -> bool {
+        if generation.0 != self.generation {
+            return false;
+        }
         if self.session != Some(page.session_id) {
             return false;
         }
@@ -436,13 +473,19 @@ impl TabListing {
         true
     }
 
-    /// Records that listing `directory` failed, and reports whether that
-    /// failure was for the directory currently being browsed.
+    /// Records that the listing attempt `generation` names failed for
+    /// `directory`, and reports whether that failure is about what is
+    /// being browsed now.
     ///
-    /// `directory` is what the failed request asked for, so a reply landing
-    /// after navigation moved on is refused (`false`) the same way
-    /// [`Self::adopt_page`] refuses one -- that is the *only* thing `false`
-    /// means here.
+    /// Refused (`false`) when a newer [`Self::begin_loading`] or a
+    /// navigation has superseded `generation`, or when `directory` is no
+    /// longer the one being browsed. The generation guard is what
+    /// [`Self::adopt_page`] has always needed mirrored here: an
+    /// `ApplicationError` carries no revision, so without a request
+    /// identity a superseded request's late failure would mark rows a
+    /// *newer* request just refreshed as failed -- and its mirror, a late
+    /// failure erasing a newer request's genuine `Loading`, is the same
+    /// hole from the other side.
     ///
     /// **Rows already held are kept.** They are the session's last
     /// successful answer for this exact directory, and replacing them with
@@ -457,7 +500,15 @@ impl TabListing {
     /// one. A superseded-revision id resolves to nothing rather than to
     /// some other entry, so the worst case is a refused operation, not a
     /// wrong-file delete.
-    pub fn fail(&mut self, directory: &ArchivePath, error: ApplicationError) -> bool {
+    pub fn fail(
+        &mut self,
+        generation: ListingGeneration,
+        directory: &ArchivePath,
+        error: ApplicationError,
+    ) -> bool {
+        if generation.0 != self.generation {
+            return false;
+        }
         if directory != &self.request.directory {
             return false;
         }
@@ -505,7 +556,11 @@ impl TabListing {
     /// Runs one navigation and, if it moved, re-points the request at the
     /// new directory and discards whatever answered the old one -- rows,
     /// an in-flight marker, or a failure alike, since none of them say
-    /// anything about the directory now being browsed.
+    /// anything about the directory now being browsed. The generation
+    /// advances too: a reply still in flight for the old directory is a
+    /// superseded request's reply now, dropped by its own token rather
+    /// than relying solely on the directory comparison (which a
+    /// navigate-away-and-back would defeat).
     fn navigated<A>(
         &mut self,
         navigate: impl FnOnce(&mut ArchiveNavigation, A) -> bool,
@@ -518,6 +573,7 @@ impl TabListing {
         self.request.offset = 0;
         self.rows = None;
         self.status = RequestStatus::Idle;
+        self.generation += 1;
         true
     }
 }
