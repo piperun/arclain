@@ -174,11 +174,17 @@
 //!   `PluginAction::CloseDialog` clears the `open_dialog` entry the
 //!   facade-rendered dialog is keyed on. The per-frame dialog reconcile
 //!   is what makes the second direction safe.
-//! - **`MainPage`** -- not migrated. Drawn by the plugin detail view,
-//!   which holds a per-plugin `cached_main_layout` for exactly the reason
-//!   a slot makes unnecessary. Migrating it is a
-//!   [`PluginSlot::MainPage`] declaration plus deleting that cache and
-//!   the two invalidation sites that keep it honest.
+//! - **`MainPage`** -- migrated. Declared and drawn by
+//!   `crate::features::plugins::presentation::views::detail_view::
+//!   render_plugin_ui`, dispatched through
+//!   `crate::features::plugins::presentation::document_dispatch`. The
+//!   per-plugin `cached_main_layout` that view used to hold, and the two
+//!   sites that invalidated it, are gone: a slot holds the document, so
+//!   there was nothing left for a second cache to do. Its host is
+//!   window-scoped, so unlike a panel nothing sweeps it when a tab
+//!   closes. The plugin-page coordinator releases it when its plugin is
+//!   no longer selected; enable toggles and refresh also close it through
+//!   [`PluginSessions::close_plugin`] and [`PluginSessions::close_all`].
 //! - **`PluginButton`** -- migrated. Declared by
 //!   `crate::core::arclain_app::toolbar_handler`, which owns the whole
 //!   plugin half of the toolbar: it resolves the slot, draws the named

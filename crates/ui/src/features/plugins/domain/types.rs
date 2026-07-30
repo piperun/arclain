@@ -1,9 +1,7 @@
 //! Plugin UI type definitions
 
-use arclain_plugins::types::PluginLayout;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 static NEXT_PLUGIN_UI_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -105,13 +103,6 @@ pub struct PluginsListState {
     pub show_permissions: bool,
     /// Filter text for searching
     pub filter_text: String,
-    /// Cached `MainPage` layout for the currently-selected plugin.
-    /// Keyed as `(plugin_id, layout)`. Populated lazily on first
-    /// render and invalidated when the selected plugin changes or
-    /// the plugin sends a `RefreshPanel` action targeting `MainPage`.
-    /// Without this, every render frame issued a WASM
-    /// `get_ui_layout(MainPage)` call into the plugin (audit P4).
-    pub cached_main_layout: Option<(String, Arc<PluginLayout>)>,
     pub snapshot_status: SnapshotStatus,
     pub snapshot_request_id: Option<RequestId>,
     /// The last value of `AppSignals::plugin_list_epoch` this state

@@ -2,9 +2,12 @@
 //!
 //! Renders plugin settings, permissions, and custom UI when a plugin is selected.
 
+use crate::features::plugins::application::{document_is_empty, PluginSlot, SlotView};
 use crate::features::plugins::domain::types::PluginsListState;
-
-use crate::features::plugins::presentation::rendering as ui;
+use crate::features::plugins::presentation::document_dispatch;
+use crate::features::plugins::presentation::rendering::{
+    render_document, DocumentContext, DocumentExtent,
+};
 
 use crate::shared::components::Form;
 use crate::shared::image_assets::ImageOwner;
@@ -14,7 +17,23 @@ use arclain_app::settings::NetworkSettingsDto;
 use arclain_widgets::toggle_switch::ToggleSwitch;
 use arclain_widgets::Chips;
 use eframe::egui;
-use std::sync::Arc;
+
+/// How much vertical room a plugin's `MainPage` document may claim.
+///
+/// Only a `Split` document cares (see [`DocumentExtent`]), and only
+/// because of where this host draws it: the plugin's configuration is the
+/// last section of a `Form`, which stacks its sections inside a vertical
+/// `ScrollArea`. A `Split` drawn with [`DocumentExtent::Full`] gives its
+/// `SidePanel`/`CentralPanel` *all remaining* height of the `Ui` they are
+/// shown inside, and a scroll area's content `Ui` is sized to the visible
+/// viewport -- so one plugin's two-pane layout would take the whole form
+/// over instead of sitting in it as one section among the others.
+/// Bounding keeps the real two-pane layout the plugin asked for while
+/// leaving the form's own stacking intact; the archive browser's
+/// properties panel bounds its documents for the same reason, at a
+/// smaller cap because it is a narrow side panel rather than a
+/// full-width settings page.
+const MAIN_PAGE_SPLIT_MAX_HEIGHT: u32 = 480;
 
 /// Whether this plugin's traffic is routed through the proxy right now.
 /// The *effective* answer, not the stored override -- a default-proxied
@@ -50,11 +69,6 @@ pub fn render(
     shared: Option<&SharedState>,
 ) -> bool {
     let mut needs_refresh = false;
-
-    // Drop cached MainPage layout if the user switched plugins, so
-    // render_plugin_ui fetches the new plugin's layout on the next
-    // call below (audit P4).
-    invalidate_main_layout_on_plugin_change(state);
 
     let selected_id = match &state.selected_plugin {
         Some(id) => id.clone(),
@@ -271,13 +285,7 @@ pub fn render(
 
         if plugin_info.loaded {
             if let Some(shared) = shared {
-                render_plugin_ui(
-                    ui,
-                    theme,
-                    &plugin_info.id,
-                    shared,
-                    &mut state.cached_main_layout,
-                );
+                render_plugin_ui(ui, theme, &plugin_info.id, shared);
             }
         } else {
             ui.label(
@@ -448,94 +456,66 @@ fn render_domain_row(
     changed
 }
 
-/// Render the plugin's custom UI elements
-fn render_plugin_ui(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    plugin_id: &str,
-    shared: &SharedState,
-    cached_main_layout: &mut Option<(String, Arc<arclain_plugins::types::PluginLayout>)>,
-) {
-    let origin_tab = shared.signals().tabs.get().active_id();
-    // Audit P4: cached_main_layout serves the layout for the
-    // currently-selected plugin. Fetch fresh only when the cache is
-    // empty or holds a different plugin's layout. Re-fetches happen
-    // when the cache is explicitly invalidated (selected plugin
-    // change in the parent render, or `RefreshPanel` action targeting
-    // `MainPage` drained on the next frame).
-    let cache_hit_for_this_plugin = cached_main_layout
-        .as_ref()
-        .is_some_and(|(id, _)| id == plugin_id);
-
-    let ui_result = if cache_hit_for_this_plugin {
-        cached_main_layout
-            .as_ref()
-            .map(|(_, layout)| Ok(layout.clone()))
-    } else {
-        let layout = shared.plugin_ui_jobs.layout(
-            plugin_id,
-            crate::features::plugins::application::PluginUiTarget::MainPage,
-            Some(origin_tab),
+/// Render the selected plugin's own configuration UI -- its `MainPage`
+/// extension point, served by the application facade's session contract
+/// (see `crate::features::plugins::application::facade_sessions`).
+///
+/// The slot is window-scoped rather than tab-scoped: this view draws
+/// exactly one `MainPage` for the whole window, so a document event
+/// resolves against whichever tab is active when it happens -- the same
+/// fallback `crate::core::operation_bridge` applies to this slot's
+/// asynchronous action results.
+///
+/// Safe to call every frame, which is what this function exists to make
+/// true: the slot holds its session *and* its document, so a frame that
+/// finds the slot open reads a cached tree instead of re-entering the
+/// WASM guest. That is what retires the per-plugin `cached_main_layout`
+/// this view used to hold to keep a per-frame `get-ui-layout` off the
+/// render thread.
+fn render_plugin_ui(ui: &mut egui::Ui, theme: &AppTheme, plugin_id: &str, shared: &SharedState) {
+    let Some(facade) = shared.facade.as_ref() else {
+        // Stated rather than silent: without a facade there is no session
+        // to open, and drawing nothing under the section header would
+        // read as "this plugin has no configuration".
+        ui.label(
+            egui::RichText::new(
+                "Plugin configuration is unavailable: application facade is unavailable",
+            )
+            .color(theme.colors.on_surface_variant),
         );
-        if let Some(Ok(ref layout)) = layout {
-            *cached_main_layout = Some((plugin_id.to_string(), layout.clone()));
-        }
-        layout
+        return;
     };
 
-    match ui_result {
-        Some(Ok(ui_elements)) => {
-            if ui_elements.is_empty() {
+    let slot = PluginSlot::MainPage {
+        plugin_id: plugin_id.to_string(),
+    };
+    match shared
+        .plugin_sessions
+        .view(facade, shared.services.tokio_runtime.handle(), &slot)
+    {
+        SlotView::Ready(document) => {
+            if document_is_empty(&document.root) {
                 ui.label(
                     egui::RichText::new("This plugin does not provide configuration.")
                         .color(theme.colors.on_surface_variant),
                 );
-            } else {
-                let plugin_id_clone = plugin_id.to_string();
-                // Render path requires a SharedState — render_plugin_ui
-                // returned earlier above when shared is None. Cloning a
-                // SharedState is just refcount bumps; no allocations.
-                let shared_clone = shared.clone();
-
-                let mut event_callback = Box::new(move |id: &str, value: Option<String>| {
-                    crate::features::plugins::presentation::dispatch::dispatch_plugin_event_for_tab(
-                        &shared_clone,
-                        origin_tab,
-                        plugin_id_clone.clone(),
-                        id.to_string(),
-                        value,
-                    );
-                }) as ui::UiEventCallback;
-
-                let mut render = |elements: &[arclain_plugins::types::PluginUiElement]| {
-                    let image_owner = ImageOwner::plugin_settings(plugin_id);
-                    ui::render_ui_elements_owned(
-                        ui,
-                        elements,
-                        &mut event_callback,
-                        &theme.colors,
-                        Some(shared),
-                        Some(plugin_id),
-                        Some(&image_owner),
-                    );
-                };
-                match ui_elements.as_ref() {
-                    arclain_plugins::types::PluginLayout::Single { elements } => render(elements),
-                    arclain_plugins::types::PluginLayout::Split {
-                        sidebar, content, ..
-                    } => {
-                        render(sidebar);
-                        render(content);
-                    }
-                }
+                return;
             }
-        }
-        Some(Err(error)) => {
-            ui.label(
-                egui::RichText::new(format!("Plugin UI error: {error}")).color(theme.colors.error),
+            let image_owner = ImageOwner::plugin_settings(plugin_id);
+            let events = render_document(
+                ui,
+                &document,
+                DocumentContext {
+                    colors: &theme.colors,
+                    shared_state: Some(shared),
+                    image_owner: Some(&image_owner),
+                    extent: DocumentExtent::Bounded(MAIN_PAGE_SPLIT_MAX_HEIGHT),
+                },
             );
+            let origin_tab = shared.signals().tabs.get().active_id();
+            document_dispatch::apply_document_events(shared, &slot, origin_tab, events);
         }
-        None => {
+        SlotView::Opening => {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label(
@@ -545,19 +525,10 @@ fn render_plugin_ui(
                 );
             });
         }
-    }
-}
-
-/// Drop `state.cached_main_layout` if it doesn't belong to the
-/// currently-selected plugin. Called once per render of the detail
-/// view, before `render_plugin_ui` reads the cache.
-pub(crate) fn invalidate_main_layout_on_plugin_change(state: &mut PluginsListState) {
-    if let (Some(sel), Some((cached_id, _))) = (
-        state.selected_plugin.as_ref(),
-        state.cached_main_layout.as_ref(),
-    ) {
-        if sel != cached_id {
-            state.cached_main_layout = None;
+        SlotView::Failed(error) => {
+            ui.label(
+                egui::RichText::new(format!("Plugin UI error: {error}")).color(theme.colors.error),
+            );
         }
     }
 }
@@ -635,30 +606,6 @@ mod tests {
         assert_eq!(map.len(), 1);
     }
 
-    /// Regression test for P4 from `docs/AUDIT_2026-05-03.md`.
-    ///
-    /// `cached_main_layout` is per-plugin. When the user switches the
-    /// selected plugin in the detail view, the cache from the previous
-    /// plugin must be dropped so render_plugin_ui fetches the new
-    /// plugin's layout (rather than reusing the stale one for the
-    /// wrong plugin).
-    #[test]
-    fn p4_invalidate_main_layout_when_plugin_changes() {
-        let mut state = PluginsListState::default();
-        state.selected_plugin = Some("plugin_b".to_string());
-        state.cached_main_layout = Some((
-            "plugin_a".to_string(),
-            Arc::new(arclain_plugins::types::PluginLayout::default()),
-        ));
-
-        invalidate_main_layout_on_plugin_change(&mut state);
-
-        assert!(
-            state.cached_main_layout.is_none(),
-            "Cache held plugin_a's layout while plugin_b is selected; should have dropped",
-        );
-    }
-
     /// The domain rows are analyzed through the application facade. The
     /// text the user reads is the facade's mirror of the analysis' own
     /// wording, and must stay identical to it -- this pins the exact
@@ -695,23 +642,5 @@ mod tests {
     #[test]
     fn whitelist_entries_without_shared_state_are_empty() {
         assert!(fetch_whitelist_entries(None, "any-plugin").is_empty());
-    }
-
-    /// Same selected plugin → keep the cache.
-    #[test]
-    fn p4_keep_main_layout_when_same_plugin() {
-        let mut state = PluginsListState::default();
-        state.selected_plugin = Some("plugin_a".to_string());
-        state.cached_main_layout = Some((
-            "plugin_a".to_string(),
-            Arc::new(arclain_plugins::types::PluginLayout::default()),
-        ));
-
-        invalidate_main_layout_on_plugin_change(&mut state);
-
-        assert!(
-            state.cached_main_layout.is_some(),
-            "Cache for plugin_a should not be dropped when plugin_a is still selected",
-        );
     }
 }
