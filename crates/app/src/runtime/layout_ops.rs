@@ -33,18 +33,31 @@
 //! anyway, for the same cross-writer ordering discipline every other
 //! settings mutation here observes. Read-only functions never take it.
 //!
+//! The item batch has no such transaction: `run_save_ui_items` is still
+//! a bare loop of autocommitted upserts on one connection, so its own
+//! partial-failure window (some rows written, then an error) remains
+//! open. Left that way deliberately for now -- unlike the six-key
+//! display-option batch, whose mid-batch failure a test can induce with
+//! a constraint on the last key, proving the loop's window would need a
+//! fault-injection seam in the storage layer that does not exist, and
+//! an untestable transaction is a claim, not a guarantee. The lock
+//! still keeps two *saves* from interleaving; it does not make one save
+//! all-or-nothing.
+//!
 //! ## Last write wins, deliberately
 //!
 //! Neither save carries a revision or a compare-and-swap, because the
 //! storage underneath never had one: `UiService::upsert_items` is an
-//! unconditional `INSERT .. ON CONFLICT DO UPDATE` per item and
-//! `set_display_option` is the same for one key. Two frontends editing
-//! one region concurrently therefore end with whichever saved last, which
-//! is what the pre-facade layout editor already did. This is *not*
-//! `update_settings`'s optimistic-revision contract, and it is not
-//! silently weaker than the storage it wraps -- see
-//! `ArclainApp::save_ui_items`'s own doc comment, which states it for
-//! callers.
+//! unconditional `INSERT .. ON CONFLICT DO UPDATE` per item, and the
+//! display-options batch (`UiService::set_display_options`) is the same
+//! per-key upsert repeated inside its one transaction -- atomic against
+//! failure, still unconditional against concurrent writers. Two
+//! frontends editing one region concurrently therefore end with
+//! whichever saved last, which is what the pre-facade layout editor
+//! already did. This is *not* `update_settings`'s optimistic-revision
+//! contract, and it is not silently weaker than the storage it wraps --
+//! see `ArclainApp::save_ui_items`'s own doc comment, which states it
+//! for callers.
 //!
 //! ## A save never deletes
 //!

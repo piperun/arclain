@@ -5,8 +5,8 @@
 
 use anyhow::Result;
 use arclain_db::{
-    delete_item, get_display_option, list_items_by_region, set_display_option, set_display_options,
-    sync_host_item, upsert_item, DieselPool, UiItem, UiRegion,
+    delete_item, get_display_option, list_items_by_region, set_display_options, sync_host_item,
+    upsert_item, DieselPool, UiItem, UiRegion,
 };
 
 /// Service for managing UI configuration items
@@ -90,17 +90,13 @@ impl UiService {
         self.pool.with_conn(|conn| get_display_option(conn, key))
     }
 
-    /// Set a display option value
-    pub fn set_display_option(&self, key: &str, value: &str) -> Result<()> {
-        self.pool
-            .with_conn(|conn| set_display_option(conn, key, value))
-    }
-
-    /// Set several display options on one connection, in one
-    /// transaction: every entry lands or none does. For entries that
-    /// form one logical value -- a settings page saving all of its
-    /// keys as one edit must not leave a mix of old and new behind a
-    /// failure partway through.
+    /// Set display options on one connection, in one transaction:
+    /// every entry lands or none does. The only write path -- a
+    /// single-key setter used to sit beside this, but the one caller
+    /// (the facade's display-options save) writes all of its keys as
+    /// one logical value, and a second, non-transactional way to write
+    /// the same rows was surface waiting to be misused. A single-key
+    /// write is a one-entry batch.
     pub fn set_display_options(&self, entries: &[(&str, &str)]) -> Result<()> {
         self.pool
             .with_conn(|conn| set_display_options(conn, entries))
