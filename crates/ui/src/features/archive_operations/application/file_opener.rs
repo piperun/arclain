@@ -23,9 +23,7 @@
 
 use crate::core::operation_bridge::MaterializationAction;
 use crate::shared::SharedState;
-use arclain_app::archive::{
-    ArchivePath, EntryKind, EntrySortKey, ListEntriesRequest, SortDirection,
-};
+use arclain_app::archive::{ArchivePath, EntryKind};
 use arclain_app::ids::{ArchiveSessionId, EntryId};
 use arclain_app::materialization::{MaterializationPurpose, MaterializeRequest};
 use arclain_app::ArclainApp;
@@ -102,6 +100,14 @@ fn basename(path: &str) -> String {
     }
 }
 
+/// One directory's whole listing, for resolving a path to the `EntryId`
+/// naming it.
+///
+/// Shares [`crate::core::tabs::TabListing::whole_directory_request`] with
+/// every other path-to-id resolution in this crate rather than spelling
+/// the request out again: this call site used to cap `limit` at a literal
+/// `100_000`, so a directory larger than that could not resolve at all --
+/// see [`resolve_directory_entry_id`] for what that silently degraded to.
 async fn list_directory(
     app: &ArclainApp,
     session_id: ArchiveSessionId,
@@ -109,14 +115,7 @@ async fn list_directory(
 ) -> Result<arclain_app::archive::EntryPage, arclain_app::error::ApplicationError> {
     app.list_entries(
         session_id,
-        ListEntriesRequest {
-            directory,
-            sort_key: EntrySortKey::Name,
-            sort_direction: SortDirection::Ascending,
-            name_filter: None,
-            offset: 0,
-            limit: 100_000,
-        },
+        crate::core::tabs::TabListing::whole_directory_request(directory),
     )
     .await
 }
@@ -127,6 +126,15 @@ async fn list_directory(
 /// name at the same nesting level (see `arclain_app::archive`'s
 /// `EntryIdAssigner` doc comment), and only a real directory's subtree is
 /// something `start_materialization` can expand.
+///
+/// A `None` here degrades silently: `resolve_materialization_target` falls
+/// back to materializing the target file alone, dropping exactly the
+/// sibling files `OpenStrategy::SameDirectory` exists to bring along --
+/// the regression [`needs_whole_archive_fallback`]'s own doc comment warns
+/// about. That fallback is a pre-existing defect with its own ticket and is
+/// deliberately left as it stands here; what changed is only that a
+/// directory larger than the old hard-coded page limit is no longer one of
+/// the ways to reach it (see [`list_directory`]).
 async fn resolve_directory_entry_id(
     app: &ArclainApp,
     session_id: ArchiveSessionId,

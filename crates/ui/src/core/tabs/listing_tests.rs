@@ -342,11 +342,11 @@ fn the_listing_exposes_the_same_history_predicates_the_toolbar_reads() {
 }
 
 // =========================================================================
-// PageState -- why a directory has no rows
+// rows x status -- why a directory has no rows, and what is happening to it
 // =========================================================================
 
-/// The whole reason `PageState` exists. An `Option<EntryPage>` gives one
-/// representation of "no rows" for four different causes, and once the
+/// The whole reason the two axes are separate. An `Option<EntryPage>` alone
+/// gives one representation of "no rows" for every cause, and once the
 /// render path reads this model, a listing that *failed* would render as a
 /// perfectly ordinary empty folder.
 #[test]
@@ -363,8 +363,6 @@ fn a_failed_listing_is_distinguishable_from_an_empty_directory() {
     assert!(failed.entries().is_empty());
 
     // Distinguishable everywhere it matters.
-    assert!(matches!(empty.page_state(), PageState::Loaded(_)));
-    assert!(matches!(failed.page_state(), PageState::Failed(_)));
     assert!(
         empty.page().is_some(),
         "the session said this folder is empty"
@@ -373,6 +371,8 @@ fn a_failed_listing_is_distinguishable_from_an_empty_directory() {
         failed.page().is_none(),
         "nothing is known about this folder"
     );
+    assert_eq!(empty.status(), &RequestStatus::Idle);
+    assert!(matches!(failed.status(), RequestStatus::Failed(_)));
     assert_eq!(empty.failure(), None);
     assert_eq!(
         failed.failure().map(|error| error.summary.as_str()),
@@ -380,75 +380,124 @@ fn a_failed_listing_is_distinguishable_from_an_empty_directory() {
     );
 }
 
+/// The state a collapsed enum could not name: rows on screen that are the
+/// last good answer to a request which has since failed. Both facts have to
+/// be observable at once, or a renderer cannot mark the rows stale -- it
+/// would have to choose between showing them and reporting the error.
+#[test]
+fn stale_rows_and_the_failure_that_stranded_them_are_both_observable() {
+    let mut listing = listing();
+    assert!(listing.adopt_page(page("", 3, 1, &["readme.txt"])));
+
+    assert!(
+        listing.fail(&ArchivePath::root(), listing_error("refresh failed")),
+        "a failure for the directory being browsed must be recorded, not dropped"
+    );
+
+    assert_eq!(listing.entries()[0].name, "readme.txt");
+    assert!(listing.page().is_some());
+    assert_eq!(
+        listing.failure().map(|error| error.summary.as_str()),
+        Some("refresh failed"),
+        "keeping the rows must not lose the reason they are stale"
+    );
+}
+
+/// The other state a collapsed enum could not name: a refresh in flight
+/// over rows still on screen, so a renderer can show a spinner *without*
+/// blanking the list first.
+#[test]
+fn a_refresh_in_flight_can_keep_the_previous_rows_on_screen() {
+    let mut listing = listing();
+    assert!(listing.adopt_page(page("", 1, 1, &["readme.txt"])));
+
+    listing.begin_loading();
+
+    assert!(listing.is_loading());
+    assert_eq!(
+        listing.entries()[0].name,
+        "readme.txt",
+        "beginning a refresh must not blank the rows on its own"
+    );
+    assert!(listing.page().is_some());
+}
+
+/// The two outcomes of `fail` must be tellable apart by a caller: a failure
+/// for the directory on screen is recorded (`true`), one for a directory
+/// already navigated away from is refused (`false`) and changes nothing.
+#[test]
+fn a_recorded_failure_and_a_refused_one_are_distinguishable() {
+    let mut listing = listing();
+    assert!(listing.descend("game"));
+    let current = listing.directory().clone();
+    let left_behind = ArchivePath::root();
+
+    assert!(
+        !listing.fail(&left_behind, listing_error("root failed, too late")),
+        "a failure for a directory no longer browsed must be refused"
+    );
+    assert_eq!(listing.status(), &RequestStatus::Idle);
+    assert_eq!(listing.failure(), None);
+
+    assert!(listing.fail(&current, listing_error("game failed")));
+    assert_eq!(
+        listing.failure().map(|error| error.summary.as_str()),
+        Some("game failed")
+    );
+}
+
 #[test]
 fn a_listing_that_has_asked_nothing_is_neither_loading_nor_failed() {
     let listing = listing();
-    assert_eq!(listing.page_state(), &PageState::Absent);
+    assert_eq!(listing.status(), &RequestStatus::Idle);
     assert!(!listing.is_loading());
     assert_eq!(listing.failure(), None);
     assert!(listing.page().is_none());
 }
 
 #[test]
-fn a_listing_in_flight_is_neither_empty_nor_failed() {
+fn a_first_listing_in_flight_is_neither_empty_nor_failed() {
     let mut listing = listing();
     listing.begin_loading();
 
     assert!(listing.is_loading());
-    assert_eq!(listing.page_state(), &PageState::Loading);
     assert!(listing.page().is_none());
     assert_eq!(listing.failure(), None);
     assert!(listing.entries().is_empty());
 }
 
 #[test]
-fn a_page_arriving_clears_the_in_flight_marker() {
+fn a_page_arriving_clears_both_the_in_flight_marker_and_an_earlier_failure() {
     let mut listing = listing();
+    assert!(listing.fail(&ArchivePath::root(), listing_error("first attempt")));
     listing.begin_loading();
     assert!(listing.adopt_page(page("", 1, 1, &["readme.txt"])));
 
     assert!(!listing.is_loading());
-    assert_eq!(listing.entries()[0].name, "readme.txt");
-}
-
-#[test]
-fn navigating_discards_a_failure_along_with_everything_else() {
-    let mut listing = listing();
-    assert!(listing.fail(&ArchivePath::root(), listing_error("root failed")));
-
-    assert!(listing.descend("game"));
     assert_eq!(
-        listing.page_state(),
-        &PageState::Absent,
-        "the root's failure said nothing about game/"
+        listing.failure(),
+        None,
+        "a successful listing supersedes the failure"
     );
-    assert_eq!(listing.failure(), None);
-}
-
-/// The mirror of `adopt_page`'s own directory refusal: a failure for the
-/// directory the user has already navigated away from must not surface as
-/// a failure of the one now on screen.
-#[test]
-fn a_failure_for_a_directory_no_longer_browsed_is_refused() {
-    let mut listing = listing();
-    assert!(listing.descend("game"));
-
-    let stale = ArchivePath::root();
-    assert!(!listing.fail(&stale, listing_error("root failed, too late")));
-    assert_eq!(listing.page_state(), &PageState::Absent);
-}
-
-/// Rows already loaded are the session's last successful answer for this
-/// exact directory. A failed *refresh* must not replace them with
-/// "contents unknown" -- the user can still act on what is shown, and the
-/// failure reaches them through the status bar like any other.
-#[test]
-fn a_failed_refresh_does_not_discard_rows_the_session_already_returned() {
-    let mut listing = listing();
-    assert!(listing.adopt_page(page("", 3, 1, &["readme.txt"])));
-
-    assert!(!listing.fail(&ArchivePath::root(), listing_error("refresh failed")));
     assert_eq!(listing.entries()[0].name, "readme.txt");
+}
+
+#[test]
+fn navigating_discards_the_rows_and_the_status_together() {
+    let mut listing = listing();
+    assert!(listing.adopt_page(page("", 1, 1, &["readme.txt"])));
+    assert!(listing.fail(&ArchivePath::root(), listing_error("root refresh failed")));
+
+    assert!(listing.descend("game"));
+    assert!(
+        listing.page().is_none(),
+        "the root rows are not the contents of the folder now shown"
+    );
+    assert_eq!(
+        listing.status(),
+        &RequestStatus::Idle,
+        "the root failure said nothing about the folder now shown"
+    );
     assert_eq!(listing.failure(), None);
 }
 

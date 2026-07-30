@@ -230,44 +230,58 @@ impl ArchiveNavigation {
     }
 }
 
-/// What the session has said about the directory a tab is browsing.
+/// What the tab's most recent listing request is doing.
 ///
-/// Four distinct states rather than one `Option<EntryPage>`, because
-/// "there are no rows to show" has four different causes and only one of
-/// them means the folder is empty. Collapsed into an `Option`, a listing
-/// that *failed* is indistinguishable from a directory that is genuinely
-/// empty -- so a backend error, a wrong password, or a revoked session
-/// would render as a normal empty folder, with nothing anywhere in the
-/// render tree able to tell the difference. That is the silent-empty-view
-/// failure mode, arriving by construction rather than by accident.
+/// Deliberately separate from *whether the tab holds rows* (see
+/// [`TabListing::page`]), because those are independent facts and the
+/// states that matter are their combinations:
 ///
-/// Kept explicit now, while nothing renders this yet: the alternative is
-/// discovering it after the render tree is built on top of an `Option`.
+/// | rows | status | means |
+/// | --- | --- | --- |
+/// | none | `Idle` | nothing asked yet -- no archive open, or navigation just moved |
+/// | none | `Loading` | first listing of this directory in flight |
+/// | none | `Failed` | listing this directory failed; its contents are *unknown* |
+/// | some | `Idle` | the session answered; zero rows means the folder really is empty |
+/// | some | `Loading` | refreshing, with the previous answer still on screen |
+/// | some | `Failed` | a refresh failed; these rows are the last good answer |
+///
+/// Collapsing the two axes into one enum -- which an earlier shape of this
+/// did -- makes the bottom two rows unnameable. A renderer then cannot
+/// draw a spinner over existing rows, and cannot mark rows as
+/// "couldn't refresh", even in principle: the failure has nowhere to live
+/// once the decision is made to keep the rows. And with a single
+/// `Option<EntryPage>` the top row and the fourth become the same value,
+/// so a listing that *failed* renders as an ordinary empty folder -- the
+/// silent-empty-view failure mode, arriving by construction rather than by
+/// accident.
+///
+/// Kept explicit now, while nothing renders any of this yet: the
+/// alternative is discovering it after the render tree is built on top of
+/// the collapsed shape.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum PageState {
-    /// Nothing has been asked. No archive open, or navigation just moved
-    /// and the request for the new directory has not been sent yet.
+pub enum RequestStatus {
+    /// No request is outstanding: either none has been made, or the last
+    /// one was answered.
     #[default]
-    Absent,
+    Idle,
     /// A listing for the current request is in flight.
     Loading,
-    /// The session answered. Zero rows here means the directory really is
-    /// empty -- which is exactly what [`Self::Failed`] does not mean.
-    Loaded(Arc<EntryPage>),
-    /// The session refused. The directory's contents are *unknown*, not
-    /// empty. Behind an `Arc` for the same per-frame-clone reason
-    /// [`Self::Loaded`] is.
+    /// The last listing of this directory failed. Behind an `Arc` for the
+    /// same per-frame-clone reason the rows are: the whole envelope
+    /// (kind, recoverability, suggested action, correlation id) is what a
+    /// renderer needs to offer a retry, not just a summary string.
     Failed(Arc<ApplicationError>),
 }
 
 /// One tab's archive listing: which session it is listing, where it is
-/// browsing, the request that describes what its browser is showing, and
-/// what that session said in reply.
+/// browsing, the request that describes what its browser is showing, the
+/// rows the session last returned for it, and what the latest request is
+/// doing.
 ///
 /// `request.directory` always equals `navigation.current()` -- callers
 /// change it by navigating, never by editing the request -- and every
-/// navigation returns the page state to [`PageState::Absent`], because a
-/// reply answers the directory it was requested for and nothing else.
+/// navigation discards both rows and status, because a reply answers the
+/// directory it was requested for and nothing else.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabListing {
     /// The archive session this listing belongs to, `None` before the
@@ -280,7 +294,11 @@ pub struct TabListing {
     session: Option<ArchiveSessionId>,
     navigation: ArchiveNavigation,
     request: ListEntriesRequest,
-    page: PageState,
+    /// The rows the session last returned for `request.directory`, behind
+    /// an `Arc` so a renderer reading this signal every frame clones a
+    /// refcount rather than every row of the directory it is showing.
+    rows: Option<Arc<EntryPage>>,
+    status: RequestStatus,
 }
 
 impl Default for TabListing {
@@ -298,7 +316,8 @@ impl TabListing {
             session,
             navigation: ArchiveNavigation::default(),
             request: Self::whole_directory_request(ArchivePath::root()),
-            page: PageState::Absent,
+            rows: None,
+            status: RequestStatus::Idle,
         }
     }
 
@@ -351,63 +370,67 @@ impl TabListing {
         &self.request
     }
 
-    /// What the session has said about the directory being browsed.
+    /// What the latest listing request for this directory is doing.
     ///
-    /// The accessor a renderer must consult before treating an empty row
-    /// list as an empty folder -- see [`PageState`].
-    pub fn page_state(&self) -> &PageState {
-        &self.page
+    /// Orthogonal to whether rows are held -- a renderer must consult both
+    /// before deciding what to draw. See [`RequestStatus`] for the full
+    /// table of combinations.
+    pub fn status(&self) -> &RequestStatus {
+        &self.status
     }
 
-    /// The page the session answered with, or `None` when it has not
-    /// answered (nothing asked yet, a listing in flight, or a listing that
-    /// failed -- [`Self::page_state`] distinguishes those).
+    /// The rows the session last returned for the directory being browsed,
+    /// or `None` when it has not returned any yet.
+    ///
+    /// `Some` with zero entries means the folder really is empty. A `None`
+    /// here says only "no rows"; [`Self::status`] says *why*.
     pub fn page(&self) -> Option<&EntryPage> {
-        match &self.page {
-            PageState::Loaded(page) => Some(page),
-            PageState::Absent | PageState::Loading | PageState::Failed(_) => None,
-        }
+        self.rows.as_deref()
     }
 
-    /// Why the current directory has no rows, when the reason is that
-    /// listing it failed.
+    /// The error the last listing of this directory failed with, if it
+    /// failed. Independent of whether rows are held: a refresh that fails
+    /// over a directory already on screen reports both.
     pub fn failure(&self) -> Option<&ApplicationError> {
-        match &self.page {
-            PageState::Failed(error) => Some(error),
-            PageState::Absent | PageState::Loading | PageState::Loaded(_) => None,
+        match &self.status {
+            RequestStatus::Failed(error) => Some(error),
+            RequestStatus::Idle | RequestStatus::Loading => None,
         }
     }
 
-    /// Whether a listing for the current request is in flight.
+    /// Whether a listing for the current request is in flight -- which says
+    /// nothing about whether rows are on screen while it runs.
     pub fn is_loading(&self) -> bool {
-        matches!(self.page, PageState::Loading)
+        matches!(self.status, RequestStatus::Loading)
     }
 
-    /// The current directory's rows -- empty unless the session has
-    /// actually answered.
+    /// The current directory's rows -- empty until the session returns
+    /// some.
     ///
     /// TRANSITIONAL(4c): an un-migrated consumer sees exactly what it saw
-    /// when this was an `Option<EntryPage>` -- an empty slice for every
-    /// state but `Loaded` -- which is what keeps its behavior unchanged.
-    /// A consumer that *renders* a directory must not keep that reading:
-    /// ask [`Self::page_state`], so a failed listing shows an error rather
-    /// than an empty folder.
+    /// when this was an `Option<EntryPage>`, which is what keeps its
+    /// behavior unchanged. A consumer that *renders* a directory must not
+    /// keep that reading: an empty slice here is not "this folder is
+    /// empty" unless [`Self::page`] is also `Some`, and [`Self::status`]
+    /// is what turns the other cases into a spinner or an error instead of
+    /// a blank folder.
     pub fn entries(&self) -> &[ArchiveEntryDto] {
-        match &self.page {
-            PageState::Loaded(page) => &page.entries,
-            PageState::Absent | PageState::Loading | PageState::Failed(_) => &[],
+        match &self.rows {
+            Some(page) => &page.entries,
+            None => &[],
         }
     }
 
-    /// Records that a listing for the current request is in flight.
+    /// Records that a listing for the current request is in flight,
+    /// without touching the rows.
     ///
-    /// A caller refreshing a directory whose rows are already on screen
-    /// simply does not call this: [`Self::adopt_page`] swaps the rows in
-    /// place, so the choice between "blank the list while reloading" and
-    /// "keep showing the previous answer" stays with the caller rather
-    /// than being baked in here.
+    /// Whether the previous answer stays on screen while it runs is the
+    /// caller's choice, not this type's: rows and status are independent
+    /// fields, so "refreshing, previous rows still shown" is a state the
+    /// model can hold. Navigation is the one thing that clears rows on its
+    /// own, because a new directory's listing has nothing to keep.
     pub fn begin_loading(&mut self) {
-        self.page = PageState::Loading;
+        self.status = RequestStatus::Loading;
     }
 
     /// Stores `page` as the answer to the current request.
@@ -421,11 +444,15 @@ impl TabListing {
     ///   session-scoped) against the session it holds now;
     /// * one listing a different directory, from an in-flight request
     ///   whose reply lands after navigation moved on;
-    /// * one older than a page already loaded, from a refresh overtaken by
+    /// * one older than the rows already held, from a refresh overtaken by
     ///   a newer one.
     ///
     /// Without these the browser would flip to a stale archive,
     /// directory, or revision purely on reply order.
+    ///
+    /// An accepted page also returns the status to
+    /// [`RequestStatus::Idle`]: a successful listing supersedes whatever
+    /// the previous attempt was doing, including a failure.
     pub fn adopt_page(&mut self, page: EntryPage) -> bool {
         if self.session != Some(page.session_id) {
             return false;
@@ -433,34 +460,42 @@ impl TabListing {
         if page.directory != self.request.directory {
             return false;
         }
-        if let PageState::Loaded(held) = &self.page {
+        if let Some(held) = &self.rows {
             if page.revision < held.revision {
                 return false;
             }
         }
-        self.page = PageState::Loaded(Arc::new(page));
+        self.rows = Some(Arc::new(page));
+        self.status = RequestStatus::Idle;
         true
     }
 
-    /// Records that listing `directory` failed.
+    /// Records that listing `directory` failed, and reports whether that
+    /// failure was for the directory currently being browsed.
     ///
-    /// `directory` is what the failed request asked for, so a reply
-    /// landing after navigation moved on is refused the same way
-    /// [`Self::adopt_page`] refuses one.
+    /// `directory` is what the failed request asked for, so a reply landing
+    /// after navigation moved on is refused (`false`) the same way
+    /// [`Self::adopt_page`] refuses one -- that is the *only* thing `false`
+    /// means here.
     ///
-    /// Also refused once rows are already loaded for that directory: they
-    /// are the session's last successful answer for it, and replacing
-    /// them with "contents unknown" because a *refresh* failed loses
-    /// information the user can still act on. A failed refresh reaches the
-    /// user through the status bar, like every other operation failure.
+    /// **Rows already held are kept.** They are the session's last
+    /// successful answer for this exact directory, and replacing them with
+    /// "contents unknown" because a *refresh* failed loses information the
+    /// user can still act on -- while the failure itself is recorded in the
+    /// status either way, so a renderer can mark the rows stale rather than
+    /// having to choose between showing them and reporting the error.
+    ///
+    /// Keeping them is safe, not merely convenient: acting on a stale row
+    /// cannot reach the wrong entry, because the `EntryId` it carries is
+    /// validated against the owning session on every facade call that takes
+    /// one. A superseded-revision id resolves to nothing rather than to
+    /// some other entry, so the worst case is a refused operation, not a
+    /// wrong-file delete.
     pub fn fail(&mut self, directory: &ArchivePath, error: ApplicationError) -> bool {
         if directory != &self.request.directory {
             return false;
         }
-        if matches!(self.page, PageState::Loaded(_)) {
-            return false;
-        }
-        self.page = PageState::Failed(Arc::new(error));
+        self.status = RequestStatus::Failed(Arc::new(error));
         true
     }
 
@@ -515,7 +550,8 @@ impl TabListing {
         }
         self.request.directory = self.navigation.current().clone();
         self.request.offset = 0;
-        self.page = PageState::Absent;
+        self.rows = None;
+        self.status = RequestStatus::Idle;
         true
     }
 }
