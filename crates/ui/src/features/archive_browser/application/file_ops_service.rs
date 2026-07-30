@@ -6,9 +6,12 @@ use crate::features::archive_operations::ArchiveOperationsState;
 use crate::features::file_editing::domain::types::FileEditLoadState;
 use crate::shared::SharedState;
 use anyhow::{anyhow, Result};
+use arclain_app::archive::{ArchivePath, ListEntriesRequest};
+use arclain_app::ids::ArchiveSessionId;
 use arclain_app::operations::ArchiveMutationRequest;
-use arclain_core::backends::BackendSelector;
-use std::path::Path;
+use arclain_app::ArclainApp;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -24,32 +27,90 @@ use std::sync::Arc;
 /// (`crates/app/tests/archive_mutation.rs`) exercise a real,
 /// injectable-at-bootstrap fake backend, and this crate's own
 /// `crates/ui/tests/` cover the UI-side wiring end to end against a real
-/// bootstrapped `ArclainApp`. This trait stays narrowed to the one
-/// synchronous read path that has not moved.
+/// bootstrapped `ArclainApp`.
+///
+/// What survives here is a *scheduling* seam, not a backend one: the
+/// read itself is `ArclainApp::read_entry_text`, and what this boundary
+/// still buys is deterministic control over *when* a read finishes, so
+/// the two properties that have nothing to do with archives -- a caller
+/// that is never blocked on I/O, and a stale completion that cannot
+/// overwrite a newer read -- stay pinned without racing a real archive.
+/// It returns a future because the facade call is `async`; a
+/// production implementation performs no blocking work of its own.
+#[doc(hidden)]
+pub type TextReadFuture<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
+
 #[doc(hidden)]
 pub trait TextReadIo: Send + Sync {
-    fn read_text(&self, archive: &Path, path: &str) -> Result<String>;
+    /// Reads the archive-root-relative `path`'s text out of the tab's
+    /// own archive session.
+    fn read_text(&self, path: String) -> TextReadFuture<'_>;
 }
 
-struct BackendTextReadIo {
-    backend_selector: BackendSelector,
-    password: Option<String>,
+/// Reads through the application facade: resolves `path` to the
+/// `EntryId` its own session minted, then asks the session -- which
+/// supplies the backend and the password it was opened with -- for the
+/// entry's text.
+///
+/// The id is never fabricated here. It comes out of a `list_entries`
+/// page of the file's own containing directory, exactly as every other
+/// path-to-id resolution in this crate does, because a frontend-minted
+/// id could name a different entry than the row the user clicked.
+struct FacadeTextReadIo {
+    app: ArclainApp,
+    session_id: ArchiveSessionId,
 }
 
-impl BackendTextReadIo {
-    fn capture(shared: &SharedState, origin: &TabState) -> Self {
-        Self {
-            backend_selector: shared.app_state.lock().backend_selector.clone(),
-            password: origin.current_password.get(),
-        }
+impl TextReadIo for FacadeTextReadIo {
+    fn read_text(&self, path: String) -> TextReadFuture<'_> {
+        Box::pin(async move {
+            let (directory, name) = split_archive_path(&path)?;
+            let page = self
+                .app
+                .list_entries(
+                    self.session_id,
+                    ListEntriesRequest::whole_directory(directory),
+                )
+                .await
+                .map_err(|error| anyhow!("{}", error.summary))?;
+            let entry = page
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .ok_or_else(|| anyhow!("{path} is no longer in the archive"))?;
+            self.app
+                .read_entry_text(self.session_id, entry.id)
+                .await
+                .map_err(|error| anyhow!("{}", error.summary))
+        })
     }
 }
 
-impl TextReadIo for BackendTextReadIo {
-    fn read_text(&self, archive: &Path, path: &str) -> Result<String> {
-        let backend = self.backend_selector.select(archive)?;
-        backend.read_text_file(archive, path, self.password.as_deref())
+/// Stands in when the tab holds no archive session (or the composition
+/// has no facade at all). The dialog still opens and reports the refusal
+/// through the same path a backend failure takes, rather than the read
+/// silently doing nothing.
+struct NoSessionTextReadIo;
+
+impl TextReadIo for NoSessionTextReadIo {
+    fn read_text(&self, _path: String) -> TextReadFuture<'_> {
+        Box::pin(std::future::ready(Err(anyhow!("No archive loaded"))))
     }
+}
+
+/// Splits an archive-root-relative path into the directory to list and
+/// the entry name to find inside it. Both halves come straight from the
+/// row the user clicked, so a path the archive path type refuses is a
+/// caller error rather than something to normalize away silently.
+fn split_archive_path(path: &str) -> Result<(ArchivePath, String)> {
+    let normalized = path.replace('\\', "/");
+    let (directory, name) = match normalized.rfind('/') {
+        Some(position) => (&normalized[..position], &normalized[position + 1..]),
+        None => ("", normalized.as_str()),
+    };
+    let directory = ArchivePath::parse(directory.to_string())
+        .map_err(|error| anyhow!("{}", error.summary))?;
+    Ok((directory, name.to_string()))
 }
 
 pub struct FileOpsService;
@@ -172,8 +233,19 @@ impl FileOpsService {
         operations::extraction::extract_selected(shared, &active_tab, vec![file.to_string()]);
     }
 
+    /// Loads `path`'s text into `origin`'s file-edit dialog, through the
+    /// archive session `origin` holds.
+    ///
+    /// Refuses before touching the dialog when the tab has no open
+    /// session: without one there is no archive to read from, and the
+    /// pre-facade path's own equivalent -- no `archive_path` -- reported
+    /// the same way.
     pub fn read_text(&self, shared: &SharedState, origin: Arc<TabState>, path: String) {
-        let io = Arc::new(BackendTextReadIo::capture(shared, &origin));
+        let io: Arc<dyn TextReadIo> =
+            match (origin.archive_session_id.get(), shared.facade.clone()) {
+                (Some(session_id), Some(app)) => Arc::new(FacadeTextReadIo { app, session_id }),
+                _ => Arc::new(NoSessionTextReadIo),
+            };
         self.read_text_with_io(shared, origin, path, io);
     }
 
@@ -218,13 +290,11 @@ impl FileOpsService {
 
         runtime.spawn(async move {
             let _guard = guard;
-            let worker_archive = archive.clone();
-            let worker_path = path.clone();
-            let result =
-                tokio::task::spawn_blocking(move || io.read_text(&worker_archive, &worker_path))
-                    .await
-                    .map_err(|error| anyhow!("archive text worker failed: {error}"))
-                    .and_then(|result| result);
+            // No `spawn_blocking` hop here: the read is a facade call
+            // that owns its own blocking discipline (see
+            // `ArclainApp::read_entry_text`), so wrapping it would park
+            // a blocking-pool thread on a future that never blocks.
+            let result = io.read_text(path.clone()).await;
 
             if origin.archive_path.get().as_ref() != Some(&archive) {
                 return;

@@ -1,4 +1,6 @@
-use arclain_ui::features::archive_browser::application::file_ops_service::TextReadIo;
+use arclain_ui::features::archive_browser::application::file_ops_service::{
+    TextReadFuture, TextReadIo,
+};
 use arclain_ui::features::archive_browser::application::FileOpsService;
 use arclain_ui::features::archive_browser::{Action, BrowserController};
 use arclain_ui::features::archive_operations::ArchiveOperationsState;
@@ -6,7 +8,6 @@ use arclain_ui::features::file_editing::domain::types::{FileEditDialog, FileEdit
 use arclain_ui::shared::models::file_entry::FileEntry;
 
 use std::cell::RefCell;
-use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -83,17 +84,30 @@ impl HandleAction for TestContext {
     }
 }
 
+/// A text read whose completion the test controls: it announces the path
+/// it was asked for, then parks until the test opens its gate.
+///
+/// The park runs on the blocking pool rather than inline in the future,
+/// because the runtime backing these tests has two workers and one test
+/// keeps two reads outstanding at once -- blocking both workers would
+/// stall the very completion tasks the assertions wait for.
 struct BlockingReadIo {
     started: Sender<String>,
-    gate: StdMutex<Receiver<()>>,
+    gate: Arc<StdMutex<Receiver<()>>>,
     content: String,
 }
 
 impl TextReadIo for BlockingReadIo {
-    fn read_text(&self, _archive: &Path, path: &str) -> anyhow::Result<String> {
-        self.started.send(path.to_string()).unwrap();
-        self.gate.lock().unwrap().recv().unwrap();
-        Ok(self.content.clone())
+    fn read_text(&self, path: String) -> TextReadFuture<'_> {
+        self.started.send(path).unwrap();
+        let gate = self.gate.clone();
+        let content = self.content.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || gate.lock().unwrap().recv().unwrap())
+                .await
+                .unwrap();
+            Ok(content)
+        })
     }
 }
 
@@ -141,7 +155,7 @@ fn archive_file_jobs_text_read_returns_before_io_and_updates_origin_tab() {
     let (gate_tx, gate_rx) = mpsc::channel();
     let io = Arc::new(BlockingReadIo {
         started: started_tx,
-        gate: StdMutex::new(gate_rx),
+        gate: Arc::new(StdMutex::new(gate_rx)),
         content: "origin content".to_string(),
     });
     let (returned_tx, returned_rx) = mpsc::channel();
@@ -207,7 +221,7 @@ fn archive_file_jobs_stale_text_completion_cannot_overwrite_newer_read() {
         "a.txt".to_string(),
         Arc::new(BlockingReadIo {
             started: started_tx.clone(),
-            gate: StdMutex::new(gate_a_rx),
+            gate: Arc::new(StdMutex::new(gate_a_rx)),
             content: "stale A".to_string(),
         }),
     );
@@ -223,7 +237,7 @@ fn archive_file_jobs_stale_text_completion_cannot_overwrite_newer_read() {
         "b.txt".to_string(),
         Arc::new(BlockingReadIo {
             started: started_tx,
-            gate: StdMutex::new(gate_b_rx),
+            gate: Arc::new(StdMutex::new(gate_b_rx)),
             content: "fresh B".to_string(),
         }),
     );

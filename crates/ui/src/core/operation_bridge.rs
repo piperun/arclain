@@ -399,11 +399,8 @@ async fn fetch_and_adopt_listing(
 /// tab immediately before calling this: rebinds the listing and
 /// inventory to that session (so any reply still in flight for the
 /// archive this one replaced is refused rather than seated), resets the
-/// browse cursor to the archive root, clears the selection, seats the
-/// session's own rows via [`fetch_and_adopt_listing`], and re-stamps
-/// `current_password` from the session's own archive handle -- the
-/// resolved password the pre-facade code re-derived by running a second,
-/// duplicate `backend.list()` with its own auto-password ladder.
+/// browse cursor to the archive root, clears the selection, and seats
+/// the session's own rows via [`fetch_and_adopt_listing`].
 ///
 /// `pub` for the same reason `OperationOrigins::register` is: production
 /// code must reach this only through the bridge's own event handling,
@@ -444,31 +441,14 @@ pub async fn relist_for_browser_signals(
     }
     tab.selection_count.set_if_changed(0);
 
-    // The session's own archive handle carries the password the open
-    // actually resolved (typed, rule-matched, or challenge-answered).
-    // Stamping `current_password` from it is what keeps the two
-    // password-consuming paths that have not migrated yet -- the
-    // synchronous file-edit read and the plugin event context -- working
-    // for an auto-unlocked archive, where no dialog ever ran UI-side to
-    // write the signal. (The handle itself is peeked and dropped: since
-    // drag-out moved onto the facade's drag-stage surface, no UI code
-    // holds a backend handle anymore.)
-    match app.session_archive_handle(session_id).await {
-        Ok(handle) => {
-            let resolved_password = handle.lock().password_ref().map(str::to_string);
-            if resolved_password.is_some() {
-                tab.current_password.set(resolved_password);
-            }
-        }
-        Err(error) => {
-            // The session vanished between the completion event and this
-            // call (a racing close). The fetches below will fail the
-            // same way and report it.
-            tracing::warn!(
-                "[operation_bridge] could not fetch the session's archive handle: {error:?}"
-            );
-        }
-    }
+    // Nothing re-derives the archive's password here anymore. The
+    // session holds whatever the open resolved (typed, rule-matched, or
+    // challenge-answered) and supplies it to every read that needs it,
+    // so the frontend no longer copies the secret out of the session's
+    // own archive handle to hand it back later -- and the transitional
+    // facade method that handed that handle over is gone with it. What
+    // still writes `tab.current_password` is the password dialog, which
+    // is where a user-typed password legitimately enters the UI.
 
     fetch_and_adopt_listing(&app, tab, session_id).await?;
 

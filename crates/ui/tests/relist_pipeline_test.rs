@@ -324,11 +324,15 @@ fn a_listing_that_fails_at_open_reaches_the_status_bar_not_an_empty_folder() {
 /// The auto-password ladder is the facade's alone now: a
 /// header-encrypted archive whose password a stored rule knows opens end
 /// to end -- real 7-Zip, real vault-seeded rule, no password typed, no
-/// challenge raised -- and the tab comes out fully populated, with the
-/// resolved password stamped from the session's own handle (there is no
-/// second, UI-side ladder left to re-derive it).
+/// challenge raised -- and the tab comes out fully populated.
+///
+/// The password never reaches the frontend at all, and the file-edit
+/// read still works anyway: the session supplies its own password to
+/// `read_entry_text`. Both halves are asserted together because they are
+/// one claim -- the UI stopped needing the secret precisely because the
+/// read stopped being the UI's.
 #[test]
-fn a_rule_protected_archive_opens_through_the_facades_own_ladder() {
+fn a_rule_protected_archive_opens_and_reads_without_the_ui_holding_its_password() {
     const FIXTURE_PASSWORD: &str = "rule-supplied-password";
 
     let temp = tempfile::tempdir().unwrap();
@@ -431,12 +435,33 @@ fn a_rule_protected_archive_opens_through_the_facades_own_ladder() {
     // whether 7-Zip's `-slt` output flags header encryption on an
     // already-unlocked listing varies by 7-Zip version -- the same
     // value the pre-facade extras carried, preserved, not redefined.)
-    assert_eq!(
-        tab.current_password.get().as_deref(),
-        Some(FIXTURE_PASSWORD),
-        "the resolved password is stamped from the session's own handle -- \
-         nothing UI-side re-derived it"
+    assert!(
+        tab.current_password.get().is_none(),
+        "the archive's password stays in the session that resolved it -- \
+         no rule-supplied secret is copied onto the tab"
     );
+
+    // ...and the read the tab used to need that copy for still works,
+    // because the session supplies its own password to the facade.
+    arclain_ui::features::archive_browser::application::FileOpsService.read_text(
+        &shared,
+        tab.clone(),
+        "payload.txt".to_string(),
+    );
+    wait_until("the file-edit read never completed", || {
+        !matches!(
+            tab.file_edit_dialog.get().load_state,
+            arclain_ui::features::file_editing::domain::types::FileEditLoadState::Loading { .. }
+        )
+    });
+    let dialog = tab.file_edit_dialog.get();
+    assert_eq!(
+        dialog.load_state,
+        arclain_ui::features::file_editing::domain::types::FileEditLoadState::Ready,
+        "reading an entry of a rule-unlocked archive failed: {}",
+        dialog.error
+    );
+    assert_eq!(dialog.content, "locked payload");
 }
 
 /// A failed *refresh* keeps the rows already on screen and records the
