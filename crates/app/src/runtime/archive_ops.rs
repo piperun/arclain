@@ -410,6 +410,7 @@ pub(super) async fn run_open_archive(
                     None => arclain_core::Archive::new(backend, source_path.clone()),
                 };
                 let archive_type = archive_kind_to_type_string(&info.archive_kind);
+                let encryption = crate::archive::SessionEncryption::from_listing(&info);
                 let entries = Arc::new(info.entries);
                 let session = match inner
                     .archive_sessions()
@@ -418,6 +419,7 @@ pub(super) async fn run_open_archive(
                         archive_type,
                         archive,
                         entries.clone(),
+                        encryption,
                         &handle,
                     )
                     .await

@@ -21,7 +21,7 @@ use parking_lot::RwLock;
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 
-use crate::archive::ArchiveSession;
+use crate::archive::{ArchiveSession, SessionEncryption};
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::event::SessionEvent;
 use crate::ids::ArchiveSessionId;
@@ -154,6 +154,7 @@ impl ArchiveSessionStore {
         archive_type: String,
         archive: arclain_core::Archive,
         entries: Arc<Vec<arclain_core::ArchiveEntry>>,
+        encryption: SessionEncryption,
         handle: &Handle,
     ) -> Result<Arc<ArchiveSession>, ApplicationError> {
         let id = ArchiveSessionId::from_raw(self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -165,6 +166,7 @@ impl ArchiveSessionStore {
                     archive_type,
                     archive,
                     entries.as_slice(),
+                    encryption,
                 ))
             })
             .await
@@ -338,6 +340,7 @@ mod tests {
                 "zip".to_string(),
                 dummy_archive(),
                 Arc::new(Vec::new()),
+                SessionEncryption::default(),
                 &Handle::current(),
             )
             .await
@@ -356,6 +359,7 @@ mod tests {
                 "zip".to_string(),
                 dummy_archive(),
                 Arc::new(Vec::new()),
+                SessionEncryption::default(),
                 &Handle::current(),
             )
             .await
@@ -366,6 +370,7 @@ mod tests {
                 "zip".to_string(),
                 dummy_archive(),
                 Arc::new(Vec::new()),
+                SessionEncryption::default(),
                 &Handle::current(),
             )
             .await
@@ -387,6 +392,7 @@ mod tests {
                 "zip".to_string(),
                 dummy_archive(),
                 Arc::new(Vec::new()),
+                SessionEncryption::default(),
                 &Handle::current(),
             )
             .await
@@ -419,6 +425,7 @@ mod tests {
                 "zip".to_string(),
                 dummy_archive(),
                 Arc::new(Vec::new()),
+                SessionEncryption::default(),
                 &Handle::current(),
             )
             .await

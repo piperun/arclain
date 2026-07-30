@@ -87,6 +87,9 @@ fn constructs_every_public_dto() {
         archive_type: "zip".to_string(),
         entry_count: 1,
         total_uncompressed_size: 20,
+        encrypted: false,
+        headers_encrypted: false,
+        encryption_method: None,
         comment: None,
         metadata: None,
     };
@@ -396,6 +399,9 @@ mod serialization_snapshots {
             archive_type: "zip".to_string(),
             entry_count: 2,
             total_uncompressed_size: 4096,
+            encrypted: true,
+            headers_encrypted: false,
+            encryption_method: Some("ZipCrypto/AES".to_string()),
             comment: Some("a comment".to_string()),
             metadata: Some(serde_json::json!({"created_by": "arclain"})),
         };
@@ -410,6 +416,9 @@ mod serialization_snapshots {
                 "archive_type": "zip",
                 "entry_count": 2,
                 "total_uncompressed_size": 4096,
+                "encrypted": true,
+                "headers_encrypted": false,
+                "encryption_method": "ZipCrypto/AES",
                 "comment": "a comment",
                 "metadata": {"created_by": "arclain"},
             })

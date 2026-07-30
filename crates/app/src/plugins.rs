@@ -1886,6 +1886,7 @@ mod tests {
                 "zip".to_string(),
                 archive,
                 Arc::new(entries),
+                crate::archive::SessionEncryption::default(),
                 &tokio::runtime::Handle::current(),
             )
             .await

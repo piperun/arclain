@@ -709,6 +709,12 @@ pub(crate) struct ArchiveSession {
     /// reports as `ArchiveSnapshot::metadata`.
     metadata: RwLock<Option<serde_json::Value>>,
     archive_type: String,
+    /// The archive-level encryption facts the backend's open-time listing
+    /// reported, held verbatim for [`Self::snapshot`]. Deliberately not
+    /// re-derived on [`Self::reindex`]: the pre-facade UI captured these
+    /// once per open too, and a mutation relist's listing describes the
+    /// same archive the open did.
+    encryption: SessionEncryption,
     archive: Arc<Mutex<arclain_core::Archive>>,
     revision: AtomicU64,
     entry_index: RwLock<EntryIndex>,
@@ -772,6 +778,29 @@ pub(crate) struct ArchiveSession {
     desynced: AtomicBool,
 }
 
+/// The archive-level encryption facts one backend listing reported --
+/// `arclain_core::ArchiveInfo`'s three non-entry fields, carried as one
+/// value so [`ArchiveSession::new`]'s callers cannot mix them up
+/// positionally.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SessionEncryption {
+    pub(crate) encrypted: bool,
+    pub(crate) headers_encrypted: bool,
+    pub(crate) encryption_method: Option<String>,
+}
+
+impl SessionEncryption {
+    /// Captures the trio from a backend listing, leaving the listing's
+    /// entries untouched for the caller to consume separately.
+    pub(crate) fn from_listing(info: &arclain_core::ArchiveInfo) -> Self {
+        Self {
+            encrypted: info.encrypted,
+            headers_encrypted: info.headers_encrypted,
+            encryption_method: info.encryption_method.clone(),
+        }
+    }
+}
+
 impl ArchiveSession {
     pub(crate) fn new(
         id: ArchiveSessionId,
@@ -779,6 +808,7 @@ impl ArchiveSession {
         archive_type: String,
         archive: arclain_core::Archive,
         entries: &[arclain_core::ArchiveEntry],
+        encryption: SessionEncryption,
     ) -> Self {
         let mut id_assigner = EntryIdAssigner::default();
         let entry_index = EntryIndex::build(entries, &mut id_assigner);
@@ -787,6 +817,7 @@ impl ArchiveSession {
             source_path: RwLock::new(source_path),
             metadata: RwLock::new(None),
             archive_type,
+            encryption,
             archive: Arc::new(Mutex::new(archive)),
             revision: AtomicU64::new(1),
             entry_index: RwLock::new(entry_index),
@@ -988,6 +1019,9 @@ impl ArchiveSession {
             archive_type: self.archive_type.clone(),
             entry_count: index.entry_count(),
             total_uncompressed_size: index.total_uncompressed_size(),
+            encrypted: self.encryption.encrypted,
+            headers_encrypted: self.encryption.headers_encrypted,
+            encryption_method: self.encryption.encryption_method.clone(),
             // Neither `arclain_core::archive::ArchiveInfo` nor any backend
             // in this workspace reports an archive comment today; always
             // `None` until a future task adds a real source for it.
@@ -1833,6 +1867,36 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_reports_the_encryption_trio_the_open_listing_carried() {
+        let entries = vec![encrypted_file("secret.bin")];
+        let session = ArchiveSession::new(
+            ArchiveSessionId::from_raw(1),
+            PathBuf::from("a.zip"),
+            "zip".to_string(),
+            dummy_archive(),
+            &entries,
+            SessionEncryption {
+                encrypted: true,
+                headers_encrypted: false,
+                encryption_method: Some("ZipCrypto/AES".to_string()),
+            },
+        );
+
+        let snapshot = session.snapshot();
+        assert!(snapshot.encrypted);
+        assert!(!snapshot.headers_encrypted);
+        assert_eq!(snapshot.encryption_method.as_deref(), Some("ZipCrypto/AES"));
+
+        // A reindex bumps the revision but never re-derives the trio --
+        // it describes the open-time listing by contract.
+        session.reindex(&entries);
+        let after = session.snapshot();
+        assert_eq!(after.revision, 2);
+        assert!(after.encrypted);
+        assert_eq!(after.encryption_method.as_deref(), Some("ZipCrypto/AES"));
+    }
+
+    #[test]
     fn inventory_walks_the_whole_tree_depth_first_with_parents_before_contents() {
         let entries = vec![
             file("dir/sub/c.txt", 1, 1),
@@ -2047,6 +2111,7 @@ mod tests {
             "zip".to_string(),
             dummy_archive(),
             entries,
+            SessionEncryption::default(),
         )
     }
 

@@ -7,7 +7,7 @@ mod session;
 mod store;
 
 pub use multipart::{detect_multipart, MultiPartArchiveDto, MultiPartFormat};
-pub(crate) use session::ArchiveSession;
+pub(crate) use session::{ArchiveSession, SessionEncryption};
 pub(crate) use store::ArchiveSessionStore;
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
@@ -134,6 +134,14 @@ pub struct ArchiveEntryDto {
 /// A point-in-time summary of an open archive session. `revision`
 /// increments every time the archive's contents change, so a frontend can
 /// tell a cached [`EntryPage`] apart from one that reflects a newer state.
+///
+/// `encrypted`/`headers_encrypted`/`encryption_method` are the archive-
+/// level encryption facts the backend reported when the session was
+/// opened (per-entry encryption is on each [`ArchiveEntryDto`] instead).
+/// They describe the *open-time* listing and are not re-derived on later
+/// reindexes: a mutation that changed them would need a reopen to be
+/// reflected, matching how the pre-facade UI treated the same three
+/// values.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ArchiveSnapshot {
     pub session_id: ArchiveSessionId,
@@ -142,6 +150,9 @@ pub struct ArchiveSnapshot {
     pub archive_type: String,
     pub entry_count: u64,
     pub total_uncompressed_size: u64,
+    pub encrypted: bool,
+    pub headers_encrypted: bool,
+    pub encryption_method: Option<String>,
     pub comment: Option<String>,
     pub metadata: Option<serde_json::Value>,
 }
