@@ -135,6 +135,26 @@ fn bootstrap_app_with_ui_demo(temp: &tempfile::TempDir) -> ArclainApp {
     bootstrap_app_with_plugin(temp, "ui-demo")
 }
 
+/// Boots a *second* `ArclainApp` over a profile an earlier one already
+/// created and populated -- the restart half of a persistence round trip.
+///
+/// Deliberately seeds nothing. `support::seed_working_sevenzip_config`
+/// saves a brand-new `UserConfig` row, so calling it a second time would
+/// erase every column the first application wrote, including the very one
+/// a persistence test exists to read back. The plugin fixtures and the
+/// 7-Zip path are already on disk from the first bootstrap.
+fn rebootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
+    ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(support::temp_paths(temp.path())),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .expect("re-bootstrapping over an existing profile must succeed")
+}
+
 /// The same isolated temp profile, with an *empty* plugins directory --
 /// the starting point for the `install_plugin` tests, which need the
 /// component to arrive through the facade rather than through a folder
@@ -1049,6 +1069,167 @@ fn several_refresh_panel_actions_in_one_response_trigger_exactly_one_refetch() {
         "three RefreshPanel actions in one response must trigger exactly one re-fetch, \
          not zero (stale label) and not three (layout-call-4)"
     );
+}
+
+// ===========================================================================
+// Plugin settings written from inside a guest.
+//
+// A guest's `set-setting` only writes into its own instance and flips a
+// dirty bit; nothing in the plugin runtime ever puts that on disk, so the
+// host has to pull it after every call that enters a guest. A plugin's
+// settings form *is* a plugin UI, which makes an ordinary `on-ui-event`
+// the write path a real user takes.
+// ===========================================================================
+
+/// Reads `facade-test-fixture`'s `Panel` label, which reports what the
+/// guest currently holds for its own remembered-value setting -- the only
+/// way a host test can see a value from the guest's side of the boundary.
+fn remembered_label(document: &PluginUiDocument) -> String {
+    panel_label(document, 0)
+}
+
+/// The fixture's second `Panel` label: how many times this plugin has
+/// been loaded, maintained by its `init` rather than by a UI event.
+fn loads_label(document: &PluginUiDocument) -> String {
+    panel_label(document, 1)
+}
+
+fn panel_label(document: &PluginUiDocument, index: usize) -> String {
+    let arclain_app::plugins::PluginUiNodeKind::Single { children } = &document.root.kind else {
+        panic!("expected a Single root");
+    };
+    let arclain_app::plugins::PluginUiNodeKind::Label { text, .. } = &children[index].kind else {
+        panic!("expected child {index} to be a Label");
+    };
+    text.clone()
+}
+
+#[test]
+fn a_setting_written_from_a_ui_event_survives_a_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+    let snapshot = runtime
+        .block_on(app.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .unwrap();
+    assert_eq!(remembered_label(&snapshot.document), "remembered:unset");
+
+    // Exactly what a plugin's settings form does: an ordinary UI event
+    // whose handler calls `set-setting`.
+    let operation_id = runtime
+        .block_on(app.start_plugin_action(PluginActionRequest {
+            session_id: snapshot.session_id,
+            node_id: "remember".to_string(),
+            action: PluginActionDto::SetValue {
+                value: Some("RJ123456".to_string()),
+            },
+        }))
+        .unwrap();
+    let update = runtime.block_on(wait_for_plugin_ui_updated(&app, operation_id));
+    assert_eq!(
+        remembered_label(&update.document),
+        "remembered:RJ123456",
+        "the guest holds the value it was just given",
+    );
+
+    // The whole point: the value must outlive the process that received
+    // it. A second application over the same profile can only report it
+    // if the first one pulled it out of the instance and stored it, since
+    // a fresh plugin instance starts from whatever the settings seed
+    // supplies and nothing else.
+    drop(runtime);
+    drop(app);
+    let restarted = rebootstrap_app(&temp);
+    let restarted_runtime = foreign_runtime();
+    let reopened = restarted_runtime
+        .block_on(restarted.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .unwrap();
+
+    assert_eq!(
+        remembered_label(&reopened.document),
+        "remembered:RJ123456",
+        "a setting a plugin wrote must survive a restart",
+    );
+}
+
+/// `on-ui-event` is not the only guest call a setting can be written
+/// from. The fixture's `init` maintains a load counter derived from its
+/// own persisted value, so it reaches two only if the first load's write
+/// was pulled and stored -- and the only guest entry between that write
+/// and the end of the first application's life is the session open.
+#[test]
+fn a_setting_written_outside_a_ui_event_is_persisted_when_a_session_opens() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+    let first = runtime
+        .block_on(app.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .unwrap();
+    assert_eq!(loads_label(&first.document), "loads:1");
+
+    drop(runtime);
+    drop(app);
+    let restarted = rebootstrap_app(&temp);
+    let restarted_runtime = foreign_runtime();
+    let second = restarted_runtime
+        .block_on(restarted.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .unwrap();
+
+    assert_eq!(
+        loads_label(&second.document),
+        "loads:2",
+        "the second load must see the first load's own write",
+    );
+}
+
+/// The other half of the same contract: an interaction that writes no
+/// setting must not have one invented for it, and re-reading must not
+/// disturb what is stored.
+#[test]
+fn a_plugin_that_writes_no_setting_keeps_reporting_none() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+    let snapshot = runtime
+        .block_on(app.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .unwrap();
+    // An interaction that writes nothing, dispatched between two reads.
+    let operation_id = runtime
+        .block_on(app.start_plugin_action(PluginActionRequest {
+            session_id: snapshot.session_id,
+            node_id: "multi-action".to_string(),
+            action: PluginActionDto::Activate,
+        }))
+        .unwrap();
+    runtime.block_on(wait_for_plugin_ui_updated(&app, operation_id));
+
+    drop(runtime);
+    drop(app);
+    let restarted = rebootstrap_app(&temp);
+    let restarted_runtime = foreign_runtime();
+    let reopened = restarted_runtime
+        .block_on(restarted.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .unwrap();
+
+    assert_eq!(remembered_label(&reopened.document), "remembered:unset");
 }
 
 #[test]
