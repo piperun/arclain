@@ -391,8 +391,23 @@ async fn fetch_and_adopt_inventory(
 /// tab immediately before calling this: rebinds the listing and
 /// inventory to that session (so any reply still in flight for the
 /// archive this one replaced is refused rather than seated), resets the
-/// browse cursor to the archive root, clears the selection, and seats
-/// the session's own rows via [`fetch_and_adopt_inventory`].
+/// browse cursor to the archive root, clears the selection *and the
+/// browser rows*, and seats the session's own rows via
+/// [`fetch_and_adopt_inventory`].
+///
+/// Clearing the rows is what stops a reused tab -- toolbar Open, Ctrl+O,
+/// a nested open, a password-retry reopen all reuse the same tab id --
+/// from showing the *previous* archive's rows under the new archive's
+/// name: this function has already re-pointed `archive_path`, so from
+/// here on the tab claims to be the new archive, and every other thing
+/// describing the old one (the listing, the inventory, the selection) is
+/// discarded on the same lines. The published rows were the one that was
+/// not. They are cleared here rather than only on the failure path
+/// because the in-flight window has the same problem in miniature, and
+/// because `TabListing`'s status axis is what keeps the empty result
+/// from reading as an ordinary empty folder in either case: the browser
+/// draws `Loading` while the fetch runs and the failure if it does not
+/// answer.
 ///
 /// `pub` for the same reason `OperationOrigins::register` is: production
 /// code must reach this only through the bridge's own event handling,
@@ -432,6 +447,8 @@ pub async fn relist_for_browser_signals(
         }
     }
     tab.selection_count.set_if_changed(0);
+    tab.browser_entries
+        .update(|snapshot| snapshot.replace(Vec::new()));
 
     // Nothing re-derives the archive's password here anymore. The
     // session holds whatever the open resolved (typed, rule-matched, or

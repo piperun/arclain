@@ -12,13 +12,15 @@
 //!
 //! Assertions about what the user sees are stated against the tab's
 //! published browser rows (`TabState::browser_entries`), because those
-//! are what the browser draws.
+//! are what the browser draws -- and, paired with the listing's status,
+//! what `browser_body` turns into a folder, a failure, or a spinner.
 
 mod common;
 use common::create_test_shared_state;
 
 use arclain_app::archive::ArchivePath;
 use arclain_ui::core::tabs::{RequestStatus, TabState};
+use arclain_ui::features::archive_browser::presentation::{browser_body, BrowserBody};
 use arclain_ui::shared::SharedState;
 use std::path::Path;
 use std::sync::Arc;
@@ -329,6 +331,13 @@ fn a_listing_that_fails_at_open_reaches_the_status_bar_not_an_empty_folder() {
         "nothing is known about the archive -- no rows were ever seated"
     );
     assert!(drawn_paths(&tab).is_empty());
+    let body = browser_body(false, listing.status());
+    assert!(
+        matches!(&body, BrowserBody::Unlistable(failure)
+            if failure.summary == listing.failure().unwrap().summary),
+        "the browser must draw this as a failure carrying the error's own \
+         summary, not as an empty archive: {body:?}"
+    );
 }
 
 /// The auto-password ladder is the facade's alone now: a
@@ -479,6 +488,12 @@ fn a_rule_protected_archive_opens_and_reads_without_the_ui_holding_its_password(
 /// failure alongside them -- the keep-the-rows semantics part 1 pinned on
 /// the type, now exercised through the real refresh path against a real
 /// session that disappears mid-flight.
+///
+/// This is the one case where rows and a recorded failure legitimately
+/// coexist: the rows are the *same* archive's last good answer, so the
+/// browser marks them stale rather than discarding them. A failed *open*
+/// is the opposite case and gets the opposite treatment (see
+/// [`a_failed_open_on_a_reused_tab_draws_neither_the_previous_archive_nor_an_empty_one`]).
 #[test]
 fn a_failed_refresh_keeps_the_rows_and_records_the_failure() {
     let fixture = open_fixture(&[("a.txt", b"content"), ("b.txt", b"more")]);
@@ -521,6 +536,120 @@ fn a_failed_refresh_keeps_the_rows_and_records_the_failure() {
     assert!(
         tab.inventory.get().entry_count() > 0,
         "the whole-archive inventory keeps its last good answer too"
+    );
+
+    let body = browser_body(true, listing.status());
+    assert!(
+        matches!(&body, BrowserBody::StaleListing(failure)
+            if failure.summary == listing.failure().unwrap().summary),
+        "the browser must keep drawing the rows and say why they are stale: {body:?}"
+    );
+}
+
+/// The regression guard for the confident lie this whole two-axis model
+/// exists to make impossible.
+///
+/// Every reused-tab route -- toolbar Open, Ctrl+O, a nested open, a
+/// password-retry reopen -- re-points the *same* tab at a new archive.
+/// The relist stamps the new archive's name onto the tab before it can
+/// know whether the listing will succeed, so if the listing then fails
+/// and nothing clears the published rows, the browser shows archive A's
+/// rows under archive B's name. Those rows are not merely stale: they
+/// describe a different archive entirely.
+///
+/// The fix has to be both halves at once. Clearing the rows alone would
+/// trade the wrong rows for a bare empty folder -- the silent-empty-view
+/// this model was reshaped to prevent -- so the failure has to be drawn
+/// as a failure.
+#[test]
+fn a_failed_open_on_a_reused_tab_draws_neither_the_previous_archive_nor_an_empty_one() {
+    let fixture = open_fixture(&[("first-archive.txt", b"a"), ("also-first.txt", b"b")]);
+    let tab = &fixture.tab;
+    let shared = &fixture.shared;
+    assert_eq!(
+        drawn_paths(tab),
+        ["also-first.txt", "first-archive.txt"],
+        "the first archive's rows are what the browser is drawing"
+    );
+    let first_path = tab
+        .archive_path
+        .get()
+        .expect("the first open named the tab");
+
+    // A second archive, opened into the same tab, whose session vanishes
+    // between the facade's completion and the bridge's registration --
+    // every listing fetch the relist makes will fail against it.
+    let second_path = fixture._temp.path().join("second.zip");
+    build_zip_fixture(&second_path, &[("second-archive.txt", b"c")]);
+    let runtime = shared.services.tokio_runtime.clone();
+    runtime.block_on({
+        let shared = shared.clone();
+        let app = fixture.app.clone();
+        let second_path = second_path.clone();
+        let tab_id = tab.id;
+        async move {
+            let operation_id = app
+                .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                    source_path: second_path,
+                    password: None,
+                })
+                .await
+                .expect("start_open_archive must be accepted");
+            let snapshot = wait_for_open_completion(&app, operation_id).await;
+            app.close_archive(snapshot.session_id)
+                .await
+                .expect("closing the fresh session must succeed");
+            arclain_ui::core::operation_bridge::register_operation(&shared, operation_id, tab_id)
+                .await;
+        }
+    });
+
+    wait_until("the failed listing never reached the status bar", || {
+        shared
+            .signals()
+            .status_bar
+            .get()
+            .message
+            .contains("Archive opened but failed to display")
+    });
+
+    // The tab now names the second archive...
+    let named = tab
+        .archive_path
+        .get()
+        .expect("the tab still names an archive");
+    assert_ne!(
+        named, first_path,
+        "the tab was re-pointed at the second archive"
+    );
+    assert_eq!(named, second_path);
+
+    // ...so the first archive's rows must be gone. This is the half that
+    // bites: without the clear, `drawn_paths` still answers with the
+    // first archive's two rows under the second archive's name.
+    assert!(
+        drawn_paths(tab).is_empty(),
+        "the previous archive's rows are still on screen under the new \
+         archive's name: {:?}",
+        drawn_paths(tab)
+    );
+    assert_eq!(tab.inventory.get().entry_count(), 0);
+
+    // ...and the other half: what is on screen instead is the failure,
+    // not an empty archive.
+    let listing = tab.listing.get();
+    let failure = listing
+        .failure()
+        .expect("the failed listing must be recorded on the tab it failed for");
+    let body = browser_body(false, listing.status());
+    assert!(
+        matches!(&body, BrowserBody::Unlistable(drawn) if drawn.summary == failure.summary),
+        "clearing the rows must not leave a bare empty folder behind: {body:?}"
+    );
+    assert_ne!(
+        body,
+        BrowserBody::Listing,
+        "an empty `Listing` here is exactly the silent-empty-view this model prevents"
     );
 }
 

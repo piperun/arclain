@@ -3,11 +3,12 @@
 use crate::core::tabs::view_state::{
     ArchiveTreeProjectionCache, BrowserProjectionCache, BrowserViewState,
 };
-use crate::core::tabs::TabState;
+use crate::core::tabs::{RequestStatus, TabState};
 use crate::features::archive_browser::domain::Action;
 use crate::features::archive_browser::presentation::components::{file_list, properties_panel};
 use crate::shared::components::tree_panel::{self, FolderTree, TreeRowProjectionCache};
 use crate::shared::SharedState;
+use arclain_app::error::{ApplicationError, Recoverability, SuggestedAction};
 use arclain_app::layout::UiActionTypeDto;
 use arclain_app::Signal;
 use eframe::egui;
@@ -19,6 +20,98 @@ fn with_borrowed_signal_value<T, R>(signal: &Signal<T>, use_value: impl FnOnce(&
     let result = use_value(&value);
     drop(value);
     result
+}
+
+/// A listing failure in the shape the browser panel draws it.
+///
+/// Built from the whole [`ApplicationError`] envelope rather than only its
+/// `summary`, because the envelope is the only place that says what can be
+/// done about the failure: "supply a password" and "try again" are
+/// different answers, and neither is inferable from the summary prose.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListingFailure {
+    /// The envelope's own one-line summary of what went wrong.
+    pub summary: String,
+    /// What the envelope says can be done about it, when it says anything.
+    pub hint: Option<&'static str>,
+}
+
+impl ListingFailure {
+    fn from_error(error: &ApplicationError) -> Self {
+        Self {
+            summary: error.summary.clone(),
+            hint: hint_for(error),
+        }
+    }
+}
+
+/// The one line of advice the error envelope justifies, if any.
+///
+/// Reads `suggested_action` first (the field that exists precisely so a
+/// frontend need not parse prose), and falls back to `recoverability` for
+/// an error that carries no suggestion but does say a retry could work. A
+/// `Fatal` error with no suggestion gets no hint rather than an invented
+/// one.
+fn hint_for(error: &ApplicationError) -> Option<&'static str> {
+    match error.suggested_action {
+        Some(SuggestedAction::SupplyPassword) => Some("This archive needs a password."),
+        Some(SuggestedAction::CheckPermissions) => {
+            Some("Check that you can read the archive file, then try again.")
+        }
+        Some(SuggestedAction::InstallExternalTool) => {
+            Some("This archive format needs an external tool that is not installed.")
+        }
+        Some(SuggestedAction::Retry) => Some("Reopening the archive may succeed."),
+        Some(SuggestedAction::ChooseDestination) => None,
+        None => match error.recoverability {
+            Recoverability::Retry => Some("Reopening the archive may succeed."),
+            Recoverability::UserAction | Recoverability::Fatal => None,
+        },
+    }
+}
+
+/// What the browser's central panel draws for the directory on screen.
+///
+/// Decided from the two axes `TabListing` keeps apart: the rows published
+/// for the browsed directory, and what the fetch behind them is doing.
+/// Collapsing them is what made a *failed* listing render as an ordinary
+/// empty folder -- see [`RequestStatus`]'s own table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BrowserBody {
+    /// Draw the published rows. Zero of them means the directory really is
+    /// empty: the session answered, and this is its answer.
+    ///
+    /// Also what a refresh in flight *over existing rows* draws -- those
+    /// rows are still the last good answer, and a banner on every mutation
+    /// would be noise rather than information.
+    Listing,
+    /// Draw the published rows over a notice that they could not be
+    /// refreshed. They are the last good answer for this exact directory
+    /// and the same archive still holds them, so discarding them would
+    /// lose information the user can still act on.
+    StaleListing(ListingFailure),
+    /// Nothing is on screen and nothing is coming: draw the failure. This
+    /// is the state that must never render as an empty folder -- the
+    /// contents are *unknown*, which is a different claim from *empty*.
+    Unlistable(ListingFailure),
+    /// Nothing is on screen yet because the listing is still running. Also
+    /// distinct from an empty folder, and distinct from a failure.
+    Loading,
+}
+
+/// Maps the two axes onto what the central panel draws. Pure, so the
+/// mapping is testable without a frame.
+pub fn browser_body(has_rows: bool, status: &RequestStatus) -> BrowserBody {
+    match (has_rows, status) {
+        (true, RequestStatus::Failed(error)) => {
+            BrowserBody::StaleListing(ListingFailure::from_error(error))
+        }
+        (false, RequestStatus::Failed(error)) => {
+            BrowserBody::Unlistable(ListingFailure::from_error(error))
+        }
+        (false, RequestStatus::Loading) => BrowserBody::Loading,
+        (_, RequestStatus::Idle) | (true, RequestStatus::Loading) => BrowserBody::Listing,
+    }
 }
 
 pub fn render_archive_browser(
@@ -39,6 +132,34 @@ pub fn render_archive_browser(
     }
 
     let entries = tab.browser_entries.get();
+    let listing = tab.listing.get();
+    let body = browser_body(!entries.entries.is_empty(), listing.status());
+
+    // The side panels are projections of the archive's whole entry tree
+    // -- the tree panel is its folder rows, the properties panel's
+    // archive group its aggregate totals -- so while that tree is unknown
+    // they would report an archive of zero files and zero bytes: the same
+    // confident lie in a different panel. Draw the central panel's answer
+    // alone until it is known.
+    //
+    // Keyed on the inventory rather than on the folder on screen having
+    // rows: a directory that is merely *empty* (or whose refresh failed)
+    // says nothing about the archive around it, and must not take the
+    // panels away.
+    if tab.inventory.get().revision().is_none() {
+        match &body {
+            BrowserBody::Unlistable(failure) => {
+                render_unlistable_state(ctx, shared, failure);
+                return action;
+            }
+            BrowserBody::Loading => {
+                render_listing_in_flight_state(ctx, shared);
+                return action;
+            }
+            BrowserBody::Listing | BrowserBody::StaleListing(_) => {}
+        }
+    }
+
     let mut view_state = tab.browser_view_state.get();
     let render_projection =
         with_borrowed_signal_value(&shared.signals().search_text, |search_text| {
@@ -59,7 +180,6 @@ pub fn render_archive_browser(
             .map(|name| name.to_string_lossy())
             .unwrap_or_else(|| std::borrow::Cow::Borrowed("archive"));
         let archive_entries = tab.inventory.get().entries_arc();
-        let listing = tab.listing.get();
         let tree = tree_projection.projection(&archive_entries, |entries| {
             FolderTree::from_folders(&crate::core::operations::browser_rows::folder_paths(
                 entries,
@@ -91,16 +211,27 @@ pub fn render_archive_browser(
         }
     }
 
-    // Render central file list
-    render_file_list(
-        ctx,
-        entries.entries.as_ref(),
-        render_projection.visible_indices,
-        render_projection.visible_selected_count,
-        &mut view_state,
-        shared,
-        &mut action,
-    );
+    // Render the central panel: the file list, over the "these rows are
+    // the last good answer" notice when a refresh of them failed -- or
+    // the listing's own state where there are no rows to draw and none
+    // are known.
+    match &body {
+        BrowserBody::Listing | BrowserBody::StaleListing(_) => render_file_list(
+            ctx,
+            entries.entries.as_ref(),
+            render_projection.visible_indices,
+            render_projection.visible_selected_count,
+            &mut view_state,
+            shared,
+            match &body {
+                BrowserBody::StaleListing(failure) => Some(failure),
+                _ => None,
+            },
+            &mut action,
+        ),
+        BrowserBody::Unlistable(failure) => render_unlistable_state(ctx, shared, failure),
+        BrowserBody::Loading => render_listing_in_flight_state(ctx, shared),
+    }
 
     // Update selection_count signal for toolbar button state.
     // Selection lives in a dedicated HashSet now (post-refactor for
@@ -137,6 +268,103 @@ fn render_empty_state(ctx: &egui::Context, shared: &SharedState) {
                 });
             });
         });
+}
+
+/// Draws a listing whose contents could not be read at all.
+///
+/// Deliberately shaped like [`render_empty_state`] and deliberately
+/// worded so it cannot be mistaken for one: an empty archive says "No
+/// archive loaded"/nothing here, this says the contents are unknown and
+/// why. Reusing the empty state's centered layout is what makes the two
+/// comparable at a glance; the icon, the colour and the wording are what
+/// make them different answers.
+fn render_unlistable_state(ctx: &egui::Context, shared: &SharedState, failure: &ListingFailure) {
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))
+        .show(ctx, |ui| {
+            ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(egui_phosphor::regular::PROHIBIT)
+                            .size(64.0)
+                            .color(shared.theme.colors.error),
+                    );
+                    ui.add_space(16.0);
+                    ui.label(
+                        egui::RichText::new("Couldn't list this archive")
+                            .size(18.0)
+                            .strong()
+                            .color(shared.theme.colors.error),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(&failure.summary)
+                            .size(14.0)
+                            .color(shared.theme.colors.on_surface),
+                    );
+                    if let Some(hint) = failure.hint {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(hint)
+                                .size(14.0)
+                                .color(shared.theme.colors.on_surface_variant),
+                        );
+                    }
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "The archive's contents are unknown -- this is not an empty archive.",
+                        )
+                        .size(12.0)
+                        .color(shared.theme.colors.on_surface_variant),
+                    );
+                });
+            });
+        });
+}
+
+/// Draws a listing that has not answered yet. Distinct from an empty
+/// archive for the same reason [`render_unlistable_state`] is: nothing on
+/// screen does not mean nothing in the archive.
+fn render_listing_in_flight_state(ctx: &egui::Context, shared: &SharedState) {
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))
+        .show(ctx, |ui| {
+            ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.spinner();
+                    ui.add_space(16.0);
+                    ui.label(
+                        egui::RichText::new("Listing the archive…")
+                            .size(18.0)
+                            .color(shared.theme.colors.on_surface),
+                    );
+                });
+            });
+        });
+}
+
+/// The banner drawn above rows a failed refresh stranded: they are the
+/// last good answer, and this is the reason they are not a fresh one.
+fn render_stale_listing_notice(ui: &mut egui::Ui, shared: &SharedState, failure: &ListingFailure) {
+    let line = format!(
+        "{} Couldn't refresh — showing the last known contents: {}",
+        egui_phosphor::regular::WARNING,
+        failure.summary
+    );
+    ui.label(
+        egui::RichText::new(line)
+            .size(13.0)
+            .color(shared.theme.colors.error),
+    );
+    if let Some(hint) = failure.hint {
+        ui.label(
+            egui::RichText::new(hint)
+                .size(12.0)
+                .color(shared.theme.colors.on_surface_variant),
+        );
+    }
+    ui.add_space(4.0);
 }
 
 fn render_tree_panel(
@@ -325,6 +553,7 @@ fn plugin_panel_section(
     Some(properties_panel::PanelSection::Plugin { slot, document })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_file_list(
     ctx: &egui::Context,
     entries: &[crate::shared::models::file_entry::FileEntry],
@@ -332,12 +561,16 @@ fn render_file_list(
     visible_selected_count: usize,
     state: &mut BrowserViewState,
     shared: &SharedState,
+    stale_notice: Option<&ListingFailure>,
     action: &mut Action,
 ) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))
         .show(ctx, |ui| {
             ui.vertical(|ui| {
+                if let Some(failure) = stale_notice {
+                    render_stale_listing_notice(ui, shared, failure);
+                }
                 // No outer ScrollArea here — both render_list_view (egui_extras
                 // TableBuilder with body.rows virtualization) and render_grid_view
                 // (ScrollArea::show_rows virtualization) own their own scrolling.
