@@ -117,10 +117,7 @@ pub fn render_toolbar_item(
 /// the toggle invalidates it, so this never goes stale in the direction
 /// that would keep drawing a disabled plugin's button.
 fn plugin_is_enabled(shared: &SharedState, plugin_id: &str) -> bool {
-    let Some(Ok(plugins)) = shared
-        .plugin_ui_jobs
-        .plugin_snapshot(shared.signals().plugin_visibility.get())
-    else {
+    let Some(Ok(plugins)) = shared.plugin_ui_jobs.plugin_snapshot() else {
         return false;
     };
     plugins

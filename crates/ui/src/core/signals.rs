@@ -179,12 +179,6 @@ pub struct AppSignals {
     /// way as [`Self::general_settings`].
     pub security_settings: Signal<arclain_app::settings::SecuritySettingsDto>,
 
-    /// Per-plugin visibility overrides, as the opaque JSON blob the
-    /// plugin snapshot builder keys its cache on. Not part of the
-    /// settings snapshot: it is a plugin-list rendering concern, and
-    /// nothing here interprets it.
-    pub plugin_visibility: Signal<Option<String>>,
-
     /// [NEW] Status Bar State
     pub status_bar: Signal<crate::shared::components::status_bar::StatusBarInfo>,
 
@@ -429,7 +423,6 @@ impl AppSignals {
             archive_settings: Signal::new(Default::default()).with_name("archive_settings"),
             network_settings: Signal::new(Default::default()).with_name("network_settings"),
             security_settings: Signal::new(Default::default()).with_name("security_settings"),
-            plugin_visibility: Signal::new(None).with_name("plugin_visibility"),
             status_bar: Signal::new(
                 crate::shared::components::status_bar::StatusBarInfo::default(),
             )
@@ -494,7 +487,6 @@ impl AppSignals {
         signal_ctx.bind_named(&self.archive_settings, "archive_settings");
         signal_ctx.bind_named(&self.network_settings, "network_settings");
         signal_ctx.bind_named(&self.security_settings, "security_settings");
-        signal_ctx.bind_named(&self.plugin_visibility, "plugin_visibility");
         signal_ctx.bind_named(&self.status_bar, "status_bar");
         // Note: per-tab password_dialog is not bound here — it lives in TabState
         // (post 2026-05-20 B3 reframed slice)
@@ -561,7 +553,6 @@ impl AppSignals {
         self.archive_settings.set(Default::default());
         self.network_settings.set(Default::default());
         self.security_settings.set(Default::default());
-        self.plugin_visibility.set(None);
         self.status_bar
             .set(crate::shared::components::status_bar::StatusBarInfo::default());
         self.process_run.set(ProcessRunState::default());

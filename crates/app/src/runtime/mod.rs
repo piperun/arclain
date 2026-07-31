@@ -2068,9 +2068,20 @@ impl ArclainApp {
     /// own `plugins_available` flag rather than failing every plugin
     /// call outright).
     pub async fn plugins(&self) -> Result<Vec<crate::plugins::PluginSummary>, ApplicationError> {
-        self.dispatch(|inner| match inner.plugin_manager() {
-            Some(manager) => crate::plugins::PluginSessionStore::plugins(&manager),
-            None => Vec::new(),
+        self.dispatch(|inner| {
+            let visibility = inner
+                .session
+                .mutable
+                .read()
+                .user_config
+                .plugin_visibility
+                .clone();
+            match inner.plugin_manager() {
+                Some(manager) => {
+                    crate::plugins::PluginSessionStore::plugins(&manager, visibility.as_deref())
+                }
+                None => Vec::new(),
+            }
         })
         .await
     }

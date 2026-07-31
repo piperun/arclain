@@ -56,11 +56,7 @@ pub fn render(
                 PanelSection::Plugin { slot, document } => {
                     let plugin_id = slot.plugin_id();
                     let plugin_name = shared
-                        .and_then(|shared| {
-                            shared
-                                .plugin_ui_jobs
-                                .plugin_snapshot(shared.signals().plugin_visibility.get())
-                        })
+                        .and_then(|shared| shared.plugin_ui_jobs.plugin_snapshot())
                         .and_then(Result::ok)
                         .and_then(|plugins| {
                             plugins

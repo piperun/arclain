@@ -83,9 +83,7 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                                 let plugins = app
                                     .shared_state
                                     .plugin_ui_jobs
-                                    .plugin_snapshot(
-                                        app.shared_state.signals().plugin_visibility.get(),
-                                    )
+                                    .plugin_snapshot()
                                     .and_then(Result::ok);
                                 crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
                                     &mut app.organization_feature.rules_page,

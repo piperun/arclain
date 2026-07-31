@@ -45,10 +45,6 @@ impl AppState {
             signals: AppSignals::new(),
         };
 
-        me.signals
-            .plugin_visibility
-            .set(me.user_config.plugin_visibility.clone());
-
         // Active context: `ArclainApp::install_active_tab_bridge` resolves
         // everything through this application's own archive-session
         // state (kept in sync with egui's active tab via

@@ -23,9 +23,7 @@ const COMPLETED_JOB_CAPACITY: usize = MAX_PENDING_JOBS + 8;
 
 #[derive(Clone, Debug)]
 pub enum PluginUiRequest {
-    Snapshot {
-        plugin_visibility: Option<String>,
-    },
+    Snapshot,
     ChromeSnapshot,
     NetworkLog,
     DomainWhitelist {
@@ -43,9 +41,7 @@ pub enum PluginUiRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PluginUiFailureContext {
-    Snapshot {
-        visibility: Option<String>,
-    },
+    Snapshot,
     ChromeSnapshot,
     NetworkLog,
     DomainWhitelist {
@@ -98,7 +94,7 @@ pub enum PluginUiResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum RequestKey {
-    Snapshot(Option<String>),
+    Snapshot,
     ChromeSnapshot,
     NetworkLog,
     DomainWhitelist(String),
@@ -113,7 +109,7 @@ enum RequestKey {
 impl PluginUiRequest {
     fn key(&self, request_id: RequestId) -> RequestKey {
         match self {
-            Self::Snapshot { plugin_visibility } => RequestKey::Snapshot(plugin_visibility.clone()),
+            Self::Snapshot => RequestKey::Snapshot,
             Self::ChromeSnapshot => RequestKey::ChromeSnapshot,
             Self::NetworkLog => RequestKey::NetworkLog,
             Self::DomainWhitelist { plugin_id } => RequestKey::DomainWhitelist(plugin_id.clone()),
@@ -134,9 +130,7 @@ impl PluginUiRequest {
 impl RequestKey {
     fn failure_context(&self, request: &PluginUiRequest) -> PluginUiFailureContext {
         match (self, request) {
-            (Self::Snapshot(visibility), _) => PluginUiFailureContext::Snapshot {
-                visibility: visibility.clone(),
-            },
+            (Self::Snapshot, _) => PluginUiFailureContext::Snapshot,
             (Self::ChromeSnapshot, _) => PluginUiFailureContext::ChromeSnapshot,
             (Self::NetworkLog, _) => PluginUiFailureContext::NetworkLog,
             (Self::DomainWhitelist(plugin_id), _) => PluginUiFailureContext::DomainWhitelist {
@@ -173,7 +167,7 @@ struct Completed {
 
 #[derive(Default)]
 struct PluginUiCache {
-    snapshots: HashMap<Option<String>, Result<Arc<Vec<PluginInfo>>, Arc<str>>>,
+    snapshot: Option<Result<Arc<Vec<PluginInfo>>, Arc<str>>>,
     chrome: Option<Result<Arc<PluginChromeSnapshot>, Arc<str>>>,
     network_log: Option<(Instant, Arc<Vec<(SystemTime, String)>>)>,
     network_log_failure: Option<Arc<str>>,
@@ -279,22 +273,17 @@ impl PluginUiJobs {
         results
     }
 
-    pub fn plugin_snapshot(
-        &self,
-        plugin_visibility: Option<String>,
-    ) -> Option<Result<Arc<Vec<PluginInfo>>, Arc<str>>> {
-        let snapshot = self.cache.lock().snapshots.get(&plugin_visibility).cloned();
+    pub fn plugin_snapshot(&self) -> Option<Result<Arc<Vec<PluginInfo>>, Arc<str>>> {
+        let snapshot = self.cache.lock().snapshot.clone();
         if snapshot.is_none() {
-            self.request(PluginUiRequest::Snapshot { plugin_visibility });
+            self.request(PluginUiRequest::Snapshot);
         }
         snapshot
     }
 
     pub fn invalidate_plugin_snapshots(&self) {
-        self.cache.lock().snapshots.clear();
-        self.pending
-            .lock()
-            .retain(|key, _| !matches!(key, RequestKey::Snapshot(_)));
+        self.cache.lock().snapshot = None;
+        self.pending.lock().remove(&RequestKey::Snapshot);
     }
 
     pub fn chrome_snapshot(&self) -> Option<Result<Arc<PluginChromeSnapshot>, Arc<str>>> {
@@ -417,10 +406,8 @@ impl PluginUiJobs {
     fn cache_completed(&self, completed: &Completed) {
         let mut cache = self.cache.lock();
         match (&completed.key, &completed.result) {
-            (RequestKey::Snapshot(visibility), PluginUiResult::SnapshotLoaded { plugins, .. }) => {
-                cache
-                    .snapshots
-                    .insert(visibility.clone(), Ok(Arc::new(plugins.clone())));
+            (RequestKey::Snapshot, PluginUiResult::SnapshotLoaded { plugins, .. }) => {
+                cache.snapshot = Some(Ok(Arc::new(plugins.clone())));
             }
             (RequestKey::ChromeSnapshot, PluginUiResult::ChromeSnapshotLoaded { snapshot, .. }) => {
                 cache.chrome = Some(Ok(Arc::new(snapshot.clone())))
@@ -449,9 +436,7 @@ impl PluginUiJobs {
             (_, PluginUiResult::Failed { context, error, .. }) => {
                 let error = Arc::<str>::from(error.as_str());
                 match context {
-                    PluginUiFailureContext::Snapshot { visibility } => {
-                        cache.snapshots.insert(visibility.clone(), Err(error));
-                    }
+                    PluginUiFailureContext::Snapshot => cache.snapshot = Some(Err(error)),
                     PluginUiFailureContext::ChromeSnapshot => cache.chrome = Some(Err(error)),
                     PluginUiFailureContext::NetworkLog => {
                         cache.network_log = None;
@@ -555,16 +540,14 @@ async fn execute(
     };
 
     match request {
-        PluginUiRequest::Snapshot { plugin_visibility } => match facade.plugins().await {
+        PluginUiRequest::Snapshot => match facade.plugins().await {
             Ok(plugins) => PluginUiResult::SnapshotLoaded {
                 request_id,
-                plugins: project_plugins(plugins, plugin_visibility.as_deref()),
+                plugins: project_plugins(plugins),
             },
             Err(error) => PluginUiResult::Failed {
                 request_id,
-                context: PluginUiFailureContext::Snapshot {
-                    visibility: plugin_visibility,
-                },
+                context: PluginUiFailureContext::Snapshot,
                 error: error.summary,
             },
         },
@@ -630,15 +613,13 @@ async fn execute(
     }
 }
 
-fn project_plugins(plugins: Vec<PluginSummary>, visibility: Option<&str>) -> Vec<PluginInfo> {
-    let visibility: HashMap<String, HashMap<String, bool>> =
-        serde_json::from_str(visibility.unwrap_or("{}")).unwrap_or_default();
+fn project_plugins(plugins: Vec<PluginSummary>) -> Vec<PluginInfo> {
     let mut projected = plugins
         .into_iter()
         .map(|plugin| {
             let loaded = plugin.load_error.is_none();
             PluginInfo {
-                visibility: visibility.get(&plugin.id).cloned().unwrap_or_default(),
+                visibility: plugin.visibility.into_iter().collect(),
                 id: plugin.id,
                 name: plugin.name,
                 version: plugin.version,
@@ -722,19 +703,19 @@ mod tests {
 
     #[test]
     fn plugin_projection_preserves_visibility_and_facade_capability_labels() {
-        let plugins = project_plugins(
-            vec![PluginSummary {
-                id: "demo".to_string(),
-                name: "Demo".to_string(),
-                version: "1.0.0".to_string(),
-                author: "Arclain".to_string(),
-                description: "fixture".to_string(),
-                capabilities: vec![PluginCapabilityDto::Network],
-                enabled: true,
-                load_error: None,
-            }],
-            Some(r#"{"demo":{"toolbar":true}}"#),
-        );
+        let mut visibility = std::collections::BTreeMap::new();
+        visibility.insert("toolbar".to_string(), true);
+        let plugins = project_plugins(vec![PluginSummary {
+            id: "demo".to_string(),
+            name: "Demo".to_string(),
+            version: "1.0.0".to_string(),
+            author: "Arclain".to_string(),
+            description: "fixture".to_string(),
+            capabilities: vec![PluginCapabilityDto::Network],
+            visibility,
+            enabled: true,
+            load_error: None,
+        }]);
 
         assert_eq!(plugins[0].capabilities, vec!["Network"]);
         assert_eq!(plugins[0].visibility.get("toolbar"), Some(&true));
@@ -758,7 +739,7 @@ mod tests {
     #[test]
     fn invalidation_rejects_a_late_snapshot_completion() {
         let jobs = test_jobs();
-        let key = RequestKey::Snapshot(None);
+        let key = RequestKey::Snapshot;
         let request_id = RequestId(41);
         jobs.pending.lock().insert(key.clone(), request_id);
         jobs.outstanding.store(1, AtomicOrdering::Release);
@@ -777,7 +758,7 @@ mod tests {
             "an invalidated result must not escape to the UI"
         );
         assert!(
-            jobs.cache.lock().snapshots.get(&None).is_none(),
+            jobs.cache.lock().snapshot.is_none(),
             "a late result must not repopulate the invalidated cache"
         );
         assert_eq!(jobs.outstanding.load(AtomicOrdering::Acquire), 0);
@@ -911,9 +892,7 @@ mod tests {
             }
         }
 
-        jobs.request(PluginUiRequest::Snapshot {
-            plugin_visibility: None,
-        });
+        jobs.request(PluginUiRequest::Snapshot);
 
         assert_eq!(jobs.pending.lock().len(), MAX_PENDING_JOBS);
         assert!(matches!(
@@ -930,9 +909,7 @@ mod tests {
             .store(MAX_PENDING_JOBS, std::sync::atomic::Ordering::Release);
 
         jobs.invalidate_plugin_snapshots();
-        jobs.request(PluginUiRequest::Snapshot {
-            plugin_visibility: None,
-        });
+        jobs.request(PluginUiRequest::Snapshot);
 
         assert_eq!(
             jobs.outstanding.load(std::sync::atomic::Ordering::Acquire),

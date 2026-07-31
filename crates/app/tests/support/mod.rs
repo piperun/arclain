@@ -53,6 +53,17 @@ pub fn create_dummy_executable(dir: &Path, name: &str) -> PathBuf {
 /// branch instead of searching the real system `PATH` (whose contents
 /// this test suite cannot control across machines/CI).
 pub fn seed_working_sevenzip_config(paths: &AppPaths, sevenzip_path: &Path) {
+    seed_working_config(paths, sevenzip_path, None);
+}
+
+/// [`seed_working_sevenzip_config`] plus a persisted plugin-visibility map.
+/// Used by facade tests that must prove the plugin DTO carries the stored
+/// presentation capabilities without exposing `UserConfig` itself.
+pub fn seed_working_config(
+    paths: &AppPaths,
+    sevenzip_path: &Path,
+    plugin_visibility: Option<String>,
+) {
     let databases_dir = databases_dir(paths);
     std::fs::create_dir_all(&databases_dir).expect("create databases dir");
     let config_db_path = databases_dir.join("config.sqlite");
@@ -63,6 +74,7 @@ pub fn seed_working_sevenzip_config(paths: &AppPaths, sevenzip_path: &Path) {
         arclain_core::UserConfig::ensure_table(conn)?;
         let mut config = arclain_core::UserConfig::new();
         config.sevenzip_path = Some(sevenzip_path.to_string_lossy().into_owned());
+        config.plugin_visibility = plugin_visibility;
         config.save(conn)?;
         Ok(())
     })

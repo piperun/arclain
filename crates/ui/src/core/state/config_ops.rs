@@ -112,9 +112,6 @@ impl AppState {
         self.encrypted_crc_policy = legacy.encrypted_crc_policy;
         self.db_paths = legacy.db_paths;
         self.dbs = legacy.dbs;
-        self.signals
-            .plugin_visibility
-            .set(self.user_config.plugin_visibility.clone());
         self.refresh_settings_signals(facade, runtime)
     }
 

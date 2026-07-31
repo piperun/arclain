@@ -891,7 +891,7 @@ pub(super) async fn run_set_plugin_enabled(
 
     crate::plugins::PluginSessionStore::set_plugin_enabled(&manager, &plugin_id, enabled)?;
 
-    let enabled_ids: Vec<String> = crate::plugins::PluginSessionStore::plugins(&manager)
+    let enabled_ids: Vec<String> = crate::plugins::PluginSessionStore::plugins(&manager, None)
         .into_iter()
         .filter(|summary| summary.enabled)
         .map(|summary| summary.id)

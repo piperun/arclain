@@ -197,7 +197,7 @@ impl BrowserController {
     ) -> Vec<arclain_app::organization::OrganizationRuleSummary> {
         let dlsite_enabled = shared
             .plugin_ui_jobs
-            .plugin_snapshot(shared.signals().plugin_visibility.get())
+            .plugin_snapshot()
             .and_then(Result::ok)
             .map(|plugins| {
                 plugins.iter().any(|p| {

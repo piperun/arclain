@@ -43,10 +43,7 @@ impl Region for ToolbarRegion {
     fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool {
         use crate::features::plugins::application::{document_buttons, PluginSlot, SlotView};
 
-        let Some(Ok(snapshot)) = shared
-            .plugin_ui_jobs
-            .plugin_snapshot(shared.signals().plugin_visibility.get())
-        else {
+        let Some(Ok(snapshot)) = shared.plugin_ui_jobs.plugin_snapshot() else {
             return false;
         };
         let enabled_plugins: Vec<_> = snapshot
@@ -173,10 +170,7 @@ impl Region for InfoPanelRegion {
     const AXIS: Axis = Axis::Vertical;
 
     fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool {
-        let Some(Ok(snapshot)) = shared
-            .plugin_ui_jobs
-            .plugin_snapshot(shared.signals().plugin_visibility.get())
-        else {
+        let Some(Ok(snapshot)) = shared.plugin_ui_jobs.plugin_snapshot() else {
             return false;
         };
         let enabled_plugins: Vec<_> = snapshot

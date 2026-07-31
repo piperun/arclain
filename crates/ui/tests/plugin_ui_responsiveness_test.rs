@@ -37,7 +37,7 @@ fn facade_plugin_queries_need_no_legacy_plugin_manager() {
 
     loop {
         let _ = jobs.drain();
-        if let Some(result) = jobs.plugin_snapshot(None) {
+        if let Some(result) = jobs.plugin_snapshot() {
             assert!(
                 result
                     .expect("the facade plugin read must succeed")
@@ -244,12 +244,8 @@ fn duplicate_facade_snapshot_requests_are_coalesced() {
         shared.facade.clone(),
         shared.services.tokio_runtime.handle().clone(),
     );
-    let first = jobs.request(PluginUiRequest::Snapshot {
-        plugin_visibility: None,
-    });
-    let duplicate = jobs.request(PluginUiRequest::Snapshot {
-        plugin_visibility: None,
-    });
+    let first = jobs.request(PluginUiRequest::Snapshot);
+    let duplicate = jobs.request(PluginUiRequest::Snapshot);
     assert_eq!(duplicate, first, "identical pending work must coalesce");
 
     let deadline = Instant::now() + Duration::from_secs(2);

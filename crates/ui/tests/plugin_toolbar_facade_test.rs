@@ -140,10 +140,7 @@ fn warm_plugin_snapshot(shared: &SharedState) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let _ = shared.plugin_ui_jobs.drain();
-        if let Some(Ok(plugins)) = shared
-            .plugin_ui_jobs
-            .plugin_snapshot(shared.signals().plugin_visibility.get())
-        {
+        if let Some(Ok(plugins)) = shared.plugin_ui_jobs.plugin_snapshot() {
             if plugins.iter().any(|plugin| plugin.id == PLUGIN) {
                 return;
             }

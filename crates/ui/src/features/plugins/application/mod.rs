@@ -16,11 +16,7 @@ pub fn request_plugin_snapshot(shared: &SharedState, state: &mut PluginsListStat
     if state.snapshot_status != SnapshotStatus::Idle {
         return;
     }
-    let plugin_visibility = shared.signals().plugin_visibility.get();
-    if let Some(snapshot) = shared
-        .plugin_ui_jobs
-        .plugin_snapshot(plugin_visibility.clone())
-    {
+    if let Some(snapshot) = shared.plugin_ui_jobs.plugin_snapshot() {
         match snapshot {
             Ok(snapshot) => {
                 state.plugins = snapshot.as_ref().clone();
@@ -34,9 +30,7 @@ pub fn request_plugin_snapshot(shared: &SharedState, state: &mut PluginsListStat
         }
         return;
     }
-    let request_id = shared
-        .plugin_ui_jobs
-        .request(PluginUiRequest::Snapshot { plugin_visibility });
+    let request_id = shared.plugin_ui_jobs.request(PluginUiRequest::Snapshot);
     state.snapshot_status = SnapshotStatus::Pending;
     state.snapshot_request_id = Some(request_id);
 }
@@ -86,7 +80,7 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
                 error,
             } => {
                 match context {
-                    PluginUiFailureContext::Snapshot { .. } => {
+                    PluginUiFailureContext::Snapshot => {
                         plugins
                             .list_state
                             .apply_snapshot_failure(request_id, error.clone());

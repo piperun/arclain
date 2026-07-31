@@ -136,6 +136,22 @@ fn bootstrap_app_with_ui_demo(temp: &tempfile::TempDir) -> ArclainApp {
     bootstrap_app_with_plugin(temp, "ui-demo")
 }
 
+fn bootstrap_app_with_ui_demo_visibility(temp: &tempfile::TempDir, visibility: &str) -> ArclainApp {
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_config(&paths, &dummy_sevenzip(temp), Some(visibility.to_string()));
+    std::fs::create_dir_all(&paths.plugins_dir).expect("create plugins dir");
+    install_plugin_fixture(&paths.plugins_dir, "ui-demo");
+    ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .expect("bootstrap with persisted plugin visibility")
+}
+
 /// Boots a *second* `ArclainApp` over a profile an earlier one already
 /// created and populated -- the restart half of a persistence round trip.
 ///
@@ -297,6 +313,25 @@ fn plugins_reports_the_installed_fixture_as_enabled_with_no_load_error() {
     assert!(ui_demo.enabled);
     assert_eq!(ui_demo.load_error, None);
     assert_eq!(ui_demo.name, "UI Demo Plugin");
+}
+
+#[test]
+fn plugins_reports_the_persisted_visibility_for_each_plugin() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo_visibility(
+        &temp,
+        r#"{"ui-demo":{"toolbar":true,"info_panel":false}}"#,
+    );
+    let runtime = foreign_runtime();
+
+    let summaries = runtime.block_on(app.plugins()).expect("list plugins");
+    let ui_demo = summaries
+        .iter()
+        .find(|summary| summary.id == "ui-demo")
+        .expect("ui-demo must be reported");
+
+    assert_eq!(ui_demo.visibility.get("toolbar"), Some(&true));
+    assert_eq!(ui_demo.visibility.get("info_panel"), Some(&false));
 }
 
 #[test]

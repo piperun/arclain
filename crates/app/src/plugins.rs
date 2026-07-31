@@ -94,7 +94,7 @@
 //!   active at all), and [`crate::ArclainApp::active_tab_bridge`] is how
 //!   a frontend obtains it to install on `PluginManager`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -938,6 +938,11 @@ pub struct PluginSummary {
     /// manifest's key order), deduplicated by construction because each
     /// capability has exactly one manifest flag.
     pub capabilities: Vec<PluginCapabilityDto>,
+    /// Per-surface visibility overrides persisted for this plugin.
+    ///
+    /// Keys are frontend-neutral capability slots such as `toolbar` and
+    /// `info_panel`. Missing keys retain that surface's default behavior.
+    pub visibility: BTreeMap<String, bool>,
     pub enabled: bool,
     /// `Some(reason)` if this plugin was discovered on disk but failed to
     /// load -- see `arclain_plugins::manager::FailedPlugin`. A plugin
@@ -1855,12 +1860,18 @@ impl PluginSessionStore {
 
     /// Every plugin `PluginManager` knows about, successfully loaded or
     /// not (see `arclain_plugins::manager::FailedPlugin`).
-    pub(crate) fn plugins(manager: &SyncMutex<PluginManager>) -> Vec<PluginSummary> {
+    pub(crate) fn plugins(
+        manager: &SyncMutex<PluginManager>,
+        persisted_visibility: Option<&str>,
+    ) -> Vec<PluginSummary> {
+        let visibility: HashMap<String, BTreeMap<String, bool>> =
+            serde_json::from_str(persisted_visibility.unwrap_or("{}")).unwrap_or_default();
         let manager = manager.lock();
         let mut summaries: Vec<PluginSummary> = manager
             .list_plugins()
             .into_iter()
             .map(|item| {
+                let plugin_visibility = visibility.get(&item.id).cloned().unwrap_or_default();
                 let capabilities = item
                     .manifest
                     .capabilities
@@ -1875,26 +1886,29 @@ impl PluginSessionStore {
                     author: item.manifest.plugin.author,
                     description: item.manifest.plugin.description,
                     capabilities,
+                    visibility: plugin_visibility,
                     enabled: item.enabled,
                     load_error: None,
                 }
             })
             .collect();
-        summaries.extend(
-            manager
-                .failed_plugins()
-                .into_iter()
-                .map(|failed| PluginSummary {
-                    id: failed.original_id,
-                    name: String::new(),
-                    version: String::new(),
-                    author: String::new(),
-                    description: String::new(),
-                    capabilities: Vec::new(),
-                    enabled: false,
-                    load_error: Some(failed.error),
-                }),
-        );
+        summaries.extend(manager.failed_plugins().into_iter().map(|failed| {
+            let plugin_visibility = visibility
+                .get(&failed.original_id)
+                .cloned()
+                .unwrap_or_default();
+            PluginSummary {
+                id: failed.original_id,
+                name: String::new(),
+                version: String::new(),
+                author: String::new(),
+                description: String::new(),
+                capabilities: Vec::new(),
+                visibility: plugin_visibility,
+                enabled: false,
+                load_error: Some(failed.error),
+            }
+        }));
         summaries
     }
 

@@ -82,9 +82,6 @@ pub fn app_state_from_facade(facade: &arclain_app::ArclainApp) -> AppState {
         .take_legacy_composition()
         .expect("take legacy composition for the test fixture");
     let signals = AppSignals::new();
-    signals
-        .plugin_visibility
-        .set(legacy.user_config.plugin_visibility.clone());
     AppState {
         user_config: legacy.user_config,
         pass_rules: legacy.pass_rules,

@@ -199,7 +199,7 @@ pub fn render_settings_content(
                             other => {
                                 let plugins = shared_state
                                     .plugin_ui_jobs
-                                    .plugin_snapshot(shared_state.signals().plugin_visibility.get())
+                                    .plugin_snapshot()
                                     .and_then(Result::ok);
                                 crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
                                     rp,
@@ -291,7 +291,7 @@ pub fn render_settings_content(
                     if let Some(data_action) = output.data_action {
                         let plugins = shared_state
                             .plugin_ui_jobs
-                            .plugin_snapshot(shared_state.signals().plugin_visibility.get())
+                            .plugin_snapshot()
                             .and_then(Result::ok);
                         crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
                             rp,
