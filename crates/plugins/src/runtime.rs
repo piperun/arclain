@@ -20,20 +20,29 @@ const FUEL_PER_EXPORT: u64 = 10_000_000;
 // The epoch pair below is a liveness dead-man switch, NOT a work budget:
 // `FUEL_PER_EXPORT` above is the load-bearing bound on how much a plugin
 // may compute per export, and it is deterministic regardless of machine
-// speed or load. Wall-clock enters only because fuel cannot see time spent
-// on the host side of a hostcall: a guest looping over cheap hostcalls (or
-// stuck inside one that never returns) burns almost no fuel while pinning
-// the plugin worker thread, so some wall-clock ceiling must exist for the
-// worker to be reclaimable at all.
+// speed or load. Wall-clock enters only because fuel cannot see time
+// spent on the host side of a hostcall: a guest *looping* over cheap
+// hostcalls burns almost no fuel while pinning the plugin worker thread
+// for as long as the loop keeps running. That loop is what this ceiling
+// reaps -- and it is the only thing it can reap. The trap lands at guest
+// epoch checks (function entries and loop backedges), so a single
+// hostcall that never returns pins the worker at ANY deadline value;
+// bounding an individual hostcall is each hostcall implementation's own
+// job (the network layer's per-request timeout, etc.), never this
+// mechanism's.
 //
 // Sizing rule: this ceiling must dwarf the slowest *legitimate* export,
 // not typical work, because tripping it is catastrophic -- an epoch trap
 // (`Trap::Interrupt`) permanently poisons the instance (see
-// `resource_quota_reason`), killing the plugin until it is reloaded. The
-// network layer's own per-request contract allows a single hostcall
-// `arclain_network::DEFAULT_REQUEST_TIMEOUT` (30s), and an export that
-// makes a few sequential requests is doing exactly what plugins are for,
-// so the ceiling sits at minutes.
+// `resource_quota_reason`), and the shipped product has no recovery path
+// (`unavailable_reason` has no production consumer and `reload_plugin`
+// no production caller), so a false positive kills the plugin until the
+// application restarts. The network layer's per-request contract allows
+// a single hostcall `arclain_network::DEFAULT_REQUEST_TIMEOUT` (30s) --
+// and that bound covers whole transfers, which resume beyond it via
+// ranged requests rather than running longer -- so an export making a
+// few sequential requests legitimately runs minutes. The ceiling
+// therefore sits at minutes; the sizing test pins its floor.
 //
 // Do not re-tune fuel and this pair toward each other. When this was 10
 // ticks (~100ms), a well-behaved guest that had consumed 2 of its
@@ -1302,19 +1311,25 @@ mod resource_limit_tests {
         );
     }
 
-    /// Pins the sizing relationship the dead-man switch depends on: the
-    /// epoch ceiling must comfortably exceed the slowest legitimate single
-    /// hostcall (the network layer's own per-request timeout), so it can
-    /// only ever fire on genuine wedges. Shrinking the ceiling back toward
-    /// a per-export "budget" re-creates the failure where a guest that had
-    /// consumed 2 of its 10,000,000 fuel was killed on wall-clock alone.
+    /// Pins the floor the dead-man switch may never shrink below: four
+    /// network-request timeouts, the bottom of the minutes band. The
+    /// binding constraint is the doctrine on `EPOCH_TICKS_PER_EXPORT`
+    /// itself -- the ceiling must dwarf the slowest legitimate export,
+    /// which is a few sequential hostcalls each bounded by the network
+    /// layer's 30s per-request contract -- and this assertion is the
+    /// arithmetic floor beneath that doctrine, so a re-tune back toward a
+    /// per-export "budget" fails a test instead of only contradicting a
+    /// comment. The shipped value sits at ten request-timeouts,
+    /// comfortably above the floor; anything inside the minutes band
+    /// satisfies both.
     #[test]
     fn the_epoch_deadline_dwarfs_the_slowest_legitimate_hostcall() {
         let ceiling = EPOCH_TICK_INTERVAL * u32::try_from(EPOCH_TICKS_PER_EXPORT).unwrap();
         assert!(
-            ceiling >= 2 * arclain_network::DEFAULT_REQUEST_TIMEOUT,
-            "epoch ceiling {ceiling:?} must be at least twice the network layer's \
-             per-request timeout ({:?}) -- it is a liveness backstop, not a work budget",
+            ceiling >= 4 * arclain_network::DEFAULT_REQUEST_TIMEOUT,
+            "epoch ceiling {ceiling:?} must stay at or above four times the network \
+             layer's per-request timeout ({:?}) -- it is a liveness backstop sized for \
+             the slowest legitimate export, not a work budget",
             arclain_network::DEFAULT_REQUEST_TIMEOUT
         );
     }
