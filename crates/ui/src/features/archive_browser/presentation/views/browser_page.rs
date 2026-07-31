@@ -72,18 +72,19 @@ fn hint_for(error: &ApplicationError) -> Option<&'static str> {
 
 /// What the browser's central panel draws for the directory on screen.
 ///
-/// Decided from the two axes `TabListing` keeps apart: the rows published
-/// for the browsed directory, and what the fetch behind them is doing.
-/// Collapsing them is what made a *failed* listing render as an ordinary
-/// empty folder -- see [`RequestStatus`]'s own table.
+/// A presentation of [`RequestStatus`] and nothing else. The row count is
+/// deliberately not an input: whether a directory's contents are *known*
+/// is a fact the listing model records, and reading it off "are there
+/// rows" is what made an archive nobody had listed draw as an empty one
+/// and a failed refresh of an empty folder draw as contents-unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BrowserBody {
     /// Draw the published rows. Zero of them means the directory really is
     /// empty: the session answered, and this is its answer.
     ///
-    /// Also what a refresh in flight *over existing rows* draws -- those
-    /// rows are still the last good answer, and a banner on every mutation
-    /// would be noise rather than information.
+    /// Also what a refresh in flight *over already-answered contents*
+    /// draws -- what is on screen is still the last good answer, and a
+    /// banner on every mutation would be noise rather than information.
     Listing,
     /// Draw the published rows over a notice that they could not be
     /// refreshed. They are the last good answer for this exact directory
@@ -94,23 +95,30 @@ pub enum BrowserBody {
     /// is the state that must never render as an empty folder -- the
     /// contents are *unknown*, which is a different claim from *empty*.
     Unlistable(ListingFailure),
-    /// Nothing is on screen yet because the listing is still running. Also
-    /// distinct from an empty folder, and distinct from a failure.
+    /// The contents are not known yet: either a first listing is running,
+    /// or the tab has only been pointed at an archive and the open behind
+    /// it has not answered. Distinct from an empty folder, and distinct
+    /// from a failure.
     Loading,
 }
 
-/// Maps the two axes onto what the central panel draws. Pure, so the
-/// mapping is testable without a frame.
-pub fn browser_body(has_rows: bool, status: &RequestStatus) -> BrowserBody {
-    match (has_rows, status) {
-        (true, RequestStatus::Failed(error)) => {
-            BrowserBody::StaleListing(ListingFailure::from_error(error))
-        }
-        (false, RequestStatus::Failed(error)) => {
+/// Maps the listing's status onto what the central panel draws. Pure, so
+/// the mapping is testable without a frame.
+///
+/// [`RequestStatus::Unlisted`] draws as [`BrowserBody::Loading`] rather
+/// than as a folder, which is the whole point: a tab that has never listed
+/// anything has nothing to show, and every route that reaches this state
+/// has an open either running or about to. It cannot linger -- a failed
+/// open settles it at [`RequestStatus::Unlistable`] and a cancelled one
+/// takes the archive off the tab entirely, so the spinner always resolves.
+pub fn browser_body(status: &RequestStatus) -> BrowserBody {
+    match status {
+        RequestStatus::Listed | RequestStatus::Refreshing => BrowserBody::Listing,
+        RequestStatus::Stale(error) => BrowserBody::StaleListing(ListingFailure::from_error(error)),
+        RequestStatus::Unlistable(error) => {
             BrowserBody::Unlistable(ListingFailure::from_error(error))
         }
-        (false, RequestStatus::Loading) => BrowserBody::Loading,
-        (_, RequestStatus::Idle) | (true, RequestStatus::Loading) => BrowserBody::Listing,
+        RequestStatus::Unlisted | RequestStatus::Loading => BrowserBody::Loading,
     }
 }
 
@@ -133,7 +141,7 @@ pub fn render_archive_browser(
 
     let entries = tab.browser_entries.get();
     let listing = tab.listing.get();
-    let body = browser_body(!entries.entries.is_empty(), listing.status());
+    let body = browser_body(listing.status());
 
     // The side panels are projections of the archive's whole entry tree
     // -- the tree panel is its folder rows, the properties panel's
@@ -323,9 +331,11 @@ fn render_unlistable_state(ctx: &egui::Context, shared: &SharedState, failure: &
         });
 }
 
-/// Draws a listing that has not answered yet. Distinct from an empty
-/// archive for the same reason [`render_unlistable_state`] is: nothing on
-/// screen does not mean nothing in the archive.
+/// Draws an archive whose contents are not known yet -- a first listing
+/// still running, or a tab that has been pointed at an archive whose open
+/// has not answered. Distinct from an empty archive for the same reason
+/// [`render_unlistable_state`] is: nothing on screen does not mean nothing
+/// in the archive.
 fn render_listing_in_flight_state(ctx: &egui::Context, shared: &SharedState) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))

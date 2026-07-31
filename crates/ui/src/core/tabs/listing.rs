@@ -216,51 +216,101 @@ impl ArchiveNavigation {
     }
 }
 
-/// What the tab's most recent listing request is doing.
+/// What the tab knows about the directory it is browsing, and what the
+/// fetch behind it is doing.
 ///
-/// Deliberately separate from *whether the tab has rows to show*. The rows
-/// are the browser rows published for the browsed directory
-/// (`TabState::browser_entries`, scoped out of the whole-archive
-/// [`TabInventory`] by `crate::core::operations::browser_rows`); this says
-/// what the fetch behind them is doing. Those are independent facts, and
-/// the states that matter are their combinations:
+/// Six states, which are three pairs of the *same* fetch state over the
+/// two answers to the question that decides everything the browser draws:
+/// **have this archive's contents ever been listed?**
 ///
-/// | rows | status | means |
-/// | --- | --- | --- |
-/// | none | `Idle` | nothing has been listed yet, or the browsed directory really is empty |
-/// | none | `Loading` | the archive's listing is in flight; its contents are not known yet |
-/// | none | `Failed` | the listing failed; the contents are *unknown*, not empty |
-/// | some | `Idle` | the session answered and these are its rows |
-/// | some | `Loading` | refreshing, with the previous answer still on screen |
-/// | some | `Failed` | a refresh failed; these rows are the last good answer |
+/// | contents | nothing running | fetch in flight | last fetch failed |
+/// | --- | --- | --- | --- |
+/// | **unknown** | [`Unlisted`] | [`Loading`] | [`Unlistable`] |
+/// | **known** | [`Listed`] | [`Refreshing`] | [`Stale`] |
 ///
-/// Collapsing the two axes into one enum -- which an earlier shape of this
-/// did -- makes the bottom two rows unnameable. A renderer then cannot
-/// draw a spinner over existing rows, and cannot mark rows as
-/// "couldn't refresh", even in principle: the failure has nowhere to live
-/// once the decision is made to keep the rows. And it makes the first and
-/// fourth rows the same value, so a listing that *failed* renders as an
-/// ordinary empty folder -- the silent-empty-view failure mode, arriving
-/// by construction rather than by accident.
+/// The top row is the one that used to be missing. An earlier shape had a
+/// single `Idle` covering both "nothing has been asked" and "the session
+/// answered", with the browser inferring which by asking whether the tab
+/// had any rows -- and no rows plus nothing running is exactly what a tab
+/// looks like both when its archive is empty and when it has never listed
+/// anything at all. So a tab that had only ever been *pointed* at an
+/// archive drew as a loaded, empty one, and stayed that way for good once
+/// the open behind it failed: there was nowhere for that outcome to land.
+/// Naming the unknown row makes the two tellable apart from this value
+/// alone, with no second signal to consult and no row count to read.
+///
+/// The same missing fact is why [`Stale`] and [`Unlistable`] are separate
+/// variants rather than one `Failed`. A failure over a directory that
+/// *has* been answered strands the last good answer on screen, and a
+/// directory whose last good answer was "nothing here" is no exception --
+/// keying that on "are there rows" reported a failed refresh of a
+/// genuinely empty folder as contents-unknown.
+///
+/// The rows themselves stay off this type. They are the browser rows
+/// published for the browsed directory (`TabState::browser_entries`,
+/// scoped out of the whole-archive [`TabInventory`] by
+/// `crate::core::operations::browser_rows`); this is what the fetch behind
+/// them is doing.
 ///
 /// `crate::features::archive_browser::presentation::views::browser_page::
 /// browser_body` is the reader that turns this table into what the browser
 /// panel draws.
 ///
+/// [`Unlisted`]: RequestStatus::Unlisted
+/// [`Loading`]: RequestStatus::Loading
+/// [`Unlistable`]: RequestStatus::Unlistable
+/// [`Listed`]: RequestStatus::Listed
+/// [`Refreshing`]: RequestStatus::Refreshing
+/// [`Stale`]: RequestStatus::Stale
 /// [`TabInventory`]: super::inventory::TabInventory
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum RequestStatus {
-    /// No request is outstanding: either none has been made, or the last
-    /// one was answered.
+    /// Nothing has ever been listed here and nothing is running. The tab
+    /// may already *name* an archive -- reopen-closed, duplicate, session
+    /// restore and replace-active all point a fresh tab at a path before
+    /// the open behind it has begun -- but naming one is not knowing what
+    /// is in it.
     #[default]
-    Idle,
-    /// A listing for the current request is in flight.
+    Unlisted,
+    /// A listing is in flight and nothing has answered before it, so the
+    /// contents are still unknown.
     Loading,
-    /// The last listing of this directory failed. Behind an `Arc` for the
-    /// same per-frame-clone reason the rows are: the whole envelope
-    /// (kind, recoverability, suggested action, correlation id) is what a
-    /// renderer needs to offer a retry, not just a summary string.
-    Failed(Arc<ApplicationError>),
+    /// A listing answered. The published rows *are* that answer, and zero
+    /// of them means the directory really is empty.
+    Listed,
+    /// A listing is in flight over contents that have already been
+    /// answered. Whatever is on screen is still the last good answer while
+    /// it runs.
+    Refreshing,
+    /// A listing failed with nothing ever answered before it: the contents
+    /// are **unknown**, which is a different claim from *empty*.
+    ///
+    /// Behind an `Arc` for the same per-frame-clone reason the rows are:
+    /// the whole envelope (kind, recoverability, suggested action,
+    /// correlation id) is what a renderer needs to offer a retry, not just
+    /// a summary string.
+    Unlistable(Arc<ApplicationError>),
+    /// A listing failed over contents that had already been answered:
+    /// what is on screen is the last good answer, and this is why it is
+    /// not a fresh one.
+    Stale(Arc<ApplicationError>),
+}
+
+impl RequestStatus {
+    /// Whether a listing has ever answered for this binding -- which half
+    /// of [`RequestStatus`]'s own table this value sits in.
+    ///
+    /// The one fact every transition below needs and no caller should have
+    /// to reconstruct. Matched exhaustively with no `_` arm on purpose: a
+    /// new variant has to say which half it belongs to rather than
+    /// defaulting into "unknown" and quietly reintroducing the conflation
+    /// this type exists to prevent.
+    pub fn contents_known(&self) -> bool {
+        match self {
+            Self::Unlisted | Self::Loading | Self::Unlistable(_) => false,
+            Self::Listed | Self::Refreshing | Self::Stale(_) => true,
+        }
+    }
 }
 
 /// Names one listing request so its eventual reply -- success or failure
@@ -341,7 +391,10 @@ impl TabListing {
             session,
             navigation: ArchiveNavigation::default(),
             request: ListEntriesRequest::whole_directory(ArchivePath::root()),
-            status: RequestStatus::Idle,
+            // Nothing has been asked for this binding yet, and a rebind to
+            // a different archive knows nothing about the new one however
+            // much it knew about the old.
+            status: RequestStatus::Unlisted,
             generation: 0,
         }
     }
@@ -387,41 +440,76 @@ impl TabListing {
         &self.status
     }
 
+    /// Whether nothing has ever been asked of this listing -- stricter
+    /// than the negation of [`RequestStatus::contents_known`], which also
+    /// holds for a listing that is running and for one that failed.
+    ///
+    /// The guard [`Self::fail_unlisted`] applies, named once here because
+    /// two callers need it: that method, and the one that has to make the
+    /// *other* decision about a tab that never listed anything -- a
+    /// cancelled open has no failure to record and takes the archive off
+    /// the tab instead.
+    pub fn is_unlisted(&self) -> bool {
+        matches!(self.status, RequestStatus::Unlisted)
+    }
+
     /// The error the last listing of this directory failed with, if it
     /// failed. Independent of whether the tab has rows to show: a refresh
     /// that fails over a directory already on screen reports both.
     pub fn failure(&self) -> Option<&ApplicationError> {
         match &self.status {
-            RequestStatus::Failed(error) => Some(error),
-            RequestStatus::Idle | RequestStatus::Loading => None,
+            RequestStatus::Unlistable(error) | RequestStatus::Stale(error) => Some(error),
+            RequestStatus::Unlisted
+            | RequestStatus::Loading
+            | RequestStatus::Listed
+            | RequestStatus::Refreshing => None,
         }
     }
 
     /// Whether a listing for the current request is in flight -- which says
     /// nothing about whether rows are on screen while it runs.
     pub fn is_loading(&self) -> bool {
-        matches!(self.status, RequestStatus::Loading)
+        matches!(
+            self.status,
+            RequestStatus::Loading | RequestStatus::Refreshing
+        )
     }
 
     /// Records that a listing for the current request is in flight and
     /// mints the [`ListingGeneration`] naming this attempt -- the token
     /// its eventual [`Self::succeed`]/[`Self::fail`] must present.
     ///
+    /// Which in-flight state it lands in carries the fact the reply will
+    /// need: a fetch over contents nothing has ever answered is
+    /// [`RequestStatus::Loading`] (there is nothing to show while it
+    /// runs), one over contents already answered is
+    /// [`RequestStatus::Refreshing`] (what is on screen is still the last
+    /// good answer). That is also what lets [`Self::fail`] tell an
+    /// unlistable archive from a stale one without counting rows.
+    ///
     /// Whether the rows already on screen stay there while it runs is the
     /// caller's choice, not this type's: the rows live on the tab's own
     /// signals, so "refreshing, previous answer still shown" is a state
     /// the model can hold. A relist that rebinds the tab to a *different*
-    /// archive clears them, because none of them describe it.
+    /// archive clears them, because none of them describe it -- and
+    /// rebinding resets the status to [`RequestStatus::Unlisted`], so the
+    /// fetch that follows is a first listing again.
     pub fn begin_loading(&mut self) -> ListingGeneration {
         self.generation += 1;
-        self.status = RequestStatus::Loading;
+        self.status = if self.status.contents_known() {
+            RequestStatus::Refreshing
+        } else {
+            RequestStatus::Loading
+        };
         ListingGeneration(self.generation)
     }
 
     /// Records that the listing attempt `generation` names -- made
-    /// against `session_id` for `directory` -- answered, returning the
-    /// status to [`RequestStatus::Idle`]. A successful listing supersedes
-    /// whatever the previous attempt was doing, including a failure.
+    /// against `session_id` for `directory` -- answered, settling the
+    /// status at [`RequestStatus::Listed`]. A successful listing
+    /// supersedes whatever the previous attempt was doing, including a
+    /// failure, and it is the only transition that makes the contents
+    /// known.
     ///
     /// Refused (`false`) under [`Self::answers_current_request`]'s three
     /// guards, exactly as [`Self::fail`] is.
@@ -434,7 +522,7 @@ impl TabListing {
         if !self.answers_current_request(generation, session_id, directory) {
             return false;
         }
-        self.status = RequestStatus::Idle;
+        self.status = RequestStatus::Listed;
         true
     }
 
@@ -444,6 +532,14 @@ impl TabListing {
     ///
     /// Refused (`false`) under [`Self::answers_current_request`]'s three
     /// guards, exactly as [`Self::succeed`] is.
+    ///
+    /// Lands on [`RequestStatus::Stale`] when a listing had already
+    /// answered for this binding and [`RequestStatus::Unlistable`] when
+    /// none ever had -- the distinction between "these are the last known
+    /// contents" and "the contents are unknown". It is read off the
+    /// in-flight state [`Self::begin_loading`] minted rather than off the
+    /// tab's row count, which is why a failed refresh of a directory that
+    /// was answered as *empty* still reads as a failed refresh.
     ///
     /// **Rows already on screen are left alone.** They are the session's
     /// last successful answer for this exact directory, and blanking them
@@ -471,7 +567,45 @@ impl TabListing {
         if !self.answers_current_request(generation, session_id, directory) {
             return false;
         }
-        self.status = RequestStatus::Failed(Arc::new(error));
+        let error = Arc::new(error);
+        self.status = if self.status.contents_known() {
+            RequestStatus::Stale(error)
+        } else {
+            RequestStatus::Unlistable(error)
+        };
+        true
+    }
+
+    /// Records why a listing that was never even asked for is never going
+    /// to be answered, and reports whether it was recorded.
+    ///
+    /// The companion to [`Self::fail`] for the failure that happens
+    /// *before* any listing: an archive open that never reached the point
+    /// of minting a session has no attempt to close, no session to check a
+    /// reply against and no directory to name, so it cannot present the
+    /// token `fail` demands -- yet it decides the same thing, that this
+    /// tab's contents are unknown, permanently.
+    ///
+    /// Without it the terminal outcome had nowhere to land. A tab pointed
+    /// at an archive by reopen-closed, duplicate, session restore or
+    /// replace-active sits at [`RequestStatus::Unlisted`] while its open
+    /// runs; when that open fails there is no in-flight marker left to
+    /// observe and nothing to distinguish the tab from one whose archive
+    /// was listed and found empty, so the browser drew an empty archive
+    /// and kept drawing it.
+    ///
+    /// Refused (`false`) unless the listing is still
+    /// [`RequestStatus::Unlisted`]. That guard is what keeps a failed open
+    /// off a tab with an archive already on screen: opening B into a tab
+    /// showing A and having it fail says nothing about A, whose rows,
+    /// inventory and listing all still describe it correctly. It equally
+    /// refuses to deface a listing that is genuinely in flight, whose own
+    /// reply is the one entitled to settle it.
+    pub fn fail_unlisted(&mut self, error: ApplicationError) -> bool {
+        if !self.is_unlisted() {
+            return false;
+        }
+        self.status = RequestStatus::Unlistable(Arc::new(error));
         true
     }
 
@@ -552,10 +686,18 @@ impl TabListing {
     /// solely on the directory comparison (which a navigate-away-and-back
     /// would defeat).
     ///
+    /// What is *not* discarded is whether this archive's contents are
+    /// known. Moving between directories is answered from the whole-archive
+    /// inventory the tab already holds, not by a new fetch, so a tab that
+    /// has listed its archive still knows what is in the folder it just
+    /// moved to -- including that the folder is empty. Dropping to
+    /// [`RequestStatus::Unlisted`] on every move would make each
+    /// navigation into an empty folder read as "contents unknown".
+    ///
     /// The browser's rows are republished by the navigation service in the
-    /// same step, out of the inventory the tab already holds, so a move
-    /// never leaves the old directory's rows under the new directory's
-    /// breadcrumb and never costs a frame of emptiness.
+    /// same step, out of that inventory, so a move never leaves the old
+    /// directory's rows under the new directory's breadcrumb and never
+    /// costs a frame of emptiness.
     fn navigated<A>(
         &mut self,
         navigate: impl FnOnce(&mut ArchiveNavigation, A) -> bool,
@@ -566,7 +708,11 @@ impl TabListing {
         }
         self.request.directory = self.navigation.current().clone();
         self.request.offset = 0;
-        self.status = RequestStatus::Idle;
+        self.status = if self.status.contents_known() {
+            RequestStatus::Listed
+        } else {
+            RequestStatus::Unlisted
+        };
         self.generation += 1;
         true
     }

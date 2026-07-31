@@ -57,6 +57,58 @@ fn bootstrap_real_app(temp: &tempfile::TempDir) -> arclain_app::ArclainApp {
     .expect("bootstrap the test facade")
 }
 
+/// Blocks until `operation_id` fails. The mirror of
+/// [`wait_for_open_completion`], and the way a test reaches the bridge's
+/// failed-open handler through the real facade rather than by calling into
+/// it.
+async fn wait_for_open_failure(
+    app: &arclain_app::ArclainApp,
+    operation_id: arclain_app::ids::OperationId,
+) -> arclain_app::error::ApplicationError {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let operation = app.operation(operation_id).await.unwrap();
+        match operation.state {
+            arclain_app::event::OperationState::Failed { error } => return error,
+            arclain_app::event::OperationState::Completed { .. } => {
+                panic!("the open the fixture was built to make fail succeeded instead")
+            }
+            _ => {}
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the open never reached a terminal state within the test deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Blocks until `operation_id` parks on a password challenge -- what an
+/// archive the backend cannot read at all does, since "unreadable" and
+/// "encrypted" are the same observation from outside. Deterministic, which
+/// is what makes it a usable place to cancel from.
+async fn wait_for_password_challenge(
+    app: &arclain_app::ArclainApp,
+    operation_id: arclain_app::ids::OperationId,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let operation = app.operation(operation_id).await.unwrap();
+        if matches!(
+            operation.state,
+            arclain_app::event::OperationState::Challenge { .. }
+        ) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the open never raised the challenge this test cancels from: {:?}",
+            operation.state
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn wait_for_open_completion(
     app: &arclain_app::ArclainApp,
     operation_id: arclain_app::ids::OperationId,
@@ -173,7 +225,7 @@ fn a_mutation_relists_the_navigated_directory_and_selection_survives() {
         let listing = tab.listing.get();
         assert_eq!(listing.session(), tab.archive_session_id.get());
         assert_eq!(listing.directory(), &ArchivePath::root());
-        assert_eq!(listing.status(), &RequestStatus::Idle);
+        assert_eq!(listing.status(), &RequestStatus::Listed);
         assert_eq!(tab.inventory.get().revision(), Some(1));
         assert_eq!(
             tab.inventory.get().entry_count(),
@@ -222,7 +274,7 @@ fn a_mutation_relists_the_navigated_directory_and_selection_survives() {
     // would be visible here as three rows including `added.txt`.
     let listing = tab.listing.get();
     assert_eq!(listing.current_path(), "subdir");
-    assert_eq!(listing.status(), &RequestStatus::Idle);
+    assert_eq!(listing.status(), &RequestStatus::Listed);
     assert_eq!(
         drawn_paths(tab),
         ["subdir/keep.txt", "subdir/second.txt"],
@@ -318,7 +370,7 @@ fn a_listing_that_fails_at_open_reaches_the_status_bar_not_an_empty_folder() {
 
     let listing = tab.listing.get();
     assert!(
-        matches!(listing.status(), RequestStatus::Failed(_)),
+        matches!(listing.status(), RequestStatus::Unlistable(_)),
         "the listing records the failure instead of masquerading as empty"
     );
     assert!(
@@ -331,7 +383,7 @@ fn a_listing_that_fails_at_open_reaches_the_status_bar_not_an_empty_folder() {
         "nothing is known about the archive -- no rows were ever seated"
     );
     assert!(drawn_paths(&tab).is_empty());
-    let body = browser_body(false, listing.status());
+    let body = browser_body(listing.status());
     assert!(
         matches!(&body, BrowserBody::Unlistable(failure)
             if failure.summary == listing.failure().unwrap().summary),
@@ -485,8 +537,8 @@ fn a_rule_protected_archive_opens_and_reads_without_the_ui_holding_its_password(
 }
 
 /// A failed *refresh* keeps the rows already on screen and records the
-/// failure alongside them -- the keep-the-rows semantics part 1 pinned on
-/// the type, now exercised through the real refresh path against a real
+/// failure alongside them -- the keep-the-rows semantics `TabListing::fail`
+/// documents, exercised through the real refresh path against a real
 /// session that disappears mid-flight.
 ///
 /// This is the one case where rows and a recorded failure legitimately
@@ -530,15 +582,16 @@ fn a_failed_refresh_keeps_the_rows_and_records_the_failure() {
         "the rows on screen are the session's last good answer and must survive"
     );
     assert!(
-        matches!(listing.status(), RequestStatus::Failed(_)),
-        "the failure is recorded alongside the kept rows"
+        matches!(listing.status(), RequestStatus::Stale(_)),
+        "the failure is recorded alongside the kept rows, as a *refresh* that \
+         failed rather than contents nobody ever listed"
     );
     assert!(
         tab.inventory.get().entry_count() > 0,
         "the whole-archive inventory keeps its last good answer too"
     );
 
-    let body = browser_body(true, listing.status());
+    let body = browser_body(listing.status());
     assert!(
         matches!(&body, BrowserBody::StaleListing(failure)
             if failure.summary == listing.failure().unwrap().summary),
@@ -641,7 +694,7 @@ fn a_failed_open_on_a_reused_tab_draws_neither_the_previous_archive_nor_an_empty
     let failure = listing
         .failure()
         .expect("the failed listing must be recorded on the tab it failed for");
-    let body = browser_body(false, listing.status());
+    let body = browser_body(listing.status());
     assert!(
         matches!(&body, BrowserBody::Unlistable(drawn) if drawn.summary == failure.summary),
         "clearing the rows must not leave a bare empty folder behind: {body:?}"
@@ -651,6 +704,269 @@ fn a_failed_open_on_a_reused_tab_draws_neither_the_previous_archive_nor_an_empty
         BrowserBody::Listing,
         "an empty `Listing` here is exactly the silent-empty-view this model prevents"
     );
+}
+
+/// The permanent half of the silent-empty view, and the case that made
+/// this its own change rather than one more input to `browser_body`.
+///
+/// Reopen-closed, duplicate tab, session restore and replace-active all
+/// name a *fresh* tab's archive before its open has begun. Until the open
+/// answers, such a tab has an `archive_path` and nothing else: no rows, no
+/// inventory, and -- before this -- a listing whose state was the same one
+/// an empty directory settles at. So it drew as a loaded, empty archive.
+///
+/// The open failing is what makes that permanent rather than transient.
+/// `handle_open_archive_failed_or_cancelled` clears
+/// `pending_open_operation` and never re-points `archive_path`, so after
+/// it there is no operation left in flight anywhere for a renderer to key
+/// on: a fix that reads "is an open running" restores the truth while the
+/// open runs and hands the lie straight back when it fails. Only recording
+/// the outcome *on the listing* survives the operation that produced it,
+/// which is what this asserts at both ends -- before the open, and after
+/// it has failed and been forgotten.
+#[test]
+fn a_tab_pointed_at_an_archive_never_draws_as_an_empty_one_even_after_the_open_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_real_app(&temp);
+    let mut shared = create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.clone();
+    arclain_ui::core::operation_bridge::spawn(&shared);
+
+    // An archive the open really does refuse, reached the way these tabs
+    // really do reach it. The file-dialog path detects a multi-part
+    // archive up front and sends the user to the merge dialog instead;
+    // reopen-closed and session restore call `load_archive_into_tab`
+    // straight out, with no such check -- so reopening a tab that held one
+    // part of a multi-part set is a genuine, reachable failed open rather
+    // than an injected one.
+    let unopenable = temp.path().join("RJ123456.part1.rar");
+    std::fs::write(&unopenable, b"one part of a multi-part set").unwrap();
+
+    // A tab created exactly the way all four routes create one: the real
+    // `TabsCollection::open` with a path, onto a brand-new `TabState`.
+    let tab_id = {
+        let mut collection = shared.signals().tabs.get();
+        let id = collection.open(Some(unopenable.clone()));
+        shared.signals().tabs.set(collection);
+        id
+    };
+    let tab = shared
+        .signals()
+        .tabs
+        .get()
+        .get(tab_id)
+        .cloned()
+        .expect("the new tab is in the collection");
+
+    // Before the open even starts. The tab claims an archive and has no
+    // rows -- byte for byte what an empty archive looks like.
+    assert!(
+        tab.archive_loaded.get(),
+        "the tab names an archive, which is what puts the browser on the \
+         listing path instead of its no-archive state"
+    );
+    assert!(drawn_paths(&tab).is_empty());
+    assert_eq!(tab.inventory.get().entry_count(), 0);
+    assert_ne!(
+        browser_body(tab.listing.get().status()),
+        BrowserBody::Listing,
+        "a tab that has never listed anything must not draw the file list -- \
+         an empty one says the archive is empty"
+    );
+
+    // Now the open, for real, against an archive the facade refuses.
+    runtime.block_on({
+        let shared = shared.clone();
+        let app = app.clone();
+        async move {
+            let operation_id = app
+                .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                    source_path: unopenable,
+                    password: None,
+                })
+                .await
+                .expect("start_open_archive must be accepted");
+            wait_for_open_failure(&app, operation_id).await;
+            arclain_ui::core::operation_bridge::register_operation(&shared, operation_id, tab_id)
+                .await;
+        }
+    });
+
+    wait_until("the failed open never reached the status bar", || {
+        shared
+            .signals()
+            .status_bar
+            .get()
+            .message
+            .contains("Failed to load archive")
+    });
+
+    // The tab still names the archive that failed, so the browser is still
+    // on the listing path...
+    assert!(tab.archive_path.get().is_some());
+    // ...and nothing is in flight any more, which is what makes this the
+    // permanent case: there is no pending operation left for a renderer to
+    // infer "still loading" from.
+    assert_eq!(tab.pending_open_operation.get(), None);
+
+    let listing = tab.listing.get();
+    let failure = listing.failure().expect(
+        "a failed open must settle the tab that never listed -- otherwise \
+         nothing on the tab records that the contents will never arrive",
+    );
+    let body = browser_body(listing.status());
+    assert!(
+        matches!(&body, BrowserBody::Unlistable(drawn) if drawn.summary == failure.summary),
+        "the browser must draw the failure with the error's own summary: {body:?}"
+    );
+    assert_ne!(
+        body,
+        BrowserBody::Listing,
+        "this is the state that used to draw an empty archive forever"
+    );
+    assert_ne!(
+        body,
+        BrowserBody::Loading,
+        "and it must not draw a spinner forever either -- nothing is coming"
+    );
+}
+
+/// The other terminal outcome, and the one a user reaches most often:
+/// reopening a tab whose archive has since been moved or deleted raises a
+/// password challenge (unreadable and encrypted look the same from
+/// outside), and dismissing that dialog cancels the open.
+///
+/// A cancellation is not a failure and inventing an error to report would
+/// be worse than saying nothing, so the archive comes off a tab that never
+/// listed anything -- leaving the ordinary empty tab the user is left
+/// holding rather than an empty *archive*, or a spinner nothing will
+/// resolve.
+#[test]
+fn a_cancelled_open_leaves_a_tab_that_never_listed_holding_no_archive() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_real_app(&temp);
+    let mut shared = create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.clone();
+    arclain_ui::core::operation_bridge::spawn(&shared);
+
+    // The archive the tab was pointed at is not there any more -- exactly
+    // what a reopened or restored tab finds when the file moved between
+    // sessions.
+    let vanished = temp.path().join("RJ123456.zip");
+    let tab_id = {
+        let mut collection = shared.signals().tabs.get();
+        let id = collection.open(Some(vanished.clone()));
+        shared.signals().tabs.set(collection);
+        id
+    };
+    let tab = shared
+        .signals()
+        .tabs
+        .get()
+        .get(tab_id)
+        .cloned()
+        .expect("the new tab is in the collection");
+    assert!(tab.archive_loaded.get());
+
+    runtime.block_on({
+        let shared = shared.clone();
+        let app = app.clone();
+        async move {
+            let operation_id = app
+                .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                    source_path: vanished,
+                    password: None,
+                })
+                .await
+                .expect("start_open_archive must be accepted");
+            // Park on the challenge first, so the cancel below cannot race
+            // an open that succeeded.
+            wait_for_password_challenge(&app, operation_id).await;
+            app.cancel_operation(operation_id)
+                .await
+                .expect("cancelling a parked open must be accepted");
+            arclain_ui::core::operation_bridge::register_operation(&shared, operation_id, tab_id)
+                .await;
+        }
+    });
+
+    wait_until("the cancelled open never settled the tab", || {
+        !tab.archive_loaded.get()
+    });
+    assert_eq!(
+        tab.archive_session_id.get(),
+        None,
+        "nothing was ever opened, so there is no session to have leaked"
+    );
+    assert!(
+        tab.listing.get().failure().is_none(),
+        "a cancellation is not a failure and must not be reported as one"
+    );
+}
+
+/// The guard on both branches above, at the seam that matters: a tab with
+/// an archive already on screen is untouched by an open that fails or is
+/// cancelled. Opening B into a tab showing A says nothing about A, whose
+/// rows, inventory and listing all still describe it correctly -- and
+/// stamping the failure onto that tab would replace a perfectly good
+/// listing with a failure panel about a different archive.
+#[test]
+fn an_open_that_fails_leaves_the_archive_already_on_screen_alone() {
+    let fixture = open_fixture(&[("a.txt", b"content"), ("b.txt", b"more")]);
+    let tab = &fixture.tab;
+    let shared = &fixture.shared;
+    let rows_before = drawn_paths(tab);
+    let path_before = tab
+        .archive_path
+        .get()
+        .expect("the first open named the tab");
+    assert_eq!(rows_before, ["a.txt", "b.txt"]);
+
+    let unopenable = fixture._temp.path().join("RJ654321.part1.rar");
+    std::fs::write(&unopenable, b"one part of a multi-part set").unwrap();
+    let runtime = shared.services.tokio_runtime.clone();
+    runtime.block_on({
+        let shared = shared.clone();
+        let app = fixture.app.clone();
+        let tab_id = tab.id;
+        async move {
+            let operation_id = app
+                .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                    source_path: unopenable,
+                    password: None,
+                })
+                .await
+                .expect("start_open_archive must be accepted");
+            wait_for_open_failure(&app, operation_id).await;
+            arclain_ui::core::operation_bridge::register_operation(&shared, operation_id, tab_id)
+                .await;
+        }
+    });
+
+    wait_until("the failed open never reached the status bar", || {
+        shared
+            .signals()
+            .status_bar
+            .get()
+            .message
+            .contains("Failed to load archive")
+    });
+
+    assert_eq!(
+        tab.archive_path.get(),
+        Some(path_before),
+        "the tab still names the archive it actually has open"
+    );
+    assert_eq!(drawn_paths(tab), rows_before);
+    let listing = tab.listing.get();
+    assert_eq!(
+        listing.failure(),
+        None,
+        "a different archive's failure must not be reported against this one"
+    );
+    assert_eq!(browser_body(listing.status()), BrowserBody::Listing);
 }
 
 /// A file and a directory sharing a name at the same level is legal in a

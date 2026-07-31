@@ -74,6 +74,33 @@ fn seed_inventory_rows(
         }
         held.adopt(prepared.clone());
     });
+    settle_listing(tab, session_id);
+}
+
+/// Records that the tab's listing answered for the directory it is
+/// browsing, bound to `session_id`.
+///
+/// Seating an inventory *is* a listing having answered: in production the
+/// same fetch brackets the adopt with `begin_loading`/`succeed`, and
+/// nothing publishes a browser row before that pair closes. A fixture that
+/// seats rows while leaving the listing having asked for nothing describes
+/// a tab production cannot produce -- and the browser rightly draws that
+/// as an archive whose contents it does not have yet, since a tab merely
+/// *pointed* at an archive looks exactly the same.
+fn settle_listing(
+    tab: &arclain_ui::core::tabs::TabState,
+    session_id: arclain_app::ids::ArchiveSessionId,
+) {
+    use arclain_ui::core::tabs::TabListing;
+
+    tab.listing.update(|listing| {
+        if listing.session() != Some(session_id) {
+            *listing = TabListing::for_session(Some(session_id));
+        }
+        let directory = listing.directory().clone();
+        let generation = listing.begin_loading();
+        assert!(listing.succeed(generation, session_id, &directory));
+    });
 }
 
 trait HandleAction {
@@ -576,6 +603,10 @@ fn test_ui_render_sanity() {
         .set(Some(PathBuf::from("test.zip")));
 
     let tab = shared.signals().tabs.get().active().clone();
+    // The rows below are an answer, so the listing has to say one was
+    // given -- otherwise this renders the "contents not known yet" panel,
+    // whose spinner repaints every frame and never settles.
+    settle_listing(&tab, arclain_app::ids::ArchiveSessionId::from_raw(1));
     tab.browser_entries.update(|snapshot| {
         snapshot.replace(vec![FileEntry {
             name: "test_ui_file.txt".to_string(),
@@ -742,9 +773,10 @@ fn production_toolbar_uses_change_gated_browser_view_publication() {
 /// rows, and both pieces of per-entry view state that must outlive a
 /// refresh -- the selection and the tree's folder expansion -- do.
 ///
-/// Parts 1 and 2 pinned survival at the listing and relist layers; this
-/// pins it where the user actually experiences it, through a real render
-/// of the real `ArchiveBrowser` between the two inventories.
+/// `TabListing`'s and the relist pipeline's own tests pin that survival at
+/// their layers; this pins it where the user actually experiences it,
+/// through a real render of the real `ArchiveBrowser` between the two
+/// inventories.
 #[test]
 fn the_rendered_browser_draws_dto_rows_and_keeps_selection_and_expansion_across_a_refresh() {
     use arclain_app::archive::EntryKind;

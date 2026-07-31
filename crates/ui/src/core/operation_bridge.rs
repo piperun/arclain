@@ -646,6 +646,16 @@ async fn handle_open_archive_completed(
         tracing::error!(
             "[operation_bridge] archive opened via the facade but the UI-side re-list failed: {error:?}"
         );
+        // Ordinarily a no-op: the relist's own fetch records its failure
+        // through `TabListing::fail`, so by here the listing already says
+        // the contents are unknown and `fail_unlisted`'s guard refuses.
+        // It closes the relist's two guard-clause exits, which report
+        // without ever reaching that fetch -- an unreachable pair in
+        // production, but the alternative to covering them is a tab left
+        // waiting on a listing nothing will ever answer.
+        tab.listing.update(|listing| {
+            listing.fail_unlisted(error.clone());
+        });
         shared.signals().status_bar.update(|status| {
             status.message = format!("Archive opened but failed to display: {}", error.summary);
         });
@@ -664,6 +674,66 @@ async fn handle_open_archive_completed(
         if let Some(retry_path) = tab.pending_open_after_unlock.get() {
             tab.pending_open_after_unlock.set(None);
             tab.pending_open_file.set(Some(retry_path));
+        }
+    }
+}
+
+/// Settles a tab whose archive open reached a terminal state without ever
+/// listing anything, so the browser stops waiting on an answer that is not
+/// coming.
+///
+/// Four routes point a *fresh* tab at an archive before its open has begun
+/// -- reopen-closed, duplicate tab, session restore and replace-active all
+/// set `archive_path` on a new `TabState`, whose listing is
+/// `RequestStatus::Unlisted`. While the open runs the browser draws that
+/// honestly, as contents it does not know yet. When the open ends without
+/// producing them, something has to say so: this handler already cleared
+/// `pending_open_operation`, so after it there is no in-flight marker left
+/// anywhere for a renderer to key on, and the tab would sit on an
+/// unresolvable spinner for as long as it stayed open.
+///
+/// The two terminal outcomes are different claims and get different
+/// answers:
+///
+/// * **Failed** -- the archive is real and the tab keeps naming it; what
+///   is unknown is its contents, and the envelope says why. Recorded onto
+///   the listing, which draws the failure with the error's own summary and
+///   suggested action.
+/// * **Cancelled** -- the user withdrew the request, so there is no
+///   failure to report and inventing one would be worse than saying
+///   nothing. The archive comes off the tab instead, leaving the ordinary
+///   empty tab the user is left holding.
+///
+/// Both are gated on the listing never having asked for anything, so
+/// neither can touch a tab with an archive already on screen: opening B
+/// into a tab showing A and having it fail or be cancelled says nothing
+/// about A, whose rows, inventory and listing all still describe it
+/// correctly. `TabListing::fail_unlisted` carries that guard itself; the
+/// cancel branch asks for it.
+///
+/// The cancel branch takes a second condition the failure branch does not
+/// need, because it is the only one whose guard and whose write land on
+/// *different* signals and so cannot be one atomic update. A tab is
+/// briefly `Unlisted` again in the instant a concurrent open rebinds its
+/// listing to a new session, before that fetch marks itself in flight --
+/// and clearing `archive_path` there would blank a tab whose archive was
+/// about to arrive. `handle_open_archive_completed` stamps
+/// `archive_session_id` before it rebinds anything, so requiring the tab
+/// to hold no session closes exactly that window.
+fn settle_a_tab_that_never_listed(
+    tab: &crate::core::tabs::TabState,
+    error: Option<&arclain_app::error::ApplicationError>,
+) {
+    match error {
+        Some(error) => {
+            tab.listing.update(|listing| {
+                listing.fail_unlisted(error.clone());
+            });
+        }
+        None => {
+            if tab.listing.get().is_unlisted() && tab.archive_session_id.get().is_none() {
+                tab.archive_path.set(None);
+            }
         }
     }
 }
@@ -689,6 +759,7 @@ fn handle_open_archive_failed_or_cancelled(
     };
     tab.pending_open_operation.set(None);
     dequeue_and_present_next(&tab, operation_id);
+    settle_a_tab_that_never_listed(&tab, error.as_ref());
 
     if let Some(error) = error {
         let message = format!("Failed to load archive: {}", error.summary);

@@ -328,7 +328,12 @@ fn a_fresh_tab_browses_the_archive_root_with_nothing_listed_yet() {
 
     assert_eq!(listing.directory(), &ArchivePath::root());
     assert_eq!(listing.current_path(), "");
-    assert_eq!(listing.status(), &RequestStatus::Idle);
+    assert_eq!(
+        listing.status(),
+        &RequestStatus::Unlisted,
+        "a fresh tab has asked for nothing, which is a different state from \
+         having asked and been answered with nothing"
+    );
     assert_eq!(tab.inventory.get().entry_count(), 0);
     assert!(tab.archive_snapshot.get().is_none());
     assert!(tab.archive_session_id.get().is_none());
@@ -479,7 +484,7 @@ fn a_tabs_listing_is_bound_to_its_session_and_requests_its_own_directory() {
     );
     assert_eq!(
         listing.status(),
-        &RequestStatus::Idle,
+        &RequestStatus::Listed,
         "the open's own listing answered"
     );
 

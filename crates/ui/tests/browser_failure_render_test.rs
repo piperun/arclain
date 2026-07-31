@@ -42,6 +42,11 @@ const LOADING_HEADLINE: &str = "Listing the archive";
 /// The tree panel's own heading -- drawn whenever that panel renders at
 /// all, whatever folder set it ends up with.
 const TREE_PANEL_HEADING: &str = "ARCHIVE STRUCTURE";
+/// The file list's own column header, drawn even over zero rows -- so
+/// "the file list is on screen" is observable without any row to look for.
+/// The one positive marker that separates a drawn empty folder from a
+/// central panel that drew something else entirely.
+const FILE_LIST_COLUMN: &str = "Name";
 
 fn listing_error(summary: &str) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::Backend, summary)
@@ -64,33 +69,43 @@ fn row(name: &str) -> FileEntry {
 
 /// A tab that names an archive (so the browser draws a listing rather
 /// than its "no archive loaded" state), holding `rows` and whatever
-/// `status` the caller wants the listing's fetch to be in.
+/// `status` the caller wants the listing to be in.
 ///
-/// The status is driven through the real seams -- `begin_loading` then
-/// `succeed`/`fail` -- rather than constructed, so a test can only
-/// express states the model can actually reach.
+/// Every state but the first is driven through the real seams --
+/// `begin_loading` then `succeed`/`fail` -- rather than constructed, so a
+/// test can only express states the model can actually reach. `Unlisted`
+/// is the one that needs no seam: it is what a fresh listing already is,
+/// which is exactly the point.
 fn seeded_tab(shared: &SharedState, rows: Vec<FileEntry>, status: &RequestStatus) -> Arc<TabState> {
     let tab = shared.signals().tabs.get().active().clone();
     tab.archive_path.set(Some(PathBuf::from("fixture.zip")));
 
     let session_id = ArchiveSessionId::from_raw(SESSION);
     let mut listing = TabListing::for_session(Some(session_id));
+
+    fn answer(listing: &mut TabListing, session_id: ArchiveSessionId) {
+        let generation = listing.begin_loading();
+        assert!(listing.succeed(generation, session_id, &ArchivePath::root()));
+    }
+    fn refuse(listing: &mut TabListing, session_id: ArchiveSessionId, error: &ApplicationError) {
+        let generation = listing.begin_loading();
+        assert!(listing.fail(generation, session_id, &ArchivePath::root(), error.clone()));
+    }
+
     match status {
-        RequestStatus::Idle => {
-            let generation = listing.begin_loading();
-            assert!(listing.succeed(generation, session_id, &ArchivePath::root()));
-        }
+        RequestStatus::Unlisted => {}
         RequestStatus::Loading => {
             listing.begin_loading();
         }
-        RequestStatus::Failed(error) => {
-            let generation = listing.begin_loading();
-            assert!(listing.fail(
-                generation,
-                session_id,
-                &ArchivePath::root(),
-                (**error).clone()
-            ));
+        RequestStatus::Listed => answer(&mut listing, session_id),
+        RequestStatus::Refreshing => {
+            answer(&mut listing, session_id);
+            listing.begin_loading();
+        }
+        RequestStatus::Unlistable(error) => refuse(&mut listing, session_id, error),
+        RequestStatus::Stale(error) => {
+            answer(&mut listing, session_id);
+            refuse(&mut listing, session_id, error);
         }
     }
     assert_eq!(listing.status(), status);
@@ -166,46 +181,62 @@ fn drew(harness: &Harness<'static, ()>, text: &str) -> bool {
 // browser_body -- the decision itself
 // =========================================================================
 
-/// The distinction the whole two-axis model exists for. Zero rows means
-/// two entirely different things depending on the status, and only one of
-/// them is "this folder is empty".
+/// The distinction the whole model exists for. Nothing on screen means
+/// entirely different things depending on the status, and only one of them
+/// is "this folder is empty".
+///
+/// The first two assertions are the ones this file was extended for: an
+/// archive nobody has listed and a directory the session answered as empty
+/// publish exactly the same rows -- none -- so the row count cannot tell
+/// them apart and nothing else was being asked.
 #[test]
-fn no_rows_means_empty_only_when_the_listing_actually_answered() {
+fn nothing_on_screen_means_empty_only_when_the_listing_actually_answered() {
     assert_eq!(
-        browser_body(false, &RequestStatus::Idle),
+        browser_body(&RequestStatus::Unlisted),
+        BrowserBody::Loading,
+        "nothing has been asked yet -- drawing a folder here claims an \
+         answer nobody has given"
+    );
+    assert_ne!(
+        browser_body(&RequestStatus::Unlisted),
+        browser_body(&RequestStatus::Listed),
+        "an archive nobody listed must not draw as one listed and found empty"
+    );
+    assert_eq!(
+        browser_body(&RequestStatus::Listed),
         BrowserBody::Listing,
         "the session answered with nothing: the folder really is empty"
     );
     assert_eq!(
-        browser_body(false, &RequestStatus::Loading),
+        browser_body(&RequestStatus::Loading),
         BrowserBody::Loading,
         "nothing has answered yet -- an empty folder would be a guess"
     );
     assert!(
         matches!(
-            browser_body(false, &failed_status(listing_error("the session is gone"))),
+            browser_body(&unlistable(listing_error("the session is gone"))),
             BrowserBody::Unlistable(_)
         ),
-        "the listing failed -- the contents are unknown, not empty"
+        "the listing failed with nothing ever answered -- the contents are \
+         unknown, not empty"
     );
 }
 
-/// Rows on screen are drawn in every state; what changes is whether a
-/// reason for distrusting them is drawn alongside.
+/// Contents already answered stay drawn in every state; what changes is
+/// whether a reason for distrusting them is drawn alongside. True of a
+/// directory whose answer was "nothing here" as much as of one with rows
+/// -- which is why the decision is not read off a row count.
 #[test]
-fn rows_are_always_drawn_and_only_a_failure_marks_them_stale() {
+fn answered_contents_are_always_drawn_and_only_a_failure_marks_them_stale() {
+    assert_eq!(browser_body(&RequestStatus::Listed), BrowserBody::Listing);
     assert_eq!(
-        browser_body(true, &RequestStatus::Idle),
-        BrowserBody::Listing
-    );
-    assert_eq!(
-        browser_body(true, &RequestStatus::Loading),
+        browser_body(&RequestStatus::Refreshing),
         BrowserBody::Listing,
-        "a refresh in flight over existing rows draws no banner: they are \
-         still the last good answer, and a banner per mutation is noise"
+        "a refresh in flight over an answer draws no banner: it is still the \
+         last good one, and a banner per mutation is noise"
     );
     assert!(matches!(
-        browser_body(true, &failed_status(listing_error("refresh failed"))),
+        browser_body(&stale(listing_error("refresh failed"))),
         BrowserBody::StaleListing(_)
     ));
 }
@@ -219,8 +250,8 @@ fn rows_are_always_drawn_and_only_a_failure_marks_them_stale() {
 fn the_drawn_failure_carries_the_envelopes_summary_and_suggested_action() {
     let error = listing_error("the archive is encrypted")
         .with_suggested_action(SuggestedAction::SupplyPassword);
-    let BrowserBody::Unlistable(failure) = browser_body(false, &failed_status(error)) else {
-        panic!("a failed listing with no rows must draw as unlistable");
+    let BrowserBody::Unlistable(failure) = browser_body(&unlistable(error)) else {
+        panic!("a listing that failed with nothing answered must draw as unlistable");
     };
     assert_eq!(failure.summary, "the archive is encrypted");
     assert_eq!(failure.hint, Some("This archive needs a password."));
@@ -232,14 +263,14 @@ fn the_drawn_failure_carries_the_envelopes_summary_and_suggested_action() {
 fn recoverability_stands_in_for_a_missing_suggested_action() {
     let retryable =
         listing_error("the backend timed out").with_recoverability(Recoverability::Retry);
-    let BrowserBody::Unlistable(failure) = browser_body(false, &failed_status(retryable)) else {
+    let BrowserBody::Unlistable(failure) = browser_body(&unlistable(retryable)) else {
         panic!("expected an unlistable body");
     };
     assert_eq!(failure.hint, Some("Reopening the archive may succeed."));
 
     // `ApplicationError::new` defaults to `Fatal` with no suggestion.
     let fatal = listing_error("the archive is corrupt");
-    let BrowserBody::Unlistable(failure) = browser_body(false, &failed_status(fatal)) else {
+    let BrowserBody::Unlistable(failure) = browser_body(&unlistable(fatal)) else {
         panic!("expected an unlistable body");
     };
     assert_eq!(
@@ -248,8 +279,14 @@ fn recoverability_stands_in_for_a_missing_suggested_action() {
     );
 }
 
-fn failed_status(error: ApplicationError) -> RequestStatus {
-    RequestStatus::Failed(Arc::new(error))
+/// A listing that failed with nothing ever answered before it.
+fn unlistable(error: ApplicationError) -> RequestStatus {
+    RequestStatus::Unlistable(Arc::new(error))
+}
+
+/// A listing that failed over contents already answered.
+fn stale(error: ApplicationError) -> RequestStatus {
+    RequestStatus::Stale(Arc::new(error))
 }
 
 // =========================================================================
@@ -265,7 +302,7 @@ fn a_failed_listing_draws_the_failure_and_says_it_is_not_an_empty_archive() {
     seeded_tab(
         &shared,
         Vec::new(),
-        &failed_status(
+        &unlistable(
             listing_error("the archive session is gone")
                 .with_suggested_action(SuggestedAction::Retry),
         ),
@@ -286,21 +323,64 @@ fn a_failed_listing_draws_the_failure_and_says_it_is_not_an_empty_archive() {
     assert!(!drew(&harness, STALE_HEADLINE));
 }
 
-/// The complement, and the case that makes the one above meaningful: a
-/// folder the session listed as empty still draws as an ordinary empty
-/// folder, with nothing suggesting a failure.
+/// The complement, and the case that makes every other test in this file
+/// meaningful: a folder the session listed as empty still draws as an
+/// ordinary empty folder, with nothing suggesting a failure.
+///
+/// The positive assertion is what makes it a test rather than three ways
+/// of saying "not that": `render_list_view` draws a `Name` column header
+/// even over zero rows, so the file list being on screen at all is
+/// observable. Without it this would pass just as happily if the central
+/// panel drew nothing whatsoever.
 #[test]
 fn an_empty_directory_still_draws_as_an_empty_directory() {
     let shared = common::create_test_shared_state();
-    seeded_tab(&shared, Vec::new(), &RequestStatus::Idle);
+    seeded_tab(&shared, Vec::new(), &RequestStatus::Listed);
 
     let harness = render(&shared);
+    assert!(
+        drew(&harness, FILE_LIST_COLUMN),
+        "the empty file list itself must be on screen -- an empty folder is \
+         something the browser draws, not something it omits"
+    );
     assert!(
         !drew(&harness, UNLISTABLE_HEADLINE),
         "an empty folder must not be reported as a failure"
     );
     assert!(!drew(&harness, STALE_HEADLINE));
     assert!(!drew(&harness, LOADING_HEADLINE));
+}
+
+/// The bug this file's model change exists for, at the drawing end.
+///
+/// Reopen-closed, duplicate tab, session restore and replace-active all
+/// point a *fresh* tab at an archive before its open has produced
+/// anything. Such a tab publishes no rows and has asked for no listing,
+/// which is indistinguishable from an empty archive by every measure
+/// except the one the listing now records -- so it drew as a loaded,
+/// empty archive.
+#[test]
+fn a_tab_that_has_never_listed_does_not_draw_as_an_empty_archive() {
+    let shared = common::create_test_shared_state();
+    let tab = seeded_tab(&shared, Vec::new(), &RequestStatus::Unlisted);
+    assert!(
+        tab.archive_loaded.get(),
+        "the tab names an archive, which is what makes the browser draw a \
+         listing at all -- the state under test is only reachable this way"
+    );
+
+    let harness = render(&shared);
+    assert!(
+        !drew(&harness, FILE_LIST_COLUMN),
+        "an archive nobody has listed must not draw the file list: an empty \
+         one claims the archive is empty"
+    );
+    assert!(
+        drew(&harness, LOADING_HEADLINE),
+        "what it draws instead is that the contents are not known yet"
+    );
+    assert!(!drew(&harness, UNLISTABLE_HEADLINE));
+    assert!(!drew(&harness, STALE_HEADLINE));
 }
 
 /// A failed *refresh* is the one case where rows and a failure coexist:
@@ -312,7 +392,7 @@ fn a_failed_refresh_draws_its_rows_under_a_notice_saying_why_they_are_stale() {
     seeded_tab(
         &shared,
         vec![row("kept.txt"), row("second.txt")],
-        &failed_status(listing_error("the session was closed mid-refresh")),
+        &stale(listing_error("the session was closed mid-refresh")),
     );
 
     let harness = render(&shared);
@@ -329,18 +409,39 @@ fn a_failed_refresh_draws_its_rows_under_a_notice_saying_why_they_are_stale() {
     );
 }
 
-/// A listing still in flight over no rows draws as in flight -- not as an
-/// empty folder, and not as a failure. This is the state a reused tab
-/// passes through between being re-pointed at a new archive and that
-/// archive's rows arriving, which is exactly when the previous archive's
-/// rows used to be on screen under the new archive's name.
+/// A first listing still in flight draws as in flight -- not as an empty
+/// folder, and not as a failure. This is the state a reused tab passes
+/// through between being re-pointed at a new archive and that archive's
+/// rows arriving, which is exactly when the previous archive's rows used
+/// to be on screen under the new archive's name.
 #[test]
-fn a_listing_in_flight_over_no_rows_draws_as_in_flight() {
+fn a_first_listing_in_flight_draws_as_in_flight() {
     let shared = common::create_test_shared_state();
     seeded_tab(&shared, Vec::new(), &RequestStatus::Loading);
 
     let harness = render(&shared);
     assert!(drew(&harness, LOADING_HEADLINE));
+    assert!(!drew(&harness, FILE_LIST_COLUMN));
+    assert!(!drew(&harness, UNLISTABLE_HEADLINE));
+    assert!(!drew(&harness, STALE_HEADLINE));
+}
+
+/// A refresh of contents already answered is the opposite: they are still
+/// the last good answer, so they stay on screen with no banner -- and that
+/// holds when the answer was "nothing here". Reading this off a row count
+/// put a spinner over an empty folder every time a mutation refreshed it,
+/// where the same mutation over a folder with rows left them alone.
+#[test]
+fn a_refresh_of_a_folder_answered_as_empty_keeps_drawing_the_empty_folder() {
+    let shared = common::create_test_shared_state();
+    seeded_tab(&shared, Vec::new(), &RequestStatus::Refreshing);
+
+    let harness = render(&shared);
+    assert!(
+        drew(&harness, FILE_LIST_COLUMN),
+        "the folder is known to be empty; refreshing it does not make it unknown"
+    );
+    assert!(!drew(&harness, LOADING_HEADLINE));
     assert!(!drew(&harness, UNLISTABLE_HEADLINE));
     assert!(!drew(&harness, STALE_HEADLINE));
 }
@@ -359,7 +460,7 @@ fn a_failed_open_draws_no_panel_that_would_claim_the_archive_is_empty() {
     let tab = seeded_tab(
         &shared,
         Vec::new(),
-        &failed_status(listing_error("the archive session is gone")),
+        &unlistable(listing_error("the archive session is gone")),
     );
     assert_eq!(tab.inventory.get().revision(), None);
 
@@ -371,23 +472,54 @@ fn a_failed_open_draws_no_panel_that_would_claim_the_archive_is_empty() {
     );
 }
 
-/// The complement, and the reason the rule above is keyed on the archive
-/// rather than on the folder having rows. A directory that is genuinely
-/// empty says nothing about the archive around it: when a refresh of it
-/// fails, the archive's own tree is still known, so the panels it feeds
-/// stay -- only the central panel reports the failure.
+/// The same rule for a tab that has never listed at all: the archive's
+/// tree is just as unknown, so the panels projected from it must not draw
+/// an archive of zero files while the open behind the tab is still
+/// running.
 #[test]
-fn a_failure_over_an_empty_folder_keeps_the_panels_the_archive_still_feeds() {
+fn a_tab_that_has_never_listed_draws_no_panel_derived_from_an_unknown_archive() {
+    let shared = common::create_test_shared_state();
+    let tab = seeded_tab(&shared, Vec::new(), &RequestStatus::Unlisted);
+    assert_eq!(tab.inventory.get().revision(), None);
+
+    let harness = render(&shared);
+    assert!(drew(&harness, LOADING_HEADLINE));
+    assert!(!drew(&harness, TREE_PANEL_HEADING));
+}
+
+/// A directory that is genuinely empty says nothing about the archive
+/// around it: when a refresh of it fails, the archive's own tree is still
+/// known, so the panels it feeds stay -- and the central panel says the
+/// rows could not be *refreshed*, not that the contents are unknown.
+///
+/// The second assertion is the one that changed. Deciding between those
+/// two answers by asking whether the folder had rows got this exactly
+/// backwards for an empty folder: the tab knew perfectly well what was in
+/// it -- nothing -- and reported that as unknown.
+#[test]
+fn a_failed_refresh_of_an_empty_folder_reads_as_a_failed_refresh_not_as_unknown() {
     let shared = common::create_test_shared_state();
     let tab = seeded_tab(
         &shared,
         Vec::new(),
-        &failed_status(listing_error("the refresh failed")),
+        &stale(listing_error("the refresh failed")),
     );
     seed_inventory(&tab);
 
     let harness = render(&shared);
-    assert!(drew(&harness, UNLISTABLE_HEADLINE));
+    assert!(
+        drew(&harness, STALE_HEADLINE) && drew(&harness, "the refresh failed"),
+        "the folder was answered as empty and the refresh of it failed; both \
+         halves of that must be on screen"
+    );
+    assert!(
+        !drew(&harness, UNLISTABLE_HEADLINE),
+        "contents last answered as empty are not contents unknown"
+    );
+    assert!(
+        drew(&harness, FILE_LIST_COLUMN),
+        "the empty folder itself stays drawn under the notice"
+    );
     assert!(
         drew(&harness, TREE_PANEL_HEADING),
         "the archive's folder set is still known, so the tree panel stays"
