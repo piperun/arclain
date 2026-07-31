@@ -84,14 +84,93 @@ use arclain_network::features::proxy::ConnectionTestResult;
 use crate::challenge::SecretInput;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::settings::{
-    self, GametaServerInfo, NetworkProbeReport, PasswordRuleInput, PasswordRuleSummary,
-    ProbeStepDto, SettingsPatch, SettingsSnapshot, Socks5Candidate,
+    self, CacheMaintenanceReport, CacheMaintenanceTask, GametaServerInfo, NetworkProbeReport,
+    PasswordRuleInput, PasswordRuleSummary, ProbeStepDto, SettingsPatch, SettingsSnapshot,
+    Socks5Candidate,
 };
 
 use super::AppRuntime;
 
 const PROXY_PASSWORD_KEY: &str = "proxy:socks5";
 const GAMETA_API_KEY_KEY: &str = "gameta:api_key";
+
+pub(super) fn run_cache_maintenance(
+    inner: &AppRuntime,
+    task: CacheMaintenanceTask,
+) -> Result<CacheMaintenanceReport, ApplicationError> {
+    let _guard = inner.cache_maintenance_lock.lock();
+    match task {
+        CacheMaintenanceTask::ClearContent => {
+            let cache = inner.content_cache().ok_or_else(cache_unavailable_error)?;
+            cache
+                .clear_content()
+                .map_err(|error| cache_maintenance_error("clearing cache content", error))?;
+            Ok(CacheMaintenanceReport::ContentCleared)
+        }
+        task => {
+            let dbs = inner
+                .session
+                .mutable
+                .read()
+                .dbs
+                .clone()
+                .ok_or_else(cache_unavailable_error)?;
+            match task {
+                CacheMaintenanceTask::ClearIndex => {
+                    dbs.metadata.clear_cache_index().map_err(|error| {
+                        cache_maintenance_error("clearing the cache index", error)
+                    })?;
+                    Ok(CacheMaintenanceReport::IndexCleared)
+                }
+                CacheMaintenanceTask::GarbageCollect => {
+                    let entries =
+                        dbs.metadata
+                            .delete_orphaned_cache_entries()
+                            .map_err(|error| {
+                                cache_maintenance_error("removing orphaned cache entries", error)
+                            })?;
+                    Ok(CacheMaintenanceReport::OrphansRemoved { entries })
+                }
+                CacheMaintenanceTask::CleanOldSearch => {
+                    let entries = dbs.metadata.delete_old_search_cache(7).map_err(|error| {
+                        cache_maintenance_error("removing old search-cache entries", error)
+                    })?;
+                    Ok(CacheMaintenanceReport::OldSearchEntriesRemoved { entries })
+                }
+                CacheMaintenanceTask::RepairEntries => {
+                    let (cache_types, product_ids) =
+                        dbs.metadata.migrate_fix_cache_entries().map_err(|error| {
+                            cache_maintenance_error("repairing cache entries", error)
+                        })?;
+                    Ok(CacheMaintenanceReport::EntriesRepaired {
+                        cache_types,
+                        product_ids,
+                    })
+                }
+                CacheMaintenanceTask::ClearContent => unreachable!("handled above"),
+            }
+        }
+    }
+}
+
+fn cache_unavailable_error() -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::Unsupported,
+        "cache storage is unavailable",
+    )
+    .with_recoverability(Recoverability::Fatal)
+}
+
+fn cache_maintenance_error(context: &str, error: impl std::fmt::Display) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::Persistence,
+        "cache maintenance failed",
+    )
+    .with_diagnostic(format!("{context}: {error}"))
+    .with_recoverability(Recoverability::Retry)
+    .with_retryable(true)
+    .with_suggested_action(SuggestedAction::Retry)
+}
 
 // ============================================================================
 // Read-only.

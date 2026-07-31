@@ -260,6 +260,10 @@ pub(crate) struct AppRuntime {
     /// check actually race-free. Read-only settings methods never take
     /// this.
     settings_write_lock: tokio::sync::Mutex<()>,
+    /// Serializes destructive cache-maintenance requests. These run on
+    /// the blocking pool, so a synchronous mutex is the appropriate
+    /// guard and is never held across an `.await`.
+    cache_maintenance_lock: parking_lot::Mutex<()>,
     /// Set once by [`ArclainApp::shutdown`]. Every [`ArclainApp::dispatch`]
     /// call checks this first so a clone that outlives shutdown (held by
     /// another part of the program, or racing a concurrent shutdown call)
@@ -1311,6 +1315,19 @@ impl ArclainApp {
     /// so it propagates this error rather than logging it.
     pub async fn settings(&self) -> Result<crate::settings::SettingsSnapshot, ApplicationError> {
         self.dispatch_async(|inner| async move { settings_ops::run_settings(&inner).await })
+            .await?
+    }
+
+    /// Performs one application-owned cache maintenance task on the
+    /// blocking pool. No task accepts a filesystem path: the application
+    /// resolves its live cache/database handles itself, and clear-content
+    /// is scoped to cache blobs/partials so sibling resource and
+    /// materialization directories remain intact.
+    pub async fn maintain_cache(
+        &self,
+        task: crate::settings::CacheMaintenanceTask,
+    ) -> Result<crate::settings::CacheMaintenanceReport, ApplicationError> {
+        self.dispatch_blocking(move |inner| settings_ops::run_cache_maintenance(inner, task))
             .await?
     }
 

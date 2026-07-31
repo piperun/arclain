@@ -57,6 +57,40 @@ pub struct SettingsSnapshot {
     pub general: GeneralSettingsDto,
 }
 
+/// One explicit maintenance operation for the application's persistent
+/// cache. Kept as a closed enum so frontends cannot supply arbitrary
+/// paths, SQL fragments, or retention windows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheMaintenanceTask {
+    ClearIndex,
+    ClearContent,
+    GarbageCollect,
+    CleanOldSearch,
+    RepairEntries,
+}
+
+/// Typed outcome of [`crate::ArclainApp::maintain_cache`]. Counts are
+/// reported where the underlying maintenance operation can provide one;
+/// clear operations are acknowledgements because their stores do not
+/// expose a reliable pre-clear row/blob count.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum CacheMaintenanceReport {
+    IndexCleared,
+    ContentCleared,
+    OrphansRemoved {
+        entries: usize,
+    },
+    OldSearchEntriesRemoved {
+        entries: usize,
+    },
+    EntriesRepaired {
+        cache_types: usize,
+        product_ids: usize,
+    },
+}
+
 /// One field's patch instruction. `Keep` and an omitted/absent field are
 /// deliberately the same "leave unchanged" meaning -- `Keep` just makes
 /// that explicit for a caller building a patch programmatically instead

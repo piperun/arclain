@@ -105,6 +105,61 @@ fn failed_probe(name: &str, message: impl Into<String>) -> ConnectionTestResult 
     }
 }
 
+/// Runs one cache-maintenance command through the application boundary.
+///
+/// The facade owns the live cache root, metadata connection, locking, and
+/// error classification. Keeping those details here as typed commands and
+/// reports means this frontend never has to reconstruct a cache path or
+/// borrow the legacy database mirror.
+fn handle_cache_maintenance(
+    shared: &SharedState,
+    task: arclain_app::settings::CacheMaintenanceTask,
+) {
+    let Some(facade) = shared.facade.as_ref() else {
+        tracing::error!("Cannot maintain cache: application facade is unavailable");
+        shared
+            .toaster
+            .lock()
+            .error("Cache maintenance is unavailable right now");
+        return;
+    };
+
+    match shared
+        .services
+        .tokio_runtime
+        .block_on(facade.maintain_cache(task))
+    {
+        Ok(arclain_app::settings::CacheMaintenanceReport::IndexCleared) => {
+            tracing::info!("Cache index cleared successfully");
+        }
+        Ok(arclain_app::settings::CacheMaintenanceReport::ContentCleared) => {
+            tracing::info!("Cache content cleared successfully");
+        }
+        Ok(arclain_app::settings::CacheMaintenanceReport::OrphansRemoved { entries }) => {
+            tracing::info!(entries, "Garbage collected orphaned cache entries");
+        }
+        Ok(arclain_app::settings::CacheMaintenanceReport::OldSearchEntriesRemoved { entries }) => {
+            tracing::info!(entries, "Cleaned old search cache entries");
+        }
+        Ok(arclain_app::settings::CacheMaintenanceReport::EntriesRepaired {
+            cache_types,
+            product_ids,
+        }) => {
+            tracing::info!(cache_types, product_ids, "Repaired cache entries");
+        }
+        Err(error) => {
+            tracing::error!(
+                kind = ?error.kind,
+                correlation_id = ?error.correlation_id,
+                diagnostic = ?error.diagnostic,
+                "Cache maintenance failed: {}",
+                error.summary
+            );
+            shared.toaster.lock().error(error.summary);
+        }
+    }
+}
+
 /// Handle a settings action, mutating the appropriate state.
 ///
 /// `plugins_state` remains optional because most call sites don't carry
@@ -112,7 +167,7 @@ fn failed_probe(name: &str, message: impl Into<String>) -> ConnectionTestResult 
 pub fn handle_action(
     action: SettingsAction,
     security_state: &mut SecuritySettingsState,
-    archives_state: &mut ArchivesSettingsState,
+    _archives_state: &mut ArchivesSettingsState,
     _plugins_state: Option<&mut PluginsListState>,
     network_state: &mut crate::features::settings::domain::types::NetworkSettingsState,
     server_state: &mut ServerSettingsState,
@@ -288,83 +343,34 @@ pub fn handle_action(
             );
         }
         SettingsAction::ClearCacheIndex => {
-            let mut state = shared.app_state.lock();
-            if let Some(dbs) = &mut state.dbs {
-                if let Err(e) = dbs.metadata.clear_cache_index() {
-                    *archives_state.checksum_enabled.write() = false;
-                    tracing::error!("Failed to clear cache index: {}", e);
-                } else {
-                    tracing::info!("Cache index cleared successfully");
-                }
-            }
+            handle_cache_maintenance(
+                shared,
+                arclain_app::settings::CacheMaintenanceTask::ClearIndex,
+            );
         }
         SettingsAction::ClearCacheContent => {
-            let state = shared.app_state.lock();
-            let cache_dir = if let Some(paths) = &state.db_paths {
-                paths
-                    .cache_db
-                    .parent()
-                    .unwrap_or(std::path::Path::new("."))
-                    .join("content")
-            } else {
-                std::path::PathBuf::from("data/content")
-            };
-            drop(state);
-
-            std::thread::spawn(move || {
-                tracing::info!("Clearing cache content at {}", cache_dir.display());
-                if cache_dir.exists() {
-                    if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                        tracing::error!("Failed to remove cache dir: {}", e);
-                    }
-                    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-                        tracing::error!("Failed to recreate cache dir: {}", e);
-                    }
-                }
-            });
+            handle_cache_maintenance(
+                shared,
+                arclain_app::settings::CacheMaintenanceTask::ClearContent,
+            );
         }
         SettingsAction::GarbageCollectCache => {
-            let mut state = shared.app_state.lock();
-            if let Some(dbs) = &mut state.dbs {
-                match dbs.metadata.delete_orphaned_cache_entries() {
-                    Ok(count) => {
-                        tracing::info!("Garbage collected {} orphaned cache entries", count);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to garbage collect cache: {}", e);
-                    }
-                }
-            }
+            handle_cache_maintenance(
+                shared,
+                arclain_app::settings::CacheMaintenanceTask::GarbageCollect,
+            );
         }
         SettingsAction::CleanOldSearchCache => {
-            let mut state = shared.app_state.lock();
-            if let Some(dbs) = &mut state.dbs {
-                match dbs.metadata.delete_old_search_cache(7) {
-                    Ok(count) => {
-                        tracing::info!("Cleaned {} old search cache entries", count);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to clean search cache: {}", e);
-                    }
-                }
-            }
+            handle_cache_maintenance(
+                shared,
+                arclain_app::settings::CacheMaintenanceTask::CleanOldSearch,
+            );
         }
         SettingsAction::MigrateCacheEntries => {
-            let mut state = shared.app_state.lock();
-            if let Some(dbs) = &mut state.dbs {
-                match dbs.metadata.migrate_fix_cache_entries() {
-                    Ok((type_fixed, product_fixed)) => {
-                        tracing::info!(
-                            "Fixed cache entries: {} cache_type, {} product_id",
-                            type_fixed,
-                            product_fixed
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to migrate cache entries: {}", e);
-                    }
-                }
-            }
+            handle_cache_maintenance(
+                shared,
+                arclain_app::settings::CacheMaintenanceTask::RepairEntries,
+            );
         }
         SettingsAction::SaveGeneral {
             open_nested_in_new_tab,

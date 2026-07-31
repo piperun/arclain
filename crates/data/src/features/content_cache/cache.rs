@@ -680,6 +680,31 @@ impl ContentCache {
         &self.base_dir
     }
 
+    /// Removes the physical content-addressed blobs and unfinished
+    /// streaming writes owned by this cache, plus their index rows,
+    /// without deleting sibling application directories under the same
+    /// root (resources, materializations, and so on).
+    ///
+    /// The index is cleared first, under the same root lock. If physical
+    /// deletion then fails, unreferenced blobs may leak but no live row can
+    /// point at a missing blob and turn an ordinary cache miss into I/O
+    /// failure.
+    pub fn clear_content(&self) -> Result<()> {
+        let root_lock = self.root_lock()?;
+        let _root_guard = root_lock.lock();
+        self.service
+            .clear_all()
+            .context("clearing content cache index")?;
+        for directory in ["content-v2", ".partial"] {
+            let path = self.base_dir.join(directory);
+            if path.exists() {
+                std::fs::remove_dir_all(&path)
+                    .with_context(|| format!("clearing content cache directory {path:?}"))?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn remove(&self, key: &str) -> Result<bool> {
         self.remove_for_owner(&CacheOwner::host(), key)
     }
@@ -1106,6 +1131,27 @@ mod quota_api_tests {
     #[test]
     fn default_streaming_object_quota_preserves_large_video_support() {
         assert!(CacheLimits::default().max_object_bytes > 50 * 1024 * 1024);
+    }
+
+    #[test]
+    fn clear_content_removes_blobs_and_partials_but_preserves_cache_siblings() {
+        let (_dir, cache, _index) = owner_cache();
+        cache
+            .put("fixture", b"cached body", CacheType::Other, None, None)
+            .unwrap();
+        let partial_dir = cache.base_dir().join(".partial");
+        std::fs::create_dir_all(&partial_dir).unwrap();
+        std::fs::write(partial_dir.join("unfinished"), b"partial").unwrap();
+        let resources_dir = cache.base_dir().join("resources");
+        std::fs::create_dir_all(&resources_dir).unwrap();
+        std::fs::write(resources_dir.join("keep"), b"resource").unwrap();
+
+        cache.clear_content().unwrap();
+
+        assert!(cache.get("fixture").unwrap().is_none());
+        assert!(!cache.base_dir().join("content-v2").exists());
+        assert!(!partial_dir.exists());
+        assert!(resources_dir.join("keep").is_file());
     }
 
     #[test]

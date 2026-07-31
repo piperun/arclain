@@ -126,6 +126,10 @@ impl arclain_data::CacheIndex for CacheService {
         CacheService::update_last_accessed(self, key)
     }
 
+    fn clear_all(&self) -> Result<()> {
+        CacheService::clear_all(self)
+    }
+
     fn entries_lru(&self) -> Result<Vec<CacheEntry>> {
         CacheService::entries_lru(self)
     }

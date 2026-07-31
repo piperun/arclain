@@ -599,6 +599,7 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         // task is actually spawned -- see the field's own doc comment.
         cleanup_task_handle: parking_lot::Mutex::new(None),
         settings_write_lock: tokio::sync::Mutex::new(()),
+        cache_maintenance_lock: parking_lot::Mutex::new(()),
         shut_down: std::sync::atomic::AtomicBool::new(false),
         plugin_sessions: crate::plugins::PluginSessionStore::new(),
         active_archive_session: crate::plugins::ActiveArchiveSession::new(),

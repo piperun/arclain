@@ -51,6 +51,20 @@ pub trait CacheIndex: Send + Sync {
     fn delete_by_pattern(&self, pattern: &str) -> Result<usize>;
     fn update_last_accessed(&self, key: &str) -> Result<()>;
 
+    /// Removes every index row. Complete production indexes should
+    /// override this with one transactional statement; the compatibility
+    /// implementation is deliberately conservative and refuses an
+    /// incomplete view rather than claiming it cleared rows it cannot see.
+    fn clear_all(&self) -> Result<()> {
+        if !self.has_complete_lru_view() {
+            anyhow::bail!("cache index does not support complete enumeration");
+        }
+        for entry in self.entries_lru()? {
+            self.delete(&entry.key)?;
+        }
+        Ok(())
+    }
+
     /// Check whether any row references a physical content hash. Production
     /// indexes should implement this as an existence query; the compatibility
     /// default preserves third-party implementations.
