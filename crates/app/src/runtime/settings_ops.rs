@@ -937,6 +937,87 @@ pub(super) async fn run_set_plugin_enabled(
     Ok(())
 }
 
+/// Persists one plugin-domain approval and only then commits the same
+/// decision to the live whitelist enforced by the HTTP client.
+///
+/// This shares `settings_write_lock` with the rest of the settings
+/// mutations so two concurrent approve/revoke calls cannot land on disk
+/// in one order and in memory in the opposite order. The database write
+/// runs on the blocking pool; the live whitelist is changed only after
+/// that write succeeds.
+pub(super) async fn run_set_plugin_domain_approved(
+    inner: &Arc<AppRuntime>,
+    plugin_id: String,
+    domain: String,
+    approved: bool,
+) -> Result<(), ApplicationError> {
+    let plugin_id = plugin_id.trim().to_string();
+    if plugin_id.is_empty() {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "plugin id must not be empty",
+        )
+        .with_recoverability(Recoverability::Fatal)
+        .with_field("plugin_id"));
+    }
+    let domain = domain.trim().to_ascii_lowercase();
+    if domain.is_empty() {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::InvalidInput,
+            "domain must not be empty",
+        )
+        .with_recoverability(Recoverability::Fatal)
+        .with_field("domain"));
+    }
+
+    let _write_guard = inner.settings_write_lock.lock().await;
+    let whitelist = inner.core_services().domain_whitelist.clone();
+    let requested = whitelist
+        .read()
+        .get_all_entries()
+        .into_iter()
+        .any(|entry| entry.plugin_id == plugin_id && entry.domain == domain);
+    if !requested {
+        return Err(ApplicationError::new(
+            ApplicationErrorKind::NotFound,
+            "plugin domain request not found",
+        )
+        .with_diagnostic(format!("plugin '{plugin_id}', domain '{domain}'"))
+        .with_recoverability(Recoverability::UserAction)
+        .with_field("domain"));
+    }
+    let config_service = inner
+        .core_services()
+        .config_service
+        .clone()
+        .ok_or_else(settings_unavailable_error)?;
+    let handle = inner
+        .tokio_handle()
+        .ok_or_else(shutdown_mid_request_error)?;
+    let persisted_plugin_id = plugin_id.clone();
+    let persisted_domain = domain.clone();
+    handle
+        .spawn_blocking(move || {
+            let result = if approved {
+                config_service.approve_plugin_domain(&persisted_plugin_id, &persisted_domain)
+            } else {
+                config_service.revoke_plugin_domain(&persisted_plugin_id, &persisted_domain)
+            };
+            result.map_err(|error| persistence_error("saving plugin domain approval", error))
+        })
+        .await
+        .map_err(internal_join_error)??;
+
+    let whitelist = whitelist.read();
+    if approved {
+        whitelist.approve(&plugin_id, &domain);
+    } else {
+        whitelist.revoke(&plugin_id, &domain);
+        whitelist.add_pending(&plugin_id, &domain);
+    }
+    Ok(())
+}
+
 /// Pulls whatever `plugin_id`'s guest currently holds in its settings bag
 /// out of the plugin runtime and persists it, unless it already matches
 /// what is stored.

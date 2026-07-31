@@ -393,6 +393,34 @@ fn render_sources_never_lock_or_block_on_plugin_manager_work() {
 }
 
 #[test]
+fn plugin_domain_access_never_blocks_or_mutates_services_during_render() {
+    let detail = include_str!("../src/features/plugins/presentation/views/detail_view.rs");
+    let coordinator = include_str!("../src/features/plugins/application/ui_jobs.rs");
+    let domain_section = detail
+        .split_once("fn fetch_whitelist_entries")
+        .expect("detail view must keep the whitelist reader")
+        .1
+        .split_once("/// Render the selected plugin's own configuration UI")
+        .expect("domain rendering must remain before plugin UI rendering")
+        .0;
+
+    for forbidden in [
+        ".block_on(",
+        "services.config_service",
+        "services.domain_whitelist",
+    ] {
+        assert!(
+            !domain_section.contains(forbidden),
+            "plugin detail still performs domain work during render: {forbidden}",
+        );
+    }
+    assert!(
+        coordinator.contains("set_plugin_domain_approved"),
+        "domain approval must run through the bounded facade coordinator",
+    );
+}
+
+#[test]
 fn facade_query_coordinator_has_no_raw_plugin_event_path() {
     let coordinator = include_str!("../src/features/plugins/application/ui_jobs.rs");
     let presentation = include_str!("../src/features/plugins/presentation/mod.rs");

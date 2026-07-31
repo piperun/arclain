@@ -2655,6 +2655,24 @@ impl ArclainApp {
         .await?
     }
 
+    /// Approves or revokes one domain requested by `plugin_id`.
+    ///
+    /// The decision is persisted before the live HTTP policy changes, and
+    /// concurrent mutations are serialized so durable and in-memory
+    /// state cannot observe opposite orderings. A failed persistence
+    /// write leaves live network access unchanged.
+    pub async fn set_plugin_domain_approved(
+        &self,
+        plugin_id: String,
+        domain: String,
+        approved: bool,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_set_plugin_domain_approved(&inner, plugin_id, domain, approved).await
+        })
+        .await?
+    }
+
     /// Health-checks a *candidate* gameta server configuration -- the
     /// values a settings form currently holds, before the user has saved
     /// them -- and reports what the server said about itself.

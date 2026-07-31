@@ -38,7 +38,8 @@
 //! [`plugins::is_plugin_disabled_refusal`]. It also owns the
 //! domain-access surface a frontend used to reach `arclain-network`
 //! directly for: [`plugins::DomainWhitelistEntryDto`] (via
-//! `ArclainApp::plugin_domain_whitelist`) and the pure [`analyze_url`]
+//! `ArclainApp::{plugin_domain_whitelist, set_plugin_domain_approved}`)
+//! and the pure [`analyze_url`]
 //! re-exported below -- and the whole *display-image* surface, so a
 //! frontend holds neither a content-cache handle nor an HTTP client to
 //! render one: `ArclainApp::{read_plugin_image, write_plugin_image,

@@ -59,7 +59,9 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
                 // `SetEnabled` no longer runs through this queue -- the
                 // plugin detail view calls `ArclainApp::set_plugin_enabled`
                 // directly (durable: it persists `enabled_plugins` itself).
-                // `Install` is this coordinator's one remaining mutation.
+                // `Install` is the only operation represented by the generic
+                // mutation result; domain approval has its own result so it
+                // can invalidate only that plugin's whitelist cache.
                 match result {
                     Ok(()) => {
                         plugins.list_state.invalidate_snapshot();
@@ -70,8 +72,14 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
                     Err(error) => shared.toaster.lock().error(error),
                 }
             }
+            PluginUiResult::DomainApprovalFinished { result, .. } => {
+                if let Err(error) = result {
+                    shared.toaster.lock().error(error);
+                }
+            }
             PluginUiResult::ChromeSnapshotLoaded { .. }
-            | PluginUiResult::NetworkLogLoaded { .. } => {}
+            | PluginUiResult::NetworkLogLoaded { .. }
+            | PluginUiResult::DomainWhitelistLoaded { .. } => {}
             PluginUiResult::Failed {
                 request_id,
                 context,

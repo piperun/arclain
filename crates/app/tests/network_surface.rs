@@ -231,6 +231,100 @@ fn plugin_domain_whitelist_observes_an_approval_made_after_the_first_read() {
 }
 
 #[test]
+fn set_plugin_domain_approved_updates_the_live_and_persisted_whitelists() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    seed_whitelist(&app, |services| {
+        services
+            .domain_whitelist
+            .read()
+            .add_pending("mutable-plugin", "dlsite.example");
+    });
+    let runtime = foreign_runtime();
+
+    runtime
+        .block_on(app.set_plugin_domain_approved(
+            "mutable-plugin".to_string(),
+            "dlsite.example".to_string(),
+            true,
+        ))
+        .expect("approving a requested domain must succeed");
+
+    let entries = runtime
+        .block_on(app.plugin_domain_whitelist("mutable-plugin".to_string()))
+        .expect("read the live whitelist after approval");
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].approved);
+
+    let composition = app
+        .take_legacy_composition()
+        .expect("the transitional composition remains available as a test probe");
+    let config_pool = &composition
+        .dbs
+        .as_ref()
+        .expect("bootstrap must compose the config databases")
+        .config_pool;
+    assert!(
+        config_pool
+            .with_conn(|connection| {
+                arclain_db::is_domain_approved(connection, "mutable-plugin", "dlsite.example")
+            })
+            .expect("read the persisted approval"),
+        "the facade updated only the live network policy, not durable storage",
+    );
+
+    runtime
+        .block_on(app.set_plugin_domain_approved(
+            "mutable-plugin".to_string(),
+            "dlsite.example".to_string(),
+            false,
+        ))
+        .expect("revoking an approved domain must succeed");
+
+    let entries = runtime
+        .block_on(app.plugin_domain_whitelist("mutable-plugin".to_string()))
+        .expect("read the live whitelist after revocation");
+    assert!(!entries[0].approved);
+    assert!(
+        !config_pool
+            .with_conn(|connection| {
+                arclain_db::is_domain_approved(connection, "mutable-plugin", "dlsite.example")
+            })
+            .expect("read the persisted revocation"),
+        "the facade updated only the live network policy, not durable storage",
+    );
+}
+
+#[test]
+fn set_plugin_domain_approved_rejects_invalid_or_unrequested_domains() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let runtime = foreign_runtime();
+
+    let blank_plugin = runtime
+        .block_on(app.set_plugin_domain_approved(" ".to_string(), "example.test".to_string(), true))
+        .expect_err("a blank plugin id must be rejected");
+    assert_eq!(blank_plugin.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(blank_plugin.field.as_deref(), Some("plugin_id"));
+
+    let blank_domain = runtime
+        .block_on(app.set_plugin_domain_approved("demo".to_string(), " ".to_string(), true))
+        .expect_err("a blank domain must be rejected");
+    assert_eq!(blank_domain.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(blank_domain.field.as_deref(), Some("domain"));
+
+    let unrequested = runtime
+        .block_on(app.set_plugin_domain_approved(
+            "demo".to_string(),
+            "unrequested.example".to_string(),
+            true,
+        ))
+        .expect_err("the facade must not grant a domain the plugin never requested");
+    assert_eq!(unrequested.kind, ApplicationErrorKind::NotFound);
+    assert_eq!(unrequested.field.as_deref(), Some("domain"));
+}
+
+#[test]
 fn plugin_domain_whitelist_reports_no_domains_for_a_plugin_that_asked_for_none() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app(&temp);

@@ -5,7 +5,9 @@
 //! repaint epoch; `ArclainApp` owns every plugin call and all WASM execution.
 
 use crate::features::plugins::domain::types::{PluginInfo, PluginStatus, RequestId};
-use arclain_app::plugins::{PluginChromeSnapshot, PluginNetworkLogEntryDto, PluginSummary};
+use arclain_app::plugins::{
+    DomainWhitelistEntryDto, PluginChromeSnapshot, PluginNetworkLogEntryDto, PluginSummary,
+};
 use arclain_app::{ArclainApp, Signal};
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
@@ -15,23 +17,48 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 const NETWORK_LOG_TTL: Duration = Duration::from_secs(1);
+const DOMAIN_WHITELIST_TTL: Duration = Duration::from_secs(1);
 const MAX_PENDING_JOBS: usize = 96;
 const COMPLETED_JOB_CAPACITY: usize = MAX_PENDING_JOBS + 8;
 
 #[derive(Clone, Debug)]
 pub enum PluginUiRequest {
-    Snapshot { plugin_visibility: Option<String> },
+    Snapshot {
+        plugin_visibility: Option<String>,
+    },
     ChromeSnapshot,
     NetworkLog,
-    Install { wasm_path: PathBuf },
+    DomainWhitelist {
+        plugin_id: String,
+    },
+    SetDomainApproved {
+        plugin_id: String,
+        domain: String,
+        approved: bool,
+    },
+    Install {
+        wasm_path: PathBuf,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PluginUiFailureContext {
-    Snapshot { visibility: Option<String> },
+    Snapshot {
+        visibility: Option<String>,
+    },
     ChromeSnapshot,
     NetworkLog,
-    Install { wasm_path: PathBuf },
+    DomainWhitelist {
+        plugin_id: String,
+    },
+    SetDomainApproved {
+        plugin_id: String,
+        domain: String,
+        approved: bool,
+    },
+    Install {
+        wasm_path: PathBuf,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +74,16 @@ pub enum PluginUiResult {
     NetworkLogLoaded {
         request_id: RequestId,
         entries: Vec<(SystemTime, String)>,
+    },
+    DomainWhitelistLoaded {
+        request_id: RequestId,
+        plugin_id: String,
+        entries: Vec<DomainWhitelistEntryDto>,
+    },
+    DomainApprovalFinished {
+        request_id: RequestId,
+        plugin_id: String,
+        result: Result<(), String>,
     },
     MutationFinished {
         request_id: RequestId,
@@ -64,6 +101,12 @@ enum RequestKey {
     Snapshot(Option<String>),
     ChromeSnapshot,
     NetworkLog,
+    DomainWhitelist(String),
+    DomainApproval {
+        plugin_id: String,
+        domain: String,
+        approved: bool,
+    },
     Install(RequestId),
 }
 
@@ -73,6 +116,16 @@ impl PluginUiRequest {
             Self::Snapshot { plugin_visibility } => RequestKey::Snapshot(plugin_visibility.clone()),
             Self::ChromeSnapshot => RequestKey::ChromeSnapshot,
             Self::NetworkLog => RequestKey::NetworkLog,
+            Self::DomainWhitelist { plugin_id } => RequestKey::DomainWhitelist(plugin_id.clone()),
+            Self::SetDomainApproved {
+                plugin_id,
+                domain,
+                approved,
+            } => RequestKey::DomainApproval {
+                plugin_id: plugin_id.clone(),
+                domain: domain.clone(),
+                approved: *approved,
+            },
             Self::Install { .. } => RequestKey::Install(request_id),
         }
     }
@@ -86,6 +139,21 @@ impl RequestKey {
             },
             (Self::ChromeSnapshot, _) => PluginUiFailureContext::ChromeSnapshot,
             (Self::NetworkLog, _) => PluginUiFailureContext::NetworkLog,
+            (Self::DomainWhitelist(plugin_id), _) => PluginUiFailureContext::DomainWhitelist {
+                plugin_id: plugin_id.clone(),
+            },
+            (
+                Self::DomainApproval {
+                    plugin_id,
+                    domain,
+                    approved,
+                },
+                _,
+            ) => PluginUiFailureContext::SetDomainApproved {
+                plugin_id: plugin_id.clone(),
+                domain: domain.clone(),
+                approved: *approved,
+            },
             (Self::Install(_), PluginUiRequest::Install { wasm_path }) => {
                 PluginUiFailureContext::Install {
                     wasm_path: wasm_path.clone(),
@@ -109,6 +177,8 @@ struct PluginUiCache {
     chrome: Option<Result<Arc<PluginChromeSnapshot>, Arc<str>>>,
     network_log: Option<(Instant, Arc<Vec<(SystemTime, String)>>)>,
     network_log_failure: Option<Arc<str>>,
+    domain_whitelists: HashMap<String, (Instant, Arc<Vec<DomainWhitelistEntryDto>>)>,
+    domain_whitelist_failures: HashMap<String, Arc<str>>,
 }
 
 /// Cloneable facade-query coordinator shared by render and update paths.
@@ -272,6 +342,74 @@ impl PluginUiJobs {
         self.pending.lock().remove(&RequestKey::NetworkLog);
     }
 
+    pub fn domain_whitelist(
+        &self,
+        plugin_id: &str,
+    ) -> Option<Result<Arc<Vec<DomainWhitelistEntryDto>>, Arc<str>>> {
+        self.domain_whitelist_at(plugin_id, Instant::now())
+    }
+
+    fn domain_whitelist_at(
+        &self,
+        plugin_id: &str,
+        now: Instant,
+    ) -> Option<Result<Arc<Vec<DomainWhitelistEntryDto>>, Arc<str>>> {
+        let cache = self.cache.lock();
+        if let Some(error) = cache.domain_whitelist_failures.get(plugin_id).cloned() {
+            return Some(Err(error));
+        }
+        let cached = cache.domain_whitelists.get(plugin_id).cloned();
+        drop(cache);
+        let mutation_pending = self.pending.lock().keys().any(|key| {
+            matches!(
+                key,
+                RequestKey::DomainApproval {
+                    plugin_id: pending_plugin,
+                    ..
+                } if pending_plugin == plugin_id
+            )
+        });
+
+        if let Some((fetched_at, entries)) = cached {
+            if mutation_pending || now.saturating_duration_since(fetched_at) < DOMAIN_WHITELIST_TTL
+            {
+                return Some(Ok(entries));
+            }
+            self.invalidate_domain_whitelist(plugin_id);
+        }
+        if mutation_pending {
+            return None;
+        }
+
+        self.request(PluginUiRequest::DomainWhitelist {
+            plugin_id: plugin_id.to_string(),
+        });
+        None
+    }
+
+    pub fn domain_approval_pending(&self, plugin_id: &str, domain: &str) -> bool {
+        self.pending.lock().keys().any(|key| {
+            matches!(
+                key,
+                RequestKey::DomainApproval {
+                    plugin_id: pending_plugin,
+                    domain: pending_domain,
+                    ..
+                } if pending_plugin == plugin_id && pending_domain == domain
+            )
+        })
+    }
+
+    pub fn invalidate_domain_whitelist(&self, plugin_id: &str) {
+        let mut cache = self.cache.lock();
+        cache.domain_whitelists.remove(plugin_id);
+        cache.domain_whitelist_failures.remove(plugin_id);
+        drop(cache);
+        self.pending
+            .lock()
+            .remove(&RequestKey::DomainWhitelist(plugin_id.to_string()));
+    }
+
     fn publish(&self, completed: Completed) {
         let _ = publish_completed(&self.completed, &self.completion_epoch, completed);
     }
@@ -291,6 +429,23 @@ impl PluginUiJobs {
                 cache.network_log = Some((Instant::now(), Arc::new(entries.clone())));
                 cache.network_log_failure = None;
             }
+            (
+                RequestKey::DomainWhitelist(plugin_id),
+                PluginUiResult::DomainWhitelistLoaded { entries, .. },
+            ) => {
+                cache.domain_whitelists.insert(
+                    plugin_id.clone(),
+                    (Instant::now(), Arc::new(entries.clone())),
+                );
+                cache.domain_whitelist_failures.remove(plugin_id);
+            }
+            (
+                RequestKey::DomainApproval { plugin_id, .. },
+                PluginUiResult::DomainApprovalFinished { result: Ok(()), .. },
+            ) => {
+                cache.domain_whitelists.remove(plugin_id);
+                cache.domain_whitelist_failures.remove(plugin_id);
+            }
             (_, PluginUiResult::Failed { context, error, .. }) => {
                 let error = Arc::<str>::from(error.as_str());
                 match context {
@@ -302,7 +457,14 @@ impl PluginUiJobs {
                         cache.network_log = None;
                         cache.network_log_failure = Some(error);
                     }
-                    PluginUiFailureContext::Install { .. } => {}
+                    PluginUiFailureContext::DomainWhitelist { plugin_id } => {
+                        cache.domain_whitelists.remove(plugin_id);
+                        cache
+                            .domain_whitelist_failures
+                            .insert(plugin_id.clone(), error);
+                    }
+                    PluginUiFailureContext::SetDomainApproved { .. }
+                    | PluginUiFailureContext::Install { .. } => {}
                 }
             }
             _ => {}
@@ -428,6 +590,35 @@ async fn execute(
                 error: error.summary,
             },
         },
+        PluginUiRequest::DomainWhitelist { plugin_id } => {
+            match facade.plugin_domain_whitelist(plugin_id.clone()).await {
+                Ok(entries) => PluginUiResult::DomainWhitelistLoaded {
+                    request_id,
+                    plugin_id,
+                    entries,
+                },
+                Err(error) => PluginUiResult::Failed {
+                    request_id,
+                    context: PluginUiFailureContext::DomainWhitelist { plugin_id },
+                    error: error.summary,
+                },
+            }
+        }
+        PluginUiRequest::SetDomainApproved {
+            plugin_id,
+            domain,
+            approved,
+        } => {
+            let result = facade
+                .set_plugin_domain_approved(plugin_id.clone(), domain, approved)
+                .await
+                .map_err(|error| error.summary);
+            PluginUiResult::DomainApprovalFinished {
+                request_id,
+                plugin_id,
+                result,
+            }
+        }
         PluginUiRequest::Install { wasm_path } => {
             let result = facade
                 .install_plugin(wasm_path)
@@ -493,6 +684,8 @@ fn result_request_id(result: &PluginUiResult) -> RequestId {
         PluginUiResult::SnapshotLoaded { request_id, .. }
         | PluginUiResult::ChromeSnapshotLoaded { request_id, .. }
         | PluginUiResult::NetworkLogLoaded { request_id, .. }
+        | PluginUiResult::DomainWhitelistLoaded { request_id, .. }
+        | PluginUiResult::DomainApprovalFinished { request_id, .. }
         | PluginUiResult::MutationFinished { request_id, .. }
         | PluginUiResult::Failed { request_id, .. } => *request_id,
     }
@@ -591,6 +784,101 @@ mod tests {
             "expired logs must not be rendered indefinitely"
         );
         assert!(jobs.pending.lock().contains_key(&RequestKey::NetworkLog));
+    }
+
+    #[test]
+    fn domain_whitelist_cache_expires_and_refetches() {
+        let jobs = test_jobs();
+        let fetched_at = Instant::now();
+        let entries = Arc::new(vec![DomainWhitelistEntryDto {
+            plugin_id: "demo".to_string(),
+            domain: "example.test".to_string(),
+            approved: false,
+        }]);
+        jobs.cache
+            .lock()
+            .domain_whitelists
+            .insert("demo".to_string(), (fetched_at, entries.clone()));
+
+        let cached = jobs
+            .domain_whitelist_at(
+                "demo",
+                fetched_at + DOMAIN_WHITELIST_TTL - Duration::from_millis(1),
+            )
+            .expect("fresh whitelist must remain cached")
+            .expect("fresh whitelist must be successful");
+        assert!(Arc::ptr_eq(&cached, &entries));
+
+        assert!(
+            jobs.domain_whitelist_at("demo", fetched_at + DOMAIN_WHITELIST_TTL,)
+                .is_none(),
+            "an expired whitelist must be refreshed off the render thread",
+        );
+        assert!(jobs
+            .pending
+            .lock()
+            .contains_key(&RequestKey::DomainWhitelist("demo".to_string())));
+    }
+
+    #[test]
+    fn pending_domain_mutation_keeps_the_last_whitelist_visible() {
+        let jobs = test_jobs();
+        let fetched_at = Instant::now();
+        let entries = Arc::new(vec![DomainWhitelistEntryDto {
+            plugin_id: "demo".to_string(),
+            domain: "example.test".to_string(),
+            approved: false,
+        }]);
+        jobs.cache
+            .lock()
+            .domain_whitelists
+            .insert("demo".to_string(), (fetched_at, entries.clone()));
+        jobs.pending.lock().insert(
+            RequestKey::DomainApproval {
+                plugin_id: "demo".to_string(),
+                domain: "example.test".to_string(),
+                approved: true,
+            },
+            RequestId(42),
+        );
+
+        let cached = jobs
+            .domain_whitelist_at("demo", fetched_at + DOMAIN_WHITELIST_TTL)
+            .expect("a mutation must keep the previous row visible")
+            .expect("the previous row remains successful");
+
+        assert!(Arc::ptr_eq(&cached, &entries));
+        assert!(jobs.domain_approval_pending("demo", "example.test"));
+        assert!(!jobs
+            .pending
+            .lock()
+            .contains_key(&RequestKey::DomainWhitelist("demo".to_string())));
+    }
+
+    #[test]
+    fn successful_domain_mutation_invalidates_the_whitelist_cache() {
+        let jobs = test_jobs();
+        jobs.cache
+            .lock()
+            .domain_whitelists
+            .insert("demo".to_string(), (Instant::now(), Arc::new(Vec::new())));
+        let completed = Completed {
+            key: RequestKey::DomainApproval {
+                plugin_id: "demo".to_string(),
+                domain: "example.test".to_string(),
+                approved: true,
+            },
+            result: PluginUiResult::DomainApprovalFinished {
+                request_id: RequestId(43),
+                plugin_id: "demo".to_string(),
+                result: Ok(()),
+            },
+            tracked: false,
+        };
+
+        jobs.cache_completed(&completed);
+
+        assert!(!jobs.cache.lock().domain_whitelists.contains_key("demo"));
     }
 
     #[test]

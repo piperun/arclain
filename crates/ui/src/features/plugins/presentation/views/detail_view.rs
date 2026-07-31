@@ -268,9 +268,7 @@ pub fn render(
             );
         } else {
             for entry in &whitelist_entries {
-                if render_domain_row(ui, theme, entry, shared) {
-                    needs_refresh = true;
-                }
+                render_domain_row(ui, theme, entry, shared);
                 ui.add_space(8.0);
             }
         }
@@ -299,9 +297,10 @@ pub fn render(
 }
 
 /// Every domain the selected plugin has requested, as the facade reports
-/// them. Read fresh each frame rather than cached: a plugin can request a
-/// new domain at any time from a background fetch, so a cache would leave
-/// that request invisible until something else happened to invalidate it.
+/// it through the bounded UI coordinator. The coordinator keeps the last
+/// result for one second: short enough for a background request to appear
+/// promptly, while keeping database/plugin policy work off the render
+/// thread.
 ///
 /// A failed read shows an empty domain list and says why in the log,
 /// rather than taking the whole detail view down with it. The only
@@ -314,22 +313,19 @@ fn fetch_whitelist_entries(
     let Some(shared) = shared else {
         return Vec::new();
     };
-    let Some(facade) = shared.facade.as_ref() else {
+    if shared.facade.is_none() {
         return Vec::new();
-    };
-    match shared
-        .services
-        .tokio_runtime
-        .block_on(facade.plugin_domain_whitelist(plugin_id.to_string()))
-    {
-        Ok(entries) => entries,
-        Err(error) => {
+    }
+    match shared.plugin_ui_jobs.domain_whitelist(plugin_id) {
+        Some(Ok(entries)) => entries.as_ref().clone(),
+        Some(Err(error)) => {
             tracing::warn!(
                 "Failed to read the domain whitelist for plugin '{plugin_id}': {}",
-                error.summary
+                error
             );
             Vec::new()
         }
+        None => Vec::new(),
     }
 }
 
@@ -356,8 +352,7 @@ fn render_domain_row(
     theme: &AppTheme,
     entry: &arclain_app::plugins::DomainWhitelistEntryDto,
     shared: Option<&SharedState>,
-) -> bool {
-    let mut changed = false;
+) {
     let domain = &entry.domain;
     let is_approved = entry.approved;
 
@@ -405,55 +400,27 @@ fn render_domain_row(
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let mut approved_state = is_approved;
-            if ui.add(ToggleSwitch::new(&mut approved_state)).changed() {
-                // Audit reactive-smells: "mutates whitelist signal then
-                // DB in non-atomic sequence" — if the DB write failed,
-                // the in-memory whitelist diverged from the on-disk
-                // truth and stayed approved across restarts only if
-                // DB happened to win on the next save.
-                //
-                // Safer ordering: persist to DB first, mirror to the
-                // in-memory whitelist only on success. A failed DB
-                // write now keeps both halves consistent.
+            let mutation_pending = shared.is_some_and(|shared| {
+                shared
+                    .plugin_ui_jobs
+                    .domain_approval_pending(&entry.plugin_id, domain)
+            });
+            if ui
+                .add_enabled(!mutation_pending, ToggleSwitch::new(&mut approved_state))
+                .changed()
+            {
                 if let Some(shared) = shared {
-                    let plugin_id = entry.plugin_id.as_str();
-                    let db_result =
-                        if let Some(config_svc) = shared.services.config_service.as_ref() {
-                            if approved_state {
-                                config_svc.approve_plugin_domain(plugin_id, domain)
-                            } else {
-                                config_svc.revoke_plugin_domain(plugin_id, domain)
-                            }
-                        } else {
-                            // No config service wired: skip the DB
-                            // step and keep the in-memory mirror
-                            // working (test/headless contexts).
-                            Ok(())
-                        };
-
-                    if let Err(e) = &db_result {
-                        tracing::error!(
-                            "Failed to {} domain '{}' for plugin '{}': {}",
-                            if approved_state { "approve" } else { "revoke" },
-                            domain,
-                            plugin_id,
-                            e,
-                        );
-                    } else {
-                        let wl = shared.services.domain_whitelist.write();
-                        if approved_state {
-                            wl.approve(plugin_id, domain);
-                        } else {
-                            wl.revoke(plugin_id, domain);
-                        }
-                        changed = true;
-                    }
+                    shared.plugin_ui_jobs.request(
+                        crate::features::plugins::application::PluginUiRequest::SetDomainApproved {
+                            plugin_id: entry.plugin_id.clone(),
+                            domain: domain.clone(),
+                            approved: approved_state,
+                        },
+                    );
                 }
             }
         });
     });
-
-    changed
 }
 
 /// Render the selected plugin's own configuration UI -- its `MainPage`
