@@ -54,6 +54,16 @@ use arclain_core::features::organization::{
 /// external-tool failure on the first pack that uses the profile.
 const MAX_COMPRESSION_LEVEL: u8 = 9;
 
+/// Reports whether an archive name contains a recognized DLsite product code.
+///
+/// This is application vocabulary rather than presentation policy: the same
+/// detector gates metadata-backed organization rules and metadata lookup.
+/// Frontends use this query instead of importing the core utility that owns
+/// the underlying Gameta-compatible detection algorithm.
+pub fn has_dlsite_product_code(archive_name: &str) -> bool {
+    arclain_core::utilities::has_dlsite_code(archive_name)
+}
+
 // ============================================================================
 // Rule DTOs.
 // ============================================================================

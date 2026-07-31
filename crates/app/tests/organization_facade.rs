@@ -28,9 +28,9 @@ use arclain_app::error::ApplicationErrorKind;
 use arclain_app::event::{OperationResult, OperationState};
 use arclain_app::ids::ArchiveSessionId;
 use arclain_app::organization::{
-    OrganizationMoveActionDto, OrganizationProfileInput, OrganizationProfileSummary,
-    OrganizationRuleActionsDto, OrganizationRuleInput, OrganizationRuleSummary,
-    OrganizationRuleTriggerDto,
+    has_dlsite_product_code, OrganizationMoveActionDto, OrganizationProfileInput,
+    OrganizationProfileSummary, OrganizationRuleActionsDto, OrganizationRuleInput,
+    OrganizationRuleSummary, OrganizationRuleTriggerDto,
 };
 use arclain_app::{ArclainApp, BootstrapConfig};
 
@@ -72,6 +72,15 @@ fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
         materialization_cleanup_interval_override: None,
     })
     .expect("bootstrap must succeed")
+}
+
+#[test]
+fn dlsite_product_code_detection_is_available_through_the_facade_vocabulary() {
+    assert!(has_dlsite_product_code("[RJ123456] Game Title.zip"));
+    assert!(has_dlsite_product_code("vj123456_voice.rar"));
+    assert!(has_dlsite_product_code("BJ12345678"));
+    assert!(!has_dlsite_product_code("ordinary-archive.zip"));
+    assert!(!has_dlsite_product_code("RJ12345.zip"));
 }
 
 fn build_zip_fixture(dir: &Path, name: &str, entries: &[(&str, &[u8])]) -> PathBuf {

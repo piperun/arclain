@@ -114,6 +114,7 @@ pub mod error;
 pub mod event;
 pub mod ids;
 pub mod layout;
+pub mod logging;
 pub mod materialization;
 pub mod operations;
 pub mod organization;

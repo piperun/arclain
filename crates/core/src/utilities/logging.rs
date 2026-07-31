@@ -91,20 +91,21 @@ fn prepare_file_appender(
 /// - Console (stdout/stderr) - only in debug builds
 /// - Rolling log files in `%APPDATA%/arclain/logs/` directory (daily rotation)
 pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
+    init_logging_in(&app_log_dir())
+}
+
+/// Initialize the logging system in an application-selected directory.
+///
+/// The application facade uses this variant so path overrides and portable
+/// profiles do not initialize tracing in the OS-default profile by accident.
+pub fn init_logging_in(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    // Use platform-specific app data directory
-    let log_dir = app_log_dir();
-
     // Create filename with format: arclain-YYYY-MM-DD.log
-    let log_filename = current_app_log_path()
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("arclain.log")
-        .to_string();
+    let log_filename = current_app_log_file_name();
 
     // Use 'never' rotation with our custom filename (we handle date in filename)
-    let file_appender = prepare_file_appender(&log_dir, &log_filename)?;
+    let file_appender = prepare_file_appender(log_dir, &log_filename)?;
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     // Create local time formatter

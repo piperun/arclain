@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use anyhow::Result;
-use arclain_core::utilities::{current_app_log_path, init_logging, plugin_log_dir};
+use arclain_app::{logging, AppPaths};
 use arclain_ui::core::arclain_app::ArclainApp;
 use arclain_ui::shared::components::logs_page::LogSession;
 use eframe::egui;
@@ -18,16 +18,22 @@ pub static NvOptimusEnablement: u32 = 1;
 pub static AmdPowerXpressRequestHighPerformance: i32 = 1;
 
 fn main() -> Result<()> {
-    if let Err(e) = init_logging() {
-        eprintln!("Failed to initialize logging: {}", e);
+    let app_paths = AppPaths::system_default().map_err(|error| {
+        anyhow::anyhow!("Failed to resolve application paths: {}", error.summary)
+    })?;
+    let log_paths = logging::initialize(&app_paths);
+    if let Err(error) = &log_paths {
+        eprintln!("Failed to initialize logging: {}", error.summary);
     }
 
-    let app_log_path = current_app_log_path();
+    let (app_log_path, plugin_log_dir) = log_paths
+        .map(|paths| (paths.app_log_path, paths.plugin_log_dir))
+        .unwrap_or_else(|_| (app_paths.current_app_log_file(), app_paths.plugin_log_dir()));
     let app_log_offset = std::fs::metadata(&app_log_path)
         .map(|metadata| metadata.len())
         .unwrap_or(0);
     let log_session =
-        LogSession::capture_with_app_offset(app_log_path, app_log_offset, plugin_log_dir());
+        LogSession::capture_with_app_offset(app_log_path, app_log_offset, plugin_log_dir);
 
     info!("Starting Arclain application");
 

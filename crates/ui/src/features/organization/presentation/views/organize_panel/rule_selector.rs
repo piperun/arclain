@@ -23,13 +23,7 @@ pub fn render_rule_selector(
             .map(|r| r.name.clone())
             .unwrap_or_else(|| "None".to_string());
 
-        // Boundary note: detecting a DLsite product code in a file name
-        // is the metadata feature's own vocabulary -- the same detector
-        // the application uses to resolve library metadata -- not the
-        // organization surface's, so it stays on its current path until
-        // the metadata read model is designed. Everything else this
-        // selector shows is facade data.
-        let has_dlsite_code = arclain_core::utilities::has_dlsite_code(archive_name);
+        let has_dlsite_code = arclain_app::organization::has_dlsite_product_code(archive_name);
 
         ThemedDropdown::new("rule_selector", &current_rule)
             .width(200.0)
