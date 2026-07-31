@@ -35,6 +35,12 @@
 //!   own persisted value -- so the same round trip is covered for a guest
 //!   call that is not a UI event. No other fixture writes a setting at
 //!   all, which is why nothing caught a host that never pulled.
+//! - **A dialog with real content**: `"Dialog:fixture-dialog"` returns a
+//!   layout carrying its own call counter (`"dialog-layout-call-{n}"`),
+//!   an action button, and the two declarative navigation buttons a
+//!   dialog host has to resolve without ever forwarding them to this
+//!   guest (`CloseDialog`, `OpenPage`). `ui-demo` implements no dialog at
+//!   all, so egui's dialog host had no fixture to draw before this.
 //! - **Plugin chrome**: `get-top-tabs` returns exactly one tab, with a
 //!   badge, at a fixed priority, so a test can read `plugin_chrome` back
 //!   and assert every mirrored field. `ui-demo` registers no tabs at all.
@@ -73,6 +79,16 @@ const LOAD_COUNT_SETTING_KEY: &str = "load-count";
 /// never re-instantiates a running plugin between calls) -- exactly the
 /// property the refresh-coalescing test needs to observe.
 static MAIN_PAGE_LAYOUT_CALLS: AtomicU32 = AtomicU32::new(0);
+
+/// The dialog counterpart of [`MAIN_PAGE_LAYOUT_CALLS`], counted
+/// separately so a test can tell "the dialog host re-entered the guest"
+/// apart from any main-page read another test in the same process made.
+static DIALOG_LAYOUT_CALLS: AtomicU32 = AtomicU32::new(0);
+
+/// The dialog id this fixture answers with real content. Anything else
+/// falls through to the empty layout, the way every unimplemented
+/// extension point does.
+const FIXTURE_DIALOG: &str = "Dialog:fixture-dialog";
 
 struct Component;
 
@@ -175,6 +191,39 @@ impl archust_plugin_sdk::Guest for Component {
                     action: None,
                 }),
             ]),
+            FIXTURE_DIALOG => {
+                let call_number = DIALOG_LAYOUT_CALLS.fetch_add(1, Ordering::SeqCst) + 1;
+                PluginLayout::Single(vec![
+                    UiElement::Label(LabelConfig {
+                        text: format!("dialog-layout-call-{call_number}"),
+                        bold: false,
+                        size: None,
+                    }),
+                    // Reuses `on-ui-event`'s `"multi-action"` handler, so a
+                    // press from a dialog is observable through the same
+                    // three ordered actions the main page's is.
+                    UiElement::Button(ButtonConfig {
+                        id: "multi-action".to_string(),
+                        label: "Dialog Multi Action".to_string(),
+                        action: None,
+                    }),
+                    // The two declarative navigations a host must resolve
+                    // itself. `on-ui-event` deliberately has no arm for
+                    // either id: reaching it would mean the host forwarded
+                    // navigation to the guest, which is the bug the typed
+                    // button action exists to make impossible.
+                    UiElement::Button(ButtonConfig {
+                        id: "dialog-close".to_string(),
+                        label: "Dialog Close".to_string(),
+                        action: Some(ButtonAction::CloseDialog),
+                    }),
+                    UiElement::Button(ButtonConfig {
+                        id: "dialog-open-page".to_string(),
+                        label: "Dialog Open Page".to_string(),
+                        action: Some(ButtonAction::OpenPage("fixture-page".to_string())),
+                    }),
+                ])
+            }
             _ => PluginLayout::Single(vec![]),
         }
     }
