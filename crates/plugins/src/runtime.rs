@@ -17,7 +17,29 @@ use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store};
 
 const FUEL_PER_EXPORT: u64 = 10_000_000;
-const EPOCH_TICKS_PER_EXPORT: u64 = 10;
+// The epoch pair below is a liveness dead-man switch, NOT a work budget:
+// `FUEL_PER_EXPORT` above is the load-bearing bound on how much a plugin
+// may compute per export, and it is deterministic regardless of machine
+// speed or load. Wall-clock enters only because fuel cannot see time spent
+// on the host side of a hostcall: a guest looping over cheap hostcalls (or
+// stuck inside one that never returns) burns almost no fuel while pinning
+// the plugin worker thread, so some wall-clock ceiling must exist for the
+// worker to be reclaimable at all.
+//
+// Sizing rule: this ceiling must dwarf the slowest *legitimate* export,
+// not typical work, because tripping it is catastrophic -- an epoch trap
+// (`Trap::Interrupt`) permanently poisons the instance (see
+// `resource_quota_reason`), killing the plugin until it is reloaded. The
+// network layer's own per-request contract allows a single hostcall
+// `arclain_network::DEFAULT_REQUEST_TIMEOUT` (30s), and an export that
+// makes a few sequential requests is doing exactly what plugins are for,
+// so the ceiling sits at minutes.
+//
+// Do not re-tune fuel and this pair toward each other. When this was 10
+// ticks (~100ms), a well-behaved guest that had consumed 2 of its
+// 10,000,000 fuel was trapped on wall-clock alone -- one slow hostcall or
+// a loaded machine was enough to brick a correct plugin mid-call.
+const EPOCH_TICKS_PER_EXPORT: u64 = 30_000;
 const EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_UI_ELEMENTS: usize = 10_000;
 const MAX_ACTIONS: usize = 1_024;
@@ -1129,6 +1151,175 @@ mod resource_limit_tests {
         store
             .set_fuel(1)
             .expect("every runtime store must support fuel metering");
+    }
+
+    // A component whose export makes exactly one host call and then returns
+    // through a short loop (the loop backedge is where wasmtime inserts an
+    // epoch check, so a deadline that expired during the hostcall is
+    // observed on return). The hostcall itself does nothing but take
+    // wall-clock time -- the shape of a network/disk hostcall, or of a
+    // worker thread descheduled on a loaded machine.
+    const SLOW_HOSTCALL_COMPONENT_WAT: &str = r#"
+        (component
+            (import "block" (func $host-block))
+            (core module $m
+                (import "host" "block" (func $block))
+                (func (export "run")
+                    (local $i i32)
+                    call $block
+                    (local.set $i (i32.const 8))
+                    (loop $spin
+                        (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+                        (br_if $spin (i32.ne (local.get $i) (i32.const 0)))
+                    )
+                )
+            )
+            (core func $block-lowered (canon lower (func $host-block)))
+            (core instance $host-inst
+                (export "block" (func $block-lowered))
+            )
+            (core instance $inst (instantiate $m (with "host" (instance $host-inst))))
+            (func (export "run") (canon lift (core func $inst "run")))
+        )
+    "#;
+
+    // The wedge shape the epoch deadline exists for: an unbounded loop over
+    // a cheap hostcall. Each iteration burns a handful of fuel but an
+    // arbitrary amount of wall-clock, so fuel alone would let this pin the
+    // plugin worker for minutes.
+    const WEDGED_HOSTCALL_LOOP_WAT: &str = r#"
+        (component
+            (import "block" (func $host-block))
+            (core module $m
+                (import "host" "block" (func $block))
+                (func (export "run")
+                    (loop $forever
+                        call $block
+                        br $forever
+                    )
+                )
+            )
+            (core func $block-lowered (canon lower (func $host-block)))
+            (core instance $host-inst
+                (export "block" (func $block-lowered))
+            )
+            (core instance $inst (instantiate $m (with "host" (instance $host-inst))))
+            (func (export "run") (canon lift (core func $inst "run")))
+        )
+    "#;
+
+    fn instantiate_hostcall_component(
+        runtime: &WasmRuntime,
+        wat: &str,
+        hostcall_duration: Duration,
+    ) -> (
+        Store<HostFunctions>,
+        wasmtime::component::TypedFunc<(), ()>,
+    ) {
+        let component = Component::new(&runtime.engine, wat).unwrap();
+        let host = HostFunctions::new_for_metadata_validation("epoch-deadline-test".to_string())
+            .unwrap();
+        let mut store = new_plugin_store(&runtime.engine, host).unwrap();
+        let mut linker: Linker<HostFunctions> = Linker::new(&runtime.engine);
+        linker
+            .root()
+            .func_wrap("block", move |_store, (): ()| {
+                std::thread::sleep(hostcall_duration);
+                Ok(())
+            })
+            .unwrap();
+        let instance = linker.instantiate(&mut store, &component).unwrap();
+        let run = instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .unwrap();
+        (store, run)
+    }
+
+    /// The property the epoch deadline broke when it was a ~100ms budget: a
+    /// guest whose export spends wall-clock in a single legitimate hostcall
+    /// (150ms here -- above the old ten-tick ceiling) while consuming almost
+    /// no fuel must complete, twice in a row, with the instance staying
+    /// available. Against `EPOCH_TICKS_PER_EXPORT = 10` this fails with
+    /// `Unavailable("plugin execution deadline exceeded")` on the first call.
+    #[test]
+    fn legitimate_slow_hostcall_work_is_not_trapped_by_the_epoch_deadline() {
+        let runtime = WasmRuntime::new().unwrap();
+        let (mut store, run) = instantiate_hostcall_component(
+            &runtime,
+            SLOW_HOSTCALL_COMPONENT_WAT,
+            Duration::from_millis(150),
+        );
+        let mut availability = InstanceAvailability::default();
+
+        for call in 0..2 {
+            call_with_quotas(
+                &mut store,
+                &mut availability,
+                |store| run.call(store, ()),
+                |_| Ok(()),
+                PluginError::ExecutionError,
+            )
+            .unwrap_or_else(|error| {
+                panic!("well-behaved slow-hostcall export was rejected on call {call}: {error}")
+            });
+        }
+        let fuel_used = FUEL_PER_EXPORT - store.get_fuel().unwrap();
+        assert!(
+            fuel_used < 1_000,
+            "the slow export must be cheap in fuel (used {fuel_used}) -- wall-clock was its \
+             only cost, which is precisely what the deadline must not punish"
+        );
+        assert_eq!(availability.reason(), None);
+    }
+
+    /// The wedge the dead-man switch exists for still dies: an unbounded
+    /// hostcall loop burns wall-clock without meaningful fuel, and the
+    /// free-running ticker + deadline trap + terminal classification must
+    /// reap it. Armed at a test-scale deadline (a few ticks) after
+    /// instantiation, because waiting out the real minutes-scale production
+    /// ceiling is not a unit test; what this pins is the mechanism the
+    /// production constant relies on, and the sizing test below pins the
+    /// constant itself.
+    #[test]
+    fn a_wedged_hostcall_loop_is_still_trapped_by_the_epoch_deadline() {
+        let runtime = WasmRuntime::new().unwrap();
+        let (mut store, run) = instantiate_hostcall_component(
+            &runtime,
+            WEDGED_HOSTCALL_LOOP_WAT,
+            Duration::from_millis(5),
+        );
+
+        store.set_fuel(FUEL_PER_EXPORT).unwrap();
+        store.set_epoch_deadline(5);
+        let error = run.call(&mut store, ()).unwrap_err();
+
+        assert_eq!(
+            resource_quota_reason(&error),
+            Some("plugin execution deadline exceeded"),
+            "a hostcall loop that outlives the epoch deadline must trap terminally"
+        );
+        let fuel_used = FUEL_PER_EXPORT - store.get_fuel().unwrap_or(0);
+        assert!(
+            fuel_used < FUEL_PER_EXPORT / 100,
+            "the wedge burned only {fuel_used} fuel -- fuel alone could not have reaped it"
+        );
+    }
+
+    /// Pins the sizing relationship the dead-man switch depends on: the
+    /// epoch ceiling must comfortably exceed the slowest legitimate single
+    /// hostcall (the network layer's own per-request timeout), so it can
+    /// only ever fire on genuine wedges. Shrinking the ceiling back toward
+    /// a per-export "budget" re-creates the failure where a guest that had
+    /// consumed 2 of its 10,000,000 fuel was killed on wall-clock alone.
+    #[test]
+    fn the_epoch_deadline_dwarfs_the_slowest_legitimate_hostcall() {
+        let ceiling = EPOCH_TICK_INTERVAL * u32::try_from(EPOCH_TICKS_PER_EXPORT).unwrap();
+        assert!(
+            ceiling >= 2 * arclain_network::DEFAULT_REQUEST_TIMEOUT,
+            "epoch ceiling {ceiling:?} must be at least twice the network layer's \
+             per-request timeout ({:?}) -- it is a liveness backstop, not a work budget",
+            arclain_network::DEFAULT_REQUEST_TIMEOUT
+        );
     }
 
     // Working-set telemetry is deliberately OS-specific; functional boundary
