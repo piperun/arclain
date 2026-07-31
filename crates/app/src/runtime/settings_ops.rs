@@ -1000,6 +1000,106 @@ pub(super) async fn flush_plugin_settings(inner: &Arc<AppRuntime>, plugin_id: &s
     }
 }
 
+/// Pulls **every** plugin's settings out of the plugin runtime and
+/// persists whatever differs from what is stored, in one write. Called
+/// from [`crate::ArclainApp::shutdown`], before the runtime tears down.
+///
+/// # Why a sweep at exit, when the per-plugin pull already converges
+///
+/// [`flush_plugin_settings`] runs after every guest entry on the *session*
+/// surface, and the instance's dirty bit is sticky, so a write from any
+/// other guest entry is normally picked up by the next session open or
+/// dispatch. Normally -- but a process can exit before that next entry
+/// ever happens, and then the write is simply lost. Three guest entries
+/// have no pull of their own and are only reachable this way:
+///
+/// - `install_plugin`, whose `init` runs in the guest. Install a plugin
+///   that records something at load, close the application, and without
+///   this the record is gone.
+/// - the top-tab query behind `plugin_chrome`, on a cache miss.
+/// - the `OnArchiveOpen` event worker inside `arclain_plugins`, which runs
+///   enabled guests with no plugin session involved at all -- the ordinary
+///   shape of a command-line run.
+///
+/// This is also the one place a whole-map sweep is the right instrument:
+/// at exit there is no way to know which plugins are dirty, which is
+/// exactly what `PluginManager::get_all_settings` answers (and it is
+/// dirty-bit aware, so clean plugins cost a cached clone, not a guest
+/// call).
+///
+/// One row write for all plugins, not one per plugin: the per-plugin path
+/// reads and rewrites the whole user-config row, which at exit would mean
+/// two round trips per installed plugin for no benefit.
+///
+/// Merges into the stored map rather than replacing it, so a plugin that
+/// is no longer loaded keeps whatever was last saved for it instead of
+/// being silently dropped from the row.
+pub(super) async fn run_flush_all_plugin_settings(inner: &Arc<AppRuntime>) {
+    let Some(manager) = inner.plugin_manager() else {
+        return;
+    };
+    let live = {
+        let manager = manager.lock();
+        manager.get_all_settings()
+    };
+    if live.is_empty() {
+        return;
+    }
+
+    let _write_guard = inner.settings_write_lock.lock().await;
+    let Some(config_service) = inner.core_services().config_service.clone() else {
+        return;
+    };
+    let Some(handle) = inner.tokio_handle() else {
+        return;
+    };
+
+    let read_config_service = config_service.clone();
+    let candidate = handle
+        .spawn_blocking(move || read_config_service.get_user_config())
+        .await;
+    let mut candidate = match candidate {
+        Ok(Ok(candidate)) => candidate,
+        Ok(Err(error)) => {
+            tracing::error!(%error, "could not read settings to flush plugin settings at exit");
+            return;
+        }
+        Err(error) => {
+            tracing::error!(%error, "the plugin settings exit-flush worker failed");
+            return;
+        }
+    };
+
+    let mut stored = candidate.get_all_plugin_settings();
+    let mut changed = false;
+    for (plugin_id, settings) in live {
+        if stored.get(&plugin_id) != Some(&settings) {
+            stored.insert(plugin_id, settings);
+            changed = true;
+        }
+    }
+    if !changed {
+        return;
+    }
+    candidate.set_all_plugin_settings(&stored);
+
+    let persisted = candidate.clone();
+    match handle
+        .spawn_blocking(move || config_service.save_user_config(&persisted))
+        .await
+    {
+        Ok(Ok(())) => {
+            let mut mutable = inner.session.mutable.write();
+            mutable.user_config = candidate;
+            mutable.revision += 1;
+        }
+        Ok(Err(error)) => {
+            tracing::error!(%error, "could not save plugin settings at exit")
+        }
+        Err(error) => tracing::error!(%error, "the plugin settings exit-flush worker failed"),
+    }
+}
+
 /// Persists `settings` as `plugin_id`'s own key/value settings bag
 /// (`UserConfig::plugin_settings`), reported back to the plugin at its
 /// next `get-ui-layout`/`on-ui-event` call via `PluginManager::new`'s own

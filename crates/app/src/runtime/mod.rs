@@ -574,6 +574,14 @@ impl ArclainApp {
         // either) -- safe to call directly here, same as `shutdown_now`
         // below.
         self.inner.materialization().clear_all();
+        // The last chance to take what a plugin wrote about itself. Must
+        // precede `shutdown_now` below: it needs the runtime's blocking
+        // pool for the database round trip. See
+        // `settings_ops::run_flush_all_plugin_settings` for which guest
+        // entries this is the *only* pull for -- an installed plugin's
+        // `init`, a top-tab query, and the event worker that runs guests
+        // with no plugin session open at all.
+        settings_ops::run_flush_all_plugin_settings(&self.inner).await;
         // Synchronous, but always safe to call from any context --
         // including from within a task on this app's own runtime --
         // see `RuntimeOwner`'s doc comment. No need to route this
