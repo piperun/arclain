@@ -141,8 +141,16 @@ pub async fn reconcile_started_action(
 /// Deliberately *not* part of the session registry: which dialog is open
 /// and what the page back-stack holds is renderer-owned state that
 /// outlives any individual plugin session, and keeping it here is what
-/// lets a facade-rendered panel open a dialog that still renders through
+/// lets a facade-rendered dialog open a page that still renders through
 /// the legacy path.
+///
+/// The `CloseDialog` arm therefore clears navigation state and releases
+/// the dialog's images, but does *not* close its plugin session: that is
+/// reconciled once per frame from the open-dialog entry this writes, by
+/// [`crate::features::plugins::application::PluginSessions::
+/// retain_open_dialog`]. One owner rather than four means a close site
+/// this function does not know about -- the legacy queue's
+/// `PluginAction::CloseDialog`, say -- cannot leak a session.
 pub fn apply_navigation(
     shared: &SharedState,
     plugin_id: &str,

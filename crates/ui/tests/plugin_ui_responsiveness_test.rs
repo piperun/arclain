@@ -5,8 +5,8 @@ mod common;
 use arclain_plugins::{types::PluginAction, PluginManager};
 use arclain_ui::core::tabs::TabId;
 use arclain_ui::features::plugins::application::{
-    process_plugin_ui_results, request_plugin_snapshot, PluginUiJobs, PluginUiRequest,
-    PluginUiResult,
+    process_plugin_ui_results, request_plugin_snapshot, PluginNavigation, PluginUiJobs,
+    PluginUiRequest, PluginUiResult,
 };
 use arclain_ui::features::plugins::domain::types::{
     PluginInfo, PluginStatus, PluginsListState, SnapshotStatus,
@@ -56,8 +56,13 @@ fn plugin_page_close_releases_its_exact_image_owner() {
     );
 }
 
+/// The facade-rendered dialog's own close route. Replaces the deleted
+/// `create_dialog_callback` test of the same shape: a `CloseDialog`
+/// button used to reach the host as the reserved event id
+/// `"__dialog_close"`, and now arrives as a typed
+/// [`PluginNavigation::CloseDialog`] resolved by the renderer.
 #[test]
-fn plugin_dialog_close_releases_its_exact_image_owner() {
+fn plugin_dialog_close_navigation_releases_its_exact_image_owner() {
     let shared = common::create_test_shared_state();
     let origin_tab = shared.signals().tabs.get().active_id();
     let owner = ImageOwner::plugin_dialog("plugin", "dialog", origin_tab);
@@ -70,13 +75,17 @@ fn plugin_dialog_close_releases_its_exact_image_owner() {
         .request(owner, key, eframe::egui::Context::default());
     wait_for_image_failure(&shared, key);
 
-    let mut callback = arclain_ui::features::plugins::presentation::controllers::plugin_controller::create_dialog_callback(
+    arclain_ui::features::plugins::presentation::document_dispatch::apply_navigation(
         &shared,
-        "plugin".to_string(),
+        "plugin",
         origin_tab,
+        PluginNavigation::CloseDialog,
     );
-    callback("__dialog_close", None);
 
+    assert!(
+        !shared.signals().plugin_dialog_state.get().has_open_dialog(),
+        "close navigation must clear the open-dialog entry the session is keyed on"
+    );
     assert!(
         !shared.image_assets.contains(key),
         "dialog close left its image owner alive until incidental reconciliation"

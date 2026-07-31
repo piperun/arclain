@@ -129,7 +129,7 @@
 //! The five extension points migrate independently, because a slot's
 //! *document source* is separable from the host state that decides the
 //! slot exists at all (see "What is deliberately not modeled here"
-//! below). A facade-backed panel can already open a dialog that still
+//! below). A facade-backed dialog can already open a page that still
 //! renders through `super::ui_jobs`.
 //!
 //! - **`Panel`** -- migrated. Declared by
@@ -137,25 +137,43 @@
 //!   plugin_panel_section`, drawn by that feature's `Panel` component,
 //!   dispatched through
 //!   `crate::features::plugins::presentation::document_dispatch`.
-//! - **`Dialog`** / **`Page`** -- not migrated. Both are drawn by
+//! - **`Dialog`** -- migrated. Declared by
+//!   `crate::features::plugins::presentation::views::rendering::
+//!   render_dialog` from the `PluginDialogState` entry that says a dialog
+//!   is open, drawn with `render_document` at
+//!   `DocumentExtent::Full` (a dialog owns its window), dispatched
+//!   through `crate::features::plugins::presentation::document_dispatch`.
+//!   Its session's lifetime is reconciled once per frame by
+//!   [`PluginSessions::retain_open_dialog`] rather than hooked into each
+//!   place a dialog can close -- see that method for the four places and
+//!   why hooking them would not hold.
+//! - **`Page`** -- not migrated. Still drawn by
 //!   `crate::features::plugins::presentation::views::rendering`, which
-//!   keeps its own `cached_dialog_layout`/`cached_page_layout` plus a
-//!   stale flag, because `PluginUiJobs` can return "busy" and the
-//!   renderer must keep showing the previous layout rather than blanking.
-//!   A slot needs none of that -- [`SlotView::Ready`] already retains the
-//!   last document across an in-flight action -- so migrating them is
-//!   mostly *deletion*: drop the two cache fields, the two stale flags,
-//!   and `invalidate_*_layout`, and swap `cached_or_request_layout` for
-//!   [`PluginSessions::view`] against a `Dialog`/`Page` slot built from
-//!   the `PluginDialogState` entry that is already there. The one piece
-//!   with no slot equivalent is `PageInitState`: a page's `__page_init`
-//!   lifecycle event must run before its first layout read, or the page
-//!   caches its pre-initialization layout. Under the session model that
-//!   becomes an action dispatched against the freshly opened session,
-//!   with the *second* document (the one the dispatch returns) being the
-//!   first one drawn -- which also retires the request-id generation
-//!   guard, since a stale session's result is already rejected by the
-//!   session check in [`PluginSessions::apply_update`].
+//!   keeps its own `cached_page_layout` plus a stale flag, because
+//!   `PluginUiJobs` can return "busy" and the renderer must keep showing
+//!   the previous layout rather than blanking. A slot needs none of that
+//!   -- [`SlotView::Ready`] already retains the last document across an
+//!   in-flight action -- so migrating it is mostly *deletion*: drop the
+//!   cache field, the stale flag, and `invalidate_page_layout`, and swap
+//!   `cached_or_request_layout` for [`PluginSessions::view`] against a
+//!   `Page` slot built from the `PluginDialogState` page stack that is
+//!   already there. The one piece with no slot equivalent is
+//!   `PageInitState`: a page's `__page_init` lifecycle event must run
+//!   before its first layout read, or the page caches its
+//!   pre-initialization layout. Under the session model that becomes an
+//!   action dispatched against the freshly opened session, with the
+//!   *second* document (the one the dispatch returns) being the first one
+//!   drawn -- which also retires the request-id generation guard, since a
+//!   stale session's result is already rejected by the session check in
+//!   [`PluginSessions::apply_update`].
+//!
+//!   Until it lands, the two halves of `PluginDialogState` are
+//!   deliberately shared across the two stacks: a facade-rendered
+//!   surface's `OpenPage`/`ClosePage` navigation writes the page stack
+//!   the legacy renderer reads, and the legacy queue's
+//!   `PluginAction::CloseDialog` clears the `open_dialog` entry the
+//!   facade-rendered dialog is keyed on. The per-frame dialog reconcile
+//!   is what makes the second direction safe.
 //! - **`MainPage`** -- not migrated. Drawn by the plugin detail view,
 //!   which holds a per-plugin `cached_main_layout` for exactly the reason
 //!   a slot makes unnecessary. Migrating it is a
@@ -877,6 +895,40 @@ impl PluginSessions {
                 _ => false,
             }
         }) {
+            self.close(facade, runtime, &slot);
+        }
+    }
+
+    /// Closes every `Dialog` slot except the one the host is still
+    /// drawing (`None` when no dialog is open).
+    ///
+    /// Swept once per frame from
+    /// `crate::features::plugins::presentation::views::rendering::
+    /// render_dialog` rather than hooked into each place a dialog can
+    /// close, for the same reason [`Self::retain_hosts`] is swept rather
+    /// than hooked. A dialog closes from four places that share no call
+    /// path: the window's own close button, a
+    /// [`PluginNavigation::CloseDialog`] a button in *any* facade-rendered
+    /// document produced, the `CloseDialog` host intent an action result
+    /// carries back, and the legacy job queue's
+    /// `PluginAction::CloseDialog` -- which a still-legacy `Page`'s event
+    /// can reach while a facade-rendered dialog is open. Missing one would
+    /// leak a WASM session for the rest of the process's life, and the
+    /// fourth is in a path this frontend is in the middle of retiring, so
+    /// hooking it would be wiring a site that is about to move.
+    ///
+    /// [`Self::retain_hosts`] already closes a `Dialog` slot when its tab
+    /// closes; what it cannot see is the dialog closing while its tab
+    /// stays open, which is every case above.
+    pub fn retain_open_dialog(
+        &self,
+        facade: &ArclainApp,
+        runtime: &tokio::runtime::Handle,
+        open: Option<&PluginSlot>,
+    ) {
+        for slot in self
+            .slots_matching(|slot| matches!(slot, PluginSlot::Dialog { .. }) && Some(slot) != open)
+        {
             self.close(facade, runtime, &slot);
         }
     }

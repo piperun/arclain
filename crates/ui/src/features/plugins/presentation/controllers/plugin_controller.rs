@@ -217,7 +217,12 @@ fn process_bounded_action(
         }
 
         PluginAction::CloseDialog => {
-            // Close the current dialog
+            // Close the current dialog. This is the *legacy* queue's close
+            // path -- still reachable while `Page` renders through
+            // `PluginUiJobs`, since a page event's returned actions come
+            // back through here. Clearing the entry is all it has to do:
+            // the dialog's facade session is keyed on that entry and is
+            // closed by the renderer's per-frame reconcile.
             tracing::debug!("Plugin {} requested dialog close", plugin_id);
             let image_owner =
                 dialog_state
@@ -334,58 +339,19 @@ fn process_bounded_action(
     }
 }
 
-/// Create a callback handler for plugin dialog events.
+/// Create a callback handler for plugin page events.
 ///
 /// Plugin events are queued with their origin tab through `PluginUiJobs`.
 /// The central completion path applies returned actions and settings to
-/// that same tab even if the user switches before WASM returns.
-/// Layout invalidation is a pure signal mutation and stays inline.
-pub fn create_dialog_callback(
-    shared: &crate::shared::SharedState,
-    plugin_id: String,
-    origin_tab: crate::core::tabs::TabId,
-) -> Box<dyn FnMut(&str, Option<String>)> {
-    let dialog_signal = shared.signals().plugin_dialog_state.clone();
-    let shared_owned = shared.clone();
-    let pid = plugin_id;
-
-    Box::new(move |element_id: &str, value: Option<String>| {
-        if element_id == "__dialog_close" {
-            let mut ds = dialog_signal.get();
-            let image_owner = ds
-                .open_dialog
-                .as_ref()
-                .map(|(plugin_id, dialog_id, tab_id)| {
-                    ImageOwner::plugin_dialog(plugin_id, dialog_id, *tab_id)
-                });
-            ds.close_dialog();
-            dialog_signal.set(ds);
-            if let Some(owner) = image_owner {
-                shared_owned.image_assets.release_owner(&owner);
-            }
-            return;
-        }
-
-        crate::features::plugins::presentation::dispatch::dispatch_plugin_event_for_tab(
-            &shared_owned,
-            origin_tab,
-            pid.clone(),
-            element_id.to_string(),
-            value,
-        );
-
-        // Drop cached layout so the next render fetches a fresh one
-        // (the plugin may have changed its layout in response).
-        let mut ds = dialog_signal.get();
-        ds.invalidate_dialog_layout();
-        dialog_signal.set(ds);
-    })
-}
-
-/// Create a callback handler for plugin page events. See
-/// `create_dialog_callback` for the dispatch model — this is the
-/// page-level analogue with one extra prefix (`__page_open:`) handled
-/// inline because it's a UI navigation, not a plugin event.
+/// that same tab even if the user switches before WASM returns. Layout
+/// invalidation is a pure signal mutation and stays inline. One prefix
+/// (`__page_open:`) is handled inline because it's a UI navigation, not a
+/// plugin event.
+///
+/// The dialog analogue of this is gone: dialogs render from a facade
+/// session, whose interactions carry a typed action rather than a
+/// reserved event-id string (see `crate::features::plugins::application::
+/// facade_sessions`). This one retires with the page cutover.
 pub fn create_page_callback(
     shared: &crate::shared::SharedState,
     plugin_id: String,

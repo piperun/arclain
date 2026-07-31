@@ -26,23 +26,32 @@ pub enum PageInitState {
     },
 }
 
-/// State for managing plugin dialogs and pages
+/// State for managing plugin dialogs and pages.
+///
+/// Deliberately shared across the two plugin render stacks while only one
+/// of them has moved: the dialog half is drawn from a facade session and
+/// the page half from the legacy `PluginUiJobs` cache, but a button in
+/// either can navigate to the other, so *where* a dialog or page is open
+/// stays one piece of renderer-owned state rather than two. See
+/// `crate::features::plugins::application::facade_sessions`'s module doc
+/// comment ("What is deliberately not modeled here").
 #[derive(Debug, Default, Clone)]
 pub struct PluginDialogState {
-    /// Currently open dialog: (plugin_id, dialog_id)
+    /// Currently open dialog: (plugin_id, dialog_id, origin tab). Read by
+    /// the dialog renderer to key its facade session slot, so clearing it
+    /// from anywhere -- including the legacy queue's
+    /// `PluginAction::CloseDialog` -- is what closes that session, via the
+    /// renderer's per-frame reconcile.
     pub open_dialog: Option<(String, String, TabId)>,
     /// Page stack: each entry is (plugin_id, page_id)
     pub page_stack: Vec<(String, String, TabId)>,
-    /// Cached layout for the current dialog. Kept across UI events so
-    /// the user sees the previous layout instead of a blank panel
-    /// while a worker thread holds the plugin lock; the `*_stale`
-    /// flag below tells the renderer to refetch when the lock is free.
-    pub cached_dialog_layout: Option<Arc<PluginLayout>>,
-    /// Cached layout for the current page (same semantics as dialog).
+    /// Cached layout for the current page. Kept across UI events so the
+    /// user sees the previous layout instead of a blank panel while a
+    /// worker thread holds the plugin lock; the `*_stale` flag below
+    /// tells the renderer to refetch when the lock is free.
     pub cached_page_layout: Option<Arc<PluginLayout>>,
     /// Layout cache is stale and should be refetched on the next
     /// frame where the plugin instance lock is free.
-    pub cached_dialog_layout_stale: bool,
     pub cached_page_layout_stale: bool,
     /// Generation-keyed page initialization request.
     pub page_init: PageInitState,
@@ -54,19 +63,18 @@ impl PluginDialogState {
         Self::default()
     }
 
-    /// Open a dialog for a specific plugin
+    /// Open a dialog for a specific plugin.
+    ///
+    /// No layout bookkeeping to reset: a different dialog is a different
+    /// facade session slot, so the renderer asks for a different document
+    /// by construction.
     pub fn open_dialog(&mut self, plugin_id: &str, dialog_id: &str, origin_tab: TabId) {
         self.open_dialog = Some((plugin_id.to_string(), dialog_id.to_string(), origin_tab));
-        // Different dialog → previous cache is for a different layout.
-        self.cached_dialog_layout = None;
-        self.cached_dialog_layout_stale = false;
     }
 
     /// Close the current dialog
     pub fn close_dialog(&mut self) {
         self.open_dialog = None;
-        self.cached_dialog_layout = None;
-        self.cached_dialog_layout_stale = false;
     }
 
     /// Check if a dialog is currently open
@@ -117,12 +125,6 @@ impl PluginDialogState {
     /// during a long-running event.
     pub fn invalidate_page_layout(&mut self) {
         self.cached_page_layout_stale = true;
-    }
-
-    /// Mark the cached dialog layout stale (same semantics as
-    /// `invalidate_page_layout`).
-    pub fn invalidate_dialog_layout(&mut self) {
-        self.cached_dialog_layout_stale = true;
     }
 
     pub fn page_init_pending(&self) -> bool {
