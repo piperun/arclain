@@ -1152,62 +1152,6 @@ fn triggering_an_image_fetch_refuses_another_plugins_key() {
     );
 }
 
-/// The lightbox ingress filter: a plugin's `OpenLightbox` cannot list an
-/// image it does not own, so the index the user navigates matches what
-/// they can actually see.
-#[test]
-fn the_lightbox_ingress_drops_images_the_acting_plugin_does_not_own() {
-    use arclain_plugins::types::PluginAction;
-    use arclain_ui::features::plugins::domain::state::PluginDialogState;
-    use arclain_ui::features::plugins::presentation::controllers::plugin_controller::{
-        process_action, ActionContext,
-    };
-    use arclain_ui::shared::dialogs::LightboxState;
-
-    let lightbox = arclain_app::Signal::new(LightboxState::default());
-    let mut dialog = PluginDialogState::default();
-    let mut toaster = arclain_widgets::Toaster::new();
-    let context = ActionContext {
-        lightbox_signal: Some(&lightbox),
-        page_display_name_signal: None,
-        metadata_signal: None,
-        shared_state: None,
-        origin_tab: None,
-    };
-
-    process_action(
-        PluginAction::OpenLightbox {
-            images: vec![
-                ("plugin-image:victim:secret".to_string(), None),
-                ("own-unstamped-key".to_string(), None),
-            ],
-            start_index: 0,
-            title: None,
-        },
-        "attacker",
-        &mut dialog,
-        &mut toaster,
-        None,
-        &context,
-    );
-
-    let state = lightbox.get();
-    assert_eq!(
-        state
-            .images
-            .iter()
-            .map(|(key, _)| key.as_str())
-            .collect::<Vec<_>>(),
-        vec!["own-unstamped-key"],
-        "an image naming another plugin's namespace must not be listed at all"
-    );
-    assert_eq!(
-        state.source_plugin.as_deref(),
-        Some("attacker"),
-        "the lightbox must record who opened it, so the store can check its reads too"
-    );
-}
-
 /// The pin a panel's plugin session carries comes from the *slot key*, not
 /// from the application's ambient active-session state.
 ///

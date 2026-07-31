@@ -920,8 +920,7 @@ mod key_ownership_tests {
     }
 
     /// Only the lightbox has no owning plugin, and its keys come from
-    /// facade-stamped intents; the legacy ingress filters them itself
-    /// (see `plugin_controller`'s `OpenLightbox` arm).
+    /// facade-stamped intents.
     #[test]
     fn a_surface_with_no_owning_plugin_is_not_restricted() {
         assert!(image_key_is_addressable_by("plugin-image:anyone:k", None));

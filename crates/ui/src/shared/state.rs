@@ -5,7 +5,6 @@ use crate::shared::image_assets::ImageAssetStore;
 use crate::shared::theme::{load_cjk_fonts, AppTheme};
 use arclain_widgets::Toaster;
 use parking_lot::Mutex;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -15,14 +14,10 @@ pub struct SharedState {
     pub services: Arc<crate::core::services::Services>,
     pub theme: AppTheme,
     pub toaster: Arc<Mutex<Toaster>>,
-    /// Whether a plugin requested layout invalidation since the last frame.
-    pub refresh_requests: Arc<AtomicBool>,
     pub plugin_ui_jobs: crate::features::plugins::application::PluginUiJobs,
     /// Plugin UI slots served by the application facade's session
     /// contract -- see
-    /// `crate::features::plugins::application::facade_sessions` for the
-    /// full design, including which extension points already read from
-    /// here and which still read from `plugin_ui_jobs` above.
+    /// `crate::features::plugins::application::facade_sessions`.
     pub plugin_sessions: crate::features::plugins::application::PluginSessions,
     /// Shared cached-image state machine used by every image renderer.
     pub image_assets: ImageAssetStore,
@@ -30,10 +25,9 @@ pub struct SharedState {
     pub signals: AppSignals,
     /// The application facade: owns the Tokio runtime and every composed
     /// headless service `app_state`/`services` above were populated
-    /// from at startup (see `AppState::new`). Not yet read by any call
-    /// site in this crate -- later Stage 1 tasks migrate `app_state`/
-    /// `services` readers onto this facade's own async operation
-    /// methods incrementally, retiring the fields above as they go.
+    /// from at startup (see `AppState::new`). Plugin UI and the migrated
+    /// archive workflows read through this handle; later Stage 1 tasks
+    /// retire the remaining `app_state`/`services` readers incrementally.
     ///
     /// `Option` rather than a bare `ArclainApp`: several test fixtures
     /// (`crates/ui/tests/common/mod.rs`, `settings_controller.rs`'s own
@@ -79,37 +73,9 @@ impl SharedState {
         let services = Arc::new(services);
 
         let plugin_ui_jobs = crate::features::plugins::application::PluginUiJobs::new(
-            services.plugin_manager.clone(),
+            Some(facade.clone()),
             services.tokio_runtime.clone(),
-        )
-        .with_origin_context_provider({
-            let signals = signals.clone();
-            move |tab_id| {
-                let tabs = signals.tabs.get();
-                let tab = tabs.get(tab_id)?.clone();
-                drop(tabs);
-                Some(arclain_plugins::host_functions::EventContext {
-                    archive_path: tab
-                        .archive_path
-                        .get()
-                        .map(|path| path.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                    password: tab.current_password.get(),
-                    // The session's own entry paths -- the memoized
-                    // projection, handed out zero-copy (see
-                    // `TabInventory::entry_paths`).
-                    entries: tab.inventory.get().entry_paths(),
-                    // 0 is never a real `ArchiveSessionId` (the facade
-                    // mints ids from 1) -- a safe "no session open in
-                    // this tab" sentinel for this fallback context.
-                    archive_session_id: tab
-                        .archive_session_id
-                        .get()
-                        .map(arclain_app::ids::ArchiveSessionId::into_raw)
-                        .unwrap_or(0),
-                })
-            }
-        });
+        );
         // Every image reference resolves through the application: a plugin
         // document's keys are facade-encoded and namespaced to the owning
         // plugin (a bare key is ambiguous once it leaves its session), and
@@ -123,7 +89,6 @@ impl SharedState {
             services,
             theme,
             toaster: Arc::new(Mutex::new(Toaster::new())),
-            refresh_requests: Arc::new(AtomicBool::new(false)),
             plugin_ui_jobs,
             plugin_sessions: crate::features::plugins::application::PluginSessions::new(),
             image_assets,

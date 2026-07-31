@@ -60,8 +60,8 @@ pub fn trigger_image_fetch(
 ) -> bool {
     // The write choke point for cross-plugin key forgery, mirroring
     // `ImageAssetStore::request`'s read-side check. Every URL-fallback
-    // fetch in this frontend goes through here (flat renderer, document
-    // renderer, carousel), each declaring which plugin it is rendering, so
+    // fetch in this frontend goes through here (document renderer and
+    // carousel), each declaring which plugin it is rendering, so
     // a key naming a *different* plugin is refused before any request is
     // issued -- and long before the bytes could be written into that
     // plugin's namespace for it to later render as its own.

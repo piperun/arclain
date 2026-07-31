@@ -583,7 +583,6 @@ version = "2.3.2"
 dependencies = [
  "anyhow",
  "arboard",
- "arclain-network",
  "arclain_app",
  "arclain_core",
  "arclain_db",

@@ -2,11 +2,11 @@
 //! the cutover described in
 //! `crate::features::plugins::application::facade_sessions`.
 //!
-//! # How this differs from the flat `PluginUiElement` renderer
+//! # How this differs from the retired flat renderer
 //!
-//! `super::renderer` walks a *flat* `Vec<PluginUiElement>` and
-//! reconstructs nesting from `GroupBegin`/`GroupEnd` marker pairs at
-//! render time. A document is already a tree
+//! The retired renderer walked a flat `Vec<PluginUiElement>` and
+//! reconstructed nesting from `GroupBegin`/`GroupEnd` marker pairs at
+//! render time. A facade document is already a tree
 //! (`arclain_plugins::ui_model::normalize_layout` resolved the markers,
 //! and rejects an unbalanced pair outright instead of silently absorbing
 //! or skipping it), so this walks children directly. Three further
@@ -595,7 +595,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if let Some(key) = image_key {
-                            super::widgets::render_list_item_thumbnail(
+                            super::image::render_list_item_thumbnail(
                                 ui, images, colors, key, image_url,
                             );
                         }

@@ -31,7 +31,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // === Handle files dropped from Explorer ===
     crate::core::arclain_app::drop_handler::handle_drop_events(app, ctx);
 
-    // === Lifecycle: Refresh requests, signals, theme ===
+    // === Lifecycle: signals and theme ===
     //
     // The per-frame plugin "context sync" that used to live here is
     // gone — plugins now read the active tab's archive_path /
@@ -42,7 +42,6 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // only for a panel-driven metadata emit with no session active at
     // all. See `arclain_plugins::active_tab` and
     // `crate::core::state::init`'s own installation comment.
-    app_lifecycle::process_refresh_requests(&app.shared_state, ctx);
     app_lifecycle::bind_signals_once(&app.shared_state, ctx, &mut app._signals_bound);
     app_lifecycle::sync_active_archive_session(&app.shared_state);
     app_lifecycle::sweep_orphaned_plugin_sessions(&app.shared_state);

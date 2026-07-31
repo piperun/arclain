@@ -24,7 +24,6 @@ use arclain_app::plugins::{
     PluginExtensionPointDto, PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind,
 };
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
-use arclain_plugins::types::PluginAction;
 use arclain_ui::core::app_lifecycle;
 use arclain_ui::core::operation_bridge;
 use arclain_ui::core::services::Services;
@@ -103,10 +102,7 @@ fn shared_state_with_plugin() -> (TempDir, SharedState) {
         core: (*legacy.core_services).clone(),
         plugin_manager: legacy.plugin_manager,
     };
-    shared.plugin_ui_jobs = PluginUiJobs::new(
-        services.plugin_manager.clone(),
-        services.tokio_runtime.clone(),
-    );
+    shared.plugin_ui_jobs = PluginUiJobs::new(Some(app.clone()), services.tokio_runtime.clone());
     shared.services = Arc::new(services);
     shared
         .app_state
@@ -378,56 +374,7 @@ fn a_close_dialog_button_releases_the_session_without_reaching_the_plugin() {
     assert!(shared.plugin_sessions.is_empty());
 }
 
-/// Route 3: the legacy job queue's `PluginAction::CloseDialog`.
-///
-/// Reachable for as long as `Page` renders through `PluginUiJobs`: a page
-/// event's returned actions come back through
-/// `application::process_actions_for_origin`, which applies them to the
-/// shared `PluginDialogState` and writes it back -- exactly what this
-/// test does by hand. Nothing on that path knows the facade session
-/// registry exists, which is why the close is reconciled from the state
-/// rather than hooked into each site.
-#[test]
-fn a_legacy_close_dialog_action_releases_the_session() {
-    let (_temp, shared) = shared_state_with_plugin();
-    open_dialog(&shared, DIALOG);
-
-    let mut harness = dialog_harness(&shared);
-    step_until_session_open(&mut harness, &shared);
-
-    let signal = shared.signals().plugin_dialog_state.clone();
-    let mut state = signal.get();
-    let mut toaster = arclain_widgets::Toaster::new();
-    arclain_ui::features::plugins::presentation::controllers::plugin_controller::process_plugin_actions(
-        vec![PluginAction::CloseDialog],
-        PLUGIN,
-        &mut state,
-        &mut toaster,
-        None,
-        None,
-        Some(&shared),
-    );
-    signal.set(state);
-    assert!(
-        !dialog_is_open(&shared),
-        "precondition: the legacy action cleared the entry"
-    );
-
-    harness.step();
-
-    assert_eq!(
-        shared
-            .plugin_sessions
-            .session_id(&dialog_slot(&shared, DIALOG)),
-        None
-    );
-    assert!(
-        shared.plugin_sessions.is_empty(),
-        "a close route that never touches the registry must still release the session"
-    );
-}
-
-/// Route 4: replacement rather than closure. A second dialog is a
+/// Route 3: replacement rather than closure. A second dialog is a
 /// different slot key, so the first one's session has no host left.
 #[test]
 fn opening_a_second_dialog_releases_the_first_ones_session() {

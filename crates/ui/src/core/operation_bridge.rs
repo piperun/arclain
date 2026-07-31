@@ -1300,9 +1300,8 @@ fn handle_confirm_overwrite_challenge(
 /// `serde_json::Error` quotes the offending value in its own `Display`
 /// (`invalid type: string "<guest text>", expected ...`). Formatting the
 /// whole error with `{:?}` therefore wrote plugin-authored strings into
-/// global tracing, which is exactly what this crate's other plugin traces
-/// are built to avoid (see `plugin_controller`'s `trace_*` family and its
-/// `traced_test` coverage).
+/// global tracing, which is exactly what this crate's plugin-operation
+/// trace policy is built to avoid.
 ///
 /// Logs the host-classified `kind` and the `correlation_id` instead: enough
 /// to find the operation and its recorded error, nothing the plugin chose.
@@ -2126,10 +2125,9 @@ mod tests {
     use arclain_app::challenge::Challenge;
     use arclain_app::ids::{ArchiveSessionId, ChallengeId};
 
-    /// Extends the `trace_*` redaction family (`plugin_controller`'s own
-    /// `plugin_action_traces_redact_guest_values` and siblings) to this
-    /// sink, which was the one plugin-error path still formatting the
-    /// whole `ApplicationError`.
+    /// Pins the plugin-operation redaction policy at this sink, which was
+    /// the one plugin-error path still formatting the whole
+    /// `ApplicationError`.
     ///
     /// The marker is placed in `diagnostic` specifically because that is
     /// where guest text actually arrives: `arclain_app::plugins`'s error

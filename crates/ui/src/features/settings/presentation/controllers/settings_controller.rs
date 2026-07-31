@@ -893,7 +893,7 @@ mod tests {
             .expect("seed the settings signals for the fixture");
 
         let plugin_ui_jobs = crate::features::plugins::application::PluginUiJobs::new(
-            services.plugin_manager.clone(),
+            Some(facade.clone()),
             services.tokio_runtime.clone(),
         );
         let image_assets = crate::shared::image_assets::ImageAssetStore::without_source(
@@ -904,7 +904,6 @@ mod tests {
             services,
             theme: AppTheme::new(false),
             toaster: Arc::new(Mutex::new(Toaster::new())),
-            refresh_requests: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             plugin_ui_jobs,
             plugin_sessions: crate::features::plugins::application::PluginSessions::new(),
             image_assets,

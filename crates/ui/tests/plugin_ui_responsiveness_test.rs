@@ -2,8 +2,6 @@
 
 mod common;
 
-use arclain_plugins::{types::PluginAction, PluginManager};
-use arclain_ui::core::tabs::TabId;
 use arclain_ui::features::plugins::application::{
     process_plugin_ui_results, request_plugin_snapshot, PluginNavigation, PluginUiJobs,
     PluginUiRequest, PluginUiResult,
@@ -13,9 +11,8 @@ use arclain_ui::features::plugins::domain::types::{
 };
 use arclain_ui::features::plugins::PluginsFeature;
 use arclain_ui::shared::image_assets::{ImageAssetState, ImageOwner};
-use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn wait_for_image_failure(shared: &arclain_ui::shared::SharedState, key: &str) {
@@ -26,6 +23,31 @@ fn wait_for_image_failure(shared: &arclain_ui::shared::SharedState, key: &str) {
     ) {
         assert!(Instant::now() < deadline, "image worker did not finish");
         std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn facade_plugin_queries_need_no_legacy_plugin_manager() {
+    let (_temp, shared) = common::create_test_shared_state_with_facade();
+    let jobs = PluginUiJobs::new(shared.facade.clone(), shared.services.tokio_runtime.clone());
+    let deadline = Instant::now() + Duration::from_secs(2);
+
+    loop {
+        let _ = jobs.drain();
+        if let Some(result) = jobs.plugin_snapshot(None) {
+            assert!(
+                result
+                    .expect("the facade plugin read must succeed")
+                    .is_empty(),
+                "the isolated facade has no installed plugins"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the facade plugin snapshot never completed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -131,36 +153,6 @@ fn plugin_dialog_native_window_close_releases_its_exact_image_owner() {
 }
 
 #[test]
-fn plugin_close_dialog_action_releases_its_exact_image_owner() {
-    let shared = common::create_test_shared_state();
-    let origin_tab = shared.signals().tabs.get().active_id();
-    let owner = ImageOwner::plugin_dialog("plugin", "dialog", origin_tab);
-    let key = "dialog-action-close-image";
-    let mut dialog_state = shared.signals().plugin_dialog_state.get();
-    dialog_state.open_dialog("plugin", "dialog", origin_tab);
-    shared
-        .image_assets
-        .request(owner, key, eframe::egui::Context::default());
-    wait_for_image_failure(&shared, key);
-
-    let mut toaster = arclain_widgets::Toaster::new();
-    arclain_ui::features::plugins::presentation::controllers::plugin_controller::process_plugin_actions(
-        vec![PluginAction::CloseDialog],
-        "plugin",
-        &mut dialog_state,
-        &mut toaster,
-        None,
-        None,
-        Some(&shared),
-    );
-
-    assert!(
-        !shared.image_assets.contains(key),
-        "plugin CloseDialog action left its image owner alive"
-    );
-}
-
-#[test]
 fn plugin_settings_back_releases_the_selected_plugins_image_owner() {
     let shared = common::create_test_shared_state();
     let owner = ImageOwner::plugin_settings("plugin");
@@ -243,49 +235,16 @@ fn plugin_settings_selection_change_releases_the_previous_image_owner() {
 }
 
 #[test]
-fn request_returns_while_manager_is_blocked_and_duplicate_is_coalesced() {
-    let plugins_dir = tempfile::tempdir().expect("create plugin test directory");
-    let manager = Arc::new(Mutex::new(
-        PluginManager::new(plugins_dir.path().to_path_buf(), HashMap::new())
-            .expect("create empty plugin manager"),
-    ));
-
-    let mut shared = common::create_test_shared_state();
-    Arc::get_mut(&mut shared.services)
-        .expect("test services must be uniquely owned")
-        .plugin_manager = Some(manager.clone());
-    shared.plugin_ui_jobs =
-        PluginUiJobs::new(Some(manager.clone()), shared.services.tokio_runtime.clone());
-
-    let manager_guard = manager.lock();
-    let jobs = shared.plugin_ui_jobs.clone();
-    let requester = jobs.clone();
-    let (sent, received) = mpsc::channel();
-    let request_thread = std::thread::spawn(move || {
-        let first = requester.request(PluginUiRequest::Snapshot {
-            plugin_visibility: None,
-        });
-        let duplicate = requester.request(PluginUiRequest::Snapshot {
-            plugin_visibility: None,
-        });
-        sent.send((first, duplicate)).expect("send request ids");
+fn duplicate_facade_snapshot_requests_are_coalesced() {
+    let (_temp, shared) = common::create_test_shared_state_with_facade();
+    let jobs = PluginUiJobs::new(shared.facade.clone(), shared.services.tokio_runtime.clone());
+    let first = jobs.request(PluginUiRequest::Snapshot {
+        plugin_visibility: None,
     });
-
-    // `request` never touches the manager mutex: Snapshot work is handed to
-    // `runtime.spawn`, and only the spawned job takes the manager lock. So
-    // this window only has to cover a fresh `thread::spawn`, two lock-free
-    // queue submissions, and a channel send -- pure thread-scheduling
-    // latency, which parallel test binaries can stretch far past the 100ms
-    // this used to allow. A genuine regression (request blocking on the
-    // held manager lock) still fails at any finite budget, because the
-    // guard is not released until after this wait.
-    let (first, duplicate) = received
-        .recv_timeout(Duration::from_secs(2))
-        .expect("request must not wait for the manager mutex");
+    let duplicate = jobs.request(PluginUiRequest::Snapshot {
+        plugin_visibility: None,
+    });
     assert_eq!(duplicate, first, "identical pending work must coalesce");
-    request_thread.join().expect("request thread must finish");
-
-    drop(manager_guard);
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let results = loop {
@@ -305,117 +264,7 @@ fn request_returns_while_manager_is_blocked_and_duplicate_is_coalesced() {
 }
 
 #[test]
-fn invalidation_rejects_a_late_snapshot_result() {
-    let plugins_dir = tempfile::tempdir().expect("create plugin test directory");
-    let manager = Arc::new(Mutex::new(
-        PluginManager::new(plugins_dir.path().to_path_buf(), HashMap::new())
-            .expect("create empty plugin manager"),
-    ));
-    let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
-    let jobs = PluginUiJobs::new(Some(manager.clone()), runtime);
-    let manager_guard = manager.lock();
-    let starting_epoch = jobs.completion_signal().get();
-
-    jobs.request(PluginUiRequest::Snapshot {
-        plugin_visibility: None,
-    });
-    jobs.invalidate_plugin_snapshots();
-    drop(manager_guard);
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while jobs.completion_signal().get() == starting_epoch {
-        assert!(
-            Instant::now() < deadline,
-            "invalidated worker request did not finish"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
-    assert!(
-        jobs.drain().is_empty(),
-        "an invalidated request must not publish a stale result"
-    );
-    assert!(
-        jobs.plugin_snapshot(None).is_none(),
-        "late result repopulated the invalidated snapshot cache"
-    );
-}
-
-/// `PluginManager::enable_plugin`/`disable_plugin` are no longer reachable
-/// through this queue at all -- the plugin detail view now calls
-/// `ArclainApp::set_plugin_enabled` directly (see that method's own doc
-/// comment for why: it also persists the toggle, which this queue's old
-/// `SetEnabled` request never did). What these two tests actually proved
-/// -- the ordered queue's single worker thread executes distinct
-/// requests strictly in submission order, and repeating the same
-/// (plugin, event) pair back-to-back (an "ABA" pattern) never
-/// reorders or drops the middle request -- is still true of every
-/// mutating request kind still routed through the same `OrderedJobQueue`
-/// (`Install`/`UiEvent`/`ReactiveUiEvent`; see `RequestKey`'s
-/// own doc comment for which requests coalesce and which never do).
-/// Reproduced here with `UiEvent` instead: each request's `RequestKey`
-/// embeds its own `RequestId`, so -- exactly like the removed
-/// `SetEnabled` key did -- back-to-back `UiEvent` requests can never
-/// coalesce onto each other, only ever queue and execute in order.
-#[test]
-fn ordered_queue_requests_complete_in_strict_submission_order() {
-    let plugins_dir = tempfile::tempdir().expect("create plugin test directory");
-    let wasm_path = plugins_dir.path().join("ui-demo.wasm");
-    std::fs::write(
-        &wasm_path,
-        include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/ui-demo/ui-demo.wasm"
-        )),
-    )
-    .expect("write plugin fixture");
-    let mut plugin_manager = PluginManager::new(plugins_dir.path().join("plugins"), HashMap::new())
-        .expect("create plugin manager");
-    plugin_manager
-        .install_plugin(&wasm_path)
-        .expect("install plugin fixture");
-    let manager = Arc::new(Mutex::new(plugin_manager));
-    let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
-    let jobs = PluginUiJobs::new(Some(manager.clone()), runtime);
-    let manager_guard = manager.lock();
-
-    // A/B/A: repeating the identical (plugin_id, event_id, origin_tab)
-    // pair back-to-back must still queue three distinct jobs, not
-    // coalesce the second "false" onto the first.
-    let submitted: Vec<_> = ["false", "true", "false"]
-        .into_iter()
-        .map(|value| {
-            jobs.request(PluginUiRequest::UiEvent {
-                plugin_id: "ui-demo".to_string(),
-                event_id: "demo_check".to_string(),
-                value: Some(value.to_string()),
-                origin_tab: TabId(1),
-            })
-        })
-        .collect();
-    drop(manager_guard);
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut completed_order = Vec::new();
-    while completed_order.len() < submitted.len() {
-        for result in jobs.drain() {
-            if let PluginUiResult::UiEventFinished { request_id, .. } = result {
-                completed_order.push(request_id);
-            }
-        }
-        assert!(Instant::now() < deadline, "UI events did not finish");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
-    assert_eq!(
-        completed_order, submitted,
-        "the ordered queue's single worker must complete distinct requests in exactly the \
-         order they were submitted, never reordering or dropping a repeated (plugin, event) pair"
-    );
-}
-
-#[test]
-fn repeated_install_requests_are_distinct_ordered_side_effects() {
+fn repeated_install_requests_are_distinct_side_effects() {
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
     let jobs = PluginUiJobs::new(None, runtime);
     let wasm_path = std::path::PathBuf::from("plugin.wasm");
@@ -472,72 +321,6 @@ fn chrome_failure_is_cached_instead_of_automatically_requeued() {
     assert!(
         jobs.chrome_snapshot().is_some(),
         "a cached chrome failure must suppress per-frame automatic retries"
-    );
-}
-
-#[test]
-fn plugin_event_actions_stay_with_the_origin_tab_after_a_switch() {
-    let mut manager = PluginManager::new(
-        tempfile::tempdir()
-            .expect("create plugin directory")
-            .keep()
-            .join("plugins"),
-        HashMap::new(),
-    )
-    .expect("create plugin manager");
-    manager
-        .install_plugin(std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/dlsite-metadata/dlsite-metadata.wasm"
-        )))
-        .expect("install dlsite plugin fixture");
-    let manager = Arc::new(Mutex::new(manager));
-    let mut shared = common::create_test_shared_state();
-    Arc::get_mut(&mut shared.services)
-        .expect("test services must be uniquely owned")
-        .plugin_manager = Some(manager.clone());
-    shared.plugin_ui_jobs =
-        PluginUiJobs::new(Some(manager.clone()), shared.services.tokio_runtime.clone());
-
-    let origin_tab = shared.signals().tabs.get().active_id();
-    let starting_epoch = shared.plugin_ui_jobs.completion_signal().get();
-    let manager_guard = manager.lock();
-    arclain_ui::features::plugins::presentation::dispatch::dispatch_plugin_event(
-        &shared,
-        "dlsite-metadata".to_string(),
-        "__page_init".to_string(),
-        Some("dlsite_browser".to_string()),
-    );
-
-    let later_tab = {
-        let mut tabs = shared.signals().tabs.get();
-        let id = tabs.open(None);
-        shared.signals().tabs.set(tabs);
-        id
-    };
-    drop(manager_guard);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while shared.plugin_ui_jobs.completion_signal().get() == starting_epoch {
-        assert!(Instant::now() < deadline, "plugin event did not finish");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
-    let mut plugins = PluginsFeature::new(&shared);
-    process_plugin_ui_results(&shared, &mut plugins);
-
-    let tabs = shared.signals().tabs.get();
-    assert_eq!(
-        tabs.get(origin_tab)
-            .and_then(|tab| tab.page_display_name.get()),
-        Some("DLSite Browser".to_string()),
-        "event actions must apply to the tab that originated the WASM call"
-    );
-    assert_eq!(
-        tabs.get(later_tab)
-            .and_then(|tab| tab.page_display_name.get()),
-        None,
-        "switching tabs must not redirect event actions to the later-active tab"
     );
 }
 
@@ -610,36 +393,18 @@ fn render_sources_never_lock_or_block_on_plugin_manager_work() {
 }
 
 #[test]
-fn legacy_dispatch_has_no_parallel_originless_completion_path() {
-    let dispatch = include_str!("../src/features/plugins/presentation/dispatch.rs");
-    let controller =
-        include_str!("../src/features/plugins/presentation/controllers/plugin_controller.rs");
-    let shared_state = include_str!("../src/shared/state.rs");
-    let detail_view = include_str!("../src/features/plugins/presentation/views/detail_view.rs");
-    let panel = include_str!("../src/features/archive_browser/presentation/components/panel.rs");
+fn facade_query_coordinator_has_no_raw_plugin_event_path() {
+    let coordinator = include_str!("../src/features/plugins/application/ui_jobs.rs");
+    let presentation = include_str!("../src/features/plugins/presentation/mod.rs");
 
-    for forbidden in [
-        "pending_plugin_actions",
-        "spawn_blocking",
-        "services.plugin_manager",
-        ".send_ui_event(",
-    ] {
-        assert!(
-            !dispatch.contains(forbidden),
-            "legacy dispatch still bypasses origin-aware completions: {forbidden}"
-        );
-    }
     assert!(
-        !controller.contains(".send_ui_event("),
-        "plugin controller still bypasses PluginUiJobs for follow-up events"
+        !coordinator.contains("PluginManager")
+            && !coordinator.contains("UiEvent")
+            && !coordinator.contains("ReactiveUiEvent"),
+        "the facade query coordinator must not regain a raw plugin-runtime event path"
     );
     assert!(
-        !shared_state.contains("pending_plugin_actions")
-            && !detail_view.contains("pending_plugin_actions"),
-        "the obsolete originless pending-action queue must not remain in the UI architecture"
-    );
-    assert!(
-        !panel.contains("origin_tab.expect("),
-        "panel dispatch must handle an unavailable context without panicking"
+        !presentation.contains("pub mod controllers") && !presentation.contains("pub mod dispatch"),
+        "the deleted legacy action controller/dispatcher must not be re-exported"
     );
 }

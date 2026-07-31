@@ -79,9 +79,8 @@ pub fn render_toolbar_item(
             DocumentContext {
                 colors: &shared.theme.colors,
                 shared_state: Some(shared),
-                // The owner the pre-cutover toolbar rendered under:
-                // `render_ui_elements` derives `ImageOwner::plugin_settings`
-                // from the plugin id. Window-scoped, like this slot, so a
+                // Preserve the pre-cutover owner:
+                // `ImageOwner::plugin_settings` is window-scoped, like this slot, so a
                 // toolbar document's images are retained and evicted on
                 // exactly the terms they always were.
                 image_owner: Some(&ImageOwner::plugin_settings(plugin_id)),

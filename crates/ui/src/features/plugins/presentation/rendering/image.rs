@@ -1,6 +1,5 @@
 //! Image rendering logic for plugins
 
-use super::context::{RenderContext, UiEventHandler};
 use crate::shared::image_assets::{ImageAssetState, ImageOwner};
 use crate::shared::image_fetcher::trigger_image_fetch;
 use crate::shared::SharedState;
@@ -11,62 +10,13 @@ const IMAGE_FETCH_RETRY_INTERVAL_SECS: u64 = 30;
 /// Everything the image helpers below need, independent of which plugin
 /// renderer is driving them.
 ///
-/// Extracted from `RenderContext` so both the flat `PluginUiElement`
-/// renderer and the `PluginUiDocument` renderer
-/// (`super::document`) share one image path instead of duplicating the
-/// cache/fetch/decode state machine. `RenderContext` supplies one via
-/// [`RenderContext::image_context`].
+/// Kept separate from the document renderer so image and list-item nodes
+/// share one cache/fetch/decode state machine.
 #[derive(Clone, Copy)]
 pub struct ImageContext<'a> {
     pub shared_state: Option<&'a SharedState>,
     pub plugin_id: Option<&'a str>,
     pub image_owner: Option<&'a ImageOwner>,
-}
-
-/// Render an Image element
-pub fn render_image(
-    ui: &mut egui::Ui,
-    ctx: &mut RenderContext<'_, impl UiEventHandler + ?Sized>,
-    cache_key: &Option<String>,
-    url: &Option<String>,
-    max_height: Option<f32>,
-) {
-    let colors = ctx.colors;
-
-    let images = ctx.image_context();
-    if let Some(key) = cache_key {
-        let (state, texture) = resolve_texture(ui, images, key);
-        if let Some(texture) = texture {
-            render_texture(ui, &texture, max_height);
-            return;
-        }
-        if matches!(state, ImageAssetState::Failed(_)) {
-            maybe_trigger_fetch(ui, images, key, url.as_deref());
-        }
-        let (message, color) = match state {
-            ImageAssetState::Failed(message) if url.is_none() => {
-                (format!("🖼 [Error: {message}]"), colors.error)
-            }
-            ImageAssetState::Failed(_) => {
-                ("🖼 [Reloading...]".to_string(), colors.on_surface_variant)
-            }
-            _ => (format!("🖼 [Loading: {key}]"), colors.on_surface_variant),
-        };
-        ui.label(egui::RichText::new(message).color(color).italics());
-    } else if let Some(url_str) = url {
-        // URL without cache key - show placeholder
-        ui.label(
-            egui::RichText::new(format!("🖼 [Image: {}]", url_str))
-                .color(colors.on_surface_variant)
-                .italics(),
-        );
-    } else {
-        ui.label(
-            egui::RichText::new("🖼 [No image source]")
-                .color(colors.on_surface_variant)
-                .italics(),
-        );
-    }
 }
 
 pub(super) fn resolve_texture(
@@ -150,4 +100,26 @@ pub(super) fn render_texture(
         size: display_size,
     });
     display_size
+}
+
+pub(super) fn render_list_item_thumbnail(
+    ui: &mut egui::Ui,
+    images: ImageContext<'_>,
+    colors: &arclain_theme::ThemeColors,
+    key: &str,
+    image_url: &Option<String>,
+) {
+    let (state, texture) = resolve_texture(ui, images, key);
+    if let Some(texture) = texture {
+        render_texture(ui, &texture, Some(48.0));
+        return;
+    }
+    ui.label(
+        egui::RichText::new("…")
+            .size(16.0)
+            .color(colors.on_surface_variant),
+    );
+    if matches!(state, ImageAssetState::Failed(_)) {
+        maybe_trigger_fetch(ui, images, key, image_url.as_deref());
+    }
 }

@@ -97,10 +97,7 @@ fn shared_state_with_plugin() -> (TempDir, SharedState) {
         core: (*legacy.core_services).clone(),
         plugin_manager: legacy.plugin_manager,
     };
-    shared.plugin_ui_jobs = PluginUiJobs::new(
-        services.plugin_manager.clone(),
-        services.tokio_runtime.clone(),
-    );
+    shared.plugin_ui_jobs = PluginUiJobs::new(Some(app.clone()), services.tokio_runtime.clone());
     shared.services = Arc::new(services);
     shared
         .app_state

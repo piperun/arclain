@@ -7,26 +7,6 @@ use crate::core::signals::AppSignals;
 use crate::features::organization;
 use crate::shared::{dialogs, SharedState};
 use eframe::egui;
-use std::sync::atomic::Ordering;
-
-/// Process plugin refresh requests
-pub fn process_refresh_requests(shared_state: &SharedState, ctx: &egui::Context) {
-    if shared_state.refresh_requests.swap(false, Ordering::AcqRel) {
-        tracing::debug!("Processing plugin layout refresh request");
-        // Facade-backed slots have no cache to invalidate: a session's
-        // document only changes as the result of an action dispatched
-        // against it. A refresh requested from outside any dispatch (the
-        // event-driven `RefreshPanel` a plugin emits from `OnArchiveOpen`)
-        // is expressed by closing the sessions so the next frame opens
-        // fresh ones -- see `PluginSessions::close_all`.
-        if let Some(facade) = shared_state.facade.as_ref() {
-            shared_state
-                .plugin_sessions
-                .close_all(facade, shared_state.services.tokio_runtime.handle());
-        }
-        ctx.request_repaint();
-    }
-}
 
 /// Reports the active tab's archive session to `ArclainApp::
 /// set_active_archive_session` whenever it has changed since the last

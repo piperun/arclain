@@ -164,8 +164,8 @@
 //!   there was nothing left for a second cache to do. Its host is
 //!   window-scoped, so unlike a panel nothing sweeps it when a tab
 //!   closes. The plugin-page coordinator releases it when its plugin is
-//!   no longer selected; enable toggles and refresh also close it through
-//!   [`PluginSessions::close_plugin`] and [`PluginSessions::close_all`].
+//!   no longer selected; enable toggles close it through
+//!   [`PluginSessions::close_plugin`].
 //! - **`PluginButton`** -- migrated. Declared by
 //!   `crate::core::arclain_app::toolbar_handler`, which owns the whole
 //!   plugin half of the toolbar: it resolves the slot, draws the named
@@ -1014,28 +1014,6 @@ impl PluginSessions {
         {
             self.close(facade, runtime, &slot);
         }
-    }
-
-    /// Closes every open slot.
-    ///
-    /// This is how a plugin-requested refresh reaches a facade-backed
-    /// slot. A session has no invalidation protocol -- the document only
-    /// changes as the result of an action dispatched against it -- so a
-    /// refresh triggered from outside any dispatch (the event-driven
-    /// `RefreshPanel` a plugin emits from `OnArchiveOpen`, which never
-    /// passes through `start_plugin_action`) is expressed by dropping the
-    /// session, letting the next render frame open a fresh one against
-    /// the plugin's current state. That is the facade equivalent of
-    /// invalidating the retired renderer-side layout cache: one fresh
-    /// document read per visible slot.
-    pub fn close_all(&self, facade: &ArclainApp, runtime: &tokio::runtime::Handle) {
-        for slot in self.slots_matching(|_| true) {
-            self.close(facade, runtime, &slot);
-        }
-        // Cached capability answers are re-derived the same way a document
-        // is: a refresh means "whatever you learned from this plugin may
-        // no longer hold".
-        self.inner.lock().probes.clear();
     }
 
     /// Snapshots the matching slot keys, releasing the registry lock

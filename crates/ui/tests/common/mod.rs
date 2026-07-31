@@ -72,7 +72,7 @@ pub fn create_test_shared_state() -> SharedState {
     let signals = app_state.signals.clone();
 
     let plugin_ui_jobs = arclain_ui::features::plugins::application::PluginUiJobs::new(
-        services.plugin_manager.clone(),
+        None,
         services.tokio_runtime.clone(),
     );
     let image_assets = ImageAssetStore::without_source(services.tokio_runtime.clone());
@@ -81,7 +81,6 @@ pub fn create_test_shared_state() -> SharedState {
         services,
         theme: AppTheme::new(false),
         toaster: Arc::new(Mutex::new(Toaster::new())),
-        refresh_requests: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         plugin_ui_jobs,
         plugin_sessions: arclain_ui::features::plugins::application::PluginSessions::new(),
         image_assets,
@@ -135,6 +134,10 @@ pub fn create_test_shared_state_with_facade() -> (TempDir, SharedState) {
         .app_state
         .lock()
         .reload_ui_config(&app, &shared.services.tokio_runtime);
+    shared.plugin_ui_jobs = arclain_ui::features::plugins::application::PluginUiJobs::new(
+        Some(app.clone()),
+        shared.services.tokio_runtime.clone(),
+    );
     shared.facade = Some(app);
     (temp, shared)
 }
@@ -218,7 +221,7 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
     let signals = app_state.signals.clone();
 
     let plugin_ui_jobs = arclain_ui::features::plugins::application::PluginUiJobs::new(
-        services.plugin_manager.clone(),
+        None,
         services.tokio_runtime.clone(),
     );
     let image_assets = ImageAssetStore::without_source(services.tokio_runtime.clone());
@@ -227,7 +230,6 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         services,
         theme: AppTheme::new(false),
         toaster: Arc::new(Mutex::new(Toaster::new())),
-        refresh_requests: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         plugin_ui_jobs,
         plugin_sessions: arclain_ui::features::plugins::application::PluginSessions::new(),
         image_assets,

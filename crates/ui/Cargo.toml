@@ -30,7 +30,6 @@ egui-phosphor = "0.11.0"
 arclain_widgets = { path = "../widgets" }
 arclain_theme = { path = "../theme" }
 image = "0.25.9"
-arclain-network = { path = "../network" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 # Rasterize the bundled SVG app icon at startup. Already a transitive

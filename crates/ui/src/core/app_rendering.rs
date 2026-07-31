@@ -204,20 +204,15 @@ pub fn render_tab_bar_panel(
             // (`arclain_app::plugins::PluginTopTabDto`), so every
             // plugin-authored field this renders has already been
             // mirrored and bounded there rather than arriving as a raw
-            // plugin-runtime struct. The cached tuple still comes from
-            // the legacy plugin worker; only the vocabulary has moved.
-            if let Some(Ok((_, top_tabs))) = shared_state.plugin_ui_jobs.chrome_snapshot() {
-                for (plugin_id, tab_config) in top_tabs.iter() {
-                    let tab = arclain_app::plugins::PluginTopTabDto::from((
-                        plugin_id.clone(),
-                        tab_config.clone(),
-                    ));
+            // plugin-runtime struct.
+            if let Some(Ok(chrome)) = shared_state.plugin_ui_jobs.chrome_snapshot() {
+                for tab in &chrome.top_tabs {
                     tabs.push(components::top_tab_bar::TopTab {
-                        id: tab.id,
-                        label: tab.label,
-                        icon: tab.icon,
-                        badge: tab.badge,
-                        source: Some(tab.plugin_id),
+                        id: tab.id.clone(),
+                        label: tab.label.clone(),
+                        icon: tab.icon.clone(),
+                        badge: tab.badge.clone(),
+                        source: Some(tab.plugin_id.clone()),
                     });
                 }
             }
@@ -297,9 +292,9 @@ pub fn render_status_bar_panel(
                 .plugin_ui_jobs
                 .chrome_snapshot()
                 .and_then(Result::ok)
-                .map(|(summary, _)| components::status_bar::PluginStatusInfo {
-                    total_plugins: summary.total,
-                    enabled_plugins: summary.enabled,
+                .map(|chrome| components::status_bar::PluginStatusInfo {
+                    total_plugins: usize::try_from(chrome.summary.total).unwrap_or(usize::MAX),
+                    enabled_plugins: usize::try_from(chrome.summary.enabled).unwrap_or(usize::MAX),
                     has_metadata,
                 });
 
