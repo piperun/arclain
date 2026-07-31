@@ -593,9 +593,11 @@ mod tests {
         let actions = [
             SettingsAction::SavePasswordRules {
                 rules: vec![PasswordRule {
+                    original_name: None,
                     name: "rule".to_string(),
                     pattern: ".*".to_string(),
-                    password: RULE_PASSWORD.to_string(),
+                    replacement_password: RULE_PASSWORD.to_string(),
+                    password_configured: false,
                     priority: 1,
                     enabled: true,
                 }],

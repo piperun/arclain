@@ -160,7 +160,7 @@ impl SettingsFeature {
         if matches!(page, SettingsPage::PasswordRules) {
             return refs
                 .password_management
-                .map(|pm| pm.is_dirty(shared))
+                .map(|pm| pm.is_dirty())
                 .unwrap_or(false);
         }
 
@@ -376,6 +376,24 @@ impl SettingsFeature {
 
             {
                 navigate_to = Some(crate::core::AppPage::Settings(target_page));
+            } else if matches!(action, SettingsAction::SavePasswordRules { .. }) {
+                if let Some(password_management) = password_management.as_deref_mut() {
+                    if let Err(error) = password_management.save(shared) {
+                        tracing::error!(
+                            diagnostic = ?error.diagnostic,
+                            "Failed to save password rules: {}",
+                            error.summary
+                        );
+                        password_management.password_rules_dialog.error = error.summary.clone();
+                        shared.toaster.lock().error(error.summary);
+                    }
+                } else {
+                    self.handle_action(
+                        action,
+                        shared,
+                        plugins.as_mut().map(|p| &mut p.settings_list_state),
+                    );
+                }
             } else {
                 self.handle_action(
                     action,

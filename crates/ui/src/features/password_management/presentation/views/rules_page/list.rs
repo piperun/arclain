@@ -143,7 +143,7 @@ pub fn render_list(ui: &mut egui::Ui, theme: &AppTheme, dialog: &mut PasswordRul
             dialog.editing_index = Some(*idx);
             dialog.edit_name = rule.name.clone();
             dialog.edit_pattern = rule.pattern.clone();
-            dialog.edit_password = rule.password.clone();
+            dialog.edit_password = rule.replacement_password.clone();
             dialog.edit_priority = rule.priority.to_string();
             dialog.edit_enabled = rule.enabled;
         }

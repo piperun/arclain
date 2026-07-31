@@ -119,15 +119,22 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 app.password_management_feature.password_rules_dialog.show = false;
             }
             password_management::dialogs::zip_pass_rules::PasswordRulesResult::Save { rules } => {
-                // SavePasswordRules doesn't touch plugins_state, so passing
-                // None is safe here (and avoids dragging the PluginsFeature
-                // borrow through this dialog path).
-                app.settings_feature.handle_action(
-                    crate::features::settings::settings_content::SettingsAction::SavePasswordRules { rules },
-                    &app.shared_state,
-                    None,
-                );
-                app.password_management_feature.password_rules_dialog.show = false;
+                app.password_management_feature.password_rules_dialog.rules = rules;
+                match app.password_management_feature.save(&app.shared_state) {
+                    Ok(()) => {
+                        app.password_management_feature.password_rules_dialog.show = false;
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            diagnostic = ?error.diagnostic,
+                            "Failed to save password rules: {}",
+                            error.summary
+                        );
+                        app.password_management_feature.password_rules_dialog.error =
+                            error.summary.clone();
+                        app.shared_state.toaster.lock().error(error.summary);
+                    }
+                }
             }
         }
     }

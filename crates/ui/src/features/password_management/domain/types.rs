@@ -14,13 +14,37 @@ pub struct PasswordDialog {
     // whose dialog the user interacted with.
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PasswordRule {
+    /// Name of the stored rule this draft originated from. `None` means a
+    /// newly-added row that has never been persisted.
+    pub original_name: Option<String>,
     pub name: String,
     pub pattern: String,
-    pub password: String,
+    /// Only a replacement typed during this edit session. The stored
+    /// password is never projected into frontend state.
+    pub replacement_password: String,
+    pub password_configured: bool,
     pub priority: u32,
     pub enabled: bool,
+}
+
+impl std::fmt::Debug for PasswordRule {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PasswordRule")
+            .field("original_name", &self.original_name)
+            .field("name", &self.name)
+            .field("pattern", &self.pattern)
+            .field(
+                "replacement_password_configured",
+                &!self.replacement_password.is_empty(),
+            )
+            .field("password_configured", &self.password_configured)
+            .field("priority", &self.priority)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,5 +87,72 @@ impl Default for PasswordRulesDialog {
             regex_test_folder: None,
             regex_test_results: Vec::new(),
         }
+    }
+}
+
+impl PasswordRulesDialog {
+    pub fn can_save_edit(&self) -> bool {
+        let preserves_stored_password = self
+            .editing_index
+            .and_then(|index| self.rules.get(index))
+            .is_some_and(|rule| rule.original_name.is_some() && rule.password_configured);
+
+        !self.edit_pattern.trim().is_empty()
+            && (preserves_stored_password || !self.edit_password.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored_rule() -> PasswordRule {
+        PasswordRule {
+            original_name: Some("stored".to_string()),
+            name: "stored".to_string(),
+            pattern: ".*".to_string(),
+            replacement_password: String::new(),
+            password_configured: true,
+            priority: 10,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn an_existing_configured_rule_can_be_edited_without_retyping_its_password() {
+        let mut dialog = PasswordRulesDialog::default();
+        dialog.rules.push(stored_rule());
+        dialog.editing_index = Some(0);
+        dialog.edit_pattern = "renamed-pattern".to_string();
+
+        assert!(dialog.can_save_edit());
+    }
+
+    #[test]
+    fn a_new_rule_cannot_be_added_without_a_password() {
+        let mut dialog = PasswordRulesDialog::default();
+        dialog.edit_pattern = "new-pattern".to_string();
+
+        assert!(!dialog.can_save_edit());
+    }
+
+    #[test]
+    fn an_unsaved_row_does_not_gain_password_preservation_by_being_reedited() {
+        let mut rule = stored_rule();
+        rule.original_name = None;
+        let mut dialog = PasswordRulesDialog::default();
+        dialog.rules.push(rule);
+        dialog.editing_index = Some(0);
+        dialog.edit_pattern = "new-pattern".to_string();
+
+        assert!(!dialog.can_save_edit());
+    }
+
+    #[test]
+    fn a_rule_draft_does_not_print_its_replacement_password() {
+        let mut rule = stored_rule();
+        rule.replacement_password = "replacement-secret-2a3f".to_string();
+
+        assert!(!format!("{rule:?}").contains("replacement-secret-2a3f"));
     }
 }

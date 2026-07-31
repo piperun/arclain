@@ -30,13 +30,15 @@ pub fn extract_navigation(action: &SettingsAction) -> Option<SettingsPage> {
 /// rule *without* seeing its secret; this dialog is not one.)
 fn password_rule_input(
     rule: crate::features::password_management::dialogs::zip_pass_rules::PasswordRule,
-) -> arclain_app::settings::PasswordRuleInput {
-    arclain_app::settings::PasswordRuleInput {
+) -> arclain_app::settings::PasswordRuleEditInput {
+    arclain_app::settings::PasswordRuleEditInput {
+        original_name: rule.original_name,
         name: rule.name,
         pattern: rule.pattern,
         priority: rule.priority,
         enabled: rule.enabled,
-        password: Some(arclain_app::challenge::SecretInput::new(rule.password)),
+        password: (!rule.replacement_password.is_empty())
+            .then(|| arclain_app::challenge::SecretInput::new(rule.replacement_password)),
     }
 }
 
@@ -327,12 +329,18 @@ pub fn handle_action(
                 tracing::error!("Cannot save password rules: settings facade is unavailable");
                 return;
             };
-            let mut state = shared.app_state.lock();
             let inputs = rules.into_iter().map(password_rule_input).collect();
-            if let Err(e) =
-                state.save_password_rules(facade, &shared.services.tokio_runtime, inputs)
+            if let Err(error) = shared
+                .services
+                .tokio_runtime
+                .block_on(facade.replace_password_rules(inputs))
             {
-                tracing::error!("Failed to save password rules: {}", e);
+                tracing::error!(
+                    diagnostic = ?error.diagnostic,
+                    "Failed to save password rules: {}",
+                    error.summary
+                );
+                shared.toaster.lock().error(error.summary);
             }
         }
         SettingsAction::InstallPlugin { wasm_path } => {
@@ -770,30 +778,30 @@ mod tests {
 
     const PROXY_PLUGIN_ID: &str = "proxy-map-test-plugin";
 
-    /// Every field of a dialog row reaches the write shape, including
-    /// the password -- which `PasswordRuleInput` carries as a
-    /// `SecretInput` that neither clones nor prints, so the only way to
-    /// check it is to submit the input and read back what got stored.
+    /// Every editable field reaches the replacement write shape while the
+    /// stored password remains represented only as an optional replacement.
     #[test]
     fn a_password_rule_draft_becomes_the_applications_write_shape() {
         let draft = crate::features::password_management::dialogs::zip_pass_rules::PasswordRule {
+            original_name: Some("Original rule".to_string()),
             name: "Maker archives".to_string(),
             pattern: r"^\[Maker\]".to_string(),
-            password: "draft-password-4f21".to_string(),
+            replacement_password: "draft-password-4f21".to_string(),
+            password_configured: true,
             priority: 7,
             enabled: false,
         };
 
         let input = password_rule_input(draft);
 
+        assert_eq!(input.original_name.as_deref(), Some("Original rule"));
         assert_eq!(input.name, "Maker archives");
         assert_eq!(input.pattern, r"^\[Maker\]");
         assert_eq!(input.priority, 7);
         assert!(!input.enabled);
         assert!(
             input.password.is_some(),
-            "the dialog edits the password in the form, so every submitted row must carry one -- \
-             `None` would mean \"keep whatever is stored\" and silently discard an edit"
+            "a replacement typed in this edit session must reach the application"
         );
         assert!(
             !format!("{input:?}").contains("draft-password-4f21"),
@@ -812,16 +820,18 @@ mod tests {
 
         let input = password_rule_input(
             crate::features::password_management::dialogs::zip_pass_rules::PasswordRule {
+                original_name: None,
                 name: "Maker archives".to_string(),
                 pattern: r"^\[Maker\]".to_string(),
-                password: "draft-password-9c07".to_string(),
+                replacement_password: "draft-password-9c07".to_string(),
+                password_configured: false,
                 priority: 7,
                 enabled: false,
             },
         );
         runtime
-            .block_on(facade.upsert_password_rule(input))
-            .expect("upsert the drafted rule");
+            .block_on(facade.replace_password_rules(vec![input]))
+            .expect("replace password rules with the drafted rule");
 
         let stored = runtime
             .block_on(facade.password_rules())

@@ -77,9 +77,18 @@ pub fn render_rule_editor(
                     .size(12.0)
                     .color(theme.colors.on_surface_variant),
             );
+            let preserves_stored_password = dialog
+                .editing_index
+                .and_then(|index| dialog.rules.get(index))
+                .map(|rule| rule.original_name.is_some() && rule.password_configured)
+                .unwrap_or(false);
             TextInput::new(&mut dialog.edit_password)
                 .password(true)
-                .hint("Archive password")
+                .hint(if preserves_stored_password {
+                    "Leave blank to keep the saved password"
+                } else {
+                    "Archive password"
+                })
                 .size(TextInputSize::Small)
                 .width(content_width - 120.0)
                 .with_theme_colors(&theme.colors)
@@ -107,7 +116,7 @@ pub fn render_rule_editor(
     ui.add_space(8.0);
 
     ui.horizontal(|ui| {
-        let can_save = !dialog.edit_pattern.trim().is_empty() && !dialog.edit_password.is_empty();
+        let can_save = dialog.can_save_edit();
         if ui
             .add_enabled(
                 can_save,
@@ -124,14 +133,22 @@ pub fn render_rule_editor(
             .clicked()
         {
             let priority = dialog.edit_priority.parse::<u32>().unwrap_or(10);
+            let previous = dialog
+                .editing_index
+                .and_then(|index| dialog.rules.get(index));
             let new_rule = PasswordRule {
+                original_name: previous.and_then(|rule| rule.original_name.clone()),
                 name: if dialog.edit_name.trim().is_empty() {
                     dialog.edit_pattern.clone()
                 } else {
                     dialog.edit_name.clone()
                 },
                 pattern: dialog.edit_pattern.clone(),
-                password: dialog.edit_password.clone(),
+                replacement_password: dialog.edit_password.clone(),
+                password_configured: previous
+                    .map(|rule| rule.password_configured)
+                    .unwrap_or(false)
+                    || !dialog.edit_password.is_empty(),
                 priority,
                 enabled: dialog.edit_enabled,
             };
