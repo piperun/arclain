@@ -6,8 +6,7 @@
 //! `render_dialog` a running application calls every frame, drawing a
 //! real plugin's real dialog, a press round-tripping through
 //! `start_plugin_action`, every route a dialog can close by releasing its
-//! session, and the navigation bridge to the page half that has not been
-//! cut over yet.
+//! session, and the navigation bridge into the facade-backed page host.
 //!
 //! Uses `facade-test-fixture`, the one workspace plugin that implements
 //! the `Dialog` extension point (`fixture-dialog`, whose layout carries
@@ -72,9 +71,8 @@ fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
 /// A `SharedState` with a real application behind it *and* a real plugin
 /// loaded, composed the way `core::state::init` composes the running app:
 /// the frontend's legacy service handles come from the application's own
-/// composition, so `plugin_ui_jobs` and the facade see one plugin manager
-/// rather than two. The page half of this file's bridge test depends on
-/// exactly that -- it reads through the legacy queue.
+/// composition, so the remaining background plugin jobs and the facade
+/// see one plugin manager rather than two.
 fn shared_state_with_plugin() -> (TempDir, SharedState) {
     let temp = tempfile::tempdir().expect("create tempdir for the test facade");
     let paths = AppPaths {
@@ -534,21 +532,19 @@ fn a_dialog_whose_tab_closed_is_dismissed_instead_of_reopening_every_frame() {
 }
 
 // ============================================================================
-// The bridge to the page half, which has not been cut over.
+// The bridge to the facade-backed page host.
 // ============================================================================
 
 /// A dialog button asking for a page writes the *shared*
-/// `PluginDialogState` page stack, which the still-legacy `render_page`
-/// reads -- so a facade-rendered dialog can navigate into a legacy page
-/// during the interim.
+/// `PluginDialogState` page stack, which `render_page` turns into a
+/// facade-session slot.
 ///
-/// Asserts both halves: that the navigation is applied to the shared
-/// state (including the page-init generation the legacy renderer gates
-/// its first layout read on), and that the legacy renderer then actually
-/// draws that page.
+/// Asserts both halves: navigation arms page initialization, and the page
+/// host draws only the document returned after that lifecycle action.
 #[test]
-fn a_dialog_button_opens_a_page_the_legacy_renderer_draws() {
+fn a_dialog_button_opens_a_page_the_facade_renderer_draws() {
     let (_temp, shared) = shared_state_with_plugin();
+    spawn_plugin_action_bridge(&shared);
     let origin_tab = active_tab(&shared);
     open_dialog(&shared, DIALOG);
 
@@ -561,11 +557,11 @@ fn a_dialog_button_opens_a_page_the_legacy_renderer_draws() {
     assert_eq!(
         state.current_page(),
         Some((PLUGIN, "fixture-page", origin_tab)),
-        "the dialog's OpenPage must push onto the page stack the legacy renderer reads"
+        "the dialog's OpenPage must push onto the page stack the page host reads"
     );
     assert!(
         state.page_init_pending(),
-        "and must arm the page-init generation that renderer gates its first layout read on"
+        "and must arm the lifecycle action that gates its first document"
     );
     drop(state);
 
@@ -575,15 +571,31 @@ fn a_dialog_button_opens_a_page_the_legacy_renderer_draws() {
         .build(move |ctx| {
             assert!(
                 rendering::render_page(ctx, &page_shared),
-                "the legacy page renderer must claim the content area"
+                "the facade page renderer must claim the content area"
             );
         });
-    page_harness.step();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        page_harness.step();
+        if page_harness.query_by_label("page-layout-call-2").is_some() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the page never drew its post-init facade document"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     assert!(
-        page_harness.query_by_label("fixture-page").is_some(),
-        "the legacy page renderer must draw the page the facade dialog opened"
+        page_harness.query_by_label("page-layout-call-1").is_none(),
+        "the facade page renderer must never draw the pre-init document"
     );
+    assert!(!shared
+        .signals()
+        .plugin_dialog_state
+        .get()
+        .page_init_pending());
 }
 
 // ============================================================================

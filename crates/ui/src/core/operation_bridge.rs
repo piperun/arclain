@@ -1316,6 +1316,49 @@ fn trace_plugin_action_failure(error: &arclain_app::error::ApplicationError) {
     );
 }
 
+fn complete_page_initialization(
+    shared: &SharedState,
+    slot: &crate::features::plugins::application::PluginSlot,
+) {
+    use crate::features::plugins::application::PluginSlot;
+
+    let PluginSlot::Page {
+        plugin_id,
+        page_id,
+        tab,
+    } = slot
+    else {
+        return;
+    };
+    let signal = shared.signals().plugin_dialog_state.clone();
+    let mut state = signal.get();
+    if state.complete_page_initialization(plugin_id, page_id, *tab) {
+        signal.set(state);
+    }
+}
+
+fn fail_page_initialization(
+    shared: &SharedState,
+    slot: &crate::features::plugins::application::PluginSlot,
+    error: impl Into<std::sync::Arc<str>>,
+) {
+    use crate::features::plugins::application::PluginSlot;
+
+    let PluginSlot::Page {
+        plugin_id,
+        page_id,
+        tab,
+    } = slot
+    else {
+        return;
+    };
+    let signal = shared.signals().plugin_dialog_state.clone();
+    let mut state = signal.get();
+    if state.fail_page_initialization(plugin_id, page_id, *tab, error) {
+        signal.set(state);
+    }
+}
+
 /// Routes one `OperationKind::PluginAction` event back to the plugin UI
 /// slot that started it.
 ///
@@ -1347,18 +1390,33 @@ pub fn handle_plugin_action_event(shared: &SharedState, event: OperationEvent) {
                 .slot
                 .tab()
                 .unwrap_or_else(|| shared.signals().tabs.get().active_id());
+            if applied.page_init {
+                complete_page_initialization(shared, &applied.slot);
+            }
             document_dispatch::apply_intents(shared, &applied.slot, origin_tab, applied.intents);
             shared.signals().kick_repaint();
         }
         OperationState::Failed { error } => {
-            if shared.plugin_sessions.fail(event.operation_id).is_some() {
+            if let Some(failed) = shared.plugin_sessions.fail_with_context(event.operation_id) {
+                if failed.page_init {
+                    fail_page_initialization(shared, &failed.slot, error.summary.clone());
+                }
                 trace_plugin_action_failure(&error);
                 shared.toaster.lock().error(error.summary);
                 shared.signals().kick_repaint();
             }
         }
         OperationState::Cancelled => {
-            let _ = shared.plugin_sessions.fail(event.operation_id);
+            if let Some(failed) = shared.plugin_sessions.fail_with_context(event.operation_id) {
+                if failed.page_init {
+                    fail_page_initialization(
+                        shared,
+                        &failed.slot,
+                        "Plugin page initialization was cancelled",
+                    );
+                    shared.signals().kick_repaint();
+                }
+            }
         }
         // A plugin action's only meaningful completion result is
         // `PluginUiUpdated`, but "meaningful" is not "the only one
@@ -1369,7 +1427,15 @@ pub fn handle_plugin_action_event(shared: &SharedState, event: OperationEvent) {
         // ignoring -- the same reason the archive path forgets its origin
         // on `event_is_terminal` regardless of which result it carried.
         OperationState::Completed { .. } => {
-            if shared.plugin_sessions.fail(event.operation_id).is_some() {
+            if let Some(failed) = shared.plugin_sessions.fail_with_context(event.operation_id) {
+                if failed.page_init {
+                    fail_page_initialization(
+                        shared,
+                        &failed.slot,
+                        "Plugin page initialization returned no document",
+                    );
+                    shared.signals().kick_repaint();
+                }
                 tracing::debug!(
                     "[operation_bridge] a plugin action completed with no document update; \
                      draining its registry entry and leaving the slot's last document in place"

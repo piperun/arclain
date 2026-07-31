@@ -3,9 +3,7 @@
 //! Tracks open dialogs and page stacks for plugins that use
 //! ButtonAction::ShowDialog or ButtonAction::OpenPage.
 
-use super::types::RequestId;
 use crate::core::tabs::TabId;
-use arclain_plugins::types::PluginLayout;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -13,11 +11,16 @@ pub enum PageInitState {
     #[default]
     Idle,
     Pending {
-        request_id: RequestId,
         plugin_id: String,
         page_id: String,
         origin_tab: TabId,
     },
+    Initializing {
+        plugin_id: String,
+        page_id: String,
+        origin_tab: TabId,
+    },
+    Unavailable,
     Failed {
         plugin_id: String,
         page_id: String,
@@ -28,32 +31,21 @@ pub enum PageInitState {
 
 /// State for managing plugin dialogs and pages.
 ///
-/// Deliberately shared across the two plugin render stacks while only one
-/// of them has moved: the dialog half is drawn from a facade session and
-/// the page half from the legacy `PluginUiJobs` cache, but a button in
-/// either can navigate to the other, so *where* a dialog or page is open
-/// stays one piece of renderer-owned state rather than two. See
-/// `crate::features::plugins::application::facade_sessions`'s module doc
-/// comment ("What is deliberately not modeled here").
+/// Dialogs and pages both draw from facade sessions, but *where* one is
+/// open stays renderer-owned navigation state rather than application
+/// document state.
 #[derive(Debug, Default, Clone)]
 pub struct PluginDialogState {
     /// Currently open dialog: (plugin_id, dialog_id, origin tab). Read by
     /// the dialog renderer to key its facade session slot, so clearing it
-    /// from anywhere -- including the legacy queue's
-    /// `PluginAction::CloseDialog` -- is what closes that session, via the
-    /// renderer's per-frame reconcile.
+    /// from any typed navigation or host-intent path is what closes that
+    /// session, via the renderer's per-frame reconcile.
     pub open_dialog: Option<(String, String, TabId)>,
     /// Page stack: each entry is (plugin_id, page_id)
     pub page_stack: Vec<(String, String, TabId)>,
-    /// Cached layout for the current page. Kept across UI events so the
-    /// user sees the previous layout instead of a blank panel while a
-    /// worker thread holds the plugin lock; the `*_stale` flag below
-    /// tells the renderer to refetch when the lock is free.
-    pub cached_page_layout: Option<Arc<PluginLayout>>,
-    /// Layout cache is stale and should be refetched on the next
-    /// frame where the plugin instance lock is free.
-    pub cached_page_layout_stale: bool,
-    /// Generation-keyed page initialization request.
+    /// Lifecycle state for the current page. Session identity and action
+    /// routing reject stale completions, so this needs no request-id
+    /// generation of its own.
     pub page_init: PageInitState,
 }
 
@@ -83,27 +75,19 @@ impl PluginDialogState {
     }
 
     /// Push a new page onto the stack
-    pub fn open_page(&mut self, plugin_id: &str, page_id: &str, origin_tab: TabId) -> RequestId {
-        let request_id = RequestId::next();
+    pub fn open_page(&mut self, plugin_id: &str, page_id: &str, origin_tab: TabId) {
         self.page_stack
             .push((plugin_id.to_string(), page_id.to_string(), origin_tab));
-        // Different page → previous cache is for a different layout.
-        self.cached_page_layout = None;
-        self.cached_page_layout_stale = false;
         self.page_init = PageInitState::Pending {
-            request_id,
             plugin_id: plugin_id.to_string(),
             page_id: page_id.to_string(),
             origin_tab,
         };
-        request_id
     }
 
     /// Pop the current page from the stack
     pub fn close_page(&mut self) {
         self.page_stack.pop();
-        self.cached_page_layout = None;
-        self.cached_page_layout_stale = false;
         self.page_init = PageInitState::Idle;
     }
 
@@ -119,16 +103,11 @@ impl PluginDialogState {
         !self.page_stack.is_empty()
     }
 
-    /// Mark the cached page layout stale. The renderer keeps showing
-    /// the existing cache until it can refetch — this prevents the
-    /// page from blanking while a worker thread holds the plugin lock
-    /// during a long-running event.
-    pub fn invalidate_page_layout(&mut self) {
-        self.cached_page_layout_stale = true;
-    }
-
     pub fn page_init_pending(&self) -> bool {
-        matches!(self.page_init, PageInitState::Pending { .. })
+        matches!(
+            self.page_init,
+            PageInitState::Pending { .. } | PageInitState::Initializing { .. }
+        )
     }
 
     /// A page layout is only valid after the matching page-init
@@ -138,53 +117,119 @@ impl PluginDialogState {
         matches!(self.page_init, PageInitState::Idle)
     }
 
-    pub fn pending_page_init(&self) -> Option<(RequestId, &str, &str, TabId)> {
-        match &self.page_init {
-            PageInitState::Idle | PageInitState::Failed { .. } => None,
-            PageInitState::Pending {
-                request_id,
-                plugin_id,
-                page_id,
-                origin_tab,
-            } => Some((*request_id, plugin_id, page_id, *origin_tab)),
-        }
-    }
-
-    pub fn apply_page_initialized(&mut self, request_id: RequestId) -> bool {
+    /// Claims the pending lifecycle generation for the facade session
+    /// that has just become ready. Returns `false` for a stale render of
+    /// any page other than the current pending one.
+    pub fn begin_page_initialization(
+        &mut self,
+        plugin_id: &str,
+        page_id: &str,
+        origin_tab: TabId,
+    ) -> bool {
         let PageInitState::Pending {
-            request_id: pending,
-            ..
-        } = self.page_init
+            plugin_id: pending_plugin,
+            page_id: pending_page,
+            origin_tab: pending_tab,
+        } = &self.page_init
         else {
             return false;
         };
-        if pending != request_id {
+        if pending_plugin != plugin_id || pending_page != page_id || *pending_tab != origin_tab {
+            return false;
+        }
+        self.page_init = PageInitState::Initializing {
+            plugin_id: plugin_id.to_string(),
+            page_id: page_id.to_string(),
+            origin_tab,
+        };
+        true
+    }
+
+    pub fn complete_page_initialization(
+        &mut self,
+        plugin_id: &str,
+        page_id: &str,
+        origin_tab: TabId,
+    ) -> bool {
+        let PageInitState::Initializing {
+            plugin_id: initializing_plugin,
+            page_id: initializing_page,
+            origin_tab: initializing_tab,
+        } = &self.page_init
+        else {
+            return false;
+        };
+        if initializing_plugin != plugin_id
+            || initializing_page != page_id
+            || *initializing_tab != origin_tab
+        {
             return false;
         }
         self.page_init = PageInitState::Idle;
         true
     }
 
-    pub fn apply_page_init_failure(&mut self, request_id: RequestId, error: String) -> bool {
-        let PageInitState::Pending {
-            request_id: pending,
-            plugin_id,
-            page_id,
-            origin_tab,
+    pub fn fail_page_initialization(
+        &mut self,
+        plugin_id: &str,
+        page_id: &str,
+        origin_tab: TabId,
+        error: impl Into<Arc<str>>,
+    ) -> bool {
+        let PageInitState::Initializing {
+            plugin_id: initializing_plugin,
+            page_id: initializing_page,
+            origin_tab: initializing_tab,
         } = &self.page_init
         else {
             return false;
         };
-        if *pending != request_id {
+        if initializing_plugin != plugin_id
+            || initializing_page != page_id
+            || *initializing_tab != origin_tab
+        {
             return false;
         }
         self.page_init = PageInitState::Failed {
-            plugin_id: plugin_id.clone(),
-            page_id: page_id.clone(),
-            origin_tab: *origin_tab,
-            error: Arc::from(error),
+            plugin_id: plugin_id.to_string(),
+            page_id: page_id.to_string(),
+            origin_tab,
+            error: error.into(),
         };
         true
+    }
+
+    /// Settles lifecycle state when the facade session itself could not
+    /// open (or failed before an init operation could be started). This
+    /// is distinct from an init-action failure: the slot owns the visible
+    /// error, while no pre-init document exists to retain.
+    pub fn mark_page_unavailable(
+        &mut self,
+        plugin_id: &str,
+        page_id: &str,
+        origin_tab: TabId,
+    ) -> bool {
+        let matches_current = match &self.page_init {
+            PageInitState::Pending {
+                plugin_id: current_plugin,
+                page_id: current_page,
+                origin_tab: current_tab,
+            }
+            | PageInitState::Initializing {
+                plugin_id: current_plugin,
+                page_id: current_page,
+                origin_tab: current_tab,
+            } => {
+                current_plugin == plugin_id && current_page == page_id && *current_tab == origin_tab
+            }
+            PageInitState::Idle | PageInitState::Unavailable | PageInitState::Failed { .. } => {
+                false
+            }
+        };
+        if matches_current {
+            self.page_init = PageInitState::Unavailable;
+        }
+        matches_current
     }
 
     pub fn page_init_error(&self) -> Option<Arc<str>> {
@@ -200,24 +245,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stale_page_init_result_cannot_initialize_newer_page() {
-        let mut state = PluginDialogState::default();
-        let old = state.open_page("plugin", "old", TabId(1));
-        let new = state.open_page("plugin", "new", TabId(2));
-
-        assert!(!state.apply_page_initialized(old));
-        assert!(state.page_init_pending());
-        assert!(state.apply_page_initialized(new));
-        assert!(!state.page_init_pending());
-    }
-
-    #[test]
     fn page_layout_waits_for_matching_initialization() {
         let mut state = PluginDialogState::default();
-        let request = state.open_page("plugin", "page", TabId(1));
+        state.open_page("plugin", "page", TabId(1));
 
         assert!(!state.page_layout_ready());
-        assert!(state.apply_page_initialized(request));
+        assert!(state.begin_page_initialization("plugin", "page", TabId(1)));
+        assert!(state.complete_page_initialization("plugin", "page", TabId(1)));
         assert!(state.page_layout_ready());
     }
 

@@ -13,7 +13,6 @@ use std::sync::atomic::Ordering;
 pub fn process_refresh_requests(shared_state: &SharedState, ctx: &egui::Context) {
     if shared_state.refresh_requests.swap(false, Ordering::AcqRel) {
         tracing::debug!("Processing plugin layout refresh request");
-        shared_state.plugin_ui_jobs.invalidate_all_layouts();
         // Facade-backed slots have no cache to invalidate: a session's
         // document only changes as the result of an action dispatched
         // against it. A refresh requested from outside any dispatch (the
@@ -25,13 +24,6 @@ pub fn process_refresh_requests(shared_state: &SharedState, ctx: &egui::Context)
                 .plugin_sessions
                 .close_all(facade, shared_state.services.tokio_runtime.handle());
         }
-        // Only the page half still has a layout cache to mark stale; the
-        // dialog half's session was dropped by `close_all` above and its
-        // renderer opens a fresh one next frame.
-        let dialog_signal = shared_state.signals().plugin_dialog_state.clone();
-        let mut dialog_state = dialog_signal.get();
-        dialog_state.invalidate_page_layout();
-        dialog_signal.set(dialog_state);
         ctx.request_repaint();
     }
 }

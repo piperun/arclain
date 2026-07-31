@@ -43,12 +43,12 @@ fn plugin_page_close_releases_its_exact_image_owner() {
         .request(owner, key, eframe::egui::Context::default());
     wait_for_image_failure(&shared, key);
 
-    let mut callback = arclain_ui::features::plugins::presentation::controllers::plugin_controller::create_page_callback(
+    arclain_ui::features::plugins::presentation::document_dispatch::apply_navigation(
         &shared,
-        "plugin".to_string(),
+        "plugin",
         origin_tab,
+        PluginNavigation::ClosePage,
     );
-    callback("__page_close", None);
 
     assert!(
         !shared.image_assets.contains(key),
@@ -341,35 +341,6 @@ fn invalidation_rejects_a_late_snapshot_result() {
     );
 }
 
-#[test]
-fn reopening_the_same_page_uses_a_new_initialization_generation() {
-    let plugins_dir = tempfile::tempdir().expect("create plugin test directory");
-    let manager = Arc::new(Mutex::new(
-        PluginManager::new(plugins_dir.path().to_path_buf(), HashMap::new())
-            .expect("create empty plugin manager"),
-    ));
-    let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
-    let jobs = PluginUiJobs::new(Some(manager.clone()), runtime);
-    let manager_guard = manager.lock();
-
-    let first = jobs.request(PluginUiRequest::PageInit {
-        plugin_id: "plugin".to_string(),
-        page_id: "page".to_string(),
-        origin_tab: TabId(1),
-    });
-    let reopened = jobs.request(PluginUiRequest::PageInit {
-        plugin_id: "plugin".to_string(),
-        page_id: "page".to_string(),
-        origin_tab: TabId(1),
-    });
-
-    assert_ne!(
-        first, reopened,
-        "page lifecycle generations must never coalesce"
-    );
-    drop(manager_guard);
-}
-
 /// `PluginManager::enable_plugin`/`disable_plugin` are no longer reachable
 /// through this queue at all -- the plugin detail view now calls
 /// `ArclainApp::set_plugin_enabled` directly (see that method's own doc
@@ -380,7 +351,7 @@ fn reopening_the_same_page_uses_a_new_initialization_generation() {
 /// (plugin, event) pair back-to-back (an "ABA" pattern) never
 /// reorders or drops the middle request -- is still true of every
 /// mutating request kind still routed through the same `OrderedJobQueue`
-/// (`PageInit`/`Install`/`UiEvent`/`ReactiveUiEvent`; see `RequestKey`'s
+/// (`Install`/`UiEvent`/`ReactiveUiEvent`; see `RequestKey`'s
 /// own doc comment for which requests coalesce and which never do).
 /// Reproduced here with `UiEvent` instead: each request's `RequestKey`
 /// embeds its own `RequestId`, so -- exactly like the removed
@@ -502,41 +473,6 @@ fn chrome_failure_is_cached_instead_of_automatically_requeued() {
         jobs.chrome_snapshot().is_some(),
         "a cached chrome failure must suppress per-frame automatic retries"
     );
-}
-
-#[test]
-fn page_init_failure_becomes_terminal_visible_page_state() {
-    let shared = common::create_test_shared_state();
-    let origin_tab = shared.signals().tabs.get().active_id();
-    let dialog_signal = shared.signals().plugin_dialog_state.clone();
-    let mut dialog_state = dialog_signal.get();
-    dialog_state.open_page("missing-plugin", "page", origin_tab);
-    dialog_signal.set(dialog_state);
-    let starting_epoch = shared.plugin_ui_jobs.completion_signal().get();
-
-    let ctx = eframe::egui::Context::default();
-    let mut rendered = false;
-    let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
-        rendered = arclain_ui::features::plugins::presentation::views::rendering::render_page(
-            ctx, &shared,
-        );
-    });
-    assert!(rendered);
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while shared.plugin_ui_jobs.completion_signal().get() == starting_epoch {
-        assert!(
-            Instant::now() < deadline,
-            "page-init failure did not finish"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let mut plugins = PluginsFeature::new(&shared);
-    process_plugin_ui_results(&shared, &mut plugins);
-
-    let dialog_state = dialog_signal.get();
-    assert!(dialog_state.page_init_error().is_some());
-    assert!(!dialog_state.page_init_pending());
-    assert!(!dialog_state.page_layout_ready());
 }
 
 #[test]

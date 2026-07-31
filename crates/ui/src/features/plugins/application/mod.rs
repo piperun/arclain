@@ -6,9 +6,7 @@ pub use facade_sessions::{
     document_buttons, document_is_empty, AppliedUpdate, PluginDocumentButton, PluginNavigation,
     PluginSessions, PluginSlot, SlotView,
 };
-pub use ui_jobs::{
-    PluginUiFailureContext, PluginUiJobs, PluginUiRequest, PluginUiResult, PluginUiTarget,
-};
+pub use ui_jobs::{PluginUiFailureContext, PluginUiJobs, PluginUiRequest, PluginUiResult};
 
 use crate::features::plugins::domain::types::{PluginsListState, SnapshotStatus};
 use crate::features::plugins::presentation::controllers::plugin_controller::{
@@ -49,63 +47,6 @@ pub fn request_plugin_snapshot(shared: &SharedState, state: &mut PluginsListStat
 pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeature) {
     for result in shared.plugin_ui_jobs.drain() {
         match result {
-            PluginUiResult::PageInitialized {
-                request_id,
-                plugin_id,
-                page_id,
-                origin_tab,
-                actions,
-                actions_limited,
-            } => {
-                let dialog_signal = shared.signals().plugin_dialog_state.clone();
-                let mut dialog_state = dialog_signal.get();
-                let actions = match actions {
-                    Ok(actions) => actions,
-                    Err(error) => {
-                        if dialog_state.apply_page_init_failure(request_id, error.clone()) {
-                            dialog_signal.set(dialog_state);
-                            shared.toaster.lock().error(error);
-                        }
-                        continue;
-                    }
-                };
-                if !dialog_state.apply_page_initialized(request_id) {
-                    continue;
-                }
-                shared.plugin_ui_jobs.invalidate_layout(
-                    &plugin_id,
-                    &PluginUiTarget::Page(page_id),
-                    Some(origin_tab),
-                );
-                dialog_state.cached_page_layout = None;
-                dialog_state.cached_page_layout_stale = false;
-
-                let tabs = shared.signals().tabs.get();
-                let Some(origin) = tabs.get(origin_tab).cloned() else {
-                    dialog_signal.set(dialog_state);
-                    continue;
-                };
-                drop(tabs);
-
-                let mut toaster = shared.toaster.lock();
-                let context = ActionContext {
-                    lightbox_signal: Some(&origin.lightbox_state),
-                    page_display_name_signal: Some(&origin.page_display_name),
-                    metadata_signal: Some(&origin.metadata),
-                    shared_state: Some(shared),
-                    origin_tab: Some(origin_tab),
-                };
-                process_plugin_actions_with_limit_status(
-                    actions,
-                    actions_limited,
-                    &plugin_id,
-                    &mut dialog_state,
-                    &mut toaster,
-                    Some(&shared.refresh_requests),
-                    &context,
-                );
-                dialog_signal.set(dialog_state);
-            }
             PluginUiResult::SnapshotLoaded {
                 request_id,
                 plugins: snapshot,
@@ -132,13 +73,11 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
                         plugins.settings_list_state.invalidate_snapshot();
                         shared.plugin_ui_jobs.invalidate_plugin_snapshots();
                         shared.plugin_ui_jobs.invalidate_chrome_snapshot();
-                        shared.plugin_ui_jobs.invalidate_all_layouts();
                     }
                     Err(error) => shared.toaster.lock().error(error),
                 }
             }
-            PluginUiResult::LayoutLoaded { .. }
-            | PluginUiResult::ChromeSnapshotLoaded { .. }
+            PluginUiResult::ChromeSnapshotLoaded { .. }
             | PluginUiResult::NetworkLogLoaded { .. } => {}
             PluginUiResult::UiEventFinished {
                 plugin_id,
@@ -173,13 +112,6 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
                         plugins
                             .settings_list_state
                             .apply_snapshot_failure(request_id, error.clone());
-                    }
-                    PluginUiFailureContext::PageInit { .. } => {
-                        let signal = shared.signals().plugin_dialog_state.clone();
-                        let mut state = signal.get();
-                        if state.apply_page_init_failure(request_id, error.clone()) {
-                            signal.set(state);
-                        }
                     }
                     _ => {}
                 }

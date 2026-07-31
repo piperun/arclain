@@ -3,14 +3,12 @@
 //! Contains functions for rendering plugin dialogs and pages,
 //! extracted from arclain_app.rs to keep feature logic self-contained.
 //!
-//! The two halves are on different stacks right now: [`render_dialog`]
-//! draws a facade session's document (see
-//! `crate::features::plugins::application::facade_sessions`), while
-//! [`render_page`] still reads the legacy `PluginUiJobs` layout cache.
-//! Both read their navigation state from the same
+//! Both [`render_dialog`] and [`render_page`] draw facade-session
+//! documents (see
+//! `crate::features::plugins::application::facade_sessions`) while
+//! reading their navigation state from the same
 //! `crate::features::plugins::domain::state::PluginDialogState`, which is
-//! what lets a dialog button open a page and vice versa while only one
-//! side has moved.
+//! what lets a dialog button open a page and vice versa.
 
 use crate::core::tabs::TabId;
 use crate::features::plugins::application::{PluginSlot, SlotView};
@@ -22,39 +20,6 @@ use crate::shared::components::Form;
 use crate::shared::image_assets::ImageOwner;
 use crate::shared::SharedState;
 use eframe::egui;
-use std::sync::Arc;
-
-/// Layout shown while we wait for the plugin instance lock to free up
-/// (e.g. during a long-running DLSite fetch holding the lock on a
-/// worker thread). Rendered only when there is no cached layout to
-/// show in its place; if a previous layout exists we keep showing it
-/// until the next refetch succeeds.
-fn message_layout(message: impl Into<String>) -> Arc<arclain_plugins::types::PluginLayout> {
-    use arclain_plugins::types::{PluginLayout, PluginUiElement};
-    Arc::new(PluginLayout::Single {
-        elements: vec![PluginUiElement::Label {
-            text: message.into(),
-            bold: false,
-            size: None,
-        }],
-    })
-}
-
-fn loading_placeholder_layout() -> Arc<arclain_plugins::types::PluginLayout> {
-    message_layout("Loading plugin UI…")
-}
-
-/// Return cached layout data or queue one worker request.
-fn cached_or_request_layout(
-    shared: &SharedState,
-    plugin_id: &str,
-    target: crate::features::plugins::application::PluginUiTarget,
-    origin_tab: crate::core::tabs::TabId,
-) -> Option<Result<Arc<arclain_plugins::types::PluginLayout>, Arc<str>>> {
-    shared
-        .plugin_ui_jobs
-        .layout(plugin_id, target, Some(origin_tab))
-}
 
 /// The open dialog, after dismissing one whose origin tab has closed.
 ///
@@ -86,6 +51,69 @@ fn dismiss_dialog_whose_tab_closed(shared: &SharedState) -> Option<(String, Stri
     signal.set(state);
     shared.image_assets.release_owner(&image_owner);
     None
+}
+
+/// Returns the visible page after removing any page-stack entries whose
+/// origin tab no longer exists.
+///
+/// The tab/session sweeper closes a dead tab's facade slot, but navigation
+/// state is renderer-owned. Leaving the entry here would make the next
+/// frame reopen the just-swept session forever, so the renderer that owns
+/// the stack also owns pruning it.
+fn dismiss_pages_whose_tabs_closed(shared: &SharedState) -> Option<(String, String, TabId)> {
+    loop {
+        let current = shared
+            .signals()
+            .plugin_dialog_state
+            .get()
+            .current_page()
+            .map(|(plugin, page, tab)| (plugin.to_string(), page.to_string(), tab));
+        let Some((plugin_id, page_id, origin_tab)) = current else {
+            return None;
+        };
+        if shared.signals().tabs.get().get(origin_tab).is_some() {
+            return Some((plugin_id, page_id, origin_tab));
+        }
+
+        let owner = ImageOwner::plugin_page(&plugin_id, &page_id, origin_tab);
+        let signal = shared.signals().plugin_dialog_state.clone();
+        let mut state = signal.get();
+        state.close_page();
+        signal.set(state);
+        shared.image_assets.release_owner(&owner);
+    }
+}
+
+fn start_page_initialization(
+    shared: &SharedState,
+    slot: &PluginSlot,
+    page_id: &str,
+    origin_tab: TabId,
+) -> bool {
+    let signal = shared.signals().plugin_dialog_state.clone();
+    let mut state = signal.get();
+    if !state.begin_page_initialization(slot.plugin_id(), page_id, origin_tab) {
+        return false;
+    }
+    signal.set(state);
+
+    let Some(facade) = shared.facade.clone() else {
+        return true;
+    };
+    let shared = shared.clone();
+    let slot = slot.clone();
+    let page_id = page_id.to_string();
+    shared.services.tokio_runtime.clone().spawn(async move {
+        let Some(operation_id) = shared
+            .plugin_sessions
+            .start_page_init(&facade, &slot, page_id)
+            .await
+        else {
+            return;
+        };
+        document_dispatch::reconcile_started_action(&shared, &facade, operation_id).await;
+    });
+    true
 }
 
 /// Render the open plugin dialog, if any, as a modal overlay, and
@@ -191,82 +219,46 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
 /// Render an open plugin page (replaces main content area)
 /// Returns true if a page is being rendered (caller should skip normal content)
 pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
-    // Check if a page is open and get cached layout
-    let (page_info, cached_layout) = {
-        let dialog_state = shared.signals().plugin_dialog_state.get();
-        let page_info = dialog_state
-            .current_page()
-            .map(|(plugin, page, origin_tab)| (plugin.to_string(), page.to_string(), origin_tab));
-        let cached = dialog_state.cached_page_layout.clone();
-        (page_info, cached)
-    };
-
-    let Some((plugin_id, page_id, origin_tab)) = page_info else {
-        return false;
-    };
-    let image_owner = ImageOwner::plugin_page(plugin_id.clone(), page_id.clone(), origin_tab);
-
-    // Queue __page_init once for this page generation. The worker
-    // captures the origin tab; stale generations are ignored when
-    // results are applied before the next render.
-    if let Some((request_id, pending_plugin, pending_page, origin_tab)) = shared
-        .signals()
-        .plugin_dialog_state
-        .get()
-        .pending_page_init()
-        .map(|(id, plugin, page, origin_tab)| {
-            (id, plugin.to_string(), page.to_string(), origin_tab)
-        })
-    {
-        shared.plugin_ui_jobs.request_with_id(
-            request_id,
-            crate::features::plugins::application::PluginUiRequest::PageInit {
-                plugin_id: pending_plugin,
-                page_id: pending_page,
-                origin_tab,
-            },
+    let page_info = dismiss_pages_whose_tabs_closed(shared);
+    let slot = page_info
+        .as_ref()
+        .map(|(plugin_id, page_id, origin_tab)| PluginSlot::Page {
+            plugin_id: plugin_id.clone(),
+            page_id: page_id.clone(),
+            tab: *origin_tab,
+        });
+    if let Some(facade) = shared.facade.as_ref() {
+        shared.plugin_sessions.retain_open_page(
+            facade,
+            shared.services.tokio_runtime.handle(),
+            slot.as_ref(),
         );
     }
 
-    // Do not cache a pre-init layout. Once the matching initialization
-    // result is applied it invalidates this exact page key and the next
-    // frame queues the first valid layout read.
-    let page_layout_ready = shared
-        .signals()
-        .plugin_dialog_state
-        .get()
-        .page_layout_ready();
-    let is_stale = shared
-        .signals()
-        .plugin_dialog_state
-        .get()
-        .cached_page_layout_stale;
-    let target = crate::features::plugins::application::PluginUiTarget::Page(page_id.clone());
-    if page_layout_ready && is_stale {
-        shared
-            .plugin_ui_jobs
-            .invalidate_layout(&plugin_id, &target, Some(origin_tab));
-        let mut state = shared.signals().plugin_dialog_state.get();
-        state.cached_page_layout_stale = false;
-        shared.signals().plugin_dialog_state.set(state);
-    }
-    let page_init_error = shared.signals().plugin_dialog_state.get().page_init_error();
-    let page_layout = if let Some(error) = page_init_error {
-        message_layout(format!("Plugin page initialization failed: {error}"))
-    } else if page_layout_ready {
-        match cached_or_request_layout(shared, &plugin_id, target, origin_tab) {
-            Some(Ok(fresh)) => {
-                let mut state = shared.signals().plugin_dialog_state.get();
-                state.cached_page_layout = Some(fresh.clone());
-                shared.signals().plugin_dialog_state.set(state);
-                fresh
-            }
-            Some(Err(error)) => message_layout(format!("Plugin UI error: {error}")),
-            None => cached_layout.unwrap_or_else(loading_placeholder_layout),
-        }
-    } else {
-        cached_layout.unwrap_or_else(loading_placeholder_layout)
+    let Some(((plugin_id, page_id, origin_tab), slot)) = page_info.zip(slot) else {
+        return false;
     };
+    let image_owner = ImageOwner::plugin_page(plugin_id.clone(), page_id.clone(), origin_tab);
+    let mut view = shared.facade.as_ref().map(|facade| {
+        shared
+            .plugin_sessions
+            .view(facade, shared.services.tokio_runtime.handle(), &slot)
+    });
+    if matches!(view, Some(SlotView::Failed(_))) {
+        let signal = shared.signals().plugin_dialog_state.clone();
+        let mut state = signal.get();
+        if state.mark_page_unavailable(&plugin_id, &page_id, origin_tab) {
+            signal.set(state);
+        }
+    }
+    if matches!(view, Some(SlotView::Ready(_)))
+        && start_page_initialization(shared, &slot, &page_id, origin_tab)
+    {
+        // The document returned by opening the session is pre-init and
+        // must never be drawn. Its action result publishes revision 2,
+        // which the operation bridge stores before marking init complete.
+        view = Some(SlotView::Opening);
+    }
 
     // Get display name from signal, fallback to page_id
     let display_name = shared
@@ -278,6 +270,7 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
         .unwrap_or_else(|| page_id.clone());
 
     // Render as full page content
+    let mut events = Vec::new();
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))
         .show(ctx, |ui| {
@@ -294,77 +287,68 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
             });
             ui.add_space(4.0);
             ui.separator();
-
-            // Set up callback for page events
-            let mut callback = crate::features::plugins::presentation::controllers::plugin_controller::create_page_callback(shared, plugin_id.clone(), origin_tab);
-
-
-            use arclain_plugins::types::PluginLayout;
-            match page_layout.as_ref() {
-                PluginLayout::Single { elements } => {
-                    // Wrap in Form to provide ScrollArea (fixes cutoff bug)
-                    Form::new()
-                        .id(format!("plugin_page_single_{}", page_id))
-                        .margin(16.0)
-                        .show(ui, &shared.theme, |ui| {
-                            super::ui::render_ui_elements_owned(
-                                ui,
-                                &elements,
-                                &mut callback,
-                                &shared.theme.colors,
-                                Some(shared),
-                                Some(&plugin_id),
-                                Some(&image_owner),
-                            );
-                        });
+            let page_init_error = shared.signals().plugin_dialog_state.get().page_init_error();
+            match (view.as_ref(), page_init_error) {
+                (_, Some(error)) => {
+                    ui.label(
+                        egui::RichText::new(format!("Plugin page initialization failed: {error}"))
+                            .color(shared.theme.colors.error),
+                    );
                 }
-                PluginLayout::Split {
-                    sidebar,
-                    content,
-                    sidebar_width,
-                } => {
-                    // Wrap in Frame for consistent margin
-                    egui::Frame::NONE
-                        .inner_margin(16.0)
-                        .show(ui, |ui| {
-                            egui::SidePanel::left(format!("plugin_split_sidebar_{}", page_id))
-                                .resizable(true)
-                                .default_width(sidebar_width.unwrap_or(250.0))
-                                .show_inside(ui, |ui| {
-                                    egui::ScrollArea::vertical()
-                                        .id_salt(format!("plugin_split_sidebar_scroll_{}", page_id))
-                                        .show(ui, |ui| {
-                                            super::ui::render_ui_elements_owned(
-                                                ui,
-                                                &sidebar,
-                                                &mut callback,
-                                                &shared.theme.colors,
-                                                Some(shared),
-                                                Some(&plugin_id),
-                                                Some(&image_owner),
-                                            );
-                                        });
+                (Some(SlotView::Ready(document)), None)
+                    if shared
+                        .signals()
+                        .plugin_dialog_state
+                        .get()
+                        .page_layout_ready() =>
+                {
+                    let context = DocumentContext {
+                        colors: &shared.theme.colors,
+                        shared_state: Some(shared),
+                        image_owner: Some(&image_owner),
+                        extent: DocumentExtent::Full,
+                    };
+                    match &document.root.kind {
+                        arclain_app::plugins::PluginUiNodeKind::Single { .. } => {
+                            Form::new()
+                                .id(format!("plugin_page_single_{page_id}"))
+                                .margin(16.0)
+                                .show(ui, &shared.theme, |ui| {
+                                    events = render_document(ui, document, context);
                                 });
-
-                            egui::CentralPanel::default().show_inside(ui, |ui| {
-                                egui::ScrollArea::vertical()
-                                    .id_salt(format!("plugin_split_content_scroll_{}", page_id))
-                                    .show(ui, |ui| {
-                                        super::ui::render_ui_elements_owned(
-                                            ui,
-                                            &content,
-                                            &mut callback,
-                                            &shared.theme.colors,
-                                            Some(shared),
-                                            Some(&plugin_id),
-                                            Some(&image_owner),
-                                        );
-                                    });
+                        }
+                        arclain_app::plugins::PluginUiNodeKind::Split { .. } => {
+                            egui::Frame::NONE.inner_margin(16.0).show(ui, |ui| {
+                                events = render_document(ui, document, context);
                             });
-                        });
+                        }
+                        _ => unreachable!("normalized plugin document roots are containers"),
+                    }
+                }
+                (Some(SlotView::Failed(error)), None) => {
+                    ui.label(
+                        egui::RichText::new(format!("Plugin UI error: {error}"))
+                            .color(shared.theme.colors.error),
+                    );
+                }
+                (Some(SlotView::Opening | SlotView::Ready(_)), None) => {
+                    ui.label(
+                        egui::RichText::new("Loading plugin UI…")
+                            .color(shared.theme.colors.on_surface_variant),
+                    );
+                }
+                (None, None) => {
+                    ui.label(
+                        egui::RichText::new("Plugin UI is unavailable.")
+                            .color(shared.theme.colors.on_surface_variant),
+                    );
                 }
             }
         });
+
+    if !events.is_empty() {
+        document_dispatch::apply_document_events(shared, &slot, origin_tab, events);
+    }
 
     true
 }

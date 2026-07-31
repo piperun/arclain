@@ -125,11 +125,11 @@ pub fn render(
                             // session already fetched may depend on this
                             // plugin's enabled state (e.g. a disabled
                             // plugin's toolbar button should disappear) --
-                            // drop every cached snapshot/layout so the next
-                            // frame re-fetches instead of showing stale data.
+                            // drop every cached snapshot and live facade
+                            // session so the next frame re-fetches instead
+                            // of showing stale data.
                             shared.plugin_ui_jobs.invalidate_plugin_snapshots();
                             shared.plugin_ui_jobs.invalidate_chrome_snapshot();
-                            shared.plugin_ui_jobs.invalidate_all_layouts();
                             // Facade-backed slots hold a live session
                             // against the plugin's old enabled state;
                             // closing them makes the next frame open

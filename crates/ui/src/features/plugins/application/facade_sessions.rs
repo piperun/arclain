@@ -126,11 +126,10 @@
 //!
 //! # Migration status, and what each remaining extension point needs
 //!
-//! The five extension points migrate independently, because a slot's
-//! *document source* is separable from the host state that decides the
-//! slot exists at all (see "What is deliberately not modeled here"
-//! below). A facade-backed dialog can already open a page that still
-//! renders through `super::ui_jobs`.
+//! All five extension points now render from facade sessions. A slot's
+//! *document source* remains separable from the host state that decides
+//! the slot exists at all (see "What is deliberately not modeled here"
+//! below).
 //!
 //! - **`Panel`** -- migrated. Declared by
 //!   `crate::features::archive_browser::presentation::views::browser_page::
@@ -147,33 +146,15 @@
 //!   [`PluginSessions::retain_open_dialog`] rather than hooked into each
 //!   place a dialog can close -- see that method for the four places and
 //!   why hooking them would not hold.
-//! - **`Page`** -- not migrated. Still drawn by
-//!   `crate::features::plugins::presentation::views::rendering`, which
-//!   keeps its own `cached_page_layout` plus a stale flag, because
-//!   `PluginUiJobs` can return "busy" and the renderer must keep showing
-//!   the previous layout rather than blanking. A slot needs none of that
-//!   -- [`SlotView::Ready`] already retains the last document across an
-//!   in-flight action -- so migrating it is mostly *deletion*: drop the
-//!   cache field, the stale flag, and `invalidate_page_layout`, and swap
-//!   `cached_or_request_layout` for [`PluginSessions::view`] against a
-//!   `Page` slot built from the `PluginDialogState` page stack that is
-//!   already there. The one piece with no slot equivalent is
-//!   `PageInitState`: a page's `__page_init` lifecycle event must run
-//!   before its first layout read, or the page caches its
-//!   pre-initialization layout. Under the session model that becomes an
-//!   action dispatched against the freshly opened session, with the
-//!   *second* document (the one the dispatch returns) being the first one
-//!   drawn -- which also retires the request-id generation guard, since a
-//!   stale session's result is already rejected by the session check in
-//!   [`PluginSessions::apply_update`].
-//!
-//!   Until it lands, the two halves of `PluginDialogState` are
-//!   deliberately shared across the two stacks: a facade-rendered
-//!   surface's `OpenPage`/`ClosePage` navigation writes the page stack
-//!   the legacy renderer reads, and the legacy queue's
-//!   `PluginAction::CloseDialog` clears the `open_dialog` entry the
-//!   facade-rendered dialog is keyed on. The per-frame dialog reconcile
-//!   is what makes the second direction safe.
+//! - **`Page`** -- migrated. Declared by
+//!   `crate::features::plugins::presentation::views::rendering::
+//!   render_page` from the top of `PluginDialogState`'s page stack and
+//!   drawn with `render_document`. Its freshly opened session is not
+//!   drawable until the tracked `__page_init` lifecycle action returns:
+//!   the action's second document is the first one shown, while operation
+//!   purpose and session identity reject stale completions. Only the
+//!   visible page retains a session; covered pages reopen without running
+//!   init a second time when navigation reveals them.
 //! - **`MainPage`** -- migrated. Declared and drawn by
 //!   `crate::features::plugins::presentation::views::detail_view::
 //!   render_plugin_ui`, dispatched through
@@ -549,7 +530,19 @@ struct Registry {
     /// Reverse index for the operation bridge: an arriving event knows
     /// only its `OperationId`. Populated by [`PluginSessions::dispatch`],
     /// drained on the operation's terminal event.
-    operations: HashMap<OperationId, PluginSlot>,
+    operations: HashMap<OperationId, TrackedOperation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ActionPurpose {
+    Interaction,
+    PageInit,
+}
+
+#[derive(Clone, Debug)]
+struct TrackedOperation {
+    slot: PluginSlot,
+    purpose: ActionPurpose,
 }
 
 impl PluginSessions {
@@ -711,6 +704,47 @@ impl PluginSessions {
         node_id: String,
         action: PluginActionDto,
     ) -> Option<OperationId> {
+        self.start_action_with_purpose(facade, slot, node_id, action, ActionPurpose::Interaction)
+            .await
+    }
+
+    /// Starts the one lifecycle action that makes a freshly-opened page
+    /// document valid to render.
+    ///
+    /// Page init is tracked separately from an ordinary interaction so
+    /// the operation bridge can complete or fail the renderer-owned page
+    /// lifecycle without treating every failed button press as a fatal
+    /// page initialization error.
+    pub async fn start_page_init(
+        &self,
+        facade: &ArclainApp,
+        slot: &PluginSlot,
+        page_id: String,
+    ) -> Option<OperationId> {
+        debug_assert!(
+            matches!(slot, PluginSlot::Page { page_id: slot_page, .. } if slot_page == &page_id),
+            "page init must target the page named by its slot"
+        );
+        self.start_action_with_purpose(
+            facade,
+            slot,
+            "__page_init".to_string(),
+            PluginActionDto::SetValue {
+                value: Some(page_id),
+            },
+            ActionPurpose::PageInit,
+        )
+        .await
+    }
+
+    async fn start_action_with_purpose(
+        &self,
+        facade: &ArclainApp,
+        slot: &PluginSlot,
+        node_id: String,
+        action: PluginActionDto,
+        purpose: ActionPurpose,
+    ) -> Option<OperationId> {
         let session_id = self
             .inner
             .lock()
@@ -725,7 +759,7 @@ impl PluginSessions {
         };
         match facade.start_plugin_action(request).await {
             Ok(operation_id) => {
-                self.track(slot, operation_id);
+                self.track_with_purpose(slot, operation_id, purpose);
                 Some(operation_id)
             }
             Err(error) => {
@@ -738,11 +772,26 @@ impl PluginSessions {
     /// Records an in-flight action operation against its slot. `pub` so
     /// tests can drive the routing rules without a live facade.
     pub fn track(&self, slot: &PluginSlot, operation_id: OperationId) {
+        self.track_with_purpose(slot, operation_id, ActionPurpose::Interaction);
+    }
+
+    fn track_with_purpose(
+        &self,
+        slot: &PluginSlot,
+        operation_id: OperationId,
+        purpose: ActionPurpose,
+    ) {
         let mut registry = self.inner.lock();
         if !registry.slots.contains_key(slot) {
             return;
         }
-        registry.operations.insert(operation_id, slot.clone());
+        registry.operations.insert(
+            operation_id,
+            TrackedOperation {
+                slot: slot.clone(),
+                purpose,
+            },
+        );
         if let Some(state) = registry.slots.get_mut(slot) {
             state.inflight.push(operation_id);
         }
@@ -762,7 +811,8 @@ impl PluginSessions {
         update: PluginUiUpdate,
     ) -> Option<AppliedUpdate> {
         let mut registry = self.inner.lock();
-        let slot = registry.operations.remove(&operation_id)?;
+        let tracked = registry.operations.remove(&operation_id)?;
+        let slot = tracked.slot;
         let Some(state) = registry.slots.get_mut(&slot) else {
             return None;
         };
@@ -790,6 +840,7 @@ impl PluginSessions {
             slot,
             document,
             intents: update.intents,
+            page_init: tracked.purpose == ActionPurpose::PageInit,
         })
     }
 
@@ -802,12 +853,24 @@ impl PluginSessions {
     /// reported to the user as a toast by the caller rather than by
     /// blanking the panel.
     pub fn fail(&self, operation_id: OperationId) -> Option<PluginSlot> {
+        self.fail_with_context(operation_id)
+            .map(|failed| failed.slot)
+    }
+
+    /// Drains a failed/cancelled action while preserving why it was
+    /// started. The operation bridge uses this to make page-init failure
+    /// terminal and visible; ordinary interactions keep the last good
+    /// document and surface their error as a toast.
+    pub fn fail_with_context(&self, operation_id: OperationId) -> Option<FailedAction> {
         let mut registry = self.inner.lock();
-        let slot = registry.operations.remove(&operation_id)?;
-        if let Some(state) = registry.slots.get_mut(&slot) {
+        let tracked = registry.operations.remove(&operation_id)?;
+        if let Some(state) = registry.slots.get_mut(&tracked.slot) {
             state.inflight.retain(|tracked| *tracked != operation_id);
         }
-        Some(slot)
+        Some(FailedAction {
+            slot: tracked.slot,
+            page_init: tracked.purpose == ActionPurpose::PageInit,
+        })
     }
 
     /// Drops `slot` and closes its facade session. Idempotent.
@@ -915,13 +978,9 @@ impl PluginSessions {
     /// than hooked. A dialog closes from four places that share no call
     /// path: the window's own close button, a
     /// [`PluginNavigation::CloseDialog`] a button in *any* facade-rendered
-    /// document produced, the `CloseDialog` host intent an action result
-    /// carries back, and the legacy job queue's
-    /// `PluginAction::CloseDialog` -- which a still-legacy `Page`'s event
-    /// can reach while a facade-rendered dialog is open. Missing one would
-    /// leak a WASM session for the rest of the process's life, and the
-    /// fourth is in a path this frontend is in the middle of retiring, so
-    /// hooking it would be wiring a site that is about to move.
+    /// document produced, and the `CloseDialog` host intent an action
+    /// result carries back. Missing one would leak a WASM session for the
+    /// rest of the process's life.
     ///
     /// [`Self::retain_hosts`] already closes a `Dialog` slot when its tab
     /// closes; what it cannot see is the dialog closing while its tab
@@ -939,6 +998,24 @@ impl PluginSessions {
         }
     }
 
+    /// Closes every `Page` slot except the one currently visible at the
+    /// top of the renderer-owned page stack (`None` when no page is
+    /// open). Covered pages deliberately release their sessions; popping
+    /// back opens one fresh document while the navigation entry remembers
+    /// that the page's lifecycle init already ran.
+    pub fn retain_open_page(
+        &self,
+        facade: &ArclainApp,
+        runtime: &tokio::runtime::Handle,
+        open: Option<&PluginSlot>,
+    ) {
+        for slot in self
+            .slots_matching(|slot| matches!(slot, PluginSlot::Page { .. }) && Some(slot) != open)
+        {
+            self.close(facade, runtime, &slot);
+        }
+    }
+
     /// Closes every open slot.
     ///
     /// This is how a plugin-requested refresh reaches a facade-backed
@@ -948,9 +1025,9 @@ impl PluginSessions {
     /// `RefreshPanel` a plugin emits from `OnArchiveOpen`, which never
     /// passes through `start_plugin_action`) is expressed by dropping the
     /// session, letting the next render frame open a fresh one against
-    /// the plugin's current state. That is the same effect the pre-cutover
-    /// stack's `invalidate_all_layouts` had, and the same cost: one
-    /// `get-ui-layout` call per visible slot.
+    /// the plugin's current state. That is the facade equivalent of
+    /// invalidating the retired renderer-side layout cache: one fresh
+    /// document read per visible slot.
     pub fn close_all(&self, facade: &ArclainApp, runtime: &tokio::runtime::Handle) {
         for slot in self.slots_matching(|_| true) {
             self.close(facade, runtime, &slot);
@@ -1144,6 +1221,17 @@ pub struct AppliedUpdate {
     pub slot: PluginSlot,
     pub document: Arc<PluginUiDocument>,
     pub intents: Vec<arclain_app::plugins::PluginHostIntentDto>,
+    /// Whether this update completed the page's `__page_init` lifecycle
+    /// action rather than an ordinary document interaction.
+    pub page_init: bool,
+}
+
+/// A terminal action without a document update, including the purpose
+/// needed to resolve renderer-owned page initialization state.
+#[derive(Clone, Debug)]
+pub struct FailedAction {
+    pub slot: PluginSlot,
+    pub page_init: bool,
 }
 
 #[cfg(test)]
@@ -1211,6 +1299,37 @@ mod tests {
 
         assert_eq!(applied.slot, slot);
         assert_eq!(applied.document.revision, 2);
+        assert!(!applied.page_init);
+    }
+
+    #[test]
+    fn page_init_purpose_survives_success_and_failure_routing() {
+        let sessions = PluginSessions::new();
+        let slot = PluginSlot::Page {
+            plugin_id: "demo".to_string(),
+            page_id: "details".to_string(),
+            tab: TabId(1),
+        };
+        open_slot(&sessions, &slot, 5);
+
+        sessions.track_with_purpose(&slot, OperationId::from_raw(70), ActionPurpose::PageInit);
+        let applied = sessions
+            .apply_update(
+                OperationId::from_raw(70),
+                PluginUiUpdate {
+                    document: document(5, 2),
+                    intents: Vec::new(),
+                },
+            )
+            .expect("the tracked page init update applies");
+        assert!(applied.page_init);
+
+        sessions.track_with_purpose(&slot, OperationId::from_raw(71), ActionPurpose::PageInit);
+        let failed = sessions
+            .fail_with_context(OperationId::from_raw(71))
+            .expect("the tracked page init failure drains");
+        assert_eq!(failed.slot, slot);
+        assert!(failed.page_init);
     }
 
     #[test]

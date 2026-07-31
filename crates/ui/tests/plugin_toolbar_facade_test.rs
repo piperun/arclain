@@ -319,21 +319,10 @@ fn an_item_naming_an_unknown_button_draws_nothing() {
 /// A stored item outlives the plugin being enabled, so an item for a
 /// plugin the user has since disabled must draw nothing.
 ///
-/// The application does not enforce this -- `open_plugin_session`
-/// resolves a plugin instance without consulting its enabled flag, so the
-/// plugin would happily hand back its toolbar layout -- which is exactly
-/// why the check is worth pinning here.
-///
-/// The slot is re-warmed *after* the plugin is disabled, and that is the
-/// whole test rather than tidying-up. `close_plugin` drops the slot and
-/// its reopen is asynchronous, so a frame run straight afterwards sees
-/// `SlotView::Opening` and draws nothing no matter what the guard does --
-/// which passes for the wrong reason and would keep passing with the
-/// guard deleted. Warming first puts a live, disabled-plugin document in
-/// the slot, so the frame reaches the guard and the assertion is about
-/// the guard. That the re-warm *succeeds at all* is the concern this
-/// test exists for: the facade hands back a full document for a plugin
-/// the user has switched off.
+/// The application also refuses to open a disabled plugin session. The
+/// toolbar's own enabled check is still worth pinning: it should avoid
+/// declaring a doomed slot at all, rather than opening one merely to
+/// cache the facade's terminal refusal.
 #[test]
 fn a_disabled_plugins_button_is_not_drawn() {
     let (_temp, shared) = shared_state_with_plugin();
@@ -351,17 +340,7 @@ fn a_disabled_plugins_button_is_not_drawn() {
     shared
         .plugin_sessions
         .close_plugin(app, shared.services.tokio_runtime.handle(), PLUGIN);
-
-    let document = warm_plugin_button_slot(&shared);
-    assert_eq!(
-        document_buttons(&document.root)
-            .iter()
-            .map(|button| button.label)
-            .collect::<Vec<_>>(),
-        vec![BUTTON_LABEL],
-        "precondition: the disabled plugin still answers with a drawable \
-         document, so only the guard can stop it being drawn"
-    );
+    warm_plugin_snapshot(&shared);
 
     let mut harness = toolbar_harness(&shared);
     harness.run();
@@ -369,6 +348,10 @@ fn a_disabled_plugins_button_is_not_drawn() {
     assert!(
         harness.query_by_label(BUTTON_LABEL).is_none(),
         "a disabled plugin's stored toolbar item must draw nothing"
+    );
+    assert!(
+        shared.plugin_sessions.is_empty(),
+        "the toolbar must reject the disabled item before declaring a facade slot"
     );
 }
 
