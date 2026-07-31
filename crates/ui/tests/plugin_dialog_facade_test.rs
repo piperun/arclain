@@ -183,6 +183,10 @@ fn step_until_session_open(
         "the dialog's plugin session never opened through the facade",
         move || sessions.session_id(&probe).is_some(),
     );
+    // The session can complete after the frame that still drew the
+    // loading placeholder. Let egui settle the newly sized document
+    // window before tests address its AccessKit nodes by their rects.
+    harness.run();
     shared
         .plugin_sessions
         .session_id(&slot)
