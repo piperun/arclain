@@ -1212,13 +1212,10 @@ mod resource_limit_tests {
         runtime: &WasmRuntime,
         wat: &str,
         hostcall_duration: Duration,
-    ) -> (
-        Store<HostFunctions>,
-        wasmtime::component::TypedFunc<(), ()>,
-    ) {
+    ) -> (Store<HostFunctions>, wasmtime::component::TypedFunc<(), ()>) {
         let component = Component::new(&runtime.engine, wat).unwrap();
-        let host = HostFunctions::new_for_metadata_validation("epoch-deadline-test".to_string())
-            .unwrap();
+        let host =
+            HostFunctions::new_for_metadata_validation("epoch-deadline-test".to_string()).unwrap();
         let mut store = new_plugin_store(&runtime.engine, host).unwrap();
         let mut linker: Linker<HostFunctions> = Linker::new(&runtime.engine);
         linker
