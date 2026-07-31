@@ -1194,6 +1194,89 @@ fn a_setting_written_outside_a_ui_event_is_persisted_when_a_session_opens() {
     );
 }
 
+/// A guest can write a setting and *then* fail. The write lands in
+/// host-side instance state, so it outlives the trap -- and losing a
+/// user's setting because the plugin misbehaved afterwards would be the
+/// worse outcome. Pins the pull on the failure path, which a refactor
+/// moving it into the success arm would otherwise break silently.
+#[test]
+fn a_setting_written_before_a_guest_trap_is_still_persisted() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+    let snapshot = runtime
+        .block_on(app.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .unwrap();
+
+    let operation_id = runtime
+        .block_on(app.start_plugin_action(PluginActionRequest {
+            session_id: snapshot.session_id,
+            node_id: "trigger-trap".to_string(),
+            action: PluginActionDto::Activate,
+        }))
+        .unwrap();
+    match runtime.block_on(wait_for_terminal_state(&app, operation_id)) {
+        OperationState::Failed { .. } => {}
+        other => panic!("the trapping guest must fail its own operation, got {other:?}"),
+    }
+
+    drop(runtime);
+    drop(app);
+    let restarted = rebootstrap_app(&temp);
+    let restarted_runtime = foreign_runtime();
+    let reopened = restarted_runtime
+        .block_on(restarted.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .unwrap();
+
+    assert_eq!(
+        remembered_label(&reopened.document),
+        "remembered:trapped",
+        "a setting written before the trap must still be persisted",
+    );
+}
+
+/// `install_plugin` runs the new plugin's `init` in the guest, and no
+/// session is opened afterwards -- so the per-interaction pull never
+/// fires and only the exit sweep can save what `init` wrote. Install,
+/// shut down, restart: the load counter reaches two only if the sweep
+/// ran.
+#[test]
+fn a_setting_written_at_install_is_persisted_by_the_exit_flush() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+    runtime
+        .block_on(app.install_plugin(fixture_wasm_path("facade-test-fixture")))
+        .expect("installing the fixture must succeed");
+
+    runtime
+        .block_on(app.shutdown())
+        .expect("shutdown must succeed");
+    drop(runtime);
+    drop(app);
+
+    let restarted = rebootstrap_app(&temp);
+    let restarted_runtime = foreign_runtime();
+    let reopened = restarted_runtime
+        .block_on(restarted.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .unwrap();
+
+    assert_eq!(
+        loads_label(&reopened.document),
+        "loads:2",
+        "the second load must see what the first load's install wrote",
+    );
+}
+
 /// The other half of the same contract: an interaction that writes no
 /// setting must not have one invented for it, and re-reading must not
 /// disturb what is stored.

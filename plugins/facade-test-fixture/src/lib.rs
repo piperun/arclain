@@ -5,7 +5,8 @@
 //! empty action list) cannot exercise:
 //!
 //! - **Crash containment**: the `"trigger-trap"` button's `on-ui-event`
-//!   handler panics unconditionally. Under `panic = "abort"` (this
+//!   handler writes a setting and then panics unconditionally. Under
+//!   `panic = "abort"` (this
 //!   crate's release profile, matching every other plugin fixture in
 //!   this workspace) that compiles to a WASM `unreachable` trap, which
 //!   wasmtime surfaces as an ordinary `Result::Err` to the host -- never
@@ -221,6 +222,12 @@ impl archust_plugin_sdk::Guest for Component {
                 vec![PluginAction::RefreshPanel("Panel".to_string())]
             }
             "trigger-trap" => {
+                // Writes *before* trapping, on purpose. The write lands in
+                // host-side instance state, so it survives the trap the
+                // next line causes -- which makes this the case that
+                // proves a host pulls settings on the failure path and not
+                // only when a dispatch succeeds.
+                archust_plugin_sdk::set_setting(REMEMBERED_SETTING_KEY, "trapped");
                 panic!("facade-test-fixture: intentional trap for crash-containment tests")
             }
             "multi-action" => vec![
