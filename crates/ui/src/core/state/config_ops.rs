@@ -217,13 +217,32 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
         let state = app_state_from_facade(&facade);
 
+        runtime.block_on(async {
+            let current = facade.settings().await.expect("read fixture settings");
+            facade
+                .update_settings(arclain_app::settings::SettingsPatch {
+                    expected_revision: current.revision,
+                    archive: None,
+                    network: None,
+                    security: None,
+                    general: Some(arclain_app::settings::GeneralSettingsPatch {
+                        hotkey_bindings: arclain_app::settings::PatchValue::Keep,
+                        open_nested_in_new_tab: arclain_app::settings::PatchValue::Keep,
+                        drop_behavior: arclain_app::settings::PatchValue::Keep,
+                        restore_tabs_on_launch: arclain_app::settings::PatchValue::Set(true),
+                    }),
+                })
+                .await
+                .expect("seed a non-placeholder setting through the facade");
+        });
+
         state
             .refresh_settings_signals(&facade, runtime.handle())
             .expect("a healthy facade must serve its own settings");
 
         assert!(
             state.signals.general_settings.read().restore_tabs_on_launch,
-            "the seeded profile has restore enabled, so a filled mirror must not read as the \
+            "the facade fixture has restore enabled, so a filled mirror must not read as the \
              placeholder"
         );
         assert!(state.signals.security_settings.read().vault_available);

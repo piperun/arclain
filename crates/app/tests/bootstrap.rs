@@ -49,12 +49,16 @@ fn sevenzip_exe_name() -> &'static str {
 }
 
 #[test]
-fn frontend_fixture_can_override_sevenzip_without_editing_the_config_database() {
+fn bootstrap_override_takes_precedence_without_being_persisted() {
     let temp = tempfile::tempdir().unwrap();
     let paths = support::temp_paths(temp.path());
-    let sevenzip_path = dummy_sevenzip(&temp);
+    let persisted_path =
+        support::create_dummy_executable(&temp.path().join("persisted"), sevenzip_exe_name());
+    let override_path =
+        support::create_dummy_executable(&temp.path().join("override"), sevenzip_exe_name());
+    support::seed_working_sevenzip_config(&paths, &persisted_path);
 
-    ArclainApp::bootstrap_with_overrides(
+    let app = ArclainApp::bootstrap_with_overrides(
         BootstrapConfig {
             paths_override: Some(paths),
             worker_threads: None,
@@ -64,10 +68,33 @@ fn frontend_fixture_can_override_sevenzip_without_editing_the_config_database() 
             materialization_cleanup_interval_override: None,
         },
         BootstrapOverrides {
-            sevenzip_path: Some(sevenzip_path),
+            sevenzip_path: Some(override_path.clone()),
         },
     )
     .expect("the application-owned fixture override must satisfy 7-Zip detection");
+
+    let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
+    let capabilities = runtime
+        .block_on(app.capabilities())
+        .expect("read application capabilities");
+    let sevenzip = capabilities
+        .external_tools
+        .iter()
+        .find(|tool| tool.tool == "7z")
+        .expect("7-Zip capability");
+    assert_eq!(
+        sevenzip.resolved_path.as_deref(),
+        Some(override_path.as_path())
+    );
+
+    let settings = runtime
+        .block_on(app.settings())
+        .expect("read persisted settings through the facade");
+    assert_eq!(
+        settings.archive.sevenzip_path.as_deref(),
+        Some(persisted_path.as_path()),
+        "the process-local override must not replace the persisted setting"
+    );
 }
 
 /// First run: an entirely empty temp directory. `bootstrap()` must
