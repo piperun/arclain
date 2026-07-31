@@ -1813,13 +1813,17 @@ impl SessionRecord {
 /// - The retained document is *withheld, not discarded*: no new revision is
 ///   minted while disabled, and the same revision is served again on
 ///   re-enable.
-/// - A dispatch already inside the guest when the disable lands cannot be
-///   preempted -- a WASM call is not cancellable. It runs to completion in
-///   the guest, but [`Self::dispatch_action`] re-checks the flag the moment
-///   it returns, so nothing that call produced reaches a frontend: its host
-///   intents are dropped, its `RequestFetch`es never run, its
-///   `RefreshPanel` never re-enters the guest, and its document is never
-///   committed. The operation ends `Failed` carrying the refusal instead.
+/// - A guest call already executing when the disable lands cannot be
+///   preempted -- a WASM call is not cancellable. It runs to completion,
+///   but the flag is re-checked at every boundary after it, so **once
+///   `set_plugin_enabled(.., false)` has returned, no further guest call
+///   is made for that plugin and nothing is published on its behalf**: no
+///   host intents, no `RequestFetch`, no `RefreshPanel` re-entry, no
+///   document. A dispatch caught this way ends `Failed` carrying the
+///   refusal; an open caught this way registers no session. The boundaries
+///   are enumerated on [`Self::dispatch_action`], and there is more than
+///   one on purpose -- a single post-guest check leaves the seconds of
+///   network I/O that follow it unguarded.
 ///   The residual, stated rather than hidden: whatever that one
 ///   already-issued guest call did *inside* the guest (a setting it wrote)
 ///   stands.
@@ -1984,11 +1988,13 @@ impl PluginSessionStore {
     /// `ArclainApp::open_plugin_session`'s own doc comment for why that
     /// is indistinguishable from a real empty layout, and not a bug.
     ///
-    /// Refuses a disabled plugin outright (see [`require_enabled_plugin`]),
-    /// before any WASM call: opening a session *is* running the plugin,
-    /// because `get-ui-layout` executes in the guest. The check sits after
-    /// [`validate_extension_point`] because a malformed request is
-    /// malformed whatever the plugin's state is.
+    /// Refuses a disabled plugin (see [`require_enabled_plugin`]) both
+    /// before and after the WASM call: opening a session *is* running the
+    /// plugin, because `get-ui-layout` executes in the guest, and a
+    /// disable landing while that call runs must not leave a live session
+    /// behind. The first check sits after [`validate_extension_point`]
+    /// because a malformed request is malformed whatever the plugin's
+    /// state is.
     ///
     /// `pinned_archive_session` is whichever archive session was active at
     /// the moment this session opened, and is where a background metadata
@@ -2016,6 +2022,13 @@ impl PluginSessionStore {
         let root = self
             .fetch_and_normalize(&manager, &plugin_id, &extension_point, handle)
             .await?;
+        // The same containment [`Self::dispatch_action`] applies after its
+        // own guest call: `get-ui-layout` is not preemptible, so a disable
+        // landing while it ran cannot stop it -- but the session it would
+        // have produced is never registered and its layout is never
+        // returned. Without this, disabling a plugin during the frame that
+        // opens its panel leaves a live session behind.
+        require_enabled_plugin(&manager, &plugin_id)?;
 
         let id = PluginSessionId::from_raw(self.next_id.fetch_add(1, Ordering::Relaxed));
         let record = SessionRecord {
@@ -2118,13 +2131,23 @@ impl PluginSessionStore {
     /// event) is dispatched normally -- see
     /// `arclain_plugins::ui_model::PluginUiNodeDto::find`'s doc comment.
     ///
-    /// Refuses a disabled plugin twice, and both are load-bearing (see
-    /// [`PluginSessionStore`]'s own doc comment): once before the guest
-    /// call, so a disabled plugin is never entered, and once immediately
-    /// after it returns, so a disable that lands *during* a call cannot
-    /// have that call's actions, fetches, refresh or document escape into
-    /// a frontend. Only the first check can prevent execution; only the
-    /// second can contain a race.
+    /// The enabled flag is re-evaluated at every boundary where this
+    /// dispatch is about to act on the plugin's behalf again: before the
+    /// per-plugin queue, after it, the moment the guest call returns,
+    /// before the refresh re-enters the guest, and before the resulting
+    /// document is published. They are not redundant -- each guards a
+    /// different window, and every window between them is one a user has
+    /// time to click a toggle in (a queue wait behind another action's
+    /// guest call; the guest call itself; seconds of `RequestFetch`
+    /// network I/O; a second guest call to re-fetch the layout).
+    ///
+    /// What that buys, exactly: **once `set_plugin_enabled(.., false)` has
+    /// returned, this dispatch makes no further call into that plugin's
+    /// guest and publishes nothing on its behalf** -- no host intents, no
+    /// metadata fetch, no document revision. The one thing no check can
+    /// undo is a guest call already executing when the disable landed; it
+    /// runs to completion inside the guest, and only its results are
+    /// discarded.
     pub(crate) async fn dispatch_action(
         &self,
         manager: Arc<SyncMutex<PluginManager>>,
@@ -2147,14 +2170,22 @@ impl PluginSessionStore {
                 record.pinned_archive_session,
             )
         };
-        require_enabled_plugin(&manager, &plugin_id)?;
+        // Re-evaluated at every boundary below where this dispatch is
+        // about to act on the plugin's behalf again. Named once so the
+        // repetition reads as the deliberate pattern it is rather than as
+        // a check someone forgot to hoist: each call site guards a
+        // *different* window, and the windows are wide -- a queue wait, a
+        // guest call, seconds of network I/O.
+        let still_enabled = || require_enabled_plugin(&manager, &plugin_id);
+
+        still_enabled()?;
 
         let plugin_lock = self.lock_for_plugin(&plugin_id);
         let _guard = plugin_lock.lock().await;
-        // Re-checked after the queue: the per-plugin lock can be held for
-        // as long as another action's guest call takes, and the plugin can
-        // be disabled while this dispatch waits its turn behind it.
-        require_enabled_plugin(&manager, &plugin_id)?;
+        // The queue wait: the per-plugin lock can be held for as long as
+        // another action's guest call takes, and the plugin can be
+        // disabled while this dispatch waits its turn behind it.
+        still_enabled()?;
 
         let event_id = request.node_id.clone();
         let value = match request.action {
@@ -2183,15 +2214,11 @@ impl PluginSessionStore {
                 .with_diagnostic(join_error.to_string())
             })??;
 
-        // The containment half of the gate. Everything below this line
-        // either re-enters the guest (`RefreshPanel`), spends the plugin's
-        // network budget (`RequestFetch`), hands the plugin's own side
-        // effects to a frontend (`intents`), or publishes a new document
-        // revision -- none of which a disabled plugin may do, including
-        // the one whose call was already in flight when the user turned it
-        // off. The guest call above could not be taken back; its results
-        // can be, and are.
-        require_enabled_plugin(&manager, &plugin_id)?;
+        // The guest call could not be taken back; what it produced can be,
+        // and is. Nothing below may happen for a plugin disabled while it
+        // ran: no metadata fetch on its network budget, no re-entry into
+        // its guest, no intents handed to a frontend, no new revision.
+        still_enabled()?;
 
         let bounded = arclain_plugins::action_policy::bound_plugin_actions(actions);
         let mut intents = Vec::with_capacity(bounded.len());
@@ -2214,6 +2241,12 @@ impl PluginSessionStore {
             .await;
         }
 
+        // The widest window of the whole dispatch: a `RequestFetch` is a
+        // network round trip that can take seconds, and the refresh below
+        // re-enters the guest. A check before the guest call is worth
+        // nothing if the seconds spent between them are unguarded.
+        still_enabled()?;
+
         let refreshed_root = if outcome.needs_refresh {
             Some(
                 self.fetch_and_normalize(&manager, &plugin_id, &extension_point, handle)
@@ -2222,6 +2255,12 @@ impl PluginSessionStore {
         } else {
             None
         };
+
+        // Last boundary: publishing. The refresh above is a guest call of
+        // its own, so a disable landing during it gets the same treatment
+        // the first one does -- its layout is dropped rather than
+        // committed, and the session's revision does not move.
+        still_enabled()?;
 
         let document = {
             let mut sessions = self.sessions.write();
