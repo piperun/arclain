@@ -135,6 +135,14 @@ impl Default for EncryptedCrcPolicy {
 }
 
 impl EncryptedCrcPolicy {
+    pub fn from_settings_str(value: &str) -> Self {
+        match value {
+            "on_open" => Self::OnOpen,
+            "prompt_on_open" => Self::PromptOnOpen,
+            _ => Self::OnAccess,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             EncryptedCrcPolicy::OnOpen => "on_open",
@@ -199,6 +207,10 @@ pub enum SettingsAction {
         socks5_username: Option<String>,
         socks5_password: Option<String>,
     },
+    /// Explicitly remove the stored SOCKS5 password. A blank password in
+    /// `SaveNetwork` means "keep the configured secret" because the
+    /// frontend never receives that secret to put back into its form.
+    ClearSocks5Password,
     /// Test network settings
     TestNetwork {
         socks5_enabled: bool,
@@ -293,6 +305,7 @@ impl std::fmt::Debug for SettingsAction {
                 .field("socks5_username", &redacted_optional(socks5_username))
                 .field("socks5_password", &redacted_optional(socks5_password))
                 .finish(),
+            Self::ClearSocks5Password => f.write_str("ClearSocks5Password"),
             Self::TestNetwork {
                 socks5_enabled,
                 socks5_address,
@@ -339,6 +352,7 @@ pub struct NetworkSettingsState {
     pub socks5_address: Signal<String>,
     pub socks5_username: Signal<String>,
     pub socks5_password: Signal<String>,
+    pub socks5_password_configured: bool,
     pub connection_test_status: Signal<ConnectionTestStatus>,
 }
 
@@ -349,6 +363,7 @@ impl Default for NetworkSettingsState {
             socks5_address: Signal::new(String::new()),
             socks5_username: Signal::new(String::new()),
             socks5_password: Signal::new(String::new()),
+            socks5_password_configured: false,
             connection_test_status: Signal::new(ConnectionTestStatus::Idle),
         }
     }
@@ -416,6 +431,7 @@ pub struct ServerSettingsState {
     pub enabled: Signal<bool>,
     pub url: Signal<String>,
     pub api_key: Signal<String>,
+    pub api_key_configured: bool,
     pub connection_status: Signal<ServerConnectionStatus>,
 }
 
@@ -425,6 +441,7 @@ impl Default for ServerSettingsState {
             enabled: Signal::new(false),
             url: Signal::new(String::new()),
             api_key: Signal::new(String::new()),
+            api_key_configured: false,
             connection_status: Signal::new(ServerConnectionStatus::Idle),
         }
     }
@@ -615,6 +632,22 @@ mod tests {
         assert_eq!(EncryptedCrcPolicy::OnOpen.as_str(), "on_open");
         assert_eq!(EncryptedCrcPolicy::PromptOnOpen.as_str(), "prompt_on_open");
         assert_eq!(EncryptedCrcPolicy::OnAccess.as_str(), "on_access");
+    }
+
+    #[test]
+    fn encrypted_crc_policy_from_settings_str() {
+        assert_eq!(
+            EncryptedCrcPolicy::from_settings_str("on_open"),
+            EncryptedCrcPolicy::OnOpen
+        );
+        assert_eq!(
+            EncryptedCrcPolicy::from_settings_str("prompt_on_open"),
+            EncryptedCrcPolicy::PromptOnOpen
+        );
+        assert_eq!(
+            EncryptedCrcPolicy::from_settings_str("unknown"),
+            EncryptedCrcPolicy::OnAccess
+        );
     }
 
     #[test]

@@ -468,35 +468,43 @@ pub fn handle_action(
             }
 
             // The password is a dedicated secret write, deliberately
-            // separate from the patch above (see `ArclainApp::
-            // set_socks5_password`'s own doc comment). This page has no
-            // "leave the password unchanged" affordance: a blank field
-            // has always meant "no password" here.
+            // separate from the patch above. The facade only reports
+            // whether one is configured, never the credential itself,
+            // so blank means "preserve" and only a non-empty candidate
+            // is written. Removal has its own explicit action below.
             let password = socks5_password
                 .filter(|password| !password.is_empty())
                 .map(arclain_app::challenge::SecretInput::new);
-            if let Err(error) = shared
-                .services
-                .tokio_runtime
-                .block_on(facade.set_socks5_password(password))
-            {
-                tracing::error!("[SaveNetwork] Failed to save the SOCKS5 password: {error:?}");
-                // Unlike the `patch_result` branch above, the
-                // address/identity patch already committed before this
-                // call ever ran. "Network settings were not saved" would
-                // be false in exactly this branch, so this message says
-                // precisely what did and didn't happen instead of
-                // reusing that wording.
-                shared.toaster.lock().error(
-                    "Network address and identity settings were saved, but the password \
-                     change failed: the old password remains in effect",
-                );
-                return;
+            if let Some(password) = password {
+                if let Err(error) = shared
+                    .services
+                    .tokio_runtime
+                    .block_on(facade.set_socks5_password(Some(password)))
+                {
+                    tracing::error!("[SaveNetwork] Failed to save the SOCKS5 password: {error:?}");
+                    // Unlike the `patch_result` branch above, the
+                    // address/identity patch already committed before this
+                    // call ever ran. "Network settings were not saved" would
+                    // be false in exactly this branch, so this message says
+                    // precisely what did and didn't happen instead of
+                    // reusing that wording.
+                    shared.toaster.lock().error(
+                        "Network address and identity settings were saved, but the password \
+                         change failed: the old password remains in effect",
+                    );
+                    return;
+                }
             }
             let _ = shared
                 .app_state
                 .lock()
                 .refresh_settings_from_facade(facade, &shared.services.tokio_runtime);
+            network_state.socks5_password_configured = shared
+                .signals()
+                .network_settings
+                .read()
+                .socks5_password_configured;
+            network_state.socks5_password.set(String::new());
 
             // Live routing on the facade-owned HTTP client is already in
             // effect by this point (see `runtime::settings_ops::
@@ -509,6 +517,37 @@ pub fn handle_action(
             // `apply_proxy_to_client`) on the way to returning that very
             // snapshot.
             tracing::info!("Network settings saved");
+        }
+        SettingsAction::ClearSocks5Password => {
+            let Some(facade) = shared.facade.as_ref() else {
+                shared
+                    .toaster
+                    .lock()
+                    .error("The saved proxy password could not be cleared: application facade is unavailable");
+                return;
+            };
+            match shared
+                .services
+                .tokio_runtime
+                .block_on(facade.set_socks5_password(None))
+            {
+                Ok(()) => {
+                    let _ = shared
+                        .app_state
+                        .lock()
+                        .refresh_settings_from_facade(facade, &shared.services.tokio_runtime);
+                    network_state.socks5_password.set(String::new());
+                    network_state.socks5_password_configured = false;
+                    tracing::info!("Saved SOCKS5 password cleared");
+                }
+                Err(error) => {
+                    tracing::error!("Failed to clear the SOCKS5 password: {error:?}");
+                    shared
+                        .toaster
+                        .lock()
+                        .error("The saved proxy password could not be cleared");
+                }
+            }
         }
         SettingsAction::TestNetwork {
             socks5_enabled,
@@ -629,7 +668,7 @@ pub fn handle_action(
             // The API key is a dedicated secret write, kept separate
             // from the patch above -- see `ArclainApp::
             // set_gameta_api_key`'s own doc comment on why it has no
-            // "clear" affordance (unlike the SOCKS5 password).
+            // "clear" affordance.
             if let Some(key) = api_key {
                 let result = shared.services.tokio_runtime.block_on(
                     facade.set_gameta_api_key(arclain_app::challenge::SecretInput::new(key)),
@@ -640,6 +679,8 @@ pub fn handle_action(
                             .app_state
                             .lock()
                             .refresh_settings_from_facade(facade, &shared.services.tokio_runtime);
+                        server_state.api_key.set(String::new());
+                        server_state.api_key_configured = true;
                     }
                     Err(error) => {
                         tracing::error!("[SaveServer] Failed to save API key: {error:?}");
@@ -1215,7 +1256,7 @@ mod tests {
 
     #[traced_test]
     #[test]
-    fn save_network_accepts_blank_disabled_proxy_and_removes_password() {
+    fn save_network_accepts_blank_disabled_proxy_and_preserves_password() {
         let fixture = ProxySaveFixture::new();
 
         handle_action(
@@ -1223,7 +1264,7 @@ mod tests {
                 socks5_enabled: false,
                 socks5_address: Some(String::new()),
                 socks5_username: None,
-                socks5_password: Some(String::new()),
+                socks5_password: None,
             },
             &mut SecuritySettingsState::default(),
             &mut ArchivesSettingsState::default(),
@@ -1243,8 +1284,9 @@ mod tests {
             .unwrap()
             .secrets
             .get_secret("proxy:socks5")
-            .unwrap();
-        assert!(secret.is_none(), "blank password did not remove the secret");
+            .unwrap()
+            .expect("blank password must preserve the stored secret");
+        assert_eq!(&*secret, fixture.previous_password.as_str());
         drop(state);
 
         let persisted = fixture.config_service.get_user_config().unwrap();
@@ -1254,6 +1296,35 @@ mod tests {
         assert!(!format!("{:?}", fixture.shared.toaster.lock()).contains("Error"));
         assert!(!logs_contain("Refusing to save invalid proxy"));
         assert!(logs_contain("Network settings saved"));
+    }
+
+    #[test]
+    fn clear_socks5_password_removes_only_the_explicitly_selected_secret() {
+        let fixture = ProxySaveFixture::new();
+        let mut network_state =
+            crate::features::settings::domain::types::NetworkSettingsState::default();
+        network_state.socks5_password_configured = true;
+
+        handle_action(
+            SettingsAction::ClearSocks5Password,
+            &mut SecuritySettingsState::default(),
+            &mut ArchivesSettingsState::default(),
+            None,
+            &mut network_state,
+            &mut ServerSettingsState::default(),
+            &fixture.shared,
+        );
+
+        let state = fixture.shared.app_state.lock();
+        let secret = state
+            .dbs
+            .as_ref()
+            .unwrap()
+            .secrets
+            .get_secret("proxy:socks5")
+            .expect("read proxy secret after explicit clear");
+        assert!(secret.is_none());
+        assert!(!network_state.socks5_password_configured);
     }
 
     #[test]

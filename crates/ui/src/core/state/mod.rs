@@ -27,9 +27,10 @@ use super::signals::AppSignals;
 /// [`AppState::refresh_settings_from_facade`]. Reading a *setting* no
 /// longer goes through here -- the settings snapshot lives on
 /// [`AppSignals`] in the application's own DTO shapes. What is left is
-/// composition plumbing that retires with `take_legacy_composition`
-/// itself (`backend_selector`, `fallback_backend`, `db_paths`, `dbs`),
-/// plus two fields no facade surface can serve yet:
+/// transitional composition plumbing that retires with
+/// `take_legacy_composition` itself. The remaining production readers
+/// are concentrated in cache maintenance and password-rule editing;
+/// settings forms and archive policy already read facade DTO signals.
 ///
 /// - `pass_rules` carries the *decrypted passwords*
 ///   `arclain_core::utilities::auto_password_for` needs to unlock an
@@ -37,9 +38,6 @@ use super::signals::AppSignals;
 ///   `PasswordRuleSummary`, which deliberately reports only whether a
 ///   password is configured -- so auto-unlock cannot go through it, and
 ///   this stays until the facade owns auto-unlock itself.
-/// - `user_config` still backs the settings pages' dirty-state checks
-///   (`SettingsFeature::check_changes`), which compare a draft form
-///   value against the stored one field by field.
 pub struct AppState {
     /// User configuration loaded from database
     pub user_config: UserConfig,

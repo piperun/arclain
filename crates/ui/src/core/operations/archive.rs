@@ -189,7 +189,7 @@ pub fn load_archive_into_tab(shared: &SharedState, tab_id: TabId, path: &std::pa
 /// change is deliberate and an improvement -- rows appear immediately
 /// and their CRCs (or the password prompt) follow when ready.
 pub fn finish_archive_load(shared: &SharedState, tab: &crate::core::tabs::TabState) {
-    let policy = shared.app_state.lock().encrypted_crc_policy.clone();
+    let policy = encrypted_crc_policy(shared.signals());
     if policy == "on_access" {
         return;
     }
@@ -250,6 +250,14 @@ pub fn finish_archive_load(shared: &SharedState, tab: &crate::core::tabs::TabSta
             });
         }
     });
+}
+
+fn encrypted_crc_policy(signals: &crate::core::signals::AppSignals) -> String {
+    signals
+        .security_settings
+        .read()
+        .encrypted_crc_policy
+        .clone()
 }
 
 /// Archive information state — output shape of the per-tab
@@ -377,4 +385,19 @@ pub(crate) fn is_password_error(err_msg: &str) -> bool {
         || err_msg.contains("code Some(2)")
         || err_msg.contains("code Some(11)")
         || err_msg.contains("code Some(255)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crc_policy_comes_from_the_facade_backed_security_signal() {
+        let signals = crate::core::signals::AppSignals::new();
+        let mut security = arclain_app::settings::SecuritySettingsDto::default();
+        security.encrypted_crc_policy = "prompt_on_open".to_string();
+        signals.security_settings.set(security);
+
+        assert_eq!(encrypted_crc_policy(&signals), "prompt_on_open");
+    }
 }

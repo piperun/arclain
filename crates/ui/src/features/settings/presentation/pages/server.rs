@@ -74,15 +74,21 @@ pub fn render(
                         );
                         TextInput::new(&mut *state.api_key.write())
                             .password(true)
-                            .hint("Leave blank if authentication is not required")
+                            .hint(if state.api_key_configured {
+                                "Enter a new key to replace the saved one"
+                            } else {
+                                "Leave blank if authentication is not required"
+                            })
                             .size(TextInputSize::Small)
                             .width(ui.available_width())
                             .with_theme_colors(colors)
                             .show(ui);
                         ui.label(
-                            egui::RichText::new(
-                                "Sent as a Bearer token — leave blank for unauthenticated access",
-                            )
+                            egui::RichText::new(if state.api_key_configured {
+                                "A key is saved — leave blank to keep it"
+                            } else {
+                                "Sent as a Bearer token — leave blank for unauthenticated access"
+                            })
                             .size(11.0)
                             .color(colors.on_surface_variant),
                         );

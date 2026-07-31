@@ -91,6 +91,11 @@ pub fn render(
                                 );
                                 TextInput::new(&mut *state.socks5_password.write())
                                     .password(true)
+                                    .hint(if state.socks5_password_configured {
+                                        "Enter a new password to replace the saved one"
+                                    } else {
+                                        "Optional password"
+                                    })
                                     .size(TextInputSize::Small)
                                     .with_theme_colors(colors)
                                     .show(ui);
@@ -99,10 +104,24 @@ pub fn render(
 
                         ui.add_space(4.0);
                         ui.label(
-                            egui::RichText::new("Leave blank if authentication is not required")
-                                .size(11.0)
-                                .color(colors.on_surface_variant),
+                            egui::RichText::new(if state.socks5_password_configured {
+                                "A password is saved — leave blank to keep it"
+                            } else {
+                                "Leave blank if authentication is not required"
+                            })
+                            .size(11.0)
+                            .color(colors.on_surface_variant),
                         );
+                        if state.socks5_password_configured
+                            && ui
+                                .add(
+                                    TextButton::new("Clear saved password", ButtonSize::Small)
+                                        .with_theme_colors(colors),
+                                )
+                                .clicked()
+                        {
+                            action = Some(SettingsAction::ClearSocks5Password);
+                        }
                     });
                 });
 

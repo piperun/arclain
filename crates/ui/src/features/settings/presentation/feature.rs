@@ -55,7 +55,9 @@ impl SettingsFeature {
     pub fn new(shared: &SharedState) -> Self {
         // Seed the form state from the settings mirrors.
         let general = shared.signals().general_settings.get();
+        let archive = shared.signals().archive_settings.get();
         let network = shared.signals().network_settings.get();
+        let security = shared.signals().security_settings.get();
         let open_nested_in_new_tab = general.open_nested_in_new_tab;
         let drop_behavior = crate::features::settings::types::DropBehavior::from_settings_str(
             &general.drop_behavior,
@@ -63,18 +65,6 @@ impl SettingsFeature {
         let restore_tabs_on_launch = general.restore_tabs_on_launch;
 
         let network_state = {
-            let state = shared.app_state.lock();
-            let password = if let Some(dbs) = &state.dbs {
-                dbs.secrets
-                    .get_secret("proxy:socks5")
-                    .unwrap_or(None)
-                    .map(|s| s.to_string())
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
-            drop(state);
-
             use crate::features::settings::domain::types::ConnectionTestStatus;
 
             use arclain_app::Signal;
@@ -83,7 +73,11 @@ impl SettingsFeature {
                 socks5_enabled: Signal::new(network.socks5_enabled),
                 socks5_address: Signal::new(network.socks5_address.clone().unwrap_or_default()),
                 socks5_username: Signal::new(network.socks5_username.clone().unwrap_or_default()),
-                socks5_password: Signal::new(password),
+                // Stored secrets never cross the facade boundary. Blank
+                // means "keep" on save; the configured bit lets the page
+                // explain that without receiving the credential itself.
+                socks5_password: Signal::new(String::new()),
+                socks5_password_configured: network.socks5_password_configured,
                 connection_test_status: Signal::new(ConnectionTestStatus::Idle),
             }
         };
@@ -92,22 +86,11 @@ impl SettingsFeature {
             use crate::features::settings::domain::types::ServerConnectionStatus;
             use arclain_app::Signal;
 
-            let state = shared.app_state.lock();
-            let api_key = if let Some(dbs) = &state.dbs {
-                dbs.secrets
-                    .get_secret("gameta:api_key")
-                    .unwrap_or(None)
-                    .map(|s| s.to_string())
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
-            drop(state);
-
             ServerSettingsState {
                 enabled: Signal::new(network.gameta_server_enabled),
                 url: Signal::new(network.gameta_server_url.clone().unwrap_or_default()),
-                api_key: Signal::new(api_key),
+                api_key: Signal::new(String::new()),
+                api_key_configured: network.gameta_api_key_configured,
                 connection_status: Signal::new(ServerConnectionStatus::Idle),
             }
         };
@@ -121,14 +104,26 @@ impl SettingsFeature {
             network_state,
             server_state,
             security_state: {
-                let security = shared.signals().security_settings.get();
                 SecuritySettingsState {
+                    encrypted_crc_policy: Signal::new(
+                        crate::features::settings::domain::types::EncryptedCrcPolicy::from_settings_str(
+                            &security.encrypted_crc_policy,
+                        ),
+                    ),
                     default_secrets_db: security.default_secrets_database_path,
                     default_key_file: security.default_key_file_path,
                     ..SecuritySettingsState::default()
                 }
             },
-            archives_state: ArchivesSettingsState::default(),
+            archives_state: ArchivesSettingsState {
+                temp_dir: Signal::new(
+                    archive
+                        .temp_directory
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                ),
+                ..ArchivesSettingsState::default()
+            },
 
             interface_state: InterfaceSettingsState::default(),
             toolbar_layout_state: ToolbarLayoutState::default(),
@@ -161,8 +156,7 @@ impl SettingsFeature {
         page: &SettingsPage,
         refs: SettingsFeatureRefs<'_>,
     ) -> bool {
-        // PasswordRules dirty-detection is owned by PasswordManagementFeature
-        // — short-circuit before locking app_state for the other arms.
+        // PasswordRules dirty-detection is owned by PasswordManagementFeature.
         if matches!(page, SettingsPage::PasswordRules) {
             return refs
                 .password_management
@@ -170,56 +164,49 @@ impl SettingsFeature {
                 .unwrap_or(false);
         }
 
-        let state = shared.app_state.lock();
-
         match page {
             SettingsPage::General => {
+                let stored = shared.signals().general_settings.get();
                 let stored_drop = crate::features::settings::types::DropBehavior::from_settings_str(
-                    state
-                        .user_config
-                        .drop_behavior
-                        .as_deref()
-                        .unwrap_or("new_tab"),
+                    &stored.drop_behavior,
                 );
-                *self.general_state.open_nested_in_new_tab.read()
-                    != state.user_config.open_nested_in_new_tab
+                *self.general_state.open_nested_in_new_tab.read() != stored.open_nested_in_new_tab
                     || *self.general_state.drop_behavior.read() != stored_drop
                     || *self.general_state.restore_tabs_on_launch.read()
-                        != state.user_config.restore_tabs_on_launch
+                        != stored.restore_tabs_on_launch
             }
             SettingsPage::Archives => {
+                let stored = shared.signals().archive_settings.get();
                 let current_val = if self.archives_state.temp_dir.read().trim().is_empty() {
                     None
                 } else {
-                    Some(self.archives_state.temp_dir.read().trim().to_string())
+                    Some(std::path::PathBuf::from(
+                        self.archives_state.temp_dir.read().trim(),
+                    ))
                 };
-                current_val != state.user_config.temp_dir
+                current_val != stored.temp_directory
             }
             SettingsPage::Network => {
-                *self.network_state.socks5_enabled.read() != state.user_config.socks5_enabled
+                let stored = shared.signals().network_settings.get();
+                *self.network_state.socks5_enabled.read() != stored.socks5_enabled
                     || *self.network_state.socks5_address.read()
-                        != state.user_config.socks5_address.clone().unwrap_or_default()
+                        != stored.socks5_address.unwrap_or_default()
                     || *self.network_state.socks5_username.read()
-                        != state
-                            .user_config
-                            .socks5_username
-                            .clone()
-                            .unwrap_or_default()
+                        != stored.socks5_username.unwrap_or_default()
+                    || !self.network_state.socks5_password.read().is_empty()
             }
             SettingsPage::Server => {
-                *self.server_state.enabled.read() != state.user_config.gameta_server_enabled
-                    || *self.server_state.url.read()
-                        != state
-                            .user_config
-                            .gameta_server_url
-                            .clone()
-                            .unwrap_or_default()
+                let stored = shared.signals().network_settings.get();
+                *self.server_state.enabled.read() != stored.gameta_server_enabled
+                    || *self.server_state.url.read() != stored.gameta_server_url.unwrap_or_default()
+                    || !self.server_state.api_key.read().is_empty()
             }
             SettingsPage::Security => {
+                let stored = shared.signals().security_settings.get();
                 !self.security_state.key_file_path.read().trim().is_empty()
                     || !self.security_state.secrets_db_path.read().trim().is_empty()
-                    || *self.security_state.encrypted_crc_policy.read()
-                        != crate::features::settings::domain::types::EncryptedCrcPolicy::default()
+                    || self.security_state.encrypted_crc_policy.read().as_str()
+                        != stored.encrypted_crc_policy
             }
             _ => false,
         }
