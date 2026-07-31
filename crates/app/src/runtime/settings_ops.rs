@@ -937,15 +937,76 @@ pub(super) async fn run_set_plugin_enabled(
     Ok(())
 }
 
+/// Pulls whatever `plugin_id`'s guest currently holds in its settings bag
+/// out of the plugin runtime and persists it, unless it already matches
+/// what is stored.
+///
+/// # Why this exists
+///
+/// A guest's `set-setting` host call writes into its own instance and
+/// flips a dirty bit -- and stops there. Nothing in the plugin runtime
+/// ever writes that to disk; the host has to come and take it. So every
+/// call that enters a guest has to be followed by a pull, or the setting
+/// lives only as long as the process.
+///
+/// Called after each guest entry on the session surface, which is where
+/// settings are actually written: a plugin's settings form *is* a plugin
+/// UI, so changing a setting is an ordinary `on-ui-event`.
+///
+/// # Why it compares before writing
+///
+/// [`run_set_plugin_settings`] reads the whole user-config row, rewrites
+/// it, and saves it back. Doing that on every plugin interaction, when
+/// the overwhelming majority write no setting at all, would put a
+/// full-row database round trip behind every button click. The comparison
+/// is against this application's own mirror of the persisted row, which
+/// is only ever advanced *after* a successful save -- so the mirror can
+/// lag the disk but never lead it, and a stale mirror can only cause a
+/// redundant write, never a skipped one.
+///
+/// # Failures are logged, not propagated
+///
+/// The caller is an operation whose real subject is the plugin's document
+/// update. Failing that operation because a settings row could not be
+/// written would discard a document the user is looking at in order to
+/// report a problem with something else. The write is retried implicitly
+/// by the next interaction: a failed save leaves the mirror untouched, so
+/// the comparison above still finds a difference next time.
+pub(super) async fn flush_plugin_settings(inner: &Arc<AppRuntime>, plugin_id: &str) {
+    let Some(manager) = inner.plugin_manager() else {
+        return;
+    };
+    // Scoped so neither lock guard is held across the await below.
+    let settings = {
+        let manager = manager.lock();
+        manager.get_settings_for(plugin_id)
+    };
+    let Some(settings) = settings else {
+        return;
+    };
+    let already_persisted = {
+        let mutable = inner.session.mutable.read();
+        mutable.user_config.get_plugin_settings(plugin_id) == settings
+    };
+    if already_persisted {
+        return;
+    }
+    if let Err(error) = run_set_plugin_settings(inner, plugin_id.to_string(), settings).await {
+        tracing::error!(
+            plugin_id,
+            ?error,
+            "failed to persist a plugin's settings after it ran"
+        );
+    }
+}
+
 /// Persists `settings` as `plugin_id`'s own key/value settings bag
 /// (`UserConfig::plugin_settings`), reported back to the plugin at its
 /// next `get-ui-layout`/`on-ui-event` call via `PluginManager::new`'s own
 /// `plugin_settings` seed at bootstrap. Does not validate that
-/// `plugin_id` names a currently-loaded plugin -- a plugin's own
-/// `on-ui-event` response is this call's only production caller (see
-/// `crate::plugins::PluginSessionStore::dispatch_action`), and by the
-/// time that response exists, the plugin obviously already ran
-/// successfully.
+/// `plugin_id` names a currently-loaded plugin: a frontend saving a
+/// settings form and [`flush_plugin_settings`] are both callers, and
+/// neither reaches here without the plugin having run.
 pub(super) async fn run_set_plugin_settings(
     inner: &Arc<AppRuntime>,
     plugin_id: String,

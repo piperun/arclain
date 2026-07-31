@@ -2167,16 +2167,22 @@ impl ArclainApp {
             // happens to be active when the fetch finishes.
             let pinned_archive_session =
                 pinned.unwrap_or_else(|| inner.active_archive_session().get());
-            inner
+            let opened = inner
                 .plugin_sessions()
                 .open(
                     manager,
-                    plugin_id,
+                    plugin_id.clone(),
                     extension_point,
                     pinned_archive_session,
                     &handle,
                 )
-                .await
+                .await;
+            // `get-ui-layout` ran in the guest, and a guest may write a
+            // setting from anywhere -- so the pull happens whether the
+            // open succeeded or failed, and costs nothing when the guest
+            // wrote nothing (see `settings_ops::flush_plugin_settings`).
+            settings_ops::flush_plugin_settings(&inner, &plugin_id).await;
+            opened
         })
         .await?
     }
@@ -2286,10 +2292,22 @@ impl ArclainApp {
                         .operations()
                         .transition(operation_id, OperationState::Started)
                         .await;
+                    let plugin_id = worker_inner
+                        .plugin_sessions()
+                        .session_plugin_id(request.session_id);
                     let outcome = worker_inner
                         .plugin_sessions()
                         .dispatch_action(manager, request, &worker_handle)
                         .await;
+                    // Before the terminal transition, so a frontend that
+                    // reacts to `Completed` is reacting to a state whose
+                    // settings are already durable. Runs on the failure
+                    // path too: a guest can write a setting and then trap,
+                    // and losing the user's setting because the plugin
+                    // misbehaved afterwards would be the worse outcome.
+                    if let Some(plugin_id) = plugin_id {
+                        settings_ops::flush_plugin_settings(&worker_inner, &plugin_id).await;
+                    }
                     let state = match outcome {
                         Ok(update) => OperationState::Completed {
                             result: OperationResult::PluginUiUpdated { update },

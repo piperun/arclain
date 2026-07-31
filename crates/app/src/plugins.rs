@@ -2064,6 +2064,21 @@ impl PluginSessionStore {
         Ok(document)
     }
 
+    /// Which plugin owns `session_id`, or `None` if the session is
+    /// unknown or already closed.
+    ///
+    /// Read *before* a dispatch rather than after, by the caller that has
+    /// to persist that plugin's settings once the dispatch returns: a
+    /// dispatch can end with the session gone (closed from another task
+    /// while the guest ran), and a guest that wrote a setting on its way
+    /// to that outcome still wrote it.
+    pub(crate) fn session_plugin_id(&self, session_id: PluginSessionId) -> Option<String> {
+        self.sessions
+            .read()
+            .get(&session_id)
+            .map(|record| record.plugin_id.clone())
+    }
+
     /// The archive session this plugin session's background metadata
     /// writes are pinned to -- see [`Self::open`].
     ///
