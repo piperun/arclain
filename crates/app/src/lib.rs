@@ -32,7 +32,10 @@
 //! [`plugins::PluginUiDocument`] and the facade methods
 //! `ArclainApp::{plugins, set_plugin_enabled, open_plugin_session,
 //! plugin_ui_document, close_plugin_session, start_plugin_action,
-//! set_active_archive_session, read_plugin_image}`. It also owns the
+//! set_active_archive_session, read_plugin_image}`. A *disabled* plugin
+//! is refused by all of them, here rather than in each renderer, and
+//! distinguishably from an unknown plugin -- see
+//! [`plugins::is_plugin_disabled_refusal`]. It also owns the
 //! domain-access surface a frontend used to reach `arclain-network`
 //! directly for: [`plugins::DomainWhitelistEntryDto`] (via
 //! `ArclainApp::plugin_domain_whitelist`) and the pure [`analyze_url`]

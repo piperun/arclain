@@ -42,6 +42,13 @@
 //!   coalesce, so nothing to build a queue for.
 //! - Hidden/disabled action rejection, via
 //!   `arclain_plugins::ui_model::PluginUiNodeDto::find`.
+//! - The plugin-*enabled* gate ([`require_enabled_plugin`]): one check,
+//!   applied to every surface that runs a plugin or serves what a plugin
+//!   authored, so "a disabled plugin does not run" is a property of this
+//!   crate rather than something each renderer has to remember. See
+//!   [`PluginSessionStore`]'s own doc comment for what it does to a
+//!   session that was already open, and [`is_plugin_disabled_refusal`]
+//!   for how a frontend tells that refusal apart from "no such plugin".
 //!
 //! - `PluginAction::RequestFetch` (the gameta-or-native background
 //!   metadata fetch) is resolved through
@@ -1477,6 +1484,89 @@ fn plugin_not_found(plugin_id: &str) -> ApplicationError {
         .with_field("plugin_id")
 }
 
+/// The exact `summary` every disabled-plugin refusal carries. Exported so
+/// a frontend recognizes the refusal by comparing against *this* symbol
+/// rather than spelling the sentence itself: if the wording ever changes,
+/// both ends move together. See [`is_plugin_disabled_refusal`], which is
+/// what callers should actually use.
+pub const PLUGIN_DISABLED_SUMMARY: &str = "plugin is disabled";
+
+/// The refusal every plugin surface produces for a plugin that exists but
+/// is currently disabled -- see [`require_enabled_plugin`].
+///
+/// `PermissionDenied`, deliberately *not* `NotFound`: a renderer that
+/// asked for a disabled plugin's layout should draw nothing, while one
+/// that asked for a plugin that does not exist has a stale item id it
+/// needs to drop. Those are different repairs, so they cannot share an
+/// error kind (that ambiguity is exactly what
+/// [`is_plugin_disabled_refusal`] exists to remove).
+///
+/// No `field` is set, unlike [`plugin_not_found`]'s `plugin_id`: nothing
+/// about the caller's *request* is wrong. The same request succeeds
+/// unchanged once the plugin is enabled again, so pointing at a request
+/// field would misdirect a frontend into highlighting an input the user
+/// cannot fix there. The plugin the refusal is about is named in the
+/// diagnostic instead.
+fn plugin_disabled(plugin_id: &str) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::PermissionDenied,
+        PLUGIN_DISABLED_SUMMARY,
+    )
+    .with_diagnostic(format!("plugin id: {plugin_id}"))
+    .with_recoverability(Recoverability::UserAction)
+}
+
+/// True for exactly the refusal a disabled plugin's surface produces --
+/// `open_plugin_session`, `open_plugin_session_for_archive`,
+/// `plugin_ui_document`, and a `start_plugin_action` operation's
+/// `Failed` state.
+///
+/// The distinction a frontend needs: a slot whose plugin was turned off
+/// should quietly stop drawing (and may start drawing again if the user
+/// turns it back on), while a slot naming a plugin that does not exist is
+/// a stale reference to discard, and a genuine failure deserves the error
+/// the user sees. Only the middle case is `NotFound`, so
+/// `kind`-matching alone would collapse the first two.
+pub fn is_plugin_disabled_refusal(error: &ApplicationError) -> bool {
+    error.kind == ApplicationErrorKind::PermissionDenied && error.summary == PLUGIN_DISABLED_SUMMARY
+}
+
+/// The one enabled-flag gate every plugin surface in this crate goes
+/// through, so "a disabled plugin does not run" holds no matter which
+/// frontend asks and no matter which extension point it asks for.
+///
+/// Three outcomes, and the distinction between the last two is the point:
+/// - enabled -- `Ok(())`;
+/// - known, but currently disabled -- [`plugin_disabled`]
+///   (`PermissionDenied`);
+/// - not a plugin this manager knows at all -- [`plugin_not_found`]
+///   (`NotFound`).
+///
+/// Both reads happen under a single `PluginManager` lock acquisition, and
+/// the enabled flag they consult is the same
+/// `PluginManager::enabled_plugins` map that [`PluginSessionStore::plugins`]
+/// reports through `PluginSummary::enabled` and that
+/// [`PluginSessionStore::set_plugin_enabled`] writes. There is therefore
+/// no instant at which this gate and `ArclainApp::plugins` disagree about
+/// a plugin: a frontend's *cached copy* of the last `plugins()` answer can
+/// of course be stale, which is precisely why this gate is re-evaluated at
+/// each use rather than trusted from the caller.
+pub(crate) fn require_enabled_plugin(
+    manager: &SyncMutex<PluginManager>,
+    plugin_id: &str,
+) -> Result<(), ApplicationError> {
+    let manager = manager.lock();
+    if manager.is_plugin_enabled(plugin_id) {
+        return Ok(());
+    }
+    // Only reached on refusal, so the metadata clone never costs the
+    // happy path anything.
+    if manager.get_plugin_metadata(plugin_id).is_none() {
+        return Err(plugin_not_found(plugin_id));
+    }
+    Err(plugin_disabled(plugin_id))
+}
+
 fn unknown_plugin_session(session_id: PluginSessionId) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::NotFound, "no such plugin session")
         .with_diagnostic(format!("session id: {}", session_id.into_raw()))
@@ -1693,6 +1783,49 @@ impl SessionRecord {
 /// serialization lock every action dispatch acquires. Mints
 /// [`PluginSessionId`]s from its own counter (matching `ArchiveSessionStore`'s
 /// per-instance-counter pattern, not a process-wide `static`).
+///
+/// # What a disable does to a session that is already open
+///
+/// **The session record survives; every plugin-driven operation on it
+/// refuses for as long as the plugin stays disabled; re-enabling resumes
+/// it exactly where it was.** [`Self::open`], [`Self::document`] and
+/// [`Self::dispatch_action`] each enforce their half through
+/// [`require_enabled_plugin`]; this is the one place that states the
+/// policy whole.
+///
+/// Why the session is *not* destroyed at disable time:
+/// - The plugin runtime does not destroy anything either. `PluginManager::
+///   disable_plugin` flips a flag; the guest instance, its settings and its
+///   network log all survive. A facade that reaped sessions would impose a
+///   shorter lifetime than the runtime it wraps, and only on the host's
+///   half of the state -- the guest would go on remembering what the host
+///   had thrown away.
+/// - A frontend closes its own slots. [`Self::close`] on a session the
+///   facade had silently reaped would start reporting `NotFound` for
+///   routine teardown, turning correct cleanup into an error path.
+/// - A reaped session is indistinguishable from a bogus session id, so a
+///   panel could not tell "your plugin was turned off" (draw nothing, and
+///   maybe draw again later) from "your session id is garbage" (a bug
+///   worth surfacing). Keeping the record is what makes
+///   [`is_plugin_disabled_refusal`] answerable at all.
+///
+/// What that implies for in-flight state, each pinned by a test:
+/// - The retained document is *withheld, not discarded*: no new revision is
+///   minted while disabled, and the same revision is served again on
+///   re-enable.
+/// - A dispatch already inside the guest when the disable lands cannot be
+///   preempted -- a WASM call is not cancellable. It runs to completion in
+///   the guest, but [`Self::dispatch_action`] re-checks the flag the moment
+///   it returns, so nothing that call produced reaches a frontend: its host
+///   intents are dropped, its `RequestFetch`es never run, its
+///   `RefreshPanel` never re-enters the guest, and its document is never
+///   committed. The operation ends `Failed` carrying the refusal instead.
+///   The residual, stated rather than hidden: whatever that one
+///   already-issued guest call did *inside* the guest (a setting it wrote)
+///   stands.
+/// - Nothing re-fetches on re-enable. Enabling a plugin makes no plugin
+///   call, so the session resumes on its last document; the next dispatch
+///   refreshes it if the plugin asks.
 pub(crate) struct PluginSessionStore {
     sessions: SyncRwLock<HashMap<PluginSessionId, SessionRecord>>,
     next_id: AtomicU64,
@@ -1851,6 +1984,12 @@ impl PluginSessionStore {
     /// `ArclainApp::open_plugin_session`'s own doc comment for why that
     /// is indistinguishable from a real empty layout, and not a bug.
     ///
+    /// Refuses a disabled plugin outright (see [`require_enabled_plugin`]),
+    /// before any WASM call: opening a session *is* running the plugin,
+    /// because `get-ui-layout` executes in the guest. The check sits after
+    /// [`validate_extension_point`] because a malformed request is
+    /// malformed whatever the plugin's state is.
+    ///
     /// `pinned_archive_session` is whichever archive session was active at
     /// the moment this session opened, and is where a background metadata
     /// fetch this session later requests writes its result. A plugin UI
@@ -1873,6 +2012,7 @@ impl PluginSessionStore {
         handle: &tokio::runtime::Handle,
     ) -> Result<PluginSessionSnapshot, ApplicationError> {
         validate_extension_point(&extension_point)?;
+        require_enabled_plugin(&manager, &plugin_id)?;
         let root = self
             .fetch_and_normalize(&manager, &plugin_id, &extension_point, handle)
             .await?;
@@ -1896,15 +2036,32 @@ impl PluginSessionStore {
 
     /// Immediate query of the last document revision retained for
     /// `session_id` -- no plugin call.
+    ///
+    /// Gated on the enabled flag even though nothing executes here: the
+    /// retained document is the disabled plugin's own authored content,
+    /// and serving it would leave that plugin's panel on screen after the
+    /// user turned it off -- the visible half of "a disabled plugin still
+    /// runs". The record itself is kept, not dropped (see
+    /// [`PluginSessionStore`]'s own doc comment), so the document comes
+    /// back verbatim, at the same revision, if the plugin is re-enabled.
+    ///
+    /// Order is forced rather than chosen: the session has to resolve
+    /// before there is a plugin id to check, so an unknown session id is
+    /// `NotFound` regardless of any plugin's state.
     pub(crate) fn document(
         &self,
+        manager: &SyncMutex<PluginManager>,
         session_id: PluginSessionId,
     ) -> Result<PluginUiDocument, ApplicationError> {
-        self.sessions
-            .read()
-            .get(&session_id)
-            .map(|record| record.document(session_id))
-            .ok_or_else(|| unknown_plugin_session(session_id))
+        let (plugin_id, document) = {
+            let sessions = self.sessions.read();
+            let record = sessions
+                .get(&session_id)
+                .ok_or_else(|| unknown_plugin_session(session_id))?;
+            (record.plugin_id.clone(), record.document(session_id))
+        };
+        require_enabled_plugin(manager, &plugin_id)?;
+        Ok(document)
     }
 
     /// The archive session this plugin session's background metadata
@@ -1945,6 +2102,14 @@ impl PluginSessionStore {
     /// the tree (a toolbar button's own id, or an internal lifecycle
     /// event) is dispatched normally -- see
     /// `arclain_plugins::ui_model::PluginUiNodeDto::find`'s doc comment.
+    ///
+    /// Refuses a disabled plugin twice, and both are load-bearing (see
+    /// [`PluginSessionStore`]'s own doc comment): once before the guest
+    /// call, so a disabled plugin is never entered, and once immediately
+    /// after it returns, so a disable that lands *during* a call cannot
+    /// have that call's actions, fetches, refresh or document escape into
+    /// a frontend. Only the first check can prevent execution; only the
+    /// second can contain a race.
     pub(crate) async fn dispatch_action(
         &self,
         manager: Arc<SyncMutex<PluginManager>>,
@@ -1967,9 +2132,14 @@ impl PluginSessionStore {
                 record.pinned_archive_session,
             )
         };
+        require_enabled_plugin(&manager, &plugin_id)?;
 
         let plugin_lock = self.lock_for_plugin(&plugin_id);
         let _guard = plugin_lock.lock().await;
+        // Re-checked after the queue: the per-plugin lock can be held for
+        // as long as another action's guest call takes, and the plugin can
+        // be disabled while this dispatch waits its turn behind it.
+        require_enabled_plugin(&manager, &plugin_id)?;
 
         let event_id = request.node_id.clone();
         let value = match request.action {
@@ -1997,6 +2167,16 @@ impl PluginSessionStore {
                 )
                 .with_diagnostic(join_error.to_string())
             })??;
+
+        // The containment half of the gate. Everything below this line
+        // either re-enters the guest (`RefreshPanel`), spends the plugin's
+        // network budget (`RequestFetch`), hands the plugin's own side
+        // effects to a frontend (`intents`), or publishes a new document
+        // revision -- none of which a disabled plugin may do, including
+        // the one whose call was already in flight when the user turned it
+        // off. The guest call above could not be taken back; its results
+        // can be, and are.
+        require_enabled_plugin(&manager, &plugin_id)?;
 
         let bounded = arclain_plugins::action_policy::bound_plugin_actions(actions);
         let mut intents = Vec::with_capacity(bounded.len());
@@ -3310,6 +3490,44 @@ mod tests {
         assert_eq!(tracker.get(), Some(ArchiveSessionId::from_raw(9)));
         tracker.set(None);
         assert_eq!(tracker.get(), None);
+    }
+
+    /// The refusal's own shape, in isolation from any running plugin: the
+    /// behavior tests live in `crates/app/tests/plugin_sessions.rs` and
+    /// drive a real guest, but *which* envelope they assert on is decided
+    /// here.
+    #[test]
+    fn the_disabled_refusal_is_permission_denied_and_names_its_plugin() {
+        let error = plugin_disabled("ui-demo");
+
+        assert_eq!(error.kind, ApplicationErrorKind::PermissionDenied);
+        assert_eq!(error.summary, PLUGIN_DISABLED_SUMMARY);
+        assert_eq!(error.diagnostic.as_deref(), Some("plugin id: ui-demo"));
+        assert_eq!(error.recoverability, Recoverability::UserAction);
+        assert!(!error.retryable, "retrying alone cannot enable a plugin");
+        // Nothing about the caller's request is wrong -- the identical
+        // request succeeds once the plugin is enabled -- so no request
+        // field is blamed.
+        assert_eq!(error.field, None);
+    }
+
+    /// The distinction the gate exists to make legible. Both "not found"
+    /// errors a plugin surface can produce must fall *outside* the
+    /// predicate, or a renderer would treat a stale plugin reference as a
+    /// temporarily switched-off one and keep it forever.
+    #[test]
+    fn only_the_disabled_refusal_answers_the_disabled_predicate() {
+        assert!(is_plugin_disabled_refusal(&plugin_disabled("ui-demo")));
+        assert!(!is_plugin_disabled_refusal(&plugin_not_found("ui-demo")));
+        assert!(!is_plugin_disabled_refusal(&unknown_plugin_session(
+            PluginSessionId::from_raw(7)
+        )));
+        assert!(!is_plugin_disabled_refusal(&plugin_manager_unavailable()));
+        // A `PermissionDenied` from a *different* refusal on this same
+        // surface must not be mistaken for it either.
+        assert!(!is_plugin_disabled_refusal(
+            &authorize_plugin_image_write("ui-demo", "plugin-image:other:key").unwrap_err()
+        ));
     }
 
     #[test]

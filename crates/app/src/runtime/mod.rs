@@ -2046,6 +2046,15 @@ impl ArclainApp {
     /// live `PluginManager` and persists the result so it survives a
     /// restart (see `runtime::settings_ops::run_set_plugin_enabled`'s own
     /// doc comment). `NotFound` for an unknown `plugin_id`.
+    ///
+    /// Disabling takes effect immediately for *every* plugin surface, not
+    /// only for the ones a frontend remembers to stop asking for: a
+    /// disabled plugin can no longer open a session, answer
+    /// [`Self::plugin_ui_document`], or accept a
+    /// [`Self::start_plugin_action`]. Sessions already open are kept but
+    /// refuse until the plugin is enabled again -- see `crate::plugins::
+    /// PluginSessionStore`'s own doc comment for that policy and its
+    /// in-flight edges.
     pub async fn set_plugin_enabled(
         &self,
         plugin_id: String,
@@ -2092,6 +2101,15 @@ impl ArclainApp {
     /// registered for this dialog/page" needs its own convention (an
     /// empty layout as a sentinel), not a signal this facade can add
     /// without changing the WIT ABI.
+    ///
+    /// A *disabled* plugin cannot be opened at all: opening runs
+    /// `get-ui-layout` in the guest, so the enabled flag is enforced here
+    /// rather than left to each renderer to remember. The refusal is
+    /// `PermissionDenied`, recognized by
+    /// [`crate::plugins::is_plugin_disabled_refusal`] and deliberately
+    /// distinct from the `NotFound` an unknown `plugin_id` produces -- a
+    /// renderer should quietly draw nothing for the first and drop a
+    /// stale reference for the second.
     pub async fn open_plugin_session(
         &self,
         plugin_id: String,
@@ -2178,12 +2196,25 @@ impl ArclainApp {
     /// Immediate, in-memory query of the last document revision
     /// retained for `session_id` -- no plugin call. `NotFound` for an
     /// unknown or already-closed session id.
+    ///
+    /// Refuses, without dropping the session, while the session's plugin
+    /// is disabled: the retained document is that plugin's own authored
+    /// content, so serving it would leave a disabled plugin's panel on
+    /// screen. The refusal is `PermissionDenied` and is recognized by
+    /// [`crate::plugins::is_plugin_disabled_refusal`], so a renderer can
+    /// distinguish it from the `NotFound` of an unknown session and draw
+    /// nothing rather than an error. See `crate::plugins::
+    /// PluginSessionStore`'s own doc comment for what a disable does to an
+    /// open session, and what it deliberately does not do.
     pub async fn plugin_ui_document(
         &self,
         session_id: PluginSessionId,
     ) -> Result<crate::plugins::PluginUiDocument, ApplicationError> {
-        self.dispatch(move |inner| inner.plugin_sessions().document(session_id))
-            .await?
+        self.dispatch(move |inner| {
+            let manager = crate::plugins::require_manager(inner.plugin_manager())?;
+            inner.plugin_sessions().document(&manager, session_id)
+        })
+        .await?
     }
 
     /// Closes an open plugin session. `NotFound` if `session_id` is
@@ -2206,6 +2237,15 @@ impl ArclainApp {
     /// module doc comment for per-plugin action serialization and the
     /// hidden/disabled node rejection this performs before ever reaching
     /// the WASM guest.
+    ///
+    /// An action against a *disabled* plugin's session fails the
+    /// operation -- `Failed` carrying the same `PermissionDenied` refusal
+    /// [`crate::plugins::is_plugin_disabled_refusal`] recognizes, in the
+    /// same place an unknown session id fails it, rather than a
+    /// request-level `Err`. A disable that lands mid-call fails it too:
+    /// the guest call cannot be recalled, but nothing it produced is
+    /// published (see `crate::plugins::PluginSessionStore`'s own doc
+    /// comment).
     pub async fn start_plugin_action(
         &self,
         request: crate::plugins::PluginActionRequest,
