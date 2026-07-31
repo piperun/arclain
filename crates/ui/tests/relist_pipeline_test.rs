@@ -408,6 +408,19 @@ fn a_rule_protected_archive_opens_and_reads_without_the_ui_holding_its_password(
 
     let temp = tempfile::tempdir().unwrap();
 
+    let app = bootstrap_real_app(&temp);
+    let mut shared = create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.handle().clone();
+    let sevenzip_path = runtime
+        .block_on(app.capabilities())
+        .expect("read application capabilities")
+        .external_tools
+        .into_iter()
+        .find(|tool| tool.tool == "7z" && tool.available)
+        .and_then(|tool| tool.resolved_path)
+        .expect("these tests require a real 7-Zip executable");
+
     // A real header-encrypted 7z: without the password even the entry
     // names are unreadable, which is exactly the shape that forces the
     // open-time ladder (list fails -> consult stored rules -> retry).
@@ -415,9 +428,7 @@ fn a_rule_protected_archive_opens_and_reads_without_the_ui_holding_its_password(
     std::fs::create_dir_all(&content_dir).unwrap();
     std::fs::write(content_dir.join("payload.txt"), b"locked payload").unwrap();
     let archive_path = temp.path().join("RJ123456.7z");
-    let sevenzip = arclain_core::backends::SevenZipCli::detect(None)
-        .expect("these tests require a real 7-Zip executable");
-    let status = std::process::Command::new(sevenzip.exe_path())
+    let status = std::process::Command::new(&sevenzip_path)
         .arg("a")
         .arg(format!("-p{FIXTURE_PASSWORD}"))
         .arg("-mhe=on")
@@ -427,38 +438,19 @@ fn a_rule_protected_archive_opens_and_reads_without_the_ui_holding_its_password(
         .expect("run 7z to build the encrypted fixture");
     assert!(status.success(), "7z must build the fixture");
 
-    // Seed one enabled rule into the vault the bootstrap below will
-    // load -- the same files `arclain_app`'s own bootstrap reads.
-    {
-        let secrets_dir = temp.path().join("data").join("secrets");
-        std::fs::create_dir_all(&secrets_dir).unwrap();
-        let key_path = secrets_dir.join("master.key");
-        let key = arclain_core::SecretsKey::generate();
-        key.save_to_file(&key_path).unwrap();
-        let databases_dir = temp.path().join("data").join("databases");
-        std::fs::create_dir_all(&databases_dir).unwrap();
-        let db_paths = arclain_core::DbPaths {
-            config_db: databases_dir.join("config.sqlite"),
-            cache_db: databases_dir.join("metadata.sqlite"),
-            secrets_db: secrets_dir.join("pass.redb"),
-            key_file: Some(key_path),
-        };
-        let dbs = arclain_core::open_databases(&db_paths, &key).unwrap();
-        dbs.secrets
-            .replace_all_pass_rules(&[arclain_core::DbPassRule {
+    runtime
+        .block_on(
+            app.upsert_password_rule(arclain_app::settings::PasswordRuleInput {
                 name: "fixture rule".to_string(),
                 pattern: "RJ123456".to_string(),
-                password: FIXTURE_PASSWORD.to_string(),
+                password: Some(arclain_app::challenge::SecretInput::new(
+                    FIXTURE_PASSWORD.to_string(),
+                )),
                 priority: 10,
                 enabled: true,
-            }])
-            .unwrap();
-    }
-
-    let app = bootstrap_real_app(&temp);
-    let mut shared = create_test_shared_state();
-    shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.handle().clone();
+            }),
+        )
+        .expect("seed the fixture rule through the facade");
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;

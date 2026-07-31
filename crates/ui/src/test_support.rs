@@ -45,28 +45,19 @@ pub fn bootstrap_test_facade(temp: &TempDir) -> arclain_app::ArclainApp {
     )
     .expect("write dummy 7-Zip executable");
 
-    let databases_dir = paths.data_dir.join("databases");
-    std::fs::create_dir_all(&databases_dir).expect("create databases dir");
-    let config_db_path = databases_dir.join("config.sqlite");
-    let db = arclain_core::config::ConfigDb::open(&config_db_path).expect("open config db");
-    let conn = db.into_sqlite_db();
-    conn.with_connection(|conn| {
-        arclain_core::UserConfig::ensure_table(conn)?;
-        let mut config = arclain_core::UserConfig::new();
-        config.sevenzip_path = Some(sevenzip_path.to_string_lossy().into_owned());
-        config.save(conn)?;
-        Ok(())
-    })
-    .expect("seed sevenzip_path into test config db");
-
-    arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
-        paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-    })
+    arclain_app::ArclainApp::bootstrap_with_overrides(
+        arclain_app::BootstrapConfig {
+            paths_override: Some(paths),
+            worker_threads: None,
+            archive_backend_override: None,
+            extract_runner_override: None,
+            materialization_lease_ttl_override: None,
+            materialization_cleanup_interval_override: None,
+        },
+        arclain_app::BootstrapOverrides {
+            sevenzip_path: Some(sevenzip_path),
+        },
+    )
     .expect("bootstrap a test facade")
 }
 

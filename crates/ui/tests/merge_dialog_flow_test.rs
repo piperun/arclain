@@ -35,8 +35,8 @@ fn wait_until(message: &str, mut condition: impl FnMut() -> bool) {
     }
 }
 
-fn bootstrap_real_app(temp: &Path) -> arclain_app::ArclainApp {
-    arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
+fn real_bootstrap_config(temp: &Path) -> arclain_app::BootstrapConfig {
+    arclain_app::BootstrapConfig {
         paths_override: Some(arclain_app::AppPaths {
             config_dir: temp.join("config"),
             data_dir: temp.join("data"),
@@ -49,14 +49,25 @@ fn bootstrap_real_app(temp: &Path) -> arclain_app::ArclainApp {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
-    })
-    .expect("bootstrap must succeed against a bare temp-dir AppPaths")
+    }
+}
+
+fn bootstrap_real_app(temp: &Path) -> arclain_app::ArclainApp {
+    arclain_app::ArclainApp::bootstrap(real_bootstrap_config(temp))
+        .expect("bootstrap must succeed against a bare temp-dir AppPaths")
 }
 
 fn detect_real_sevenzip() -> Option<PathBuf> {
-    let cli = arclain_core::backends::sevenz_cli::SevenZipCli::detect(None).ok()?;
-    let exe = cli.exe_path().to_path_buf();
-    exe.exists().then_some(exe)
+    let temp = tempfile::tempdir().ok()?;
+    let app = arclain_app::ArclainApp::bootstrap(real_bootstrap_config(temp.path())).ok()?;
+    let runtime = tokio::runtime::Runtime::new().ok()?;
+    runtime
+        .block_on(app.capabilities())
+        .ok()?
+        .external_tools
+        .into_iter()
+        .find(|tool| tool.tool == "7z" && tool.available)
+        .and_then(|tool| tool.resolved_path)
 }
 
 /// A scratch root on a normal, persistent filesystem rather than system

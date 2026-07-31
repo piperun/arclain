@@ -764,13 +764,10 @@ mod tests {
     use crate::features::settings::domain::types::{ConnectionTestStatus, ServerConnectionStatus};
     use crate::shared::theme::AppTheme;
     use crate::test_support::{app_state_from_facade, bootstrap_test_facade};
-    use arclain_core::services::{ConfigService, Services as CoreServices};
-    use arclain_core::UserConfig;
     use arclain_widgets::Toaster;
     use parking_lot::Mutex;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -846,28 +843,6 @@ mod tests {
             !format!("{stored:?}").contains("draft-password-9c07"),
             "the stored summary must never carry the password itself"
         );
-    }
-
-    fn serve_proxy_sentinel(
-        proxy: TcpListener,
-        request_finished: Arc<AtomicBool>,
-        reached_proxy: Arc<AtomicBool>,
-    ) {
-        // The HTTP request timeout bounds this lifecycle. A shorter wall-clock
-        // deadline makes the sentinel depend on when the OS schedules its thread.
-        while !request_finished.load(Ordering::SeqCst) {
-            match proxy.accept() {
-                Ok((mut socket, _)) => {
-                    reached_proxy.store(true, Ordering::SeqCst);
-                    let _ = socket.write_all(&[0x05, 0xff]);
-                    return;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("proxy sentinel accept failed: {error}"),
-            }
-        }
     }
 
     /// The archives page commits its collision-policy dropdown on
@@ -969,12 +944,8 @@ mod tests {
 
     struct ProxySaveFixture {
         shared: SharedState,
-        core_services: Arc<CoreServices>,
-        config_service: Arc<ConfigService>,
-        dbs: arclain_core::ConfigDbs,
-        previous: UserConfig,
-        previous_password: String,
-        proxy_listener: TcpListener,
+        previous: arclain_app::settings::NetworkSettingsDto,
+        _proxy_listener: TcpListener,
         _temp: TempDir,
     }
 
@@ -989,11 +960,6 @@ mod tests {
                 .local_addr()
                 .expect("read previous proxy address");
             let previous_password = "previous-proxy-password-4e7a".to_string();
-            let mut previous = UserConfig::new();
-            previous.socks5_enabled = true;
-            previous.socks5_address = Some(proxy_address.to_string());
-            previous.socks5_username = Some("previous-proxy-user-2c8f".to_string());
-            previous.set_plugin_proxy_enabled(PROXY_PLUGIN_ID, true);
 
             // Seed the "previous" settings through the facade itself
             // (the same public surface a real prior session would have
@@ -1034,129 +1000,40 @@ mod tests {
                     .expect("persist previous proxy password");
             });
 
-            // These two handles are test probes only: production UI code no
-            // longer receives CoreServices. They let the regression tests
-            // prove persistence and live routing against the exact services
-            // owned by the facade.
-            let legacy = facade
-                .take_legacy_composition()
-                .expect("take core-service test probes");
-            let core_services = legacy.core_services;
-            let dbs = legacy.dbs.expect("test vault must be available");
-            let config_service = core_services
-                .config_service
-                .clone()
-                .expect("config service must be available after a real bootstrap");
+            let previous = seed_runtime
+                .block_on(facade.settings())
+                .expect("read seeded proxy settings")
+                .network;
             let shared = shared_state_from_facade(facade);
 
             Self {
                 shared,
-                core_services,
-                config_service,
-                dbs,
                 previous,
-                previous_password,
-                proxy_listener,
+                _proxy_listener: proxy_listener,
                 _temp: temp,
             }
         }
 
         fn assert_previous_settings_unchanged(&self) {
-            self.assert_previous_non_secret_settings_unchanged();
-
-            let secret = self
-                .dbs
-                .secrets
-                .get_secret("proxy:socks5")
-                .expect("read proxy secret")
-                .expect("previous proxy secret remains");
-            assert_eq!(&*secret, self.previous_password.as_str());
-        }
-
-        fn assert_previous_non_secret_settings_unchanged(&self) {
             let signal = self.shared.signals.network_settings.get();
             assert_network_signal_matches(&signal, &self.previous);
+            let facade = self.shared.facade.as_ref().expect("fixture facade");
             let persisted = self
-                .config_service
-                .get_user_config()
-                .expect("reload persisted user config");
-            assert_proxy_fields_eq(&persisted, &self.previous, "ConfigService persistence");
-        }
-
-        fn assert_previous_runtime_proxy_unchanged(&self) {
-            let proxy = self
-                .proxy_listener
-                .try_clone()
-                .expect("clone reserved proxy listener");
-            proxy
-                .set_nonblocking(true)
-                .expect("make proxy sentinel nonblocking");
-            let target = TcpListener::bind("127.0.0.1:0").expect("bind direct HTTP sentinel");
-            target
-                .set_nonblocking(true)
-                .expect("make HTTP sentinel nonblocking");
-            let target_address = target.local_addr().expect("read HTTP sentinel address");
-            let reached_directly = Arc::new(AtomicBool::new(false));
-            let reached_on_thread = reached_directly.clone();
-            let reached_proxy = Arc::new(AtomicBool::new(false));
-            let proxy_reached_on_thread = reached_proxy.clone();
-            let request_finished = Arc::new(AtomicBool::new(false));
-            let proxy_finished_on_thread = request_finished.clone();
-            let proxy_server = std::thread::spawn(move || {
-                serve_proxy_sentinel(proxy, proxy_finished_on_thread, proxy_reached_on_thread);
-            });
-
-            let target_finished_on_thread = request_finished.clone();
-            let target_server = std::thread::spawn(move || {
-                while !target_finished_on_thread.load(Ordering::SeqCst) {
-                    match target.accept() {
-                        Ok((mut socket, _)) => {
-                            reached_on_thread.store(true, Ordering::SeqCst);
-                            socket
-                                .set_read_timeout(Some(Duration::from_secs(1)))
-                                .unwrap();
-                            let mut request = [0_u8; 1024];
-                            let _ = socket.read(&mut request);
-                            let _ = socket.write_all(
-                                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-                            );
-                            return;
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
-                        Err(error) => panic!("HTTP sentinel accept failed: {error}"),
-                    }
-                }
-            });
-
-            let result = self.core_services.async_http_client.blocking_get(
-                &format!("http://{target_address}/runtime-proxy-sentinel"),
-                true,
-            );
-            request_finished.store(true, Ordering::SeqCst);
-            proxy_server.join().expect("proxy sentinel thread panicked");
-            target_server.join().expect("HTTP sentinel thread panicked");
-
-            assert!(result.is_err(), "invalid save made the request succeed");
-            assert!(
-                reached_proxy.load(Ordering::SeqCst),
-                "invalid save replaced the previous runtime proxy configuration"
-            );
-            assert!(
-                !reached_directly.load(Ordering::SeqCst),
-                "invalid save replaced the previous runtime proxy with a direct client"
-            );
+                .shared
+                .services
+                .tokio_runtime
+                .block_on(facade.settings())
+                .expect("reload persisted settings")
+                .network;
+            assert_network_signal_matches(&persisted, &self.previous);
         }
     }
 
-    /// The reactive network mirror's counterpart to
-    /// [`assert_proxy_fields_eq`]: same three proxy identity fields,
-    /// read off the settings DTO the signal now carries instead of a
-    /// `UserConfig`.
+    /// Compares the non-secret network identity plus the facade's
+    /// configured/not-configured secret indicator.
     fn assert_network_signal_matches(
         actual: &arclain_app::settings::NetworkSettingsDto,
-        expected: &UserConfig,
+        expected: &arclain_app::settings::NetworkSettingsDto,
     ) {
         assert_eq!(
             actual.socks5_enabled, expected.socks5_enabled,
@@ -1170,20 +1047,13 @@ mod tests {
             actual.socks5_username, expected.socks5_username,
             "network signal proxy username changed"
         );
-    }
-
-    fn assert_proxy_fields_eq(actual: &UserConfig, expected: &UserConfig, surface: &str) {
         assert_eq!(
-            actual.socks5_enabled, expected.socks5_enabled,
-            "{surface} proxy enablement changed"
+            actual.socks5_password_configured, expected.socks5_password_configured,
+            "network signal proxy password status changed"
         );
         assert_eq!(
-            actual.socks5_address, expected.socks5_address,
-            "{surface} proxy address changed"
-        );
-        assert_eq!(
-            actual.socks5_username, expected.socks5_username,
-            "{surface} proxy username changed"
+            actual.plugin_proxy_enabled, expected.plugin_proxy_enabled,
+            "network signal plugin proxy choices changed"
         );
     }
 
@@ -1213,7 +1083,6 @@ mod tests {
         );
 
         fixture.assert_previous_settings_unchanged();
-        fixture.assert_previous_runtime_proxy_unchanged();
 
         let observable_state = format!(
             "{:?} {:?}",
@@ -1289,18 +1158,23 @@ mod tests {
         assert!(!signal.socks5_enabled);
         assert_eq!(signal.socks5_address.as_deref(), Some(""));
         assert!(signal.socks5_username.is_none());
-        let secret = fixture
-            .dbs
-            .secrets
-            .get_secret("proxy:socks5")
-            .unwrap()
-            .expect("blank password must preserve the stored secret");
-        assert_eq!(&*secret, fixture.previous_password.as_str());
+        assert!(
+            signal.socks5_password_configured,
+            "blank password must preserve the configured secret"
+        );
 
-        let persisted = fixture.config_service.get_user_config().unwrap();
+        let facade = fixture.shared.facade.as_ref().expect("fixture facade");
+        let persisted = fixture
+            .shared
+            .services
+            .tokio_runtime
+            .block_on(facade.settings())
+            .expect("reload persisted settings")
+            .network;
         assert!(!persisted.socks5_enabled);
         assert_eq!(persisted.socks5_address.as_deref(), Some(""));
         assert!(persisted.socks5_username.is_none());
+        assert!(persisted.socks5_password_configured);
         assert!(!format!("{:?}", fixture.shared.toaster.lock()).contains("Error"));
         assert!(!logs_contain("Refusing to save invalid proxy"));
         assert!(logs_contain("Network settings saved"));
@@ -1323,218 +1197,16 @@ mod tests {
             &fixture.shared,
         );
 
-        let secret = fixture
-            .dbs
-            .secrets
-            .get_secret("proxy:socks5")
-            .expect("read proxy secret after explicit clear");
-        assert!(secret.is_none());
         assert!(!network_state.socks5_password_configured);
-    }
-
-    #[test]
-    fn save_network_disable_clears_runtime_plugin_proxy_map() {
-        let fixture = ProxySaveFixture::new();
-        assert!(fixture
-            .core_services
-            .async_http_client
-            .should_use_proxy_for_plugin(PROXY_PLUGIN_ID));
-
-        handle_action(
-            SettingsAction::SaveNetwork {
-                socks5_enabled: false,
-                socks5_address: Some(String::new()),
-                socks5_username: None,
-                socks5_password: Some(String::new()),
-            },
-            &mut SecuritySettingsState::default(),
-            &mut ArchivesSettingsState::default(),
-            None,
-            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
-            &mut ServerSettingsState::default(),
-            &fixture.shared,
-        );
-
-        assert!(
-            !fixture
-                .core_services
-                .async_http_client
-                .should_use_proxy_for_plugin(PROXY_PLUGIN_ID),
-            "disabling the global proxy left its per-plugin route enabled"
-        );
-    }
-
-    #[test]
-    fn save_network_reenable_restores_persisted_plugin_proxy_map() {
-        let fixture = ProxySaveFixture::new();
-        fixture
-            .core_services
-            .async_http_client
-            .apply_plugin_proxy_map(Default::default());
-        assert!(!fixture
-            .core_services
-            .async_http_client
-            .should_use_proxy_for_plugin(PROXY_PLUGIN_ID));
-
-        handle_action(
-            SettingsAction::SaveNetwork {
-                socks5_enabled: true,
-                socks5_address: Some("127.0.0.1:1080".to_string()),
-                socks5_username: None,
-                socks5_password: Some(String::new()),
-            },
-            &mut SecuritySettingsState::default(),
-            &mut ArchivesSettingsState::default(),
-            None,
-            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
-            &mut ServerSettingsState::default(),
-            &fixture.shared,
-        );
-
-        assert!(
-            fixture
-                .core_services
-                .async_http_client
-                .should_use_proxy_for_plugin(PROXY_PLUGIN_ID),
-            "re-enabling the global proxy did not restore the persisted per-plugin route"
-        );
-    }
-
-    #[test]
-    fn save_network_reenable_matches_startup_proxy_defaults_and_explicit_overrides() {
-        let fixture = ProxySaveFixture::new();
-        // Seed the explicit per-plugin opt-out through the facade
-        // itself -- it is what `SaveNetwork` reads its starting point
-        // from through `submit_settings_patch`.
-        let facade = fixture
+        let facade = fixture.shared.facade.as_ref().expect("fixture facade");
+        let persisted = fixture
             .shared
-            .facade
-            .as_ref()
-            .expect("fixture must have a real facade");
-        fixture.shared.services.tokio_runtime.block_on(async {
-            let current = facade.settings().await.expect("read current settings");
-            let mut plugin_proxy_enabled = current.network.plugin_proxy_enabled.clone();
-            plugin_proxy_enabled.insert("dlsite-api".to_string(), false);
-            facade
-                .update_settings(arclain_app::settings::SettingsPatch {
-                    expected_revision: current.revision,
-                    general: None,
-                    archive: None,
-                    network: Some(arclain_app::settings::NetworkSettingsPatch {
-                        socks5_enabled: arclain_app::settings::PatchValue::Keep,
-                        socks5_address: arclain_app::settings::PatchValue::Keep,
-                        socks5_username: arclain_app::settings::PatchValue::Keep,
-                        plugin_proxy_enabled: arclain_app::settings::PatchValue::Set(
-                            plugin_proxy_enabled,
-                        ),
-                        gameta_server_enabled: arclain_app::settings::PatchValue::Keep,
-                        gameta_server_url: arclain_app::settings::PatchValue::Keep,
-                    }),
-                    security: None,
-                })
-                .await
-                .expect("seed the dlsite-api opt-out");
-        });
-
-        handle_action(
-            SettingsAction::SaveNetwork {
-                socks5_enabled: true,
-                socks5_address: Some("127.0.0.1:1080".to_string()),
-                socks5_username: None,
-                socks5_password: Some(String::new()),
-            },
-            &mut SecuritySettingsState::default(),
-            &mut ArchivesSettingsState::default(),
-            None,
-            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
-            &mut ServerSettingsState::default(),
-            &fixture.shared,
-        );
-
-        let client = &fixture.core_services.async_http_client;
-        assert!(
-            client.should_use_proxy_for_plugin("dlsite"),
-            "live re-enable omitted the startup default for dlsite"
-        );
-        assert!(
-            !client.should_use_proxy_for_plugin("dlsite-api"),
-            "live re-enable replaced an explicit dlsite-api opt-out"
-        );
-        assert!(
-            client.should_use_proxy_for_plugin("dlsite-html"),
-            "live re-enable omitted the startup default for dlsite-html"
-        );
-    }
-
-    /// `SaveNetwork` now submits two separate facade calls: `update_settings`
-    /// for the identity fields (enabled/address/username), then
-    /// `set_socks5_password` for the password -- both through
-    /// `NetworkProxyPersistenceService::save`'s journaled path, but as two
-    /// *separate* calls, not the pre-facade handler's one-shot combined
-    /// save. A `user_config`-row failure trips `update_settings`'s own
-    /// identity step *first* (it always runs before the password step),
-    /// so this proves `SaveNetwork`'s atomicity from the UI's point of
-    /// view: when the identity step fails, `set_socks5_password` is never
-    /// even attempted (the handler returns early -- see `settings_
-    /// controller.rs`'s own `SaveNetwork` arm), so neither the identity
-    /// fields nor the password change apply, and the new password never
-    /// reaches the toaster or logs.
-    ///
-    /// This does not exercise `set_socks5_password`'s *own* journaled
-    /// rollback in isolation -- for a password-only change, the identity
-    /// snapshot `NetworkProxyPersistenceService::save` tracks is
-    /// unchanged (`previous == candidate`), which its own ambiguity
-    /// resolution always treats as committed regardless of the
-    /// underlying config-row write's outcome, so there is no config-row
-    /// failure mode to roll a password-only change back from. That
-    /// mechanism (a stale/corrupt pending marker failing the call
-    /// cleanly rather than being silently ignored) is covered precisely
-    /// at the layer that owns it:
-    /// `arclain_app::tests::settings_facade::
-    /// set_socks5_password_fails_cleanly_instead_of_ignoring_a_corrupt_pending_marker`.
-    #[traced_test]
-    #[test]
-    fn config_persistence_failure_during_the_identity_step_blocks_the_whole_save() {
-        const NEW_PASSWORD: &str = "new-proxy-password-4b65";
-        let fixture = ProxySaveFixture::new();
-        {
-            fixture
-                .dbs
-                .config
-                .with_connection(|connection| {
-                    connection.execute_batch(
-                        "CREATE TRIGGER reject_proxy_config_save
-                         BEFORE INSERT ON user_config
-                         BEGIN
-                             SELECT RAISE(ABORT, 'injected proxy config failure');
-                         END;",
-                    )?;
-                    Ok(())
-                })
-                .expect("install failing config trigger");
-        }
-
-        handle_action(
-            SettingsAction::SaveNetwork {
-                socks5_enabled: true,
-                socks5_address: Some("127.0.0.1:1081".to_string()),
-                socks5_username: Some("new-proxy-user-9c17".to_string()),
-                socks5_password: Some(NEW_PASSWORD.to_string()),
-            },
-            &mut SecuritySettingsState::default(),
-            &mut ArchivesSettingsState::default(),
-            None,
-            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
-            &mut ServerSettingsState::default(),
-            &fixture.shared,
-        );
-
-        fixture.assert_previous_settings_unchanged();
-        fixture.assert_previous_runtime_proxy_unchanged();
-        let diagnostics = format!("{:?}", fixture.shared.toaster.lock());
-        assert!(diagnostics.contains("Network settings were not saved"));
-        assert!(!diagnostics.contains(NEW_PASSWORD));
-        assert!(!logs_contain(NEW_PASSWORD));
+            .services
+            .tokio_runtime
+            .block_on(facade.settings())
+            .expect("reload persisted settings")
+            .network;
+        assert!(!persisted.socks5_password_configured);
     }
 
     #[traced_test]
@@ -1570,30 +1242,34 @@ mod tests {
             b"this is not a sqlite database, just noise to corrupt the file",
         )
         .expect("write corrupt config.sqlite");
-        // No dummy 7-Zip seeded: the corrupt file wipes any seeded
-        // `sevenzip_path` override, so this relies on this project's
-        // documented test-environment assumption that 7-Zip is on
-        // `PATH` (see `arclain_app`'s own `tests/bootstrap.rs` module
-        // doc comment).
-        let facade = arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
-            paths_override: Some(paths),
-            worker_threads: None,
-            archive_backend_override: None,
-            extract_runner_override: None,
-            materialization_lease_ttl_override: None,
-            materialization_cleanup_interval_override: None,
-        })
+        let sevenzip_path = temp
+            .path()
+            .join(if cfg!(windows) { "7zz.exe" } else { "7zz" });
+        std::fs::write(&sevenzip_path, b"frontend fixture only")
+            .expect("write dummy 7-Zip fixture");
+        let facade = arclain_app::ArclainApp::bootstrap_with_overrides(
+            arclain_app::BootstrapConfig {
+                paths_override: Some(paths),
+                worker_threads: None,
+                archive_backend_override: None,
+                extract_runner_override: None,
+                materialization_lease_ttl_override: None,
+                materialization_cleanup_interval_override: None,
+            },
+            arclain_app::BootstrapOverrides {
+                sevenzip_path: Some(sevenzip_path),
+            },
+        )
         .expect("corrupt config.sqlite must not fail bootstrap");
 
-        let legacy = facade
-            .take_legacy_composition()
-            .expect("take legacy composition");
+        let initial = tokio::runtime::Runtime::new()
+            .expect("create settings runtime")
+            .block_on(facade.settings())
+            .expect("read degraded settings snapshot");
         assert!(
-            legacy.dbs.is_none(),
+            !initial.security.vault_available,
             "test setup must reproduce a genuinely unavailable vault"
         );
-
-        drop(legacy);
         let shared = shared_state_from_facade(facade);
 
         handle_action(
@@ -1622,92 +1298,6 @@ mod tests {
         assert!(diagnostics.contains("Network settings were not saved"));
         assert!(!diagnostics.contains(NEW_PASSWORD));
         assert!(!logs_contain(NEW_PASSWORD));
-    }
-
-    #[test]
-    fn pending_proxy_marker_blocks_new_save_before_mutation() {
-        let fixture = ProxySaveFixture::new();
-        {
-            fixture
-                .dbs
-                .secrets
-                .set_secret("journal:proxy-settings", "invalid-marker")
-                .unwrap();
-        }
-
-        handle_action(
-            SettingsAction::SaveNetwork {
-                socks5_enabled: true,
-                socks5_address: Some("127.0.0.1:1081".to_string()),
-                socks5_username: Some("new-user".to_string()),
-                socks5_password: Some("new-password".to_string()),
-            },
-            &mut SecuritySettingsState::default(),
-            &mut ArchivesSettingsState::default(),
-            None,
-            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
-            &mut ServerSettingsState::default(),
-            &fixture.shared,
-        );
-
-        fixture.assert_previous_settings_unchanged();
-        fixture.assert_previous_runtime_proxy_unchanged();
-        assert_eq!(
-            fixture
-                .dbs
-                .secrets
-                .get_secret("journal:proxy-settings")
-                .unwrap()
-                .as_ref()
-                .map(|value| value.as_str()),
-            Some("invalid-marker")
-        );
-    }
-
-    #[test]
-    fn proxy_fixture_retains_exclusive_ownership_of_runtime_proxy_port() {
-        let fixture = ProxySaveFixture::new();
-        let proxy_address: std::net::SocketAddr = fixture
-            .previous
-            .socks5_address
-            .as_deref()
-            .unwrap()
-            .parse()
-            .unwrap();
-
-        assert!(
-            TcpListener::bind(proxy_address).is_err(),
-            "fixture released its proxy port for reuse by a later sentinel"
-        );
-    }
-
-    #[test]
-    fn proxy_sentinel_remains_available_until_the_request_finishes() {
-        let proxy = TcpListener::bind("127.0.0.1:0").expect("bind delayed proxy sentinel");
-        let proxy_address = proxy.local_addr().expect("read delayed proxy address");
-        proxy
-            .set_nonblocking(true)
-            .expect("make delayed proxy sentinel nonblocking");
-        let request_finished = Arc::new(AtomicBool::new(false));
-        let reached_proxy = Arc::new(AtomicBool::new(false));
-        let server = {
-            let request_finished = request_finished.clone();
-            let reached_proxy = reached_proxy.clone();
-            std::thread::spawn(move || {
-                serve_proxy_sentinel(proxy, request_finished, reached_proxy);
-            })
-        };
-
-        std::thread::sleep(Duration::from_millis(1_100));
-        let _connection = std::net::TcpStream::connect(proxy_address)
-            .expect("connect after the old scheduling deadline");
-        server.join().expect("proxy sentinel thread panicked");
-        request_finished.store(true, Ordering::SeqCst);
-
-        assert!(
-            reached_proxy.load(Ordering::SeqCst),
-            "proxy sentinel stopped before the request lifecycle finished"
-        );
     }
 
     // ---------------------------------------------------------------

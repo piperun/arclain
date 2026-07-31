@@ -100,6 +100,15 @@ pub struct BootstrapConfig {
     pub materialization_cleanup_interval_override: Option<std::time::Duration>,
 }
 
+/// Application-owned fixture overrides that should not require a
+/// frontend to edit backend configuration storage before bootstrap.
+#[derive(Clone, Debug, Default)]
+pub struct BootstrapOverrides {
+    /// Explicit 7-Zip executable used for this process only. It takes
+    /// precedence over the persisted setting and is never written back.
+    pub sevenzip_path: Option<PathBuf>,
+}
+
 /// Hand-written rather than `#[derive(Debug)]`: `dyn arclain_core::
 /// ArchiveBackend` does not implement `Debug`, so `archive_backend_override`
 /// cannot derive it. Reports only whether an override is set, never the
@@ -221,7 +230,10 @@ fn upgrade_narrow_auto_saved_rules(dbs: &ConfigDbs, pass_rules: &mut Vec<PassRul
     changed
 }
 
-pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationError> {
+pub(crate) fn run(
+    config: BootstrapConfig,
+    overrides: BootstrapOverrides,
+) -> Result<AppRuntime, ApplicationError> {
     info!("Bootstrapping application runtime");
 
     // -- directories, plugin directory resolution --
@@ -325,7 +337,9 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
     // `exe_path().exists()` check below closes that gap so a stale
     // configured path is treated the same as "not found" rather than
     // silently accepted and failing later on first use.
-    let sevenzip_path_override = user_config.sevenzip_path.as_ref().map(PathBuf::from);
+    let sevenzip_path_override = overrides
+        .sevenzip_path
+        .or_else(|| user_config.sevenzip_path.as_ref().map(PathBuf::from));
     let fallback_backend = match SevenZipCli::detect(sevenzip_path_override.as_deref()) {
         Ok(cli) if cli.exe_path().exists() => cli,
         _ => {

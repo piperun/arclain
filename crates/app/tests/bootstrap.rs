@@ -32,7 +32,7 @@ mod support;
 use std::path::PathBuf;
 
 use arclain_app::error::ApplicationErrorKind;
-use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
+use arclain_app::{AppPaths, ArclainApp, BootstrapConfig, BootstrapOverrides};
 
 fn dummy_sevenzip(temp: &tempfile::TempDir) -> PathBuf {
     support::create_dummy_executable(temp.path(), sevenzip_exe_name())
@@ -46,6 +46,28 @@ fn sevenzip_exe_name() -> &'static str {
 #[cfg(not(windows))]
 fn sevenzip_exe_name() -> &'static str {
     "7zz"
+}
+
+#[test]
+fn frontend_fixture_can_override_sevenzip_without_editing_the_config_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    let sevenzip_path = dummy_sevenzip(&temp);
+
+    ArclainApp::bootstrap_with_overrides(
+        BootstrapConfig {
+            paths_override: Some(paths),
+            worker_threads: None,
+            archive_backend_override: None,
+            extract_runner_override: None,
+            materialization_lease_ttl_override: None,
+            materialization_cleanup_interval_override: None,
+        },
+        BootstrapOverrides {
+            sevenzip_path: Some(sevenzip_path),
+        },
+    )
+    .expect("the application-owned fixture override must satisfy 7-Zip detection");
 }
 
 /// First run: an entirely empty temp directory. `bootstrap()` must

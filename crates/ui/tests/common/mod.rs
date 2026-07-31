@@ -39,6 +39,16 @@ fn create_test_runtime() -> Runtime {
         .expect("create test runtime")
 }
 
+#[cfg(windows)]
+fn sevenzip_exe_name() -> &'static str {
+    "7zz.exe"
+}
+
+#[cfg(not(windows))]
+fn sevenzip_exe_name() -> &'static str {
+    "7zz"
+}
+
 /// Build a minimal `SharedState` suitable for dispatcher unit tests.
 ///
 /// This fixture has no application facade, so facade-backed actions take
@@ -96,20 +106,28 @@ pub fn create_test_shared_state() -> SharedState {
 /// API only (its doc comment says the same from the other side).
 pub fn create_test_shared_state_with_facade() -> (TempDir, SharedState) {
     let temp = tempfile::tempdir().expect("create tempdir for the test facade");
-    let app = arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
-        paths_override: Some(arclain_app::AppPaths {
-            config_dir: temp.path().join("config"),
-            data_dir: temp.path().join("data"),
-            cache_dir: temp.path().join("cache"),
-            log_dir: temp.path().join("logs"),
-            plugins_dir: temp.path().join("plugins"),
-        }),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-    })
+    let sevenzip_path = temp.path().join(sevenzip_exe_name());
+    std::fs::write(&sevenzip_path, b"test fixture executable placeholder")
+        .expect("write dummy 7-Zip executable");
+    let app = arclain_app::ArclainApp::bootstrap_with_overrides(
+        arclain_app::BootstrapConfig {
+            paths_override: Some(arclain_app::AppPaths {
+                config_dir: temp.path().join("config"),
+                data_dir: temp.path().join("data"),
+                cache_dir: temp.path().join("cache"),
+                log_dir: temp.path().join("logs"),
+                plugins_dir: temp.path().join("plugins"),
+            }),
+            worker_threads: None,
+            archive_backend_override: None,
+            extract_runner_override: None,
+            materialization_lease_ttl_override: None,
+            materialization_cleanup_interval_override: None,
+        },
+        arclain_app::BootstrapOverrides {
+            sevenzip_path: Some(sevenzip_path),
+        },
+    )
     .expect("bootstrap the test facade");
 
     let mut shared = create_test_shared_state();
@@ -123,6 +141,23 @@ pub fn create_test_shared_state_with_facade() -> (TempDir, SharedState) {
     );
     shared.facade = Some(app);
     (temp, shared)
+}
+
+/// Builds a small real ZIP archive for UI tests that only need a normal
+/// completed archive-open session. Backend edge cases belong to the
+/// application crate; frontend tests consume the public facade.
+pub fn build_zip_fixture(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use std::io::Write;
+
+    let path = root.join(name);
+    let file = std::fs::File::create(&path).expect("create ZIP fixture");
+    let mut writer = zip::ZipWriter::new(file);
+    writer
+        .start_file("a.txt", zip::write::SimpleFileOptions::default())
+        .expect("start ZIP fixture entry");
+    writer.write_all(b"a").expect("write ZIP fixture entry");
+    writer.finish().expect("finish ZIP fixture");
+    path
 }
 
 /// Richer test context for archive-browser / navigation / organization

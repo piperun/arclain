@@ -38,7 +38,7 @@ mod processing_ops;
 mod session_store;
 mod settings_ops;
 
-pub use bootstrap::BootstrapConfig;
+pub use bootstrap::{BootstrapConfig, BootstrapOverrides};
 pub use paths::AppPaths;
 pub use session_store::{
     AppCapabilities, BackendCapabilityDto, ExternalToolStatusDto, HealthSnapshot, LegacyComposition,
@@ -460,6 +460,17 @@ impl ArclainApp {
     /// [`bootstrap::run`] for the full sequence and what changed moving
     /// it here).
     pub fn bootstrap(config: BootstrapConfig) -> Result<Self, ApplicationError> {
+        Self::bootstrap_with_overrides(config, BootstrapOverrides::default())
+    }
+
+    /// Bootstraps with process-local application overrides. This is the
+    /// fixture-safe counterpart to [`Self::bootstrap`]: frontends can
+    /// provide external-tool paths without reaching into configuration
+    /// databases owned by this crate.
+    pub fn bootstrap_with_overrides(
+        config: BootstrapConfig,
+        overrides: BootstrapOverrides,
+    ) -> Result<Self, ApplicationError> {
         // Read before `config` moves into `bootstrap::run` -- the resolved
         // interval is only needed here, to spawn the materialization
         // cleanup task below, once `inner` actually exists to clone into
@@ -470,7 +481,7 @@ impl ArclainApp {
         let cleanup_interval = config
             .materialization_cleanup_interval_override
             .unwrap_or(crate::materialization::DEFAULT_CLEANUP_INTERVAL);
-        let runtime = bootstrap::run(config)?;
+        let runtime = bootstrap::run(config, overrides)?;
         let inner = Arc::new(runtime);
         if let Some(handle) = inner.tokio_handle() {
             // `Weak`, not `Arc`: see `run_cleanup_task`'s own doc comment

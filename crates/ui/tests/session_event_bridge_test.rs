@@ -16,117 +16,12 @@
 //! live broadcast subscription.
 
 mod common;
-use common::create_test_shared_state;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use common::{build_zip_fixture, create_test_shared_state_with_facade};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use arclain_app::archive::OpenArchiveRequest;
 use arclain_app::event::SessionEvent;
-
-/// A backend whose `list()` always succeeds with one fake entry -- mirrors
-/// `archive_session_lifecycle_test.rs`'s own fixture of the same name,
-/// duplicated here since each test file is its own crate compile.
-struct AlwaysSucceedsBackend;
-
-impl arclain_core::ArchiveBackend for AlwaysSucceedsBackend {
-    fn name(&self) -> &str {
-        "always-succeeds"
-    }
-    fn capabilities(&self) -> arclain_core::archive::BackendCapabilities {
-        arclain_core::archive::BackendCapabilities::read_only()
-    }
-    fn identify(&self, _path: &Path) -> anyhow::Result<arclain_core::archive::ArchiveKind> {
-        Ok(arclain_core::archive::ArchiveKind::Zip)
-    }
-    fn list(
-        &self,
-        _path: &Path,
-        _password: Option<&str>,
-    ) -> anyhow::Result<arclain_core::archive::ArchiveInfo> {
-        Ok(arclain_core::archive::ArchiveInfo {
-            archive_path: PathBuf::new(),
-            archive_kind: arclain_core::archive::ArchiveKind::Zip,
-            entries: vec![arclain_core::archive::ArchiveEntry {
-                path: "a.txt".to_string(),
-                size: 1,
-                packed_size: 1,
-                modified: None,
-                is_dir: false,
-                encrypted: false,
-                crc32: None,
-            }],
-            encrypted: false,
-            headers_encrypted: false,
-            encryption_method: None,
-        })
-    }
-    fn extract_all(&self, _: &Path, _: &Path, _: Option<&str>) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-    fn extract_files(
-        &self,
-        _: &Path,
-        _: &Path,
-        _: &[String],
-        _: Option<&str>,
-    ) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-    fn extract_directory(
-        &self,
-        _: &Path,
-        _: &Path,
-        _: &str,
-        _: Option<&str>,
-    ) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-    fn recompress_7z(&self, _: &Path, _: &Path) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-    fn add_files(&self, _: &Path, _: &[PathBuf]) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-    fn create_archive(&self, _: &Path, _: &[PathBuf], _: &str) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-    fn read_text_file(&self, _: &Path, _: &str, _: Option<&str>) -> anyhow::Result<String> {
-        unimplemented!()
-    }
-    fn delete_files(&self, _: &Path, _: &[String]) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-    fn add_or_update_file_from_str(&self, _: &Path, _: &str, _: &str) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-    fn convert_to_7z(&self, _: &arclain_core::Archive, _: &Path, _: &Path) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-    fn crc32_of_entry(&self, _: &Path, _: &str, _: Option<&str>) -> anyhow::Result<String> {
-        unimplemented!()
-    }
-}
-
-fn bootstrap_always_succeeds_app(temp: &tempfile::TempDir) -> arclain_app::ArclainApp {
-    let paths = arclain_app::AppPaths {
-        config_dir: temp.path().join("config"),
-        data_dir: temp.path().join("data"),
-        cache_dir: temp.path().join("cache"),
-        log_dir: temp.path().join("logs"),
-        plugins_dir: temp.path().join("plugins"),
-    };
-    let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(AlwaysSucceedsBackend);
-    arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
-        paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: Some(backend),
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-    })
-    .expect("bootstrap must succeed against a bare temp-dir AppPaths")
-}
 
 async fn wait_for_open_completion(
     app: &arclain_app::ArclainApp,
@@ -149,6 +44,18 @@ async fn wait_for_open_completion(
     }
 }
 
+fn open_test_context() -> (
+    tempfile::TempDir,
+    arclain_ui::shared::SharedState,
+    arclain_app::ArclainApp,
+    PathBuf,
+) {
+    let (temp, shared) = create_test_shared_state_with_facade();
+    let archive = build_zip_fixture(temp.path(), "fixture.zip");
+    let app = shared.facade.as_ref().unwrap().clone();
+    (temp, shared, app, archive)
+}
+
 /// 1. A plugin's metadata write, through the installed bridge, with an
 /// archive already open and its tab already stamped, lands on that tab
 /// only once the session-event consumer processes the resulting
@@ -157,10 +64,7 @@ async fn wait_for_open_completion(
 /// steps; that separation is the entire point of the swap).
 #[test]
 fn metadata_write_with_an_open_archive_lands_on_the_correct_tab_via_the_session_event() {
-    let temp = tempfile::tempdir().unwrap();
-    let app = bootstrap_always_succeeds_app(&temp);
-    let mut shared = create_test_shared_state();
-    shared.facade = Some(app.clone());
+    let (_temp, shared, app, archive_path) = open_test_context();
     let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
@@ -169,7 +73,7 @@ fn metadata_write_with_an_open_archive_lands_on_the_correct_tab_via_the_session_
     let session_id = runtime.block_on(async {
         let operation_id = app
             .start_open_archive(OpenArchiveRequest {
-                source_path: temp.path().join("fixture.zip"),
+                source_path: archive_path.clone(),
                 password: None,
             })
             .await
@@ -228,10 +132,7 @@ fn metadata_write_with_an_open_archive_lands_on_the_correct_tab_via_the_session_
 /// nothing here may key off it.
 #[test]
 fn a_metadata_arrival_refreshes_the_tabs_product_metadata_without_bumping_the_revision() {
-    let temp = tempfile::tempdir().unwrap();
-    let app = bootstrap_always_succeeds_app(&temp);
-    let mut shared = create_test_shared_state();
-    shared.facade = Some(app.clone());
+    let (_temp, shared, app, archive_path) = open_test_context();
     let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
@@ -240,7 +141,7 @@ fn a_metadata_arrival_refreshes_the_tabs_product_metadata_without_bumping_the_re
     let session_id = runtime.block_on(async {
         let operation_id = app
             .start_open_archive(OpenArchiveRequest {
-                source_path: temp.path().join("fixture.zip"),
+                source_path: archive_path.clone(),
                 password: None,
             })
             .await
@@ -322,9 +223,8 @@ fn a_metadata_arrival_refreshes_the_tabs_product_metadata_without_bumping_the_re
 /// involved at all here: there is no session id to attach one to.
 #[test]
 fn no_session_fallback_still_lands_on_the_active_tab() {
-    let temp = tempfile::tempdir().unwrap();
-    let app = bootstrap_always_succeeds_app(&temp);
-    let shared = create_test_shared_state();
+    let (_temp, shared) = create_test_shared_state_with_facade();
+    let app = shared.facade.as_ref().unwrap().clone();
     let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
@@ -355,10 +255,7 @@ fn no_session_fallback_still_lands_on_the_active_tab() {
 /// the tab is stamped.
 #[test]
 fn buffered_delivery_for_a_not_yet_stamped_tab_is_drained_once_the_tab_is_stamped() {
-    let temp = tempfile::tempdir().unwrap();
-    let app = bootstrap_always_succeeds_app(&temp);
-    let mut shared = create_test_shared_state();
-    shared.facade = Some(app.clone());
+    let (_temp, shared, app, archive_path) = open_test_context();
     let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
@@ -367,7 +264,7 @@ fn buffered_delivery_for_a_not_yet_stamped_tab_is_drained_once_the_tab_is_stampe
     let (operation_id, session_id) = runtime.block_on(async {
         let operation_id = app
             .start_open_archive(OpenArchiveRequest {
-                source_path: temp.path().join("fixture.zip"),
+                source_path: archive_path.clone(),
                 password: None,
             })
             .await
@@ -437,10 +334,7 @@ fn buffered_delivery_for_a_not_yet_stamped_tab_is_drained_once_the_tab_is_stampe
 /// it.
 #[test]
 fn a_lagged_session_event_consumer_reconciles_via_archive_snapshot() {
-    let temp = tempfile::tempdir().unwrap();
-    let app = bootstrap_always_succeeds_app(&temp);
-    let mut shared = create_test_shared_state();
-    shared.facade = Some(app.clone());
+    let (_temp, shared, app, archive_path) = open_test_context();
     let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
@@ -449,7 +343,7 @@ fn a_lagged_session_event_consumer_reconciles_via_archive_snapshot() {
     let session_id = runtime.block_on(async {
         let operation_id = app
             .start_open_archive(OpenArchiveRequest {
-                source_path: temp.path().join("fixture.zip"),
+                source_path: archive_path.clone(),
                 password: None,
             })
             .await
@@ -502,10 +396,7 @@ fn a_lagged_session_event_consumer_reconciles_via_archive_snapshot() {
 /// already be buffered.
 #[test]
 fn a_metadata_write_whose_session_event_is_never_handled_still_lands_once_the_tab_is_stamped() {
-    let temp = tempfile::tempdir().unwrap();
-    let app = bootstrap_always_succeeds_app(&temp);
-    let mut shared = create_test_shared_state();
-    shared.facade = Some(app.clone());
+    let (_temp, shared, app, archive_path) = open_test_context();
     let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
@@ -514,7 +405,7 @@ fn a_metadata_write_whose_session_event_is_never_handled_still_lands_once_the_ta
     let (operation_id, session_id) = runtime.block_on(async {
         let operation_id = app
             .start_open_archive(OpenArchiveRequest {
-                source_path: temp.path().join("fixture.zip"),
+                source_path: archive_path.clone(),
                 password: None,
             })
             .await
@@ -568,10 +459,7 @@ fn a_metadata_write_whose_session_event_is_never_handled_still_lands_once_the_ta
 /// updating the UI's displayed archive path entirely after the swap.
 #[test]
 fn a_rename_through_the_installed_bridge_updates_the_tabs_archive_path() {
-    let temp = tempfile::tempdir().unwrap();
-    let app = bootstrap_always_succeeds_app(&temp);
-    let mut shared = create_test_shared_state();
-    shared.facade = Some(app.clone());
+    let (temp, shared, app, archive_path) = open_test_context();
     let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
@@ -580,7 +468,7 @@ fn a_rename_through_the_installed_bridge_updates_the_tabs_archive_path() {
     let session_id = runtime.block_on(async {
         let operation_id = app
             .start_open_archive(OpenArchiveRequest {
-                source_path: temp.path().join("fixture.zip"),
+                source_path: archive_path.clone(),
                 password: None,
             })
             .await
@@ -609,7 +497,7 @@ fn a_rename_through_the_installed_bridge_updates_the_tabs_archive_path() {
 
     assert_eq!(
         tab.archive_path.get(),
-        Some(temp.path().join("fixture.zip")),
+        Some(archive_path),
         "the trait call alone must not touch any UI signal -- only the session store"
     );
 

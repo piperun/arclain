@@ -123,7 +123,7 @@ pub mod process;
 pub mod runtime;
 pub mod settings;
 
-pub use runtime::{AppPaths, ArclainApp, BootstrapConfig};
+pub use runtime::{AppPaths, ArclainApp, BootstrapConfig, BootstrapOverrides};
 
 /// Re-exported at the crate root because it is not an application method
 /// at all: [`analyze_url`] needs no `ArclainApp`, no runtime, and no I/O
