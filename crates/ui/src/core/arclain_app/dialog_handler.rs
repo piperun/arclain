@@ -74,7 +74,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             let tab = shared_state.signals().tabs.get().active().clone();
             tab.current_password.set(Some(password.clone()));
             let facade = shared_state.facade.clone();
-            let runtime = shared_state.services.tokio_runtime.clone();
+            let runtime = shared_state.services.tokio_runtime.handle().clone();
             runtime.spawn(async move {
                 if let Some(facade) = facade {
                     let _ = facade
@@ -91,7 +91,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         }
         password_management::PasswordFeatureAction::Cancelled { operation_id } => {
             let facade = shared_state.facade.clone();
-            let runtime = shared_state.services.tokio_runtime.clone();
+            let runtime = shared_state.services.tokio_runtime.handle().clone();
             runtime.spawn(async move {
                 if let Some(facade) = facade {
                     let _ = facade.cancel_operation(operation_id).await;

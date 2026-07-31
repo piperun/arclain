@@ -1,48 +1,122 @@
-use arclain_core::services::Services as CoreServices;
-use std::ops::Deref;
 use std::sync::Arc;
 
-/// UI-layer Services container
-/// Wraps the still-unmigrated `CoreServices` handle.
+/// Owns the frontend runtime without ever exposing an owning reference to
+/// worker tasks.
 ///
-/// The content cache and resource manager used to live here too. Neither
-/// does now: cached images resolve through `arclain_app`'s image surface
-/// (see `crate::shared::image_assets`), and the one resource value this
-/// frontend read off a `ResourceManager` handle is
-/// `ArclainApp::materialized_resource_limit`. A frontend holding a storage
-/// handle it only used to derive a byte ceiling and a cache key lookup was
-/// the coupling those surfaces exist to remove.
-///
-/// At real startup, every field here is populated from
-/// `arclain_app::ArclainApp::take_legacy_composition` (see
-/// `crate::core::state::init::AppState::new`) rather than computed
-/// inline -- `ArclainApp::bootstrap` now owns that composition. `new`
-/// below stays a direct constructor purely for feature-level UI tests
-/// that want a minimal `Services` without paying for a full bootstrap.
-pub struct Services {
-    pub core: CoreServices,
-}
+/// The last `SharedState` clone may be released by a task running on this
+/// very executor. Tokio's ordinary `Runtime::drop` panics in that context;
+/// `shutdown_background` is explicitly non-blocking and safe there. Handles
+/// handed to tasks do not own the runtime, so this wrapper remains the one
+/// teardown authority.
+struct FrontendRuntimeOwner(Option<tokio::runtime::Runtime>);
 
-impl Default for Services {
-    fn default() -> Self {
-        panic!("Services cannot be default-constructed without runtime");
-    }
-}
-
-impl Services {
-    /// Create new UI services wrapper with clean core services
-    /// Mostly used for testing
-    pub fn new(runtime: tokio::runtime::Runtime) -> Self {
-        Self {
-            core: CoreServices::new(Arc::new(runtime)),
+impl Drop for FrontendRuntimeOwner {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
         }
     }
 }
 
-impl Deref for Services {
-    type Target = CoreServices;
+/// Cloneable view of the frontend executor.
+///
+/// Only a Tokio `Handle` crosses into background coordinators. The owning
+/// runtime remains private to [`FrontendRuntimeOwner`], so it can never
+/// become an `Arc<Runtime>` whose final reference is released through
+/// Tokio's ordinary, blocking drop path by one of its own worker tasks.
+pub struct FrontendExecutor {
+    handle: tokio::runtime::Handle,
+}
+
+impl FrontendExecutor {
+    pub fn handle(&self) -> &tokio::runtime::Handle {
+        &self.handle
+    }
+}
+
+impl std::ops::Deref for FrontendExecutor {
+    type Target = tokio::runtime::Handle;
 
     fn deref(&self) -> &Self::Target {
-        &self.core
+        &self.handle
+    }
+}
+
+/// Executor owned by the egui frontend.
+///
+/// The application facade owns the headless runtime and every backend
+/// service. This smaller, independent runtime only drives frontend work:
+/// awaiting facade futures, projecting operation streams into signals, and
+/// loading images for egui. Keeping it separate means neither this container
+/// nor any UI caller can reach into `arclain_core::services::Services`.
+pub struct Services {
+    pub tokio_runtime: FrontendExecutor,
+    _runtime_owner: Arc<FrontendRuntimeOwner>,
+}
+
+impl Services {
+    /// Builds the bounded runtime used by the production egui frontend.
+    ///
+    /// It must be multi-threaded because much of the UI work is spawned and
+    /// expected to keep progressing between frames; a current-thread runtime
+    /// would only advance while a caller was inside `block_on`.
+    pub fn production() -> std::io::Result<Self> {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map(Self::new)
+    }
+
+    /// Wraps a caller-provided frontend runtime. Used by tests so each
+    /// fixture controls the executor it creates and tears down.
+    pub fn new(runtime: tokio::runtime::Runtime) -> Self {
+        let handle = runtime.handle().clone();
+        Self {
+            tokio_runtime: FrontendExecutor { handle },
+            _runtime_owner: Arc::new(FrontendRuntimeOwner(Some(runtime))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Services;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[test]
+    fn dropping_the_last_services_clone_on_its_worker_is_safe() {
+        let services = Arc::new(Services::new(
+            tokio::runtime::Runtime::new().expect("create frontend runtime"),
+        ));
+        let handle = services.tokio_runtime.handle().clone();
+        let worker_owner = services.clone();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+
+        handle.spawn(async move {
+            entered_tx.send(()).expect("report worker entry");
+            let _ = release_rx.await;
+            let safe = catch_unwind(AssertUnwindSafe(|| drop(worker_owner))).is_ok();
+            let _ = finished_tx.send(safe);
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker started");
+        // The task now holds the final Services/owner reference.
+        drop(services);
+        release_tx.send(()).expect("release worker");
+
+        assert!(
+            finished_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("worker reported runtime teardown"),
+            "dropping Services from its own worker must not use Runtime's blocking Drop",
+        );
     }
 }

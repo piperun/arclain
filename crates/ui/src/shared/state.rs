@@ -10,7 +10,8 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct SharedState {
     pub app_state: Arc<Mutex<AppState>>,
-    /// Read-only services container (Runtime, HTTP, Plugins, etc.)
+    /// The egui-owned executor used to await facade work and drive
+    /// frontend background tasks. It contains no backend service handles.
     pub services: Arc<crate::core::services::Services>,
     pub theme: AppTheme,
     pub toaster: Arc<Mutex<Toaster>>,
@@ -23,11 +24,12 @@ pub struct SharedState {
     pub image_assets: ImageAssetStore,
     /// Direct access to signals without locking AppState
     pub signals: AppSignals,
-    /// The application facade: owns the Tokio runtime and every composed
-    /// headless service `app_state`/`services` above were populated
-    /// from at startup (see `AppState::new`). Plugin UI and the migrated
-    /// archive workflows read through this handle; later Stage 1 tasks
-    /// retire the remaining `app_state`/`services` readers incrementally.
+    /// The application facade: owns its own Tokio runtime and every composed
+    /// headless service. `app_state` above is still populated from its
+    /// transitional composition snapshot; `services` is independent and
+    /// frontend-only. Plugin UI and the migrated archive workflows read
+    /// through this handle; later Stage 1 tasks retire the remaining
+    /// `app_state` readers incrementally.
     ///
     /// `Option` rather than a bare `ArclainApp`: several test fixtures
     /// (`crates/ui/tests/common/mod.rs`, `settings_controller.rs`'s own
@@ -74,7 +76,7 @@ impl SharedState {
 
         let plugin_ui_jobs = crate::features::plugins::application::PluginUiJobs::new(
             Some(facade.clone()),
-            services.tokio_runtime.clone(),
+            services.tokio_runtime.handle().clone(),
         );
         // Every image reference resolves through the application: a plugin
         // document's keys are facade-encoded and namespaced to the owning
@@ -83,7 +85,8 @@ impl SharedState {
         // which is which, enforces its own per-asset cap on both, and owns
         // the URL-fallback fetch -- so this frontend holds no cache handle
         // and no HTTP client of its own.
-        let image_assets = ImageAssetStore::new(facade.clone(), services.tokio_runtime.clone());
+        let image_assets =
+            ImageAssetStore::new(facade.clone(), services.tokio_runtime.handle().clone());
         let shared = Self {
             app_state: app_state.clone(),
             services,

@@ -639,7 +639,7 @@ pub fn handle_process_action(
         }
         return;
     };
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     match action {
         ProcessAction::LoadInterruptedCount => {

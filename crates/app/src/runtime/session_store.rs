@@ -1,16 +1,17 @@
 //! Everything one `ArclainApp::bootstrap` call composed: the concrete
 //! headless services (databases, backends, plugins, caches) `capabilities`
 //! and `health` read from, plus [`LegacyComposition`] -- the transitional
-//! handle `crates/ui`'s not-yet-migrated `AppState`/`Services` construction
-//! pulls its legacy-shaped fields from.
+//! handle `crates/ui`'s not-yet-migrated `AppState` construction pulls its
+//! legacy-shaped fields from.
 //!
 //! [`LegacyComposition`] is not part of the frontend-neutral application
 //! surface; a Flutter/Dart bridge must never use it. It exists only
 //! because `crates/ui` has ~200 call sites reading
-//! `SharedState.app_state`/`SharedState.services` fields directly, and
-//! they migrate onto `ArclainApp`'s own async operation methods
-//! incrementally. Each migrated call site is one field here that
-//! becomes removable.
+//! `SharedState.app_state` fields directly, and they migrate onto
+//! `ArclainApp`'s own async operation methods incrementally. The
+//! `core_services` member remains as a compatibility/test probe while
+//! those legacy consumers are retired; the production UI no longer
+//! installs it into its own services container.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -194,8 +195,8 @@ pub(crate) fn compute_health(
     }
 }
 
-/// Transitional bundle handed to `crates/ui`'s legacy `AppState`/
-/// `Services` construction. See the module doc comment.
+/// Transitional bundle handed to `crates/ui`'s legacy `AppState`
+/// construction. See the module doc comment.
 pub struct LegacyComposition {
     pub core_services: Arc<CoreServices>,
     pub plugin_manager: Option<Arc<SyncMutex<PluginManager>>>,

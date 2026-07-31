@@ -138,13 +138,18 @@ impl ImageBytes for HeldFirstReadImageBytes {
 struct StoreFixture {
     store: ImageAssetStore,
     source: Arc<CountingImageBytes>,
+    _runtime: Arc<tokio::runtime::Runtime>,
 }
 
 fn fixture() -> StoreFixture {
     let source = Arc::new(CountingImageBytes::default());
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
-    let store = ImageAssetStore::from_source(source.clone(), runtime);
-    StoreFixture { store, source }
+    let store = ImageAssetStore::from_source(source.clone(), runtime.handle().clone());
+    StoreFixture {
+        store,
+        source,
+        _runtime: runtime,
+    }
 }
 
 fn png_1x1() -> Vec<u8> {
@@ -372,7 +377,7 @@ fn cache_ready_during_loading_serializes_a_restart_after_the_stale_miss() {
         release_first_get: Mutex::new(release_rx),
     });
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
-    let store = ImageAssetStore::from_source(source.clone(), runtime);
+    let store = ImageAssetStore::from_source(source.clone(), runtime.handle().clone());
     let owner = ImageOwner::plugin_page("plugin", "page", TabId(1));
     let ctx = eframe::egui::Context::default();
 
@@ -436,13 +441,17 @@ impl ImageBytes for RefusingImageBytes {
 
 fn failed_asset_after_a_refused_fetch(
     retryable: bool,
-) -> (ImageAssetStore, Arc<RefusingImageBytes>) {
+) -> (
+    ImageAssetStore,
+    Arc<RefusingImageBytes>,
+    Arc<tokio::runtime::Runtime>,
+) {
     let source = Arc::new(RefusingImageBytes {
         retryable,
         fetches: AtomicUsize::new(0),
     });
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
-    let store = ImageAssetStore::from_source(source.clone(), runtime.clone());
+    let store = ImageAssetStore::from_source(source.clone(), runtime.handle().clone());
     let ctx = eframe::egui::Context::default();
     store.request(
         ImageOwner::plugin_page("plugin", "page", TabId(1)),
@@ -460,7 +469,7 @@ fn failed_asset_after_a_refused_fetch(
         ))
         .expect_err("the fixture's fetch always fails");
     assert_eq!(source.fetches.load(Ordering::SeqCst), 1);
-    (store, source)
+    (store, source, runtime)
 }
 
 /// A permanently refused asset must stop asking. The application already
@@ -468,7 +477,7 @@ fn failed_asset_after_a_refused_fetch(
 /// this is the half that makes the renderer's 30 s loop obey it.
 #[test]
 fn a_fatal_fetch_failure_stops_the_retry_loop() {
-    let (store, _source) = failed_asset_after_a_refused_fetch(false);
+    let (store, _source, _runtime) = failed_asset_after_a_refused_fetch(false);
 
     assert!(
         !store.fetch_may_help("asset"),
@@ -484,7 +493,7 @@ fn a_fatal_fetch_failure_stops_the_retry_loop() {
 /// is the half a blanket "stop after one failure" would have broken.
 #[test]
 fn a_retryable_fetch_failure_leaves_the_loop_armed() {
-    let (store, _source) = failed_asset_after_a_refused_fetch(true);
+    let (store, _source, _runtime) = failed_asset_after_a_refused_fetch(true);
 
     assert!(
         store.fetch_may_help("asset"),
@@ -510,8 +519,8 @@ fn read_if_present(root: &Path, relative: &str) -> Option<String> {
 fn image_render_paths_do_not_read_or_decode_cached_media() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let render_paths = [
+        "src/features/plugins/presentation/rendering/document.rs",
         "src/features/plugins/presentation/rendering/image.rs",
-        "src/features/plugins/presentation/rendering/widgets/display.rs",
         "src/shared/components/carousel/image_view.rs",
         "src/shared/components/carousel/thumbnail_strip.rs",
         "src/shared/dialogs/lightbox.rs",
@@ -540,18 +549,12 @@ fn image_render_paths_do_not_read_or_decode_cached_media() {
 #[test]
 fn image_loading_placeholders_do_not_use_animated_widgets() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let source = read_if_present(
-        root,
-        "src/features/plugins/presentation/rendering/widgets/display.rs",
-    )
-    .expect("plugin display renderer exists");
+    let source = read_if_present(root, "src/features/plugins/presentation/rendering/image.rs")
+        .expect("plugin image renderer exists");
     let thumbnail_renderer = source
         .split("fn render_list_item_thumbnail")
         .nth(1)
-        .expect("thumbnail renderer exists")
-        .split("fn render_list_item_text")
-        .next()
-        .expect("thumbnail renderer has an end boundary");
+        .expect("thumbnail renderer exists");
 
     assert!(
         !thumbnail_renderer.contains("egui::Spinner"),

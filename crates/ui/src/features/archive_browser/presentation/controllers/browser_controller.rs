@@ -193,7 +193,7 @@ impl BrowserController {
         &self,
         shared: &SharedState,
         app: &arclain_app::ArclainApp,
-        runtime: &tokio::runtime::Runtime,
+        runtime: &tokio::runtime::Handle,
     ) -> Vec<arclain_app::organization::OrganizationRuleSummary> {
         let dlsite_enabled = shared
             .plugin_ui_jobs

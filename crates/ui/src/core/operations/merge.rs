@@ -79,7 +79,7 @@ pub fn start_merge(
         status.message = "Starting merge...".to_string();
     });
 
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     let shared = shared.clone();
     let tab_id = tab.id;
     let tab = tab.clone();

@@ -17,11 +17,11 @@
 use crate::shared::SharedState;
 use arclain_app::error::ApplicationError;
 use arclain_app::ArclainApp;
-use tokio::runtime::Runtime;
+use tokio::runtime::Handle;
 
 /// The facade and the runtime to await it on, or `None` for a fixture
 /// that was built without a facade (see `SharedState::facade`).
-pub fn handles(shared: &SharedState) -> Option<(&ArclainApp, &Runtime)> {
+pub fn handles(shared: &SharedState) -> Option<(&ArclainApp, &Handle)> {
     shared
         .facade
         .as_ref()

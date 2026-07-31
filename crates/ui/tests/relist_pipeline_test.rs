@@ -170,7 +170,7 @@ fn open_fixture(entries: &[(&str, &[u8])]) -> OpenedFixture {
     let app = bootstrap_real_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     arclain_ui::core::operation_bridge::spawn(&shared);
 
     let tab = shared.signals().tabs.get().active().clone();
@@ -331,7 +331,7 @@ fn a_listing_that_fails_at_open_reaches_the_status_bar_not_an_empty_folder() {
     let app = bootstrap_real_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;
@@ -458,7 +458,7 @@ fn a_rule_protected_archive_opens_and_reads_without_the_ui_holding_its_password(
     let app = bootstrap_real_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;
@@ -554,7 +554,7 @@ fn a_failed_refresh_keeps_the_rows_and_records_the_failure() {
     let rows_before = drawn_paths(tab);
     assert_eq!(rows_before, ["a.txt", "b.txt"]);
 
-    let runtime = fixture.shared.services.tokio_runtime.clone();
+    let runtime = fixture.shared.services.tokio_runtime.handle().clone();
     runtime.block_on({
         let shared = fixture.shared.clone();
         let app = fixture.app.clone();
@@ -634,7 +634,7 @@ fn a_failed_open_on_a_reused_tab_draws_neither_the_previous_archive_nor_an_empty
     // every listing fetch the relist makes will fail against it.
     let second_path = fixture._temp.path().join("second.zip");
     build_zip_fixture(&second_path, &[("second-archive.txt", b"c")]);
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     runtime.block_on({
         let shared = shared.clone();
         let app = fixture.app.clone();
@@ -730,7 +730,7 @@ fn a_tab_pointed_at_an_archive_never_draws_as_an_empty_one_even_after_the_open_f
     let app = bootstrap_real_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     arclain_ui::core::operation_bridge::spawn(&shared);
 
     // An archive the open really does refuse, reached the way these tabs
@@ -848,7 +848,7 @@ fn a_cancelled_open_leaves_a_tab_that_never_listed_holding_no_archive() {
     let app = bootstrap_real_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     arclain_ui::core::operation_bridge::spawn(&shared);
 
     // The archive the tab was pointed at is not there any more -- exactly
@@ -926,7 +926,7 @@ fn an_open_that_fails_leaves_the_archive_already_on_screen_alone() {
 
     let unopenable = fixture._temp.path().join("RJ654321.part1.rar");
     std::fs::write(&unopenable, b"one part of a multi-part set").unwrap();
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     runtime.block_on({
         let shared = shared.clone();
         let app = fixture.app.clone();
@@ -996,7 +996,7 @@ fn reading_a_file_whose_name_a_directory_shares_resolves_to_the_file() {
     let app = bootstrap_real_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;
 

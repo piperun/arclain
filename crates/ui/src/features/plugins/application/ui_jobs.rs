@@ -185,7 +185,7 @@ struct PluginUiCache {
 #[derive(Clone)]
 pub struct PluginUiJobs {
     facade: Option<ArclainApp>,
-    runtime: Arc<tokio::runtime::Runtime>,
+    runtime: tokio::runtime::Handle,
     pending: Arc<Mutex<HashMap<RequestKey, RequestId>>>,
     outstanding: Arc<AtomicUsize>,
     completed: Arc<Mutex<VecDeque<Completed>>>,
@@ -194,7 +194,7 @@ pub struct PluginUiJobs {
 }
 
 impl PluginUiJobs {
-    pub fn new(facade: Option<ArclainApp>, runtime: Arc<tokio::runtime::Runtime>) -> Self {
+    pub fn new(facade: Option<ArclainApp>, runtime: tokio::runtime::Handle) -> Self {
         Self {
             facade,
             runtime,
@@ -696,11 +696,28 @@ mod tests {
     use super::*;
     use arclain_app::plugins::PluginCapabilityDto;
 
-    fn test_jobs() -> PluginUiJobs {
-        PluginUiJobs::new(
-            None,
-            Arc::new(tokio::runtime::Runtime::new().expect("create runtime")),
-        )
+    struct TestJobs {
+        jobs: PluginUiJobs,
+        // Declared last so every Handle held by `jobs` is released before
+        // the owning runtime is dropped.
+        _runtime: tokio::runtime::Runtime,
+    }
+
+    impl std::ops::Deref for TestJobs {
+        type Target = PluginUiJobs;
+
+        fn deref(&self) -> &Self::Target {
+            &self.jobs
+        }
+    }
+
+    fn test_jobs() -> TestJobs {
+        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+        let jobs = PluginUiJobs::new(None, runtime.handle().clone());
+        TestJobs {
+            jobs,
+            _runtime: runtime,
+        }
     }
 
     #[test]

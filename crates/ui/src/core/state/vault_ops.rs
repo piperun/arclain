@@ -15,25 +15,16 @@
 //!
 //! Settings facade calls are `async`, but every caller here is a plain
 //! synchronous egui action handler (`settings_controller.rs`). `runtime`
-//! is `shared.services.tokio_runtime` -- in a real bootstrapped app this
-//! is, perhaps surprisingly, the *same* `Arc<tokio::runtime::Runtime>`
-//! `ArclainApp` uses internally (both derive from one `Arc` `bootstrap::
-//! run` constructs and hands to both `CoreServices::new` and its own
-//! `RuntimeOwner` -- see that struct's doc comment). That does not make
-//! blocking on it from egui's frame callback unsafe: Tokio's actual rule
-//! is "never call `block_on` from a thread already driving a task on
-//! that runtime", not "never reuse the same `Runtime` object" -- egui's
-//! frame thread is driven by eframe/winit's own event loop and never
-//! itself runs as one of this runtime's workers, so entering it via
-//! `block_on` here is exactly the same safe "foreign thread awaits a
-//! facade future" pattern this crate's facade-integration tests already
-//! prove (see `crates/app/tests/bootstrap.rs`'s own foreign-runtime
-//! tests) -- "foreign" meaning the calling thread, not necessarily a
-//! distinct `Runtime` instance. This also costs no more than what this
-//! file did before: the actual database I/O these calls perform is the
-//! same synchronous rusqlite/redb work that always ran directly inline
-//! in the egui frame here, just now routed through the facade instead of
-//! touching `self.dbs` by hand.
+//! is the egui-owned `shared.services.tokio_runtime`, deliberately
+//! separate from the runtime `ArclainApp` owns internally. The facade
+//! contract explicitly permits awaiting its futures from any executor;
+//! its own work dispatches back onto the application runtime. The egui
+//! frame thread is driven by eframe/winit, not by this frontend runtime,
+//! so `block_on` here does not nest a Tokio runtime. This also costs no
+//! more than what this file did before: the actual database I/O these
+//! calls perform is the same synchronous rusqlite/redb work that once ran
+//! directly inline in the frame, now routed through the facade instead
+//! of touching `self.dbs` by hand.
 
 use super::config_ops::describe_facade_error;
 use super::AppState;
@@ -41,7 +32,7 @@ use anyhow::Result;
 use arclain_app::settings::{PatchValue, SecuritySettingsPatch, SettingsPatch};
 use arclain_app::ArclainApp;
 use std::path::PathBuf;
-use tokio::runtime::Runtime;
+use tokio::runtime::Handle;
 
 fn optional_path_patch(value: Option<String>) -> PatchValue<PathBuf> {
     match value {
@@ -66,7 +57,7 @@ impl AppState {
     pub fn apply_preferences(
         &mut self,
         facade: &ArclainApp,
-        runtime: &Runtime,
+        runtime: &Handle,
         key_file_path: Option<String>,
         secrets_db_path: Option<String>,
         encrypted_crc_policy: Option<String>,
@@ -88,7 +79,7 @@ impl AppState {
     pub fn move_vault(
         &mut self,
         facade: &ArclainApp,
-        runtime: &Runtime,
+        runtime: &Handle,
         dest_path: &str,
     ) -> Result<()> {
         let result = runtime
@@ -100,7 +91,7 @@ impl AppState {
     pub fn rekey_vault(
         &mut self,
         facade: &ArclainApp,
-        runtime: &Runtime,
+        runtime: &Handle,
         new_key_file_path: &str,
     ) -> Result<()> {
         let result = runtime
@@ -135,7 +126,7 @@ impl AppState {
     fn refresh_mirror_after_vault_operation(
         &mut self,
         facade: &ArclainApp,
-        runtime: &Runtime,
+        runtime: &Handle,
         result: Result<()>,
     ) -> Result<()> {
         match self.refresh_settings_from_facade(facade, runtime) {
@@ -186,7 +177,11 @@ mod tests {
         let dest_path = blocker.join("pass.redb");
 
         state
-            .move_vault(&facade, &runtime, dest_path.to_string_lossy().as_ref())
+            .move_vault(
+                &facade,
+                runtime.handle(),
+                dest_path.to_string_lossy().as_ref(),
+            )
             .expect_err("moving into a blocked destination must fail");
 
         assert!(
@@ -216,7 +211,7 @@ mod tests {
         state
             .rekey_vault(
                 &facade,
-                &runtime,
+                runtime.handle(),
                 missing_key_file.to_string_lossy().as_ref(),
             )
             .expect_err("rekeying with a missing key file must fail");

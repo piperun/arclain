@@ -63,21 +63,30 @@ impl ArclainApp {
     ) -> Self {
         // Initialize shared state (includes AppState, Services, Theme)
         let shared_state = crate::shared::SharedState::new(cc);
+        let archive_browser = crate::features::archive_browser::ArchiveBrowser::new(&shared_state);
+        let archive_operations =
+            crate::features::archive_operations::ArchiveOperations::new(&shared_state);
+        let settings_feature = settings::SettingsFeature::new(&shared_state);
+        let plugins_feature = plugins::PluginsFeature::new(&shared_state);
+        let organization_feature = organization::OrganizationFeature::new(&shared_state);
+        let hotkeys_feature = crate::features::hotkeys::HotkeysFeature::new(&shared_state);
+        let password_management_feature =
+            crate::features::password_management::PasswordManagementFeature::new(&shared_state);
+        let last_dark_mode = shared_state.theme.dark_mode;
 
         Self {
-            shared_state: shared_state.clone(),
+            // Move the initialized state into the app after every feature
+            // has taken the clones it needs.
+            shared_state,
             page_navigator: PageNavigator::new(),
             header_state: components::HeaderState::default(),
-            archive_browser: crate::features::archive_browser::ArchiveBrowser::new(&shared_state),
-            archive_operations: crate::features::archive_operations::ArchiveOperations::new(
-                &shared_state,
-            ),
-            settings_feature: settings::SettingsFeature::new(&shared_state),
-            plugins_feature: plugins::PluginsFeature::new(&shared_state),
-            organization_feature: organization::OrganizationFeature::new(&shared_state),
-            hotkeys_feature: crate::features::hotkeys::HotkeysFeature::new(&shared_state),
-            password_management_feature:
-                crate::features::password_management::PasswordManagementFeature::new(&shared_state),
+            archive_browser,
+            archive_operations,
+            settings_feature,
+            plugins_feature,
+            organization_feature,
+            hotkeys_feature,
+            password_management_feature,
             hotkey_manager: crate::features::hotkeys::HotkeyManager::new(),
             top_tab_bar_state: components::top_tab_bar::TopTabBarState::new("archive"),
             logs_page_state: crate::shared::components::logs_page::LogsPageState::with_session(
@@ -87,7 +96,7 @@ impl ArclainApp {
             _last_window_title: None,
             _signals_bound: false,
             _theme_applied: false,
-            _last_dark_mode: shared_state.theme.dark_mode,
+            _last_dark_mode: last_dark_mode,
         }
     }
 }

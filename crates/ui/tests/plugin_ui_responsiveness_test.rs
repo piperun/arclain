@@ -29,7 +29,10 @@ fn wait_for_image_failure(shared: &arclain_ui::shared::SharedState, key: &str) {
 #[test]
 fn facade_plugin_queries_need_no_legacy_plugin_manager() {
     let (_temp, shared) = common::create_test_shared_state_with_facade();
-    let jobs = PluginUiJobs::new(shared.facade.clone(), shared.services.tokio_runtime.clone());
+    let jobs = PluginUiJobs::new(
+        shared.facade.clone(),
+        shared.services.tokio_runtime.handle().clone(),
+    );
     let deadline = Instant::now() + Duration::from_secs(2);
 
     loop {
@@ -237,7 +240,10 @@ fn plugin_settings_selection_change_releases_the_previous_image_owner() {
 #[test]
 fn duplicate_facade_snapshot_requests_are_coalesced() {
     let (_temp, shared) = common::create_test_shared_state_with_facade();
-    let jobs = PluginUiJobs::new(shared.facade.clone(), shared.services.tokio_runtime.clone());
+    let jobs = PluginUiJobs::new(
+        shared.facade.clone(),
+        shared.services.tokio_runtime.handle().clone(),
+    );
     let first = jobs.request(PluginUiRequest::Snapshot {
         plugin_visibility: None,
     });
@@ -266,7 +272,7 @@ fn duplicate_facade_snapshot_requests_are_coalesced() {
 #[test]
 fn repeated_install_requests_are_distinct_side_effects() {
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
-    let jobs = PluginUiJobs::new(None, runtime);
+    let jobs = PluginUiJobs::new(None, runtime.handle().clone());
     let wasm_path = std::path::PathBuf::from("plugin.wasm");
 
     let first = jobs.request(PluginUiRequest::Install {
@@ -306,7 +312,7 @@ fn snapshot_failure_releases_ui_pending_state() {
 #[test]
 fn chrome_failure_is_cached_instead_of_automatically_requeued() {
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
-    let jobs = PluginUiJobs::new(None, runtime);
+    let jobs = PluginUiJobs::new(None, runtime.handle().clone());
     let starting_epoch = jobs.completion_signal().get();
 
     assert!(jobs.chrome_snapshot().is_none());

@@ -103,16 +103,21 @@ fn start_page_initialization(
     let shared = shared.clone();
     let slot = slot.clone();
     let page_id = page_id.to_string();
-    shared.services.tokio_runtime.clone().spawn(async move {
-        let Some(operation_id) = shared
-            .plugin_sessions
-            .start_page_init(&facade, &slot, page_id)
-            .await
-        else {
-            return;
-        };
-        document_dispatch::reconcile_started_action(&shared, &facade, operation_id).await;
-    });
+    shared
+        .services
+        .tokio_runtime
+        .handle()
+        .clone()
+        .spawn(async move {
+            let Some(operation_id) = shared
+                .plugin_sessions
+                .start_page_init(&facade, &slot, page_id)
+                .await
+            else {
+                return;
+            };
+            document_dispatch::reconcile_started_action(&shared, &facade, operation_id).await;
+        });
     true
 }
 

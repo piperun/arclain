@@ -181,7 +181,7 @@ impl FileOpsService {
         let tab_id = origin.id;
         let directory = origin.listing.get().directory().clone();
         let shared = shared.clone();
-        let runtime = shared.services.tokio_runtime.clone();
+        let runtime = shared.services.tokio_runtime.handle().clone();
         runtime.spawn(async move {
             let page = match app
                 .list_entries(
@@ -309,7 +309,7 @@ impl FileOpsService {
             return;
         };
 
-        let runtime = shared.services.tokio_runtime.clone();
+        let runtime = shared.services.tokio_runtime.handle().clone();
         let status_bar = shared.signals().status_bar.clone();
         let guard = OpGuard::new(&origin);
 

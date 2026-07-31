@@ -251,6 +251,44 @@ pub struct GametaServerInfo {
     pub version: String,
 }
 
+/// The running application's startup connection state for the configured
+/// gameta server.
+///
+/// This is deliberately distinct from [`GametaServerInfo`]: that type is
+/// the result of explicitly probing values currently typed into a settings
+/// form, while this one reports the already-composed client's cached startup
+/// health. Reading it performs no network request.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum GametaConnectionStatusDto {
+    /// Gameta integration is disabled in the persisted configuration.
+    Disabled,
+    /// Startup composed a usable client. The version is absent only when
+    /// the client had no cached version to report.
+    Connected { version: Option<String> },
+    /// Integration is enabled, but startup could not compose a usable
+    /// client (for example, its health check failed).
+    Unavailable,
+}
+
+/// Converts the independently-composed configuration/client facts into the
+/// one startup status a frontend renders. Configuration wins deliberately:
+/// a disabled integration is `Disabled` even if a stale client handle were
+/// ever supplied by a future composition path.
+pub(crate) fn gameta_connection_status(
+    enabled: bool,
+    client_available: bool,
+    version: Option<String>,
+) -> GametaConnectionStatusDto {
+    if !enabled {
+        GametaConnectionStatusDto::Disabled
+    } else if client_available {
+        GametaConnectionStatusDto::Connected { version }
+    } else {
+        GametaConnectionStatusDto::Unavailable
+    }
+}
+
 /// The candidate SOCKS5 proxy [`crate::ArclainApp::probe_network`] routes
 /// its probe through. Field names mirror the proxy configuration the
 /// settings form holds, with the stored `host:port` authority already
@@ -1099,6 +1137,24 @@ mod tests {
             serde_json::from_str(&json).expect("deserialize server info");
 
         assert_eq!(restored, info);
+    }
+
+    #[test]
+    fn gameta_connection_status_distinguishes_disabled_connected_and_unavailable() {
+        assert_eq!(
+            gameta_connection_status(false, false, None),
+            GametaConnectionStatusDto::Disabled,
+        );
+        assert_eq!(
+            gameta_connection_status(true, true, Some("2.4.6".to_string()),),
+            GametaConnectionStatusDto::Connected {
+                version: Some("2.4.6".to_string()),
+            },
+        );
+        assert_eq!(
+            gameta_connection_status(true, false, None),
+            GametaConnectionStatusDto::Unavailable,
+        );
     }
 
     #[test]

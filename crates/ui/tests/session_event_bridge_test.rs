@@ -161,7 +161,7 @@ fn metadata_write_with_an_open_archive_lands_on_the_correct_tab_via_the_session_
     let app = bootstrap_always_succeeds_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;
@@ -232,7 +232,7 @@ fn a_metadata_arrival_refreshes_the_tabs_product_metadata_without_bumping_the_re
     let app = bootstrap_always_succeeds_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;
@@ -325,7 +325,7 @@ fn no_session_fallback_still_lands_on_the_active_tab() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_always_succeeds_app(&temp);
     let shared = create_test_shared_state();
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let fallback_signals = shared.signals().clone();
@@ -359,7 +359,7 @@ fn buffered_delivery_for_a_not_yet_stamped_tab_is_drained_once_the_tab_is_stampe
     let app = bootstrap_always_succeeds_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;
@@ -441,7 +441,7 @@ fn a_lagged_session_event_consumer_reconciles_via_archive_snapshot() {
     let app = bootstrap_always_succeeds_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;
@@ -506,7 +506,7 @@ fn a_metadata_write_whose_session_event_is_never_handled_still_lands_once_the_ta
     let app = bootstrap_always_succeeds_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;
@@ -572,7 +572,7 @@ fn a_rename_through_the_installed_bridge_updates_the_tabs_archive_path() {
     let app = bootstrap_always_succeeds_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;

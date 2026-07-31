@@ -14,9 +14,7 @@
 
 use arclain_core::backends::sevenz_cli::SevenZipCli;
 use arclain_core::backends::BackendSelector;
-use arclain_core::services::OrganizationService;
-use arclain_core::{open_databases, DbPaths, UserConfig};
-use arclain_db::SecretsKey;
+use arclain_core::{open_databases, DbPaths, SecretsKey, UserConfig};
 use arclain_ui::core::navigation::PageNavigator;
 use arclain_ui::core::services::Services;
 use arclain_ui::core::state::AppState;
@@ -73,9 +71,9 @@ pub fn create_test_shared_state() -> SharedState {
 
     let plugin_ui_jobs = arclain_ui::features::plugins::application::PluginUiJobs::new(
         None,
-        services.tokio_runtime.clone(),
+        services.tokio_runtime.handle().clone(),
     );
-    let image_assets = ImageAssetStore::without_source(services.tokio_runtime.clone());
+    let image_assets = ImageAssetStore::without_source(services.tokio_runtime.handle().clone());
     SharedState {
         app_state: Arc::new(Mutex::new(app_state)),
         services,
@@ -136,7 +134,7 @@ pub fn create_test_shared_state_with_facade() -> (TempDir, SharedState) {
         .reload_ui_config(&app, &shared.services.tokio_runtime);
     shared.plugin_ui_jobs = arclain_ui::features::plugins::application::PluginUiJobs::new(
         Some(app.clone()),
-        shared.services.tokio_runtime.clone(),
+        shared.services.tokio_runtime.handle().clone(),
     );
     shared.facade = Some(app);
     (temp, shared)
@@ -169,17 +167,11 @@ impl TestContext {
 /// duration of the test — dropping it deletes the temp directory and
 /// invalidates the open SQLite handles.
 ///
-/// Wires:
-///   * `app_state.dbs` to the full `ConfigDbs` returned by
-///     `open_databases` (includes config + cache pools, secrets, and
-///     metadata store).
-///   * `services.config_db` and `services.organization_service` to
-///     wrappers over the config pool.
-///   * Skips `services.library_service`, `services.cache_service`,
-///     `services.config_service`, `services.checksum_service`,
-///     `services.gameta_client`, `services.ui_service` — none of the MVU
-///     dispatchers under test reach for those. Add them here when a
-///     future test needs them.
+/// Wires `app_state.dbs` to the full `ConfigDbs` returned by
+/// `open_databases` (config/cache pools, secrets, and metadata store).
+/// `Services` remains frontend-only: dispatchers that need application
+/// behavior use a facade fixture instead of receiving backend handles
+/// through `SharedState`.
 ///
 /// No facade, so nothing that reads through `ArclainApp` works here:
 /// chrome-layout and interface-settings dispatchers want
@@ -199,14 +191,7 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
     let key = SecretsKey::generate();
     let dbs = open_databases(&paths, &key).expect("open test databases");
 
-    let runtime = create_test_runtime();
-    let mut services = Services::new(runtime);
-    // arclain_ui::Services wraps CoreServices via Deref-only, so
-    // db-backed fields live on `.core`.
-    services.core.config_db = Some(Arc::new(dbs.config.clone()));
-    services.core.organization_service =
-        Some(Arc::new(OrganizationService::new(dbs.config_pool.clone())));
-    let services = Arc::new(services);
+    let services = Arc::new(Services::new(create_test_runtime()));
 
     let app_state = AppState {
         user_config: UserConfig::default(),
@@ -222,9 +207,9 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
 
     let plugin_ui_jobs = arclain_ui::features::plugins::application::PluginUiJobs::new(
         None,
-        services.tokio_runtime.clone(),
+        services.tokio_runtime.handle().clone(),
     );
-    let image_assets = ImageAssetStore::without_source(services.tokio_runtime.clone());
+    let image_assets = ImageAssetStore::without_source(services.tokio_runtime.handle().clone());
     let shared = SharedState {
         app_state: Arc::new(Mutex::new(app_state)),
         services,

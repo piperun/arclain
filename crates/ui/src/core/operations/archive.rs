@@ -40,7 +40,7 @@ pub fn start_archive_open(
         // anything reading it while the open is still in flight.
         tab.current_password.set(password.clone());
     }
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     let shared = shared.clone();
     runtime.spawn(async move {
         match app
@@ -86,7 +86,7 @@ pub fn cancel_archive_open(shared: &SharedState, tab: &Arc<TabState>) {
     let Some(app) = shared.facade.clone() else {
         return;
     };
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     runtime.spawn(async move {
         let _ = app.cancel_operation(operation_id).await;
     });
@@ -113,7 +113,7 @@ pub fn close_archive_session(
     let Some(app) = shared.facade.clone() else {
         return;
     };
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     runtime.spawn(async move {
         if let Err(error) = app.close_archive(session_id).await {
             tracing::warn!(
@@ -204,7 +204,7 @@ pub fn finish_archive_load(shared: &SharedState, tab: &crate::core::tabs::TabSta
     };
 
     let shared = shared.clone();
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     runtime.clone().spawn(async move {
         let report = match app.backfill_encrypted_crcs(session_id).await {
             Ok(report) => report,

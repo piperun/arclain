@@ -136,7 +136,7 @@ fn start_add_files_reaches_a_real_backend_and_the_bridge_refreshes_the_tabs_entr
     let app = bootstrap_real_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     // `start_add_files` is fire-and-forget: `register_operation`'s own
     // one-shot reconciliation can easily land while the operation is
     // still `Accepted`/`Started` (it does not itself wait for the
@@ -239,7 +239,7 @@ fn delete_files_from_a_subdirectory_resolves_through_the_navigated_directory_and
     let app = bootstrap_real_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     arclain_ui::core::operation_bridge::spawn(&shared);
 
     let tab = shared.signals().tabs.get().active().clone();

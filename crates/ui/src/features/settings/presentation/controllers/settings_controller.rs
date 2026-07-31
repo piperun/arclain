@@ -498,10 +498,9 @@ pub fn handle_action(
                 .lock()
                 .refresh_settings_from_facade(facade, &shared.services.tokio_runtime);
 
-            // Live routing (`shared.services.async_http_client`, the
-            // same `Arc` `update_settings` already applied it to -- see
-            // `runtime::settings_ops::apply_live_proxy_routing`) is
-            // already in effect by this point, and `update_settings`
+            // Live routing on the facade-owned HTTP client is already in
+            // effect by this point (see `runtime::settings_ops::
+            // apply_live_proxy_routing`), and `update_settings`
             // validated and persisted the proxy identity itself -- so
             // recording that the save happened is all this handler has
             // left to do. It used to also rebuild a proxy config from the
@@ -710,7 +709,7 @@ mod tests {
     use crate::features::settings::domain::types::{ConnectionTestStatus, ServerConnectionStatus};
     use crate::shared::theme::AppTheme;
     use crate::test_support::{app_state_from_facade, bootstrap_test_facade};
-    use arclain_core::services::ConfigService;
+    use arclain_core::services::{ConfigService, Services as CoreServices};
     use arclain_core::UserConfig;
     use arclain_widgets::Toaster;
     use parking_lot::Mutex;
@@ -879,12 +878,9 @@ mod tests {
     /// keeps the `TempDir` the facade was bootstrapped against alive for
     /// as long as it uses the result.
     fn shared_state_from_facade(facade: arclain_app::ArclainApp) -> SharedState {
-        let legacy = facade
-            .take_legacy_composition()
-            .expect("take legacy composition for the test fixture");
-        let services = Arc::new(Services {
-            core: (*legacy.core_services).clone(),
-        });
+        let services = Arc::new(Services::new(
+            tokio::runtime::Runtime::new().expect("create frontend test runtime"),
+        ));
         let app_state = app_state_from_facade(&facade);
         let signals = app_state.signals.clone();
         app_state
@@ -893,10 +889,10 @@ mod tests {
 
         let plugin_ui_jobs = crate::features::plugins::application::PluginUiJobs::new(
             Some(facade.clone()),
-            services.tokio_runtime.clone(),
+            services.tokio_runtime.handle().clone(),
         );
         let image_assets = crate::shared::image_assets::ImageAssetStore::without_source(
-            services.tokio_runtime.clone(),
+            services.tokio_runtime.handle().clone(),
         );
         SharedState {
             app_state: Arc::new(Mutex::new(app_state)),
@@ -916,6 +912,7 @@ mod tests {
 
     struct ProxySaveFixture {
         shared: SharedState,
+        core_services: Arc<CoreServices>,
         config_service: Arc<ConfigService>,
         previous: UserConfig,
         previous_password: String,
@@ -979,15 +976,23 @@ mod tests {
                     .expect("persist previous proxy password");
             });
 
-            let shared = shared_state_from_facade(facade);
-            let config_service = shared
-                .services
+            // These two handles are test probes only: production UI code no
+            // longer receives CoreServices. They let the regression tests
+            // prove persistence and live routing against the exact services
+            // owned by the facade.
+            let core_services = facade
+                .take_legacy_composition()
+                .expect("take core-service test probes")
+                .core_services;
+            let config_service = core_services
                 .config_service
                 .clone()
                 .expect("config service must be available after a real bootstrap");
+            let shared = shared_state_from_facade(facade);
 
             Self {
                 shared,
+                core_services,
                 config_service,
                 previous,
                 previous_password,
@@ -1072,7 +1077,7 @@ mod tests {
                 }
             });
 
-            let result = self.shared.services.async_http_client.blocking_get(
+            let result = self.core_services.async_http_client.blocking_get(
                 &format!("http://{target_address}/runtime-proxy-sentinel"),
                 true,
             );
@@ -1255,8 +1260,7 @@ mod tests {
     fn save_network_disable_clears_runtime_plugin_proxy_map() {
         let fixture = ProxySaveFixture::new();
         assert!(fixture
-            .shared
-            .services
+            .core_services
             .async_http_client
             .should_use_proxy_for_plugin(PROXY_PLUGIN_ID));
 
@@ -1277,8 +1281,7 @@ mod tests {
 
         assert!(
             !fixture
-                .shared
-                .services
+                .core_services
                 .async_http_client
                 .should_use_proxy_for_plugin(PROXY_PLUGIN_ID),
             "disabling the global proxy left its per-plugin route enabled"
@@ -1289,13 +1292,11 @@ mod tests {
     fn save_network_reenable_restores_persisted_plugin_proxy_map() {
         let fixture = ProxySaveFixture::new();
         fixture
-            .shared
-            .services
+            .core_services
             .async_http_client
             .apply_plugin_proxy_map(Default::default());
         assert!(!fixture
-            .shared
-            .services
+            .core_services
             .async_http_client
             .should_use_proxy_for_plugin(PROXY_PLUGIN_ID));
 
@@ -1316,8 +1317,7 @@ mod tests {
 
         assert!(
             fixture
-                .shared
-                .services
+                .core_services
                 .async_http_client
                 .should_use_proxy_for_plugin(PROXY_PLUGIN_ID),
             "re-enabling the global proxy did not restore the persisted per-plugin route"
@@ -1378,7 +1378,7 @@ mod tests {
             &fixture.shared,
         );
 
-        let client = &fixture.shared.services.async_http_client;
+        let client = &fixture.core_services.async_http_client;
         assert!(
             client.should_use_proxy_for_plugin("dlsite"),
             "live re-enable omitted the startup default for dlsite"
@@ -1758,7 +1758,7 @@ mod tests {
             .as_ref()
             .expect("fixture must have a real facade")
             .clone();
-        let runtime = fixture.shared.services.tokio_runtime.clone();
+        let runtime = fixture.shared.services.tokio_runtime.handle().clone();
         let before = runtime
             .block_on(facade.settings())
             .expect("read settings before the probe");

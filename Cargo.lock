@@ -585,7 +585,6 @@ dependencies = [
  "arboard",
  "arclain_app",
  "arclain_core",
- "arclain_db",
  "arclain_theme",
  "arclain_widgets",
  "chrono",

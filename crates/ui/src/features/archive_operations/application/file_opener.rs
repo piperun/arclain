@@ -258,63 +258,70 @@ pub fn open_file_from_archive(shared: &SharedState, file_path: &str) {
     let actions = shared.materialization_actions.clone();
     let shared = shared.clone();
 
-    shared.services.tokio_runtime.clone().spawn(async move {
-        let (entry_ids, relative_target) = match resolve_materialization_target(
-            &app,
-            session_id,
-            &file_path_owned,
-            strategy,
-        )
-        .await
-        {
-            Ok(resolved) => resolved,
-            Err(message) => {
-                tracing::error!("[file_opener] failed to resolve {file_path_owned:?}: {message}");
-                shared.signals().status_bar.update(|s| {
-                    s.message = format!("Failed to open {file_path_owned}: {message}");
-                });
-                return;
-            }
-        };
+    shared
+        .services
+        .tokio_runtime
+        .handle()
+        .clone()
+        .spawn(async move {
+            let (entry_ids, relative_target) =
+                match resolve_materialization_target(&app, session_id, &file_path_owned, strategy)
+                    .await
+                {
+                    Ok(resolved) => resolved,
+                    Err(message) => {
+                        tracing::error!(
+                            "[file_opener] failed to resolve {file_path_owned:?}: {message}"
+                        );
+                        shared.signals().status_bar.update(|s| {
+                            s.message = format!("Failed to open {file_path_owned}: {message}");
+                        });
+                        return;
+                    }
+                };
 
-        match app
-            .start_materialization(MaterializeRequest {
-                session_id,
-                entry_ids,
-                purpose: MaterializationPurpose::ExternalOpen,
-            })
-            .await
-        {
-            Ok(operation_id) => {
-                // The action is registered before the origin (not after):
-                // `register_operation` immediately reconciles against the
-                // operation's current snapshot, and a fast-completing
-                // materialize could already be terminal by the time that
-                // reconciliation runs -- see `start_archive_open`'s
-                // identical ordering comment for `pending_open_operation`.
-                // If the action were registered second, that reconciliation
-                // could invoke `handle_materialize_completed` before this
-                // task's own `MaterializationAction` ever landed, and its
-                // `actions.take(operation_id)` would find nothing to act
-                // on, silently dropping the external-open entirely.
-                actions.register(
-                    operation_id,
-                    MaterializationAction::ExternalOpen { relative_target },
-                );
-                crate::core::operation_bridge::register_operation(&shared, operation_id, tab_id)
+            match app
+                .start_materialization(MaterializeRequest {
+                    session_id,
+                    entry_ids,
+                    purpose: MaterializationPurpose::ExternalOpen,
+                })
+                .await
+            {
+                Ok(operation_id) => {
+                    // The action is registered before the origin (not after):
+                    // `register_operation` immediately reconciles against the
+                    // operation's current snapshot, and a fast-completing
+                    // materialize could already be terminal by the time that
+                    // reconciliation runs -- see `start_archive_open`'s
+                    // identical ordering comment for `pending_open_operation`.
+                    // If the action were registered second, that reconciliation
+                    // could invoke `handle_materialize_completed` before this
+                    // task's own `MaterializationAction` ever landed, and its
+                    // `actions.take(operation_id)` would find nothing to act
+                    // on, silently dropping the external-open entirely.
+                    actions.register(
+                        operation_id,
+                        MaterializationAction::ExternalOpen { relative_target },
+                    );
+                    crate::core::operation_bridge::register_operation(
+                        &shared,
+                        operation_id,
+                        tab_id,
+                    )
                     .await;
-                shared.signals().status_bar.update(|s| {
-                    s.message = format!("Opening {file_path_owned}...");
-                });
+                    shared.signals().status_bar.update(|s| {
+                        s.message = format!("Opening {file_path_owned}...");
+                    });
+                }
+                Err(error) => {
+                    tracing::error!("[file_opener] start_materialization was rejected: {error:?}");
+                    shared.signals().status_bar.update(|s| {
+                        s.message = format!("Failed to open {file_path_owned}: {error:?}");
+                    });
+                }
             }
-            Err(error) => {
-                tracing::error!("[file_opener] start_materialization was rejected: {error:?}");
-                shared.signals().status_bar.update(|s| {
-                    s.message = format!("Failed to open {file_path_owned}: {error:?}");
-                });
-            }
-        }
-    });
+        });
 }
 
 #[cfg(test)]

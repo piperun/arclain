@@ -137,42 +137,49 @@ impl DragDropService {
 
         let runtime_handle = shared.services.tokio_runtime.handle().clone();
         let shared_for_task = shared.clone();
-        shared.services.tokio_runtime.clone().spawn(async move {
-            let entry_ids = match resolve_selection_entry_ids(&app, session_id, &files).await {
-                Ok(entry_ids) => entry_ids,
-                Err(message) => {
-                    tracing::warn!("[DragExtract] Failed to resolve dragged entries: {message}");
-                    shared_for_task.signals().status_bar.update(|s| {
-                        s.message = format!("Drag failed: {message}");
-                    });
-                    return; // `tx` drops; the updater sees disconnect.
-                }
-            };
+        shared
+            .services
+            .tokio_runtime
+            .handle()
+            .clone()
+            .spawn(async move {
+                let entry_ids = match resolve_selection_entry_ids(&app, session_id, &files).await {
+                    Ok(entry_ids) => entry_ids,
+                    Err(message) => {
+                        tracing::warn!(
+                            "[DragExtract] Failed to resolve dragged entries: {message}"
+                        );
+                        shared_for_task.signals().status_bar.update(|s| {
+                            s.message = format!("Drag failed: {message}");
+                        });
+                        return; // `tx` drops; the updater sees disconnect.
+                    }
+                };
 
-            tracing::info!(
-                "[DragExtract] Resolved {} entry ids for drag",
-                entry_ids.len()
-            );
+                tracing::info!(
+                    "[DragExtract] Resolved {} entry ids for drag",
+                    entry_ids.len()
+                );
 
-            let source: Arc<dyn DragPayloadSource> = Arc::new(FacadeDragPayloadSource::new(
-                app,
-                runtime_handle,
-                session_id,
-                entry_ids,
-            ));
+                let source: Arc<dyn DragPayloadSource> = Arc::new(FacadeDragPayloadSource::new(
+                    app,
+                    runtime_handle,
+                    session_id,
+                    entry_ids,
+                ));
 
-            match crate::platform::drag_source::start_deferred_drag(source, files, tx) {
-                Ok(()) => {
-                    tracing::info!("[DragExtract] Drag operation started in background");
+                match crate::platform::drag_source::start_deferred_drag(source, files, tx) {
+                    Ok(()) => {
+                        tracing::info!("[DragExtract] Drag operation started in background");
+                    }
+                    Err(e) => {
+                        tracing::warn!("[DragExtract] Drag failed: {}", e);
+                        shared_for_task.signals().status_bar.update(|s| {
+                            s.message = format!("Drag failed: {}", e);
+                        });
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("[DragExtract] Drag failed: {}", e);
-                    shared_for_task.signals().status_bar.update(|s| {
-                        s.message = format!("Drag failed: {}", e);
-                    });
-                }
-            }
-        });
+            });
     }
 }
 

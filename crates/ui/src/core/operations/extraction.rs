@@ -103,7 +103,7 @@ pub fn start_extraction(shared: &SharedState, tab: &Arc<TabState>, entry_paths: 
         return;
     };
 
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     let shared = shared.clone();
     let tab_id = tab.id;
     let tab = tab.clone();
@@ -211,7 +211,7 @@ pub fn cancel_extraction(shared: &SharedState, tab: &Arc<TabState>) {
     let Some(app) = shared.facade.clone() else {
         return;
     };
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     runtime.spawn(async move {
         let _ = app.cancel_operation(operation_id).await;
     });

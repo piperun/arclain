@@ -4,10 +4,9 @@
 //! `arclain_app` directly and never blocks on it.
 //!
 //! One worker per app, spawned once from `SharedState::new` onto the
-//! shared Tokio runtime (the very runtime `ArclainApp`'s own operations
-//! run on -- see `arclain_app::runtime`'s doc comment on why `Services::
-//! tokio_runtime` and the facade's internal runtime are the same
-//! instance). [`OperationOrigins`] tracks which tab a given
+//! frontend Tokio runtime. `ArclainApp` owns a separate internal runtime;
+//! subscribing and awaiting from this executor is part of the facade's
+//! foreign-runtime contract. [`OperationOrigins`] tracks which tab a given
 //! [`arclain_app::ids::OperationId`] belongs to, populated by whichever
 //! call site starts the operation (`crate::core::operations::archive::
 //! start_archive_open`, `crate::features::archive_operations::application::
@@ -285,7 +284,7 @@ pub fn renew_due_external_open_leases(shared: &SharedState) {
     for &lease_id in &due {
         leases.mark_renewed(lease_id);
     }
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     runtime.spawn(async move {
         for lease_id in due {
             match app.renew_materialization(lease_id).await {
@@ -1142,9 +1141,14 @@ fn handle_materialize_completed(
             };
             let release_now = |shared: &SharedState, lease_id: MaterializationLeaseId| {
                 if let Some(app) = shared.facade.clone() {
-                    shared.services.tokio_runtime.clone().spawn(async move {
-                        let _ = app.release_materialization(lease_id).await;
-                    });
+                    shared
+                        .services
+                        .tokio_runtime
+                        .handle()
+                        .clone()
+                        .spawn(async move {
+                            let _ = app.release_materialization(lease_id).await;
+                        });
                 }
             };
 
@@ -1262,7 +1266,7 @@ fn handle_password_challenge(
 
 fn handle_confirm_overwrite_challenge(
     app: &ArclainApp,
-    runtime: &tokio::runtime::Runtime,
+    runtime: &tokio::runtime::Handle,
     operation_id: OperationId,
     challenge: Challenge,
 ) {
@@ -1459,7 +1463,7 @@ async fn handle_event(
     shared: &SharedState,
     origins: &OperationOrigins,
     materialization_actions: &MaterializationActions,
-    runtime: &tokio::runtime::Runtime,
+    runtime: &tokio::runtime::Handle,
     event: OperationEvent,
 ) {
     // Plugin actions are routed by slot, not by tab: their origin lives in
@@ -1763,7 +1767,7 @@ fn snapshot_to_event(snapshot: arclain_app::event::OperationSnapshot) -> Operati
 async fn reconcile_one(
     shared: &SharedState,
     origins: &OperationOrigins,
-    runtime: &tokio::runtime::Runtime,
+    runtime: &tokio::runtime::Handle,
     app: &ArclainApp,
     operation_id: OperationId,
 ) {
@@ -1831,7 +1835,7 @@ pub async fn register_operation(shared: &SharedState, operation_id: OperationId,
     let Some(app) = shared.facade.clone() else {
         return;
     };
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     reconcile_one(
         shared,
         &shared.operation_origins,
@@ -1855,7 +1859,7 @@ pub async fn register_operation(shared: &SharedState, operation_id: OperationId,
 pub async fn reconcile_after_lag(
     shared: &SharedState,
     origins: &OperationOrigins,
-    runtime: &tokio::runtime::Runtime,
+    runtime: &tokio::runtime::Handle,
     app: &ArclainApp,
     skipped: u64,
 ) {
@@ -2056,7 +2060,7 @@ pub fn spawn(shared: &SharedState) {
     let Some(app) = shared.facade.clone() else {
         return;
     };
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let mut receiver = app.subscribe_operations();
     let operations_shared = shared.clone();

@@ -71,7 +71,7 @@ pub fn start_pipeline_run(
     // spawned task and dropped when it ends (success, failure, or a
     // rejected dispatch).
     let guard = OpGuard::new(&origin_tab);
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     runtime.spawn(async move {
         let _guard = guard;
@@ -244,7 +244,7 @@ pub fn cancel_pipeline_run(shared: &SharedState) {
     shared.signals().process_run.update(|run| {
         run.push_message("Cancelling...".to_string());
     });
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     runtime.spawn(async move {
         if let Err(error) = app.cancel_operation(operation_id).await {
             tracing::warn!("[process] cancelling the pipeline run failed: {error:?}");

@@ -82,9 +82,9 @@ use session_store::SessionStore;
 /// handed to `arclain_core::services::Services` as a plain
 /// `Arc<tokio::runtime::Runtime>` too (`Services::tokio_runtime`,
 /// `SessionStore::core_services` -- a type this crate cannot change),
-/// and that clone can outlive this `RuntimeOwner` entirely once
-/// `ArclainApp::take_legacy_composition` hands a `Services` off to
-/// `crates/ui`. `Drop` (and [`Self::shutdown_now`]) account for this:
+/// and a compatibility caller can clone that service bundle through
+/// `ArclainApp::take_legacy_composition`, potentially outliving this
+/// `RuntimeOwner`. `Drop` (and [`Self::shutdown_now`]) account for this:
 /// reclaim sole ownership via `Arc::try_unwrap` and shut down through
 /// `shutdown_background` (signals shutdown and returns immediately --
 /// safe from any context, including one of the runtime's own worker
@@ -98,12 +98,11 @@ use session_store::SessionStore;
 /// comment): as long as this `RuntimeOwner` is the one whose drop
 /// observes the refcount reaching zero, every other clone dropping
 /// first (including `SessionStore::core_services`'s own bare one) is
-/// always safe, being a plain decrement. If `take_legacy_composition`
-/// has handed a `Services` clone off to `crates/ui` and that clone
-/// outlives every `ArclainApp` clone, its *own*, later drop is outside
-/// this wrapper's reach entirely -- a pre-existing limitation of
-/// `arclain_core::services::Services` holding an unwrapped
-/// `Arc<Runtime>`, not something introduced or fixable here.
+/// always safe, being a plain decrement. If a compatibility caller takes
+/// a `Services` clone and lets it outlive every `ArclainApp` clone, its
+/// *own*, later drop is outside this wrapper's reach entirely -- a
+/// pre-existing limitation of `arclain_core::services::Services` holding
+/// an unwrapped `Arc<Runtime>`, not something introduced or fixable here.
 struct RuntimeOwner(parking_lot::Mutex<Option<Arc<tokio::runtime::Runtime>>>);
 
 impl RuntimeOwner {
@@ -593,11 +592,10 @@ impl ArclainApp {
         Ok(())
     }
 
-    /// Transitional handoff of this bootstrap's composed headless
-    /// services to `crates/ui`'s not-yet-migrated `AppState`/`Services`
-    /// construction. See [`LegacyComposition`]'s doc comment -- this is
-    /// not part of the frontend-neutral operation surface a Flutter/Dart
-    /// bridge would use.
+    /// Transitional handoff of this bootstrap's legacy state to
+    /// `crates/ui`'s not-yet-migrated `AppState` construction. See
+    /// [`LegacyComposition`]'s doc comment -- this is not part of the
+    /// frontend-neutral operation surface a Flutter/Dart bridge would use.
     ///
     /// Gated on the same shutdown flag [`Self::dispatch`] checks: once
     /// [`Self::shutdown`] has been called, this returns a structured
@@ -1314,6 +1312,33 @@ impl ArclainApp {
     pub async fn settings(&self) -> Result<crate::settings::SettingsSnapshot, ApplicationError> {
         self.dispatch_async(|inner| async move { settings_ops::run_settings(&inner).await })
             .await?
+    }
+
+    /// Reports the configured gameta integration's already-known startup
+    /// state without performing another network request.
+    ///
+    /// The version, when available, is the one cached by the health check
+    /// that ran while the application composed its client. This gives a
+    /// frontend exactly the status it needs for initial rendering without
+    /// exposing `arclain_network::GametaClient` or any other service handle.
+    pub async fn gameta_connection_status(
+        &self,
+    ) -> Result<crate::settings::GametaConnectionStatusDto, ApplicationError> {
+        self.dispatch(|inner| {
+            let enabled = inner
+                .session
+                .mutable
+                .read()
+                .user_config
+                .gameta_server_enabled;
+            let client = inner.core_services().gameta_client.as_ref();
+            crate::settings::gameta_connection_status(
+                enabled,
+                client.is_some(),
+                client.and_then(|client| client.last_known_version()),
+            )
+        })
+        .await
     }
 
     /// Applies `patch` if `patch.expected_revision` still matches the

@@ -56,7 +56,7 @@ pub fn sync_active_archive_session(shared: &SharedState) {
     }
     drop(last_synced);
 
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     runtime.spawn(async move {
         if let Err(error) = facade.set_active_archive_session(current).await {
             tracing::warn!(

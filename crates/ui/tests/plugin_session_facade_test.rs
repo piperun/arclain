@@ -385,15 +385,14 @@ fn reconcile_after_lag_recovers_a_plugin_action_whose_terminal_event_was_dropped
     let app = bootstrap_with_plugin(&temp, "facade-test-fixture");
     let mut shared = common::create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     let slot = PluginSlot::MainPage {
         plugin_id: "facade-test-fixture".to_string(),
     };
 
     runtime.block_on(async {
         let sessions = shared.plugin_sessions.clone();
-        let SlotView::Ready(opened) =
-            view_until_resolved(&sessions, &app, runtime.handle(), &slot).await
+        let SlotView::Ready(opened) = view_until_resolved(&sessions, &app, &runtime, &slot).await
         else {
             panic!("the main-page slot must resolve to a document");
         };
@@ -426,7 +425,7 @@ fn reconcile_after_lag_recovers_a_plugin_action_whose_terminal_event_was_dropped
             sessions.tracked_ids().is_empty(),
             "reconciliation must drain the registry entry"
         );
-        let SlotView::Ready(recovered) = sessions.view(&app, runtime.handle(), &slot) else {
+        let SlotView::Ready(recovered) = sessions.view(&app, &runtime, &slot) else {
             panic!("the slot must still hold a document");
         };
         assert!(
@@ -562,7 +561,7 @@ fn the_image_store_fetches_host_keys_where_it_reads_them_from_inside_a_runtime_t
     let runtime = runtime();
     // Built exactly as production does (`SharedState::new`), so this
     // exercises the real routing rather than a test-only source.
-    let store = ImageAssetStore::new(app.clone(), runtime.clone());
+    let store = ImageAssetStore::new(app.clone(), runtime.handle().clone());
     let png = fetchable_png(255);
     let stub = ImageStub::start(png.clone(), "image/png");
     let key = "dlsite:image:host-fetch-round-trip".to_string();
@@ -624,7 +623,7 @@ fn the_image_store_resolves_plugin_keys_through_the_plugins_own_namespace() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_with_plugin(&temp, "ui-demo");
     let runtime = runtime();
-    let store = ImageAssetStore::new(app.clone(), runtime.clone());
+    let store = ImageAssetStore::new(app.clone(), runtime.handle().clone());
     let key = "plugin-image:ui-demo:cover:RJ000002".to_string();
     let png = fetchable_png(254);
 
@@ -681,7 +680,7 @@ fn a_permanently_refused_image_stops_refetching_while_a_transient_one_does_not()
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_with_plugin(&temp, "ui-demo");
     let mut shared = common::create_test_shared_state();
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     shared.facade = Some(app.clone());
     shared.image_assets = ImageAssetStore::new(app, runtime.clone());
     let ctx = egui::Context::default();
@@ -889,14 +888,14 @@ fn the_started_action_re_read_applies_a_result_that_raced_its_registration() {
     let app = bootstrap_with_plugin(&temp, "facade-test-fixture");
     let mut shared = common::create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     let slot = PluginSlot::MainPage {
         plugin_id: "facade-test-fixture".to_string(),
     };
 
     runtime.block_on(async {
         let SlotView::Ready(opened) =
-            view_until_resolved(&shared.plugin_sessions, &app, runtime.handle(), &slot).await
+            view_until_resolved(&shared.plugin_sessions, &app, &runtime, &slot).await
         else {
             panic!("the main-page slot must resolve to a document");
         };
@@ -924,8 +923,7 @@ fn the_started_action_re_read_applies_a_result_that_raced_its_registration() {
             shared.plugin_sessions.tracked_ids().is_empty(),
             "the re-read must drain the registry entry"
         );
-        let SlotView::Ready(applied) = shared.plugin_sessions.view(&app, runtime.handle(), &slot)
-        else {
+        let SlotView::Ready(applied) = shared.plugin_sessions.view(&app, &runtime, &slot) else {
             panic!("the slot must still hold a document");
         };
         assert!(
@@ -1063,7 +1061,7 @@ fn the_image_store_refuses_a_read_for_another_plugins_key() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_with_plugin(&temp, "ui-demo");
     let runtime = runtime();
-    let store = ImageAssetStore::new(app.clone(), runtime.clone());
+    let store = ImageAssetStore::new(app.clone(), runtime.handle().clone());
     let victim_key = "plugin-image:ui-demo:cover";
     let ctx = egui::Context::default();
 
@@ -1097,7 +1095,7 @@ fn the_image_store_refuses_a_lightbox_read_for_another_plugins_key() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_with_plugin(&temp, "ui-demo");
     let runtime = runtime();
-    let store = ImageAssetStore::new(app.clone(), runtime.clone());
+    let store = ImageAssetStore::new(app.clone(), runtime.handle().clone());
 
     let refused = store.request(
         ImageOwner::Lightbox {
@@ -1122,7 +1120,7 @@ fn triggering_an_image_fetch_refuses_another_plugins_key() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_with_plugin(&temp, "ui-demo");
     let mut shared = common::create_test_shared_state();
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     shared.facade = Some(app.clone());
     // The production image source, so `can_store` answers as it does in a
     // real app rather than short-circuiting this test for the wrong reason.

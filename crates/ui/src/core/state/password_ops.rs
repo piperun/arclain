@@ -18,7 +18,7 @@ use anyhow::Result;
 use arclain_app::settings::PasswordRuleInput;
 use arclain_app::ArclainApp;
 use std::collections::HashSet;
-use tokio::runtime::Runtime;
+use tokio::runtime::Handle;
 
 impl AppState {
     /// Reconciles the settings page's whole in-memory rule list against
@@ -31,7 +31,7 @@ impl AppState {
     pub fn save_password_rules(
         &mut self,
         facade: &ArclainApp,
-        runtime: &Runtime,
+        runtime: &Handle,
         rules: Vec<PasswordRuleInput>,
     ) -> Result<()> {
         runtime.block_on(async {

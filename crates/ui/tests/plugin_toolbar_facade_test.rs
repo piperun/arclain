@@ -21,7 +21,6 @@ use arclain_app::layout::{UiActionTypeDto, UiDisplayModeDto, UiItemDto, UiRegion
 use arclain_app::plugins::PluginUiDocument;
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 use arclain_ui::core::operation_bridge;
-use arclain_ui::core::services::Services;
 use arclain_ui::features::plugins::application::{
     document_buttons, PluginSlot, PluginUiJobs, SlotView,
 };
@@ -88,16 +87,11 @@ fn shared_state_with_plugin() -> (TempDir, SharedState) {
         materialization_cleanup_interval_override: None,
     })
     .expect("bootstrap the test facade");
-    let legacy = app
-        .take_legacy_composition()
-        .expect("take the application's own composition");
-
     let mut shared = common::create_test_shared_state();
-    let services = Services {
-        core: (*legacy.core_services).clone(),
-    };
-    shared.plugin_ui_jobs = PluginUiJobs::new(Some(app.clone()), services.tokio_runtime.clone());
-    shared.services = Arc::new(services);
+    shared.plugin_ui_jobs = PluginUiJobs::new(
+        Some(app.clone()),
+        shared.services.tokio_runtime.handle().clone(),
+    );
     shared
         .app_state
         .lock()
@@ -238,13 +232,18 @@ fn spawn_plugin_action_bridge(shared: &SharedState) {
     let facade = shared.facade.clone().expect("the fixture has a facade");
     let mut events = facade.subscribe_operations();
     let shared = shared.clone();
-    shared.services.tokio_runtime.clone().spawn(async move {
-        while let Ok(event) = events.recv().await {
-            if event.kind == OperationKind::PluginAction {
-                operation_bridge::handle_plugin_action_event(&shared, event);
+    shared
+        .services
+        .tokio_runtime
+        .handle()
+        .clone()
+        .spawn(async move {
+            while let Ok(event) = events.recv().await {
+                if event.kind == OperationKind::PluginAction {
+                    operation_bridge::handle_plugin_action_event(&shared, event);
+                }
             }
-        }
-    });
+        });
 }
 
 fn wait_for_revision_beyond(shared: &SharedState, previous: u64) -> u64 {

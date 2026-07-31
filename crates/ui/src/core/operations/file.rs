@@ -61,7 +61,7 @@ pub fn start_add_files(
         return;
     };
     let shared = shared.clone();
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     runtime.spawn(async move {
         let expected_revision = match app.archive_snapshot(session_id).await {
             Ok(snapshot) => snapshot.revision,
@@ -124,7 +124,7 @@ pub fn start_replace_text(
         return;
     };
     let shared = shared.clone();
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
     runtime.spawn(async move {
         let parent = path_in_archive
             .rsplit_once('/')

@@ -1239,11 +1239,10 @@ pub(super) async fn run_set_plugin_settings(
 /// SOCKS5 identity field -- mirrors the pre-facade `SettingsAction::
 /// SaveNetwork` handler's own final step
 /// (`shared.services.async_http_client.apply_proxy_routing(...)`), which
-/// this replaces: `core_services().async_http_client` is the exact same
-/// `Arc<AsyncHttpClient>` `crates/ui`'s `Services.async_http_client`
-/// holds (see `crate::runtime::session_store`'s own doc comment on why
-/// that Arc is safely shared), so applying it here is equally visible to
-/// both.
+/// this replaces. `core_services().async_http_client` is the one
+/// application-owned client used by the headless network consumers, so
+/// applying the change here updates live routing without exposing that
+/// client to a frontend.
 ///
 /// Best-effort: a failure here is logged, not propagated as an
 /// `update_settings` error. The setting itself already saved

@@ -242,7 +242,7 @@ pub trait ImageBytes: Send + Sync {
 /// eviction always land in one namespace per key.
 struct FacadeImageBytes {
     facade: arclain_app::ArclainApp,
-    runtime: Arc<tokio::runtime::Runtime>,
+    runtime: tokio::runtime::Handle,
 }
 
 impl FacadeImageBytes {
@@ -440,7 +440,7 @@ struct ImageAssetStoreInner {
     assets: Mutex<HashMap<String, ImageAsset>>,
     active_owners: Mutex<HashSet<ImageOwner>>,
     source: Arc<dyn ImageBytes>,
-    runtime: Arc<tokio::runtime::Runtime>,
+    runtime: tokio::runtime::Handle,
     generation: AtomicU64,
 }
 
@@ -452,7 +452,7 @@ pub struct ImageAssetStore {
 impl ImageAssetStore {
     /// The production store: every image reference resolves through
     /// `facade` -- see [`FacadeImageBytes`].
-    pub fn new(facade: arclain_app::ArclainApp, runtime: Arc<tokio::runtime::Runtime>) -> Self {
+    pub fn new(facade: arclain_app::ArclainApp, runtime: tokio::runtime::Handle) -> Self {
         Self::from_source(
             Arc::new(FacadeImageBytes {
                 facade,
@@ -465,7 +465,7 @@ impl ImageAssetStore {
     /// A store with no byte source at all: every read misses and every
     /// fetch is refused as unstorable. For contexts with no application
     /// behind them -- early initialization and hand-built test fixtures.
-    pub fn without_source(runtime: Arc<tokio::runtime::Runtime>) -> Self {
+    pub fn without_source(runtime: tokio::runtime::Handle) -> Self {
         Self::from_source(Arc::new(EmptyImageBytes), runtime)
     }
 
@@ -474,7 +474,7 @@ impl ImageAssetStore {
     /// Exists for this crate's own lifecycle tests, which need a source
     /// they can count and stall; production always goes through
     /// [`Self::new`].
-    pub fn from_source(source: Arc<dyn ImageBytes>, runtime: Arc<tokio::runtime::Runtime>) -> Self {
+    pub fn from_source(source: Arc<dyn ImageBytes>, runtime: tokio::runtime::Handle) -> Self {
         Self {
             inner: Arc::new(ImageAssetStoreInner {
                 assets: Mutex::new(HashMap::new()),

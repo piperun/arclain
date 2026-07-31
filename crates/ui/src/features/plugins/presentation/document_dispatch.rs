@@ -68,16 +68,21 @@ pub fn dispatch_action(
     };
     let shared = shared.clone();
     let slot = slot.clone();
-    shared.services.tokio_runtime.clone().spawn(async move {
-        let Some(operation_id) = shared
-            .plugin_sessions
-            .start_action(&facade, &slot, node_id, action)
-            .await
-        else {
-            return;
-        };
-        reconcile_started_action(&shared, &facade, operation_id).await;
-    });
+    shared
+        .services
+        .tokio_runtime
+        .handle()
+        .clone()
+        .spawn(async move {
+            let Some(operation_id) = shared
+                .plugin_sessions
+                .start_action(&facade, &slot, node_id, action)
+                .await
+            else {
+                return;
+            };
+            reconcile_started_action(&shared, &facade, operation_id).await;
+        });
 }
 
 /// Routes an action operation's *current* state through the bridge, right

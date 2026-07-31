@@ -199,7 +199,7 @@ fn open_entries(entries: &[FixtureEntry]) -> OpenedFixture {
     let app = bootstrap_real_app(&temp);
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;

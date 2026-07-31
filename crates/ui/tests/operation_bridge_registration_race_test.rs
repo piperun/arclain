@@ -126,7 +126,7 @@ fn register_operation_reconciles_an_operation_that_already_finished_before_regis
     let app = bootstrap_test_app(&temp);
     let mut shared = common::create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;
@@ -184,7 +184,7 @@ fn register_operation_clears_tracking_even_when_the_operation_is_entirely_unknow
     let app = bootstrap_test_app(&temp);
     let mut shared = common::create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;
@@ -217,7 +217,7 @@ fn reconcile_after_lag_catches_up_every_tracked_operation_to_its_current_state()
     let app = bootstrap_test_app(&temp);
     let mut shared = common::create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;

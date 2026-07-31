@@ -227,7 +227,7 @@ fn close_archive_session_actually_releases_the_session_through_a_real_facade() {
 
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let session_id = runtime.block_on(async {
         let operation_id = app
@@ -269,7 +269,7 @@ fn a_second_open_on_the_same_tab_releases_the_prior_session() {
 
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab = shared.signals().tabs.get().active().clone();
     let tab_id = tab.id;
@@ -341,7 +341,7 @@ fn a_session_minted_for_a_tab_that_is_already_gone_is_closed_not_leaked() {
 
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
-    let runtime = shared.services.tokio_runtime.clone();
+    let runtime = shared.services.tokio_runtime.handle().clone();
 
     let tab_id = shared.signals().tabs.get().active_id();
     // A second, unrelated tab so closing `tab_id` doesn't leave the

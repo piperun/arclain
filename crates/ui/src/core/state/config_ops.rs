@@ -50,7 +50,7 @@ impl AppState {
     pub fn reload_ui_config(
         &self,
         facade: &arclain_app::ArclainApp,
-        runtime: &tokio::runtime::Runtime,
+        runtime: &tokio::runtime::Handle,
     ) {
         for (region, signal) in [
             (
@@ -102,7 +102,7 @@ impl AppState {
     pub fn refresh_settings_from_facade(
         &mut self,
         facade: &arclain_app::ArclainApp,
-        runtime: &tokio::runtime::Runtime,
+        runtime: &tokio::runtime::Handle,
     ) -> anyhow::Result<()> {
         let legacy = facade
             .take_legacy_composition()
@@ -135,7 +135,7 @@ impl AppState {
     pub fn refresh_settings_signals(
         &self,
         facade: &arclain_app::ArclainApp,
-        runtime: &tokio::runtime::Runtime,
+        runtime: &tokio::runtime::Handle,
     ) -> anyhow::Result<()> {
         let snapshot = runtime.block_on(async {
             facade
@@ -165,7 +165,7 @@ impl AppState {
     pub fn submit_settings_patch(
         &mut self,
         facade: &arclain_app::ArclainApp,
-        runtime: &tokio::runtime::Runtime,
+        runtime: &tokio::runtime::Handle,
         build_patch: impl FnOnce(u64) -> arclain_app::settings::SettingsPatch,
     ) -> anyhow::Result<arclain_app::settings::SettingsSnapshot> {
         let snapshot = runtime.block_on(async {
@@ -223,7 +223,7 @@ mod tests {
             .block_on(facade.shutdown())
             .expect("shut the facade down");
 
-        let result = state.refresh_settings_signals(&facade, &runtime);
+        let result = state.refresh_settings_signals(&facade, runtime.handle());
 
         assert!(
             result.is_err(),
@@ -264,7 +264,7 @@ mod tests {
         let state = app_state_from_facade(&facade);
 
         state
-            .refresh_settings_signals(&facade, &runtime)
+            .refresh_settings_signals(&facade, runtime.handle())
             .expect("a healthy facade must serve its own settings");
 
         assert!(

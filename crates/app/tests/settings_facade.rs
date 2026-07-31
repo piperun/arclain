@@ -1,7 +1,7 @@
 //! Integration tests for the settings/secrets/vault facade surface
-//! (`ArclainApp::settings`/`update_settings`/`set_gameta_api_key`/
-//! `set_socks5_password`/`move_vault`/`rekey_vault`/`password_rules`/
-//! `upsert_password_rule`/`delete_password_rule`).
+//! (`ArclainApp::settings`/`gameta_connection_status`/`update_settings`/
+//! `set_gameta_api_key`/`set_socks5_password`/`move_vault`/`rekey_vault`/
+//! `password_rules`/`upsert_password_rule`/`delete_password_rule`).
 //!
 //! The organization surface (`organization_profiles`/`organization_rules`
 //! and their CRUD, plus `preview_organize_plan`) has its own file,
@@ -33,8 +33,8 @@ use std::time::Duration;
 use arclain_app::challenge::SecretInput;
 use arclain_app::error::ApplicationErrorKind;
 use arclain_app::settings::{
-    ArchiveSettingsPatch, BackendModeDto, NetworkSettingsPatch, PasswordRuleInput, PatchValue,
-    SecuritySettingsPatch, SettingsPatch,
+    ArchiveSettingsPatch, BackendModeDto, GametaConnectionStatusDto, NetworkSettingsPatch,
+    PasswordRuleInput, PatchValue, SecuritySettingsPatch, SettingsPatch,
 };
 use arclain_app::{ArclainApp, BootstrapConfig};
 
@@ -1198,6 +1198,42 @@ fn clear_on_the_plugin_proxy_map_resets_it_to_empty() {
         .block_on(app.update_settings(clear_patch))
         .expect("clear must succeed");
     assert!(cleared.network.plugin_proxy_enabled.is_empty());
+}
+
+#[test]
+fn gameta_connection_status_uses_configuration_and_composed_client_state() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    assert_eq!(
+        runtime
+            .block_on(app.gameta_connection_status())
+            .expect("read disabled gameta status"),
+        GametaConnectionStatusDto::Disabled,
+    );
+
+    let current = runtime.block_on(app.settings()).expect("read settings");
+    runtime
+        .block_on(app.update_settings(SettingsPatch {
+            expected_revision: current.revision,
+            archive: None,
+            network: Some(NetworkSettingsPatch {
+                gameta_server_enabled: PatchValue::Set(true),
+                ..keep_network_patch()
+            }),
+            security: None,
+            general: None,
+        }))
+        .expect("enable gameta integration");
+
+    assert_eq!(
+        runtime
+            .block_on(app.gameta_connection_status())
+            .expect("read unavailable gameta status"),
+        GametaConnectionStatusDto::Unavailable,
+        "enabling after startup does not invent a client that was never composed",
+    );
 }
 
 /// The "fold 2" fix: a patch that changes *only* the per-plugin proxy

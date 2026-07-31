@@ -4,14 +4,14 @@
 //! sequence directly (directories, configuration, databases, backends,
 //! plugins, ...). That sequence now lives in `arclain_app::ArclainApp::
 //! bootstrap`, which this function calls and then unpacks via
-//! `take_legacy_composition` into this crate's still-existing
-//! `AppState`/`Services` shapes -- unmigrated call sites elsewhere in
-//! this crate keep reading `shared_state.app_state`/`shared_state.services`
-//! exactly as before. What's left here is genuinely UI-only: `AppSignals`
-//! construction, supplying the facade's one `AppSignals`-shaped fallback
-//! closure, and loading persisted UI state into signals. Plugin runtime
-//! wiring is application-owned; the fallback is used only when no
-//! archive session is active.
+//! `take_legacy_composition` into this crate's still-existing `AppState`
+//! shape -- unmigrated call sites elsewhere in this crate keep reading
+//! `shared_state.app_state` exactly as before. `Services` is now only the
+//! egui-owned executor that awaits facade work. What's left here is
+//! genuinely UI-only: `AppSignals` construction, supplying the facade's
+//! one `AppSignals`-shaped fallback closure, and loading persisted UI state
+//! into signals. Plugin runtime wiring is application-owned; the fallback
+//! is used only when no archive session is active.
 
 use super::config_ops::describe_facade_error;
 use super::AppState;
@@ -71,9 +71,8 @@ impl AppState {
                 anyhow::anyhow!("Failed to install the active-tab bridge: {error:?}")
             })?;
 
-        let services = crate::core::services::Services {
-            core: (*legacy.core_services).clone(),
-        };
+        let services = crate::core::services::Services::production()
+            .map_err(|error| anyhow::anyhow!("Failed to create the frontend runtime: {error}"))?;
 
         // Seed the reactive settings mirrors before anything can read
         // them.
@@ -88,27 +87,32 @@ impl AppState {
         // recoverable; silently discarding the user's session is not.
         me.refresh_settings_signals(&facade, &services.tokio_runtime)?;
 
-        // Set initial server connection status signal based on startup health check.
-        // GametaClient caches the version from the health check performed in
-        // init_db_services, so no second network call is needed here.
-        if let Some(ref gc) = services.core.gameta_client {
-            let version = gc
-                .last_known_version()
-                .unwrap_or_else(|| "unknown".to_string());
-            me.signals
-                .server_status
-                .set(crate::core::signals::ServerConnectionStatus::Connected(
-                    version,
-                ));
-        } else if me.user_config.gameta_server_enabled {
-            // Enabled in config but client wasn't created (health check failed or no URL)
-            me.signals
-                .server_status
-                .set(crate::core::signals::ServerConnectionStatus::Error(
-                    "Connection failed at startup".to_string(),
-                ));
+        // Seed the initial status from the facade's cached startup health.
+        // This performs no second network call and keeps the composed
+        // GametaClient itself behind the application boundary.
+        let gameta_status = services
+            .tokio_runtime
+            .block_on(facade.gameta_connection_status())
+            .map_err(|error| {
+                describe_facade_error("Failed to read gameta startup status", error)
+            })?;
+        match gameta_status {
+            arclain_app::settings::GametaConnectionStatusDto::Disabled => {}
+            arclain_app::settings::GametaConnectionStatusDto::Connected { version } => {
+                me.signals.server_status.set(
+                    crate::core::signals::ServerConnectionStatus::Connected(
+                        version.unwrap_or_else(|| "unknown".to_string()),
+                    ),
+                );
+            }
+            arclain_app::settings::GametaConnectionStatusDto::Unavailable => {
+                me.signals
+                    .server_status
+                    .set(crate::core::signals::ServerConnectionStatus::Error(
+                        "Connection failed at startup".to_string(),
+                    ));
+            }
         }
-        // If gameta_server_enabled is false, server_status stays Offline (default)
 
         // Seed the canonical chrome-item signals from the application.
         me.reload_ui_config(&facade, &services.tokio_runtime);
