@@ -708,6 +708,59 @@ fn open_plugin_session_opens_a_page_extension_point() {
     assert_eq!(snapshot.document.region_id, "page:settings");
 }
 
+/// A page's internal `__page_init` lifecycle event runs after its session
+/// has opened, but the frontend must never draw the document fetched
+/// before that event. The fixture bakes each `get-ui-layout` call into its
+/// first label: opening produces call 1, and page init must make the
+/// action's returned document call 2 even though the guest did not emit a
+/// `RefreshPanel` action itself.
+#[test]
+fn page_init_action_returns_a_fresh_post_init_document() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+    let snapshot = runtime
+        .block_on(app.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Page("fixture-page".to_string()),
+        ))
+        .expect("fixture page must open");
+    let first_label = |document: &PluginUiDocument| {
+        let arclain_app::plugins::PluginUiNodeKind::Single { children } = &document.root.kind
+        else {
+            panic!("expected a Single root");
+        };
+        let arclain_app::plugins::PluginUiNodeKind::Label { text, .. } = &children[0].kind else {
+            panic!("expected the first child to be a Label");
+        };
+        text.clone()
+    };
+    assert_eq!(first_label(&snapshot.document), "page-layout-call-1");
+
+    let operation_id = runtime
+        .block_on(app.start_plugin_action(PluginActionRequest {
+            session_id: snapshot.session_id,
+            node_id: "__page_init".to_string(),
+            action: PluginActionDto::SetValue {
+                value: Some("fixture-page".to_string()),
+            },
+        }))
+        .expect("page init action must start");
+    let update = runtime.block_on(wait_for_plugin_ui_updated(&app, operation_id));
+
+    assert_eq!(
+        first_label(&update.document),
+        "page-layout-call-2",
+        "page init must force one post-init layout read before publishing"
+    );
+    assert_eq!(
+        update.intents,
+        vec![PluginHostIntentDto::SetPageDisplayName {
+            name: "Fixture Page (fixture-page)".to_string(),
+        }]
+    );
+}
+
 #[test]
 fn open_plugin_session_rejects_an_empty_or_oversized_dialog_id() {
     let temp = tempfile::tempdir().unwrap();

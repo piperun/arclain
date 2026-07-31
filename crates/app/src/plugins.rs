@@ -2154,7 +2154,7 @@ impl PluginSessionStore {
         request: PluginActionRequest,
         handle: &tokio::runtime::Handle,
     ) -> Result<PluginUiUpdate, ApplicationError> {
-        let (plugin_id, extension_point, pinned_archive_session) = {
+        let (plugin_id, extension_point, pinned_archive_session, force_page_init_refresh) = {
             let sessions = self.sessions.read();
             let record = sessions
                 .get(&request.session_id)
@@ -2164,10 +2164,28 @@ impl PluginSessionStore {
                     return Err(action_rejected(&request.node_id));
                 }
             }
+            // A page session necessarily opens by reading its layout once,
+            // before the frontend can dispatch the page's internal
+            // `__page_init` lifecycle event. That event may mutate guest
+            // state without returning `RefreshPanel`; publishing the
+            // already-read root would therefore let the frontend cache a
+            // pre-init document indefinitely. A matching page init always
+            // receives one fresh read after the guest call, so the action's
+            // returned document is the first one safe to draw.
+            let force_page_init_refresh = matches!(
+                (&record.extension_point, &request.action),
+                (
+                    PluginExtensionPointDto::Page(page_id),
+                    PluginActionDto::SetValue {
+                        value: Some(init_page_id),
+                    },
+                ) if request.node_id == "__page_init" && init_page_id == page_id
+            );
             (
                 record.plugin_id.clone(),
                 record.extension_point.clone(),
                 record.pinned_archive_session,
+                force_page_init_refresh,
             )
         };
         // Re-evaluated at every boundary below where this dispatch is
@@ -2247,7 +2265,7 @@ impl PluginSessionStore {
         // nothing if the seconds spent between them are unguarded.
         still_enabled()?;
 
-        let refreshed_root = if outcome.needs_refresh {
+        let refreshed_root = if outcome.needs_refresh || force_page_init_refresh {
             Some(
                 self.fetch_and_normalize(&manager, &plugin_id, &extension_point, handle)
                     .await?,

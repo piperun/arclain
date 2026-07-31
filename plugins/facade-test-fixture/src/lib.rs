@@ -41,6 +41,13 @@
 //!   dialog host has to resolve without ever forwarding them to this
 //!   guest (`CloseDialog`, `OpenPage`). `ui-demo` implements no dialog at
 //!   all, so egui's dialog host had no fixture to draw before this.
+//! - **A page whose initialization is observable**:
+//!   `"Page:fixture-page"` and `"Page:fixture-child"` bake their shared
+//!   `get-ui-layout` call count into the document. Opening a page first
+//!   reads call 1; dispatching `__page_init` must force the application to
+//!   return call 2, so a frontend can prove it never draws the pre-init
+//!   document. The pages also expose ordinary interaction and typed
+//!   open/close-page buttons for host lifecycle coverage.
 //! - **Plugin chrome**: `get-top-tabs` returns exactly one tab, with a
 //!   badge, at a fixed priority, so a test can read `plugin_chrome` back
 //!   and assert every mirrored field. `ui-demo` registers no tabs at all.
@@ -85,10 +92,17 @@ static MAIN_PAGE_LAYOUT_CALLS: AtomicU32 = AtomicU32::new(0);
 /// apart from any main-page read another test in the same process made.
 static DIALOG_LAYOUT_CALLS: AtomicU32 = AtomicU32::new(0);
 
+/// The page counterpart of [`MAIN_PAGE_LAYOUT_CALLS`]. Both fixture
+/// pages share it so push/pop tests can prove exactly when the host
+/// re-entered `get-ui-layout`.
+static PAGE_LAYOUT_CALLS: AtomicU32 = AtomicU32::new(0);
+
 /// The dialog id this fixture answers with real content. Anything else
 /// falls through to the empty layout, the way every unimplemented
 /// extension point does.
 const FIXTURE_DIALOG: &str = "Dialog:fixture-dialog";
+const FIXTURE_PAGE: &str = "Page:fixture-page";
+const FIXTURE_CHILD_PAGE: &str = "Page:fixture-child";
 
 struct Component;
 
@@ -224,6 +238,39 @@ impl archust_plugin_sdk::Guest for Component {
                     }),
                 ])
             }
+            FIXTURE_PAGE | FIXTURE_CHILD_PAGE => {
+                let call_number = PAGE_LAYOUT_CALLS.fetch_add(1, Ordering::SeqCst) + 1;
+                PluginLayout::Single(vec![
+                    UiElement::Label(LabelConfig {
+                        text: format!("page-layout-call-{call_number}"),
+                        bold: false,
+                        size: None,
+                    }),
+                    UiElement::Label(LabelConfig {
+                        text: extension_point
+                            .strip_prefix("Page:")
+                            .unwrap_or_default()
+                            .to_string(),
+                        bold: false,
+                        size: None,
+                    }),
+                    UiElement::Button(ButtonConfig {
+                        id: "multi-action".to_string(),
+                        label: "Page Multi Action".to_string(),
+                        action: None,
+                    }),
+                    UiElement::Button(ButtonConfig {
+                        id: "page-open-child".to_string(),
+                        label: "Page Open Child".to_string(),
+                        action: Some(ButtonAction::OpenPage("fixture-child".to_string())),
+                    }),
+                    UiElement::Button(ButtonConfig {
+                        id: "page-close".to_string(),
+                        label: "Page Close".to_string(),
+                        action: Some(ButtonAction::ClosePage),
+                    }),
+                ])
+            }
             _ => PluginLayout::Single(vec![]),
         }
     }
@@ -256,6 +303,11 @@ impl archust_plugin_sdk::Guest for Component {
         use archust_plugin_sdk::arclain::plugin::ui::*;
 
         match id.as_str() {
+            "__page_init" => vec![PluginAction::SetPageDisplayName(
+                value
+                    .map(|page| format!("Fixture Page ({page})"))
+                    .unwrap_or_else(|| "Fixture Page".to_string()),
+            )],
             // A settings write from inside `on-ui-event` -- the shape
             // every real settings form uses (dlsite-metadata's toggles do
             // exactly this). The host only learns about it through the
