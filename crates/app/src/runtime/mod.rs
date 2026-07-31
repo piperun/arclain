@@ -2347,6 +2347,35 @@ impl ArclainApp {
             .await
     }
 
+    /// Installs this application's active-tab bridge on its plugin
+    /// runtime, including every plugin instance that is already loaded.
+    ///
+    /// The bridge resolves archive-backed host calls through the
+    /// renderer-neutral session selected by
+    /// [`Self::set_active_archive_session`]. `fallback` is invoked only
+    /// for a panel-driven metadata write when no archive session is
+    /// active, because resolving a frontend's own current tab is the one
+    /// responsibility the application cannot own.
+    ///
+    /// Returns `false` when bootstrap degraded cleanly without a plugin
+    /// runtime; there is nothing to install in that case. A frontend can
+    /// therefore perform this one-time setup without receiving or
+    /// depending on `PluginManager` itself.
+    pub fn install_active_tab_bridge(
+        &self,
+        fallback: impl Fn(Option<serde_json::Value>) + Send + Sync + 'static,
+    ) -> Result<bool, ApplicationError> {
+        if self.inner.shut_down.load(Ordering::SeqCst) {
+            return Err(shutdown_error());
+        }
+        let Some(manager) = self.inner.plugin_manager() else {
+            return Ok(false);
+        };
+        let bridge = self.active_tab_bridge(fallback);
+        manager.lock().set_active_tab_bridge(bridge);
+        Ok(true)
+    }
+
     /// This application's own `arclain_plugins::ActiveTabBridge`
     /// implementation, resolved through archive-session state (see
     /// [`Self::set_active_archive_session`]) instead of a UI signal tree,
@@ -2359,9 +2388,11 @@ impl ArclainApp {
     /// knowing about a frontend's own notion of "the active tab", which
     /// this crate must never depend on directly).
     ///
-    /// A frontend installs the returned bridge via
-    /// `arclain_plugins::PluginManager::set_active_tab_bridge`, once,
-    /// alongside the rest of its plugin-manager wiring.
+    /// Frontends should use [`Self::install_active_tab_bridge`], which
+    /// keeps the plugin runtime behind the application boundary. This
+    /// lower-level constructor remains useful to application tests and
+    /// other headless composition code that needs to exercise the bridge
+    /// directly.
     pub fn active_tab_bridge(
         &self,
         fallback: impl Fn(Option<serde_json::Value>) + Send + Sync + 'static,

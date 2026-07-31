@@ -421,13 +421,12 @@ mod layout_editor {
     }
 
     #[test]
-    fn sync_with_no_plugin_manager_skips_plugin_walk_cleanly() {
+    fn sync_with_empty_plugin_items_is_a_clean_no_op() {
         let shared = create_test_shared_state();
         let mut state = ToolbarLayoutState::default();
 
-        // Sync with empty signal and no plugin manager should be a
-        // graceful no-op for dirty (loaded=true, items=empty, dirty
-        // stays false).
+        // Sync with an empty facade-fed signal is a graceful no-op for
+        // dirty (loaded=true, items=empty, dirty stays false).
         handle_toolbar_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
 
         assert!(!state.dirty, "no-op sync must not mark the editor dirty");

@@ -10,7 +10,6 @@ edition.workspace = true
 # accepts from a GUI crate.
 arclain_app = { path = "../app" }
 arclain_core = { path = "../core" }
-arclain_plugins = { path = "../plugins" }
 eframe = "0.33.0"
 egui = "0.33.0"
 egui_extras = { version = "0.33.0", features = ["all_loaders"] }

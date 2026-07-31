@@ -884,7 +884,6 @@ mod tests {
             .expect("take legacy composition for the test fixture");
         let services = Arc::new(Services {
             core: (*legacy.core_services).clone(),
-            plugin_manager: legacy.plugin_manager,
         });
         let app_state = app_state_from_facade(&facade);
         let signals = app_state.signals.clone();

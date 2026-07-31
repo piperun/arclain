@@ -1,5 +1,5 @@
 //! Parity coverage for the plugin-bridge swap: `ArclainApp::
-//! active_tab_bridge` is now installed on `PluginManager` in production,
+//! install_active_tab_bridge` now owns production runtime wiring,
 //! replacing the old bridge that wrote directly into egui's own tab
 //! signals. Every case a plugin's metadata write can take must still
 //! reach the correct tab -- just through a different mechanism (a

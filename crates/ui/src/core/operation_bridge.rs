@@ -2130,10 +2130,8 @@ mod tests {
     /// `ApplicationError`.
     ///
     /// The marker is placed in `diagnostic` specifically because that is
-    /// where guest text actually arrives: `arclain_app::plugins`'s error
-    /// constructors fill it from `PluginError::to_string()`, and a
-    /// `PluginError::Serialization` carries a `serde_json::Error` whose
-    /// `Display` quotes the guest value that failed to parse.
+    /// where guest text actually arrives. A serialization failure's
+    /// `Display` value quotes the guest input that failed to parse.
     #[tracing_test::traced_test]
     #[test]
     fn a_failed_plugin_action_trace_redacts_the_plugin_supplied_diagnostic() {
@@ -2142,8 +2140,7 @@ mod tests {
         // this proves the reachable shape rather than a hand-written
         // string: the guest value ends up inside serde's own message.
         let serde_error = serde_json::from_str::<u32>(&format!("\"{marker}\"")).unwrap_err();
-        let plugin_error = arclain_plugins::types::PluginError::Serialization(serde_error);
-        let diagnostic = plugin_error.to_string();
+        let diagnostic = serde_error.to_string();
         assert!(
             diagnostic.contains(marker),
             "precondition: guest text must actually reach the diagnostic, got {diagnostic}"

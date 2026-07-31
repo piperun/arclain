@@ -100,7 +100,6 @@ fn shared_state_with_plugin() -> (TempDir, SharedState) {
     let mut shared = common::create_test_shared_state();
     let services = Services {
         core: (*legacy.core_services).clone(),
-        plugin_manager: legacy.plugin_manager,
     };
     shared.plugin_ui_jobs = PluginUiJobs::new(Some(app.clone()), services.tokio_runtime.clone());
     shared.services = Arc::new(services);

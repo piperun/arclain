@@ -622,6 +622,13 @@ fn uncreatable_plugins_dir_still_bootstraps_with_plugins_degraded() {
         .block_on(app.health())
         .expect("health() must succeed");
     assert!(health.degraded_components.iter().any(|c| c == "plugins"));
+    assert!(
+        !app.install_active_tab_bridge(|_| {
+            panic!("a missing plugin runtime cannot invoke the fallback")
+        })
+        .expect("bridge setup must preserve degraded startup"),
+        "bridge setup must report that there was no plugin runtime to wire"
+    );
 }
 
 /// End-to-end companion to the deterministic `RuntimeOwner`-focused

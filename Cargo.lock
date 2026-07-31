@@ -586,7 +586,6 @@ dependencies = [
  "arclain_app",
  "arclain_core",
  "arclain_db",
- "arclain_plugins",
  "arclain_theme",
  "arclain_widgets",
  "chrono",

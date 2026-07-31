@@ -8,11 +8,10 @@
 //! `AppState`/`Services` shapes -- unmigrated call sites elsewhere in
 //! this crate keep reading `shared_state.app_state`/`shared_state.services`
 //! exactly as before. What's left here is genuinely UI-only: `AppSignals`
-//! construction, installing the plugin manager's active-tab bridge (the
-//! facade builds the bridge itself; this only supplies the one
-//! `AppSignals`-shaped fallback closure it cannot build on its own -- see
-//! the install call's own comment), and loading persisted UI state into
-//! signals.
+//! construction, supplying the facade's one `AppSignals`-shaped fallback
+//! closure, and loading persisted UI state into signals. Plugin runtime
+//! wiring is application-owned; the fallback is used only when no
+//! archive session is active.
 
 use super::config_ops::describe_facade_error;
 use super::AppState;
@@ -50,7 +49,7 @@ impl AppState {
             .plugin_visibility
             .set(me.user_config.plugin_visibility.clone());
 
-        // Active context: `ArclainApp::active_tab_bridge` resolves
+        // Active context: `ArclainApp::install_active_tab_bridge` resolves
         // everything through this application's own archive-session
         // state (kept in sync with egui's active tab via
         // `crate::core::app_lifecycle::sync_active_archive_session`,
@@ -60,19 +59,20 @@ impl AppState {
         // closure over `AppSignals`, since "which UI element is the
         // active tab, and how do I write to it" is exactly the one thing
         // `arclain_app` must never know about directly. See
-        // `arclain_app::plugins::ProductionActiveTabBridge`'s own doc
-        // comment for why the split is drawn exactly here.
-        if let Some(ref plugin_manager) = legacy.plugin_manager {
-            let fallback_signals = me.signals.clone();
-            let bridge = facade.active_tab_bridge(move |metadata| {
+        // `arclain_app`'s bridge documentation for why the split is
+        // drawn exactly here. The facade owns the plugin runtime and
+        // updates every already-loaded instance itself.
+        let fallback_signals = me.signals.clone();
+        facade
+            .install_active_tab_bridge(move |metadata| {
                 fallback_signals.tabs.get().active().metadata.set(metadata);
-            });
-            plugin_manager.lock().set_active_tab_bridge(bridge);
-        }
+            })
+            .map_err(|error| {
+                anyhow::anyhow!("Failed to install the active-tab bridge: {error:?}")
+            })?;
 
         let services = crate::core::services::Services {
             core: (*legacy.core_services).clone(),
-            plugin_manager: legacy.plugin_manager,
         };
 
         // Seed the reactive settings mirrors before anything can read

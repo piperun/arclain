@@ -1,13 +1,9 @@
 use arclain_core::services::Services as CoreServices;
-use arclain_plugins::PluginManager;
-use parking_lot::Mutex;
 use std::ops::Deref;
 use std::sync::Arc;
 
 /// UI-layer Services container
-/// Wraps CoreServices and adds UI-specific services (PluginManager).
-/// `PluginManager` lives here because it isn't part of the headless
-/// `arclain_core::services::Services` bag.
+/// Wraps the still-unmigrated `CoreServices` handle.
 ///
 /// The content cache and resource manager used to live here too. Neither
 /// does now: cached images resolve through `arclain_app`'s image surface
@@ -25,8 +21,6 @@ use std::sync::Arc;
 /// that want a minimal `Services` without paying for a full bootstrap.
 pub struct Services {
     pub core: CoreServices,
-
-    pub plugin_manager: Option<Arc<Mutex<PluginManager>>>,
 }
 
 impl Default for Services {
@@ -41,7 +35,6 @@ impl Services {
     pub fn new(runtime: tokio::runtime::Runtime) -> Self {
         Self {
             core: CoreServices::new(Arc::new(runtime)),
-            plugin_manager: None,
         }
     }
 }

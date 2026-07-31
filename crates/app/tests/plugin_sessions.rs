@@ -21,6 +21,7 @@
 mod support;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arclain_app::error::ApplicationErrorKind;
@@ -172,6 +173,47 @@ fn bootstrap_app_without_plugins(temp: &tempfile::TempDir) -> ArclainApp {
         materialization_cleanup_interval_override: None,
     })
     .expect("bootstrap with no plugins installed must succeed")
+}
+
+#[test]
+fn installing_the_active_tab_bridge_wires_existing_plugin_instances() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observed_from_fallback = observed.clone();
+
+    assert!(
+        app.install_active_tab_bridge(move |metadata| {
+            observed_from_fallback.lock().unwrap().push(metadata);
+        })
+        .expect("installing the bridge on a running app must succeed"),
+        "the bootstrapped plugin runtime must report that it was wired",
+    );
+
+    // The legacy handle is used only as a test probe: the production
+    // frontend must not receive or wire PluginManager itself. Reaching
+    // the bridge through an instance that already existed before the
+    // install proves the application updated the manager and its live
+    // instances rather than merely retaining a bridge for future loads.
+    let legacy = app
+        .take_legacy_composition()
+        .expect("the running app must expose its transitional composition");
+    let manager = legacy
+        .plugin_manager
+        .expect("the ui-demo fixture requires a plugin manager");
+    let instance = manager
+        .lock()
+        .get_plugin_instance("ui-demo")
+        .expect("the ui-demo instance must be loaded");
+    let bridge = instance
+        .lock()
+        .get_active_tab_bridge()
+        .expect("the application must install the bridge on existing instances");
+    let metadata = Some(serde_json::json!({"product_id": "RJ123456"}));
+
+    bridge.set_active_tab_metadata(metadata.clone());
+
+    assert_eq!(*observed.lock().unwrap(), vec![metadata]);
 }
 
 /// Bootstraps with `facade-test-fixture`, the deterministic plugin built

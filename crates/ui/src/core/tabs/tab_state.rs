@@ -2,7 +2,6 @@
 
 use super::inventory::TabInventory;
 use super::listing::TabListing;
-use super::plugin_instances::TabPluginPool;
 use super::view_state::{BrowserEntriesSnapshot, BrowserViewState};
 use super::TabId;
 use crate::core::operations::archive::{derive_archive_info, ArchiveExtras, ArchiveInfo};
@@ -286,9 +285,6 @@ pub struct TabState {
     /// sweep / every `signals.tabs.set` would stack another listener
     /// onto every signal and the same write would notify 2x, 3x, …
     pub signals_bound: AtomicBool,
-
-    // Plugin instance pool (Phase 2c populates)
-    pub plugin_pool: TabPluginPool,
 }
 
 impl TabState {
@@ -356,7 +352,6 @@ impl TabState {
             tab_cancel: Arc::new(AtomicBool::new(false)),
             pinned: Arc::new(AtomicBool::new(false)),
             signals_bound: AtomicBool::new(false),
-            plugin_pool: TabPluginPool::default(),
         }
     }
 
