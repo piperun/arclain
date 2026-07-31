@@ -106,8 +106,15 @@ impl DocumentEvent {
 /// intact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DocumentExtent {
-    /// The document owns its container: a page, a dialog, a settings
-    /// detail view. `Split` fills it.
+    /// The document owns its container -- a dialog, or a page whose whole
+    /// body is the document. `Split` fills it.
+    ///
+    /// "Owns" is about the `Ui`, not about importance: the plugin
+    /// settings detail view is the plugin's *main* page and still passes
+    /// [`Self::Bounded`], because its document is one section stacked
+    /// under four others inside a `ScrollArea` whose content `Ui` is
+    /// sized to the visible viewport. A `Split` given `Full` there takes
+    /// that whole viewport and the form with it.
     Full,
     /// The document is one section among several in a scrolling host.
     /// `Split` is capped at this many points tall.

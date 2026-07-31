@@ -3,13 +3,44 @@
 //! Coordinator for plugin list and detail views.
 //! Dispatches rendering to the appropriate view based on state.
 
+use crate::features::plugins::application::PluginSlot;
 use crate::features::plugins::domain::types::PluginsListState;
 use crate::features::settings::domain::types::SettingsAction;
 
-use crate::shared::image_assets::{ImageAssetStore, ImageOwner};
+use crate::shared::image_assets::ImageOwner;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use eframe::egui;
+
+/// Releases everything the detail view holds on `plugin_id`'s behalf, for
+/// the moment that plugin stops being the selected one.
+///
+/// Two resources, one lifetime: the images its `MainPage` document
+/// referenced, and the facade session that produced that document. They
+/// are freed together because they are acquired together -- the detail
+/// view is the only host of either, and a `MainPage` slot is
+/// window-scoped, so `PluginSessions::retain_hosts` (which only reaches
+/// tab-scoped slots) will never sweep it. Leaving the session open would
+/// also mean returning to a plugin re-drew a document fetched before the
+/// user left, where every pre-facade path re-read it.
+///
+/// Called from both places a selection can end -- the render-time
+/// comparison below and the header's Back button -- so the two cannot
+/// drift apart on what "no longer selected" releases.
+fn release_selected_plugin(shared: &SharedState, plugin_id: &str) {
+    if let Some(facade) = shared.facade.as_ref() {
+        shared.plugin_sessions.close(
+            facade,
+            shared.services.tokio_runtime.handle(),
+            &PluginSlot::MainPage {
+                plugin_id: plugin_id.to_string(),
+            },
+        );
+    }
+    shared
+        .image_assets
+        .release_owner(&ImageOwner::plugin_settings(plugin_id));
+}
 
 /// Render the Plugin Page (coordinator)
 /// Dispatches to list_view or detail_view based on selection state
@@ -60,9 +91,7 @@ pub fn render(
 
     if state.selected_plugin != selected_before_render {
         if let (Some(shared), Some(previous_plugin_id)) = (shared, selected_before_render) {
-            shared
-                .image_assets
-                .release_owner(&ImageOwner::plugin_settings(previous_plugin_id));
+            release_selected_plugin(shared, &previous_plugin_id);
         }
     }
 
@@ -83,11 +112,19 @@ fn sync_plugin_list_epoch(state: &mut PluginsListState, current_epoch: u64) {
 }
 
 /// Generate header configuration for the Plugins page
+///
+/// Takes the whole [`SharedState`] rather than just the image store
+/// because Back is a deselection like any other, and a deselection
+/// releases both of the detail view's holdings (see
+/// [`release_selected_plugin`]). It cannot fall through to `render`'s own
+/// comparison: this closure runs during the header, so by the time the
+/// page body renders the selection has already changed and the
+/// comparison sees no difference.
 pub fn get_header_config<'a>(
     state: &'a mut PluginsListState,
     page: &crate::core::SettingsPage,
     install_clicked_cell: &'a std::cell::Cell<bool>,
-    image_assets: &'a ImageAssetStore,
+    shared: &'a SharedState,
 ) -> crate::features::settings::presentation::views::header_config::SettingsHeaderConfig<'a> {
     use crate::features::settings::presentation::views::header_config::SettingsHeaderConfig;
 
@@ -95,7 +132,6 @@ pub fn get_header_config<'a>(
     if let Some(plugin_id) = state.selected_plugin.clone() {
         if let Some(plugin) = state.plugins.iter().find(|p| &p.id == &plugin_id) {
             let selected_plugin = &mut state.selected_plugin;
-            let image_owner = ImageOwner::plugin_settings(&plugin_id);
 
             let mut config = SettingsHeaderConfig::new(&plugin.name)
                 .sub_description(format!(
@@ -105,7 +141,7 @@ pub fn get_header_config<'a>(
                 ))
                 .has_changes(false) // Plugin settings save immediately, no Save button needed
                 .on_back(move || {
-                    image_assets.release_owner(&image_owner);
+                    release_selected_plugin(shared, &plugin_id);
                     *selected_plugin = None;
                 });
 

@@ -194,7 +194,7 @@ fn plugin_settings_back_releases_the_selected_plugins_image_owner() {
                 &mut state,
                 &arclain_ui::core::SettingsPage::Plugins,
                 &install_clicked,
-                &shared.image_assets,
+                &shared,
             );
         config
             .on_back

@@ -23,10 +23,15 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use arclain_app::ids::PluginSessionId;
+use arclain_app::plugins::{
+    PluginExtensionPointDto, PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind,
+};
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 use arclain_ui::features::plugins::application::{PluginSlot, SlotView};
 use arclain_ui::features::plugins::domain::types::{PluginInfo, PluginStatus, PluginsListState};
-use arclain_ui::features::plugins::presentation::views::detail_view;
+use arclain_ui::features::plugins::presentation::pages::plugins_page;
+use arclain_ui::shared::image_assets::{ImageAssetState, ImageOwner};
 use arclain_ui::shared::theme::AppTheme;
 use arclain_ui::shared::SharedState;
 use egui_kittest::kittest::Queryable as _;
@@ -35,8 +40,12 @@ use egui_kittest::Harness;
 /// Deterministic layout counter and real host intents -- see this file's
 /// own doc comment.
 const FIXTURE: &str = "facade-test-fixture";
-/// Offers no `MainPage` at all, so it also exercises the empty-document
-/// branch of the section.
+/// A second plugin with a *non-empty* `MainPage` of its own, so a
+/// selection change can be shown drawing real other content rather than
+/// only the "nothing to configure" message.
+const OTHER: &str = "gstreamer-preview";
+/// Offers no `MainPage` at all, so it exercises the empty-document branch
+/// of the section.
 const DEMO: &str = "ui-demo";
 
 /// Copies a workspace plugin fixture into the folder layout the plugin
@@ -153,7 +162,11 @@ impl Stage {
     }
 }
 
-fn detail_harness(shared: SharedState, plugins: &[&str]) -> Harness<'static, Stage> {
+/// Drives `plugins_page::render`, not `detail_view::render` directly:
+/// the coordinator is what a running application calls, and it owns the
+/// other half of a `MainPage` slot's lifetime -- the release that happens
+/// when a plugin stops being the selected one.
+fn plugins_page_harness(shared: SharedState, plugins: &[&str]) -> Harness<'static, Stage> {
     let state = PluginsListState {
         plugins: plugins.iter().copied().map(plugin_info).collect(),
         selected_plugin: plugins.first().map(|id| (*id).to_string()),
@@ -162,7 +175,7 @@ fn detail_harness(shared: SharedState, plugins: &[&str]) -> Harness<'static, Sta
     let theme = shared.theme.clone();
     Harness::new_ui_state(
         |ui, stage: &mut Stage| {
-            detail_view::render(ui, &stage.theme, &mut stage.state, Some(&stage.shared));
+            plugins_page::render(ui, &stage.theme, &mut stage.state, Some(&stage.shared));
         },
         Stage {
             shared,
@@ -170,6 +183,57 @@ fn detail_harness(shared: SharedState, plugins: &[&str]) -> Harness<'static, Sta
             theme,
         },
     )
+}
+
+/// Presses the detail header's Back button the way the settings header
+/// does -- the real deselection path, and the one `render`'s own
+/// before/after comparison cannot see (the closure runs during the
+/// header, so the page body's comparison finds nothing changed).
+fn press_back(stage: &mut Stage) {
+    let install_clicked = std::cell::Cell::new(false);
+    let mut config = plugins_page::get_header_config(
+        &mut stage.state,
+        &arclain_ui::core::SettingsPage::Plugins,
+        &install_clicked,
+        &stage.shared,
+    );
+    config
+        .on_back
+        .take()
+        .expect("the detail header must offer a back action")();
+}
+
+fn node(id: &str, kind: PluginUiNodeKind) -> PluginUiNodeDto {
+    PluginUiNodeDto {
+        id: id.to_string(),
+        kind,
+        visible: true,
+        enabled: true,
+    }
+}
+
+fn label(id: &str, text: &str) -> PluginUiNodeDto {
+    node(
+        id,
+        PluginUiNodeKind::Label {
+            text: text.to_string(),
+            bold: false,
+            size: None,
+        },
+    )
+}
+
+/// A hand-built `MainPage` document, for the shapes no fixture plugin
+/// currently produces.
+fn main_page_document(session: u64, root: PluginUiNodeDto) -> PluginUiDocument {
+    PluginUiDocument {
+        session_id: PluginSessionId::from_raw(session),
+        plugin_id: "hand-built".to_string(),
+        region_id: "main_page".to_string(),
+        extension_point: PluginExtensionPointDto::MainPage,
+        revision: 1,
+        root,
+    }
 }
 
 /// Drives frames the way a running application does until `ready`, rather
@@ -212,7 +276,7 @@ fn opened(plugin_id: &'static str) -> impl Fn(&Stage) -> bool {
 #[test]
 fn the_detail_view_draws_the_selected_plugins_main_page_from_a_facade_document() {
     let (_temp, shared) = shared_state_with_plugins(&[FIXTURE]);
-    let mut harness = detail_harness(shared, &[FIXTURE]);
+    let mut harness = plugins_page_harness(shared, &[FIXTURE]);
 
     run_until(
         &mut harness,
@@ -254,7 +318,7 @@ fn the_detail_view_draws_the_selected_plugins_main_page_from_a_facade_document()
 fn a_main_page_press_dispatches_through_the_facade_and_applies_its_result() {
     let (_temp, shared) = shared_state_with_plugins(&[FIXTURE]);
     arclain_ui::core::operation_bridge::spawn(&shared);
-    let mut harness = detail_harness(shared, &[FIXTURE]);
+    let mut harness = plugins_page_harness(shared, &[FIXTURE]);
 
     run_until(
         &mut harness,
@@ -318,7 +382,7 @@ fn a_main_page_press_dispatches_through_the_facade_and_applies_its_result() {
 #[test]
 fn re_rendering_the_same_plugin_never_refetches_its_main_page() {
     let (_temp, shared) = shared_state_with_plugins(&[FIXTURE]);
-    let mut harness = detail_harness(shared, &[FIXTURE]);
+    let mut harness = plugins_page_harness(shared, &[FIXTURE]);
 
     run_until(
         &mut harness,
@@ -352,18 +416,22 @@ fn re_rendering_the_same_plugin_never_refetches_its_main_page() {
     assert_eq!(harness.state().shared.plugin_sessions.len(), 1);
 }
 
-/// The cache decision, half two: selecting another plugin shows that
-/// plugin's own `MainPage` and never the previous one's.
+/// The cache decision, half two: each plugin's own `MainPage`, and the
+/// previous one's released when it stops being selected.
 ///
-/// Under the session model this is not an invalidation at all -- the
-/// plugin id is part of the slot key, so a selection change asks for a
-/// different slot. Returning to the first plugin then re-draws its
-/// retained document without re-entering the guest, which is what the
-/// window-scoped slot buys over the per-selection cache it replaced.
+/// Under the session model a selection change is not an invalidation at
+/// all -- the plugin id is part of the slot key, so the next plugin asks
+/// for a different slot. What the *host* owes is the other half: leaving a
+/// plugin releases its session, exactly as it releases that plugin's image
+/// owner, so a return re-reads the plugin's layout rather than re-drawing
+/// one fetched before the user left.
+///
+/// Three plugins, so this covers both shapes the section can draw: one
+/// with real configuration of its own, and one with none at all.
 #[test]
-fn selecting_another_plugin_draws_that_plugins_own_main_page() {
-    let (_temp, shared) = shared_state_with_plugins(&[FIXTURE, DEMO]);
-    let mut harness = detail_harness(shared, &[FIXTURE, DEMO]);
+fn leaving_a_plugin_releases_its_session_and_the_next_one_draws_its_own_main_page() {
+    let (_temp, shared) = shared_state_with_plugins(&[FIXTURE, OTHER, DEMO]);
+    let mut harness = plugins_page_harness(shared, &[FIXTURE, OTHER, DEMO]);
 
     run_until(
         &mut harness,
@@ -372,35 +440,216 @@ fn selecting_another_plugin_draws_that_plugins_own_main_page() {
     );
     assert!(harness.query_by_label("layout-call-1").is_some());
 
-    harness.state_mut().state.selected_plugin = Some(DEMO.to_string());
+    // Back, then pick another plugin -- the way the UI actually gets from
+    // one plugin's settings to another's.
+    press_back(harness.state_mut());
+    settle(&mut harness);
+    assert!(
+        !harness.state().session_open(FIXTURE),
+        "leaving a plugin must release its session, not keep it warm"
+    );
+
+    harness.state_mut().state.selected_plugin = Some(OTHER.to_string());
     run_until(
         &mut harness,
         "the second plugin's MainPage session to open",
-        opened(DEMO),
+        opened(OTHER),
     );
 
+    assert!(
+        harness
+            .query_by_label("Enable Hardware Acceleration")
+            .is_some(),
+        "the newly selected plugin's own configuration must be drawn"
+    );
     assert!(
         harness.query_by_label("layout-call-1").is_none(),
         "the previous plugin's document must not survive a selection change"
     );
     assert!(harness.query_by_label("Multi Action").is_none());
+
+    // A plugin that offers nothing says so, rather than drawing an empty
+    // section under the header.
+    press_back(harness.state_mut());
+    settle(&mut harness);
+    harness.state_mut().state.selected_plugin = Some(DEMO.to_string());
+    run_until(
+        &mut harness,
+        "the third plugin's MainPage session to open",
+        opened(DEMO),
+    );
     assert!(
         harness
             .query_by_label("This plugin does not provide configuration.")
             .is_some(),
         "a plugin that offers no MainPage must say so rather than draw an empty section"
     );
+    assert!(harness
+        .query_by_label("Enable Hardware Acceleration")
+        .is_none());
 
-    harness.state_mut().state.selected_plugin = Some(FIXTURE.to_string());
+    // Returning to the first plugin re-reads its layout: `layout-call-2`
+    // is the fixture's own count of how many times the host has asked,
+    // and it only advances if the first session really was closed.
+    press_back(harness.state_mut());
     settle(&mut harness);
+    harness.state_mut().state.selected_plugin = Some(FIXTURE.to_string());
+    run_until(
+        &mut harness,
+        "the first plugin's MainPage session to re-open",
+        opened(FIXTURE),
+    );
 
     assert!(
-        harness.query_by_label("layout-call-1").is_some(),
-        "returning must re-draw the retained slot's document, not fetch a second layout"
+        harness.query_by_label("layout-call-2").is_some(),
+        "returning must open a fresh session and re-read the layout"
     );
     assert_eq!(
         harness.state().shared.plugin_sessions.len(),
-        2,
-        "one window-scoped slot per plugin whose settings were opened"
+        1,
+        "only the selected plugin's slot may be open"
+    );
+}
+
+/// The deselection release, from the other direction: whatever is holding
+/// the slot, the header's Back button lets go of it -- and of the image
+/// owner beside it, which is the cleanup this one was found to be
+/// inconsistent with.
+///
+/// Hand-built rather than driven through a real plugin: the property is
+/// the host's release, and a real session would only make the test slower
+/// and load-sensitive.
+#[test]
+fn back_releases_both_the_main_page_session_and_the_image_owner() {
+    let (_temp, shared) = common::create_test_shared_state_with_facade();
+    let mut stage = Stage {
+        theme: shared.theme.clone(),
+        state: PluginsListState {
+            plugins: vec![plugin_info("held")],
+            selected_plugin: Some("held".to_string()),
+            ..PluginsListState::default()
+        },
+        shared,
+    };
+    stage.shared.plugin_sessions.adopt_for_test(
+        &main_page_slot("held"),
+        PluginSessionId::from_raw(7),
+        main_page_document(
+            7,
+            node(
+                "#root",
+                PluginUiNodeKind::Single {
+                    children: vec![label("hello", "Hello")],
+                },
+            ),
+        ),
+    );
+    let key = "back-releases-image";
+    stage.shared.image_assets.request(
+        ImageOwner::plugin_settings("held"),
+        key,
+        eframe::egui::Context::default(),
+    );
+    // Settled before the release, so what is asserted is the release and
+    // not a fetch that had not landed yet -- the store has no source in a
+    // test state, so every request resolves to a failure.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !matches!(
+        stage.shared.image_assets.state(key),
+        Some(ImageAssetState::Failed(_))
+    ) {
+        assert!(Instant::now() < deadline, "the image request never settled");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    press_back(&mut stage);
+
+    assert_eq!(stage.state.selected_plugin, None);
+    assert!(
+        stage
+            .shared
+            .plugin_sessions
+            .session_id(&main_page_slot("held"))
+            .is_none(),
+        "back left the plugin's MainPage session open"
+    );
+    assert!(
+        !stage.shared.image_assets.contains(key),
+        "back left the plugin's image owner alive"
+    );
+}
+
+/// The other place a selection can end: the detail view resets it itself
+/// when the selected id is no longer in the plugin list (uninstalled, or
+/// renamed by a reinstall). That path runs *inside* `render`, so it is the
+/// before/after comparison rather than the Back closure that has to catch
+/// it.
+#[test]
+fn a_selection_that_vanishes_from_the_list_releases_its_session_too() {
+    let (_temp, shared) = common::create_test_shared_state_with_facade();
+    shared.plugin_sessions.adopt_for_test(
+        &main_page_slot("uninstalled"),
+        PluginSessionId::from_raw(11),
+        main_page_document(
+            11,
+            node(
+                "#root",
+                PluginUiNodeKind::Single {
+                    children: vec![label("gone", "Gone")],
+                },
+            ),
+        ),
+    );
+    // Selected, but absent from the list the snapshot produced.
+    let mut harness = plugins_page_harness(shared, &[]);
+    harness.state_mut().state.selected_plugin = Some("uninstalled".to_string());
+
+    settle(&mut harness);
+
+    assert_eq!(harness.state().state.selected_plugin, None);
+    assert!(
+        !harness.state().session_open("uninstalled"),
+        "a selection reset inside render must release its session as well"
+    );
+}
+
+/// A `Split` document drawn by this host keeps its two panes -- the
+/// pre-facade path flattened them into one sequential block -- and stays
+/// one section of the form rather than becoming the form.
+///
+/// Hand-built because no fixture plugin ships a `Split` `MainPage`; this
+/// is the only coverage the host's `DocumentExtent` choice has. What it
+/// pins is the choice's *shape* (bounded, two panes intact), not the cap's
+/// exact value, which `available_height` usually beats anyway.
+#[test]
+fn a_split_main_page_keeps_both_panes_and_stays_one_section_of_the_form() {
+    let (_temp, shared) = common::create_test_shared_state_with_facade();
+    shared.plugin_sessions.adopt_for_test(
+        &main_page_slot("split-plugin"),
+        PluginSessionId::from_raw(13),
+        main_page_document(
+            13,
+            node(
+                "#root",
+                PluginUiNodeKind::Split {
+                    sidebar: vec![label("s", "Sidebar Item")],
+                    content: vec![label("c", "Content Item")],
+                    sidebar_width: Some(120.0),
+                },
+            ),
+        ),
+    );
+    let mut harness = plugins_page_harness(shared, &["split-plugin"]);
+
+    settle(&mut harness);
+
+    assert!(
+        harness.query_by_label("Sidebar Item").is_some(),
+        "the sidebar pane must survive -- flattening it away is what the old renderer did"
+    );
+    assert!(harness.query_by_label("Content Item").is_some());
+    assert!(
+        harness.query_by_label("Permissions").is_some(),
+        "the form's own sections must still be on screen beside the plugin's split"
     );
 }
