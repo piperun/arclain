@@ -8,24 +8,28 @@
 //! and converting each with
 //! [`crate::core::utils::file_entry_from_dto`].
 //!
-//! # Why the inventory rather than the tab's own page
+//! # Why scoping the inventory is the session's own answer
 //!
-//! A tab also holds an [`EntryPage`] for the directory it is browsing --
-//! the answer to the exact `list_entries` request its [`TabListing`]
-//! names -- but that page is fetched on *relists* (open, mutation,
-//! CRC backfill), not on navigation. Scoping the inventory is what keeps
-//! navigation instant: clicking a folder repaints from data already in
-//! memory instead of waiting on a round trip.
+//! The inventory is fetched on *relists* (open, mutation, CRC backfill),
+//! not on navigation, and that is what keeps navigation instant: clicking
+//! a folder repaints from data already in memory instead of waiting on a
+//! round trip.
 //!
-//! That only holds because the two agree. A page is the session index's
-//! direct children of one directory; this is the same index's entries
-//! filtered to the same parent. `crates/ui/tests/tab_archive_model_test.rs`
-//! asserts row-for-row, field-for-field equality between the two at
-//! every level of a real archive, so this is a *scoping* of the
+//! That only holds because scoping it agrees with asking. Listing one
+//! directory returns the session index's direct children of it; this is
+//! the same index's entries filtered to the same parent.
+//! `crates/ui/tests/tab_archive_model_test.rs` hands the exact
+//! `list_entries` request a tab's [`TabListing`] names to the session and
+//! asserts row-for-row, field-for-field equality with what this produces,
+//! at every level of a real archive -- so this is a *scoping* of the
 //! session's answer, not a second listing pipeline reconstructing one.
 //!
+//! Whether these rows have been produced *at all* is not visible from the
+//! rows: an archive nobody has listed yet publishes none, and so does an
+//! empty directory. That distinction lives on [`TabListing`]'s status, and
+//! the browser reads it from there rather than from a row count.
+//!
 //! [`ArchiveEntryDto`]: arclain_app::archive::ArchiveEntryDto
-//! [`EntryPage`]: arclain_app::archive::EntryPage
 //! [`TabInventory`]: crate::core::tabs::TabInventory
 //! [`TabListing`]: crate::core::tabs::TabListing
 
