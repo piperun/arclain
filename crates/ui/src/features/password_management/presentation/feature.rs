@@ -30,7 +30,7 @@ impl PasswordManagementFeature {
     }
 
     /// If the page just transitioned to PasswordRules, reload the dialog's
-    /// rules list from `app_state.pass_rules`. Mirrors the behavior that
+    /// rules list from the application facade. Mirrors the behavior that
     /// used to live in `SettingsFeature::render`.
     pub fn sync_on_page_change(&mut self, shared: &SharedState, page: &SettingsPage) {
         if *page == SettingsPage::PasswordRules && self.last_visited_page.as_ref() != Some(page) {

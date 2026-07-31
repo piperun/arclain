@@ -163,7 +163,7 @@ pub struct AppSignals {
 
     /// General/interface preferences, mirrored from the application's
     /// own settings snapshot. Refreshed by
-    /// `AppState::refresh_settings_from_facade` after any settings
+    /// `AppState::refresh_settings_signals` after any settings
     /// change so already-rendered UI picks it up next frame.
     pub general_settings: Signal<arclain_app::settings::GeneralSettingsDto>,
 

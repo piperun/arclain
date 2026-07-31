@@ -193,7 +193,7 @@ pub fn render(
                     };
                     let plugin_proxy_enabled =
                         plugin_proxy_override_map(network, &plugin_info.id, proxy_toggle_val);
-                    let mut app = shared.app_state.lock();
+                    let app = shared.app_state.lock();
                     let patch_result = app.submit_settings_patch(
                         facade,
                         &shared.services.tokio_runtime,

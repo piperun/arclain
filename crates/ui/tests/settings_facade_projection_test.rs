@@ -11,7 +11,7 @@ fn no_cross_feature_refs() -> SettingsFeatureRefs<'static> {
 }
 
 #[test]
-fn untouched_settings_forms_match_the_facade_snapshot_not_legacy_state() {
+fn untouched_settings_forms_match_the_facade_snapshot() {
     let shared = common::create_test_shared_state();
 
     let mut general = arclain_app::settings::GeneralSettingsDto::default();
@@ -35,21 +35,6 @@ fn untouched_settings_forms_match_the_facade_snapshot_not_legacy_state() {
     let mut security = arclain_app::settings::SecuritySettingsDto::default();
     security.encrypted_crc_policy = "prompt_on_open".to_string();
     shared.signals().security_settings.set(security);
-
-    // Deliberately contradict every facade-backed value. During the
-    // transition this mirror can lag behind; it must not drive a form.
-    {
-        let mut legacy = shared.app_state.lock();
-        legacy.user_config.open_nested_in_new_tab = false;
-        legacy.user_config.drop_behavior = Some("new_tab".to_string());
-        legacy.user_config.restore_tabs_on_launch = true;
-        legacy.user_config.temp_dir = None;
-        legacy.user_config.socks5_enabled = false;
-        legacy.user_config.socks5_address = None;
-        legacy.user_config.socks5_username = None;
-        legacy.user_config.gameta_server_enabled = false;
-        legacy.user_config.gameta_server_url = None;
-    }
 
     let feature = SettingsFeature::new(&shared);
 

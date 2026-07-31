@@ -22,13 +22,6 @@ fn cache_content_clear_uses_the_facade_cache_not_legacy_database_paths() {
     std::fs::write(content_dir.join("blob"), b"cached").unwrap();
     std::fs::write(resources_dir.join("keep"), b"resource").unwrap();
 
-    // Prove the action needs no legacy database/path mirror at all.
-    {
-        let mut legacy = shared.app_state.lock();
-        legacy.dbs = None;
-        legacy.db_paths = None;
-    }
-
     handle_action(
         SettingsAction::ClearCacheContent,
         &mut SecuritySettingsState::default(),

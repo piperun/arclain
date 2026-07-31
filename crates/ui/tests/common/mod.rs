@@ -12,9 +12,6 @@
 
 #![allow(dead_code)] // helpers are imported selectively per test file
 
-use arclain_core::backends::sevenz_cli::SevenZipCli;
-use arclain_core::backends::BackendSelector;
-use arclain_core::{open_databases, DbPaths, SecretsKey, UserConfig};
 use arclain_ui::core::navigation::PageNavigator;
 use arclain_ui::core::services::Services;
 use arclain_ui::core::state::AppState;
@@ -44,26 +41,14 @@ fn create_test_runtime() -> Runtime {
 
 /// Build a minimal `SharedState` suitable for dispatcher unit tests.
 ///
-/// `dbs` is `None`, so any dispatcher that touches the DB pool will
-/// take its no-DB error branch — useful for asserting "given a
-/// missing service, the dispatcher sets `state.error` rather than
-/// panicking." For dispatcher tests that need real persistence,
-/// extend this helper with an in-memory diesel pool (not yet built).
-///
-/// Requires a 7z binary on PATH; the test backend uses it as the
-/// fallback. Tests on systems without 7z will panic at this helper.
+/// This fixture has no application facade, so facade-backed actions take
+/// their explicit unavailable path without any backend service leaking
+/// into frontend state.
 pub fn create_test_shared_state() -> SharedState {
     let runtime = create_test_runtime();
     let services = Arc::new(Services::new(runtime));
 
     let app_state = AppState {
-        user_config: UserConfig::default(),
-        pass_rules: vec![],
-        backend_selector: BackendSelector::new_native(),
-        fallback_backend: SevenZipCli::detect(None).expect("7z executable not found for tests"),
-        encrypted_crc_policy: "on_open".to_string(),
-        db_paths: None,
-        dbs: None,
         signals: arclain_ui::core::signals::AppSignals::new(),
     };
 
@@ -162,68 +147,9 @@ impl TestContext {
     }
 }
 
-/// Build a `SharedState` backed by real (temp-file) databases with
-/// schemas applied. The returned `TempDir` MUST stay alive for the
-/// duration of the test — dropping it deletes the temp directory and
-/// invalidates the open SQLite handles.
-///
-/// Wires `app_state.dbs` to the full `ConfigDbs` returned by
-/// `open_databases` (config/cache pools, secrets, and metadata store).
-/// `Services` remains frontend-only: dispatchers that need application
-/// behavior use a facade fixture instead of receiving backend handles
-/// through `SharedState`.
-///
-/// No facade, so nothing that reads through `ArclainApp` works here:
-/// chrome-layout and interface-settings dispatchers want
-/// [`create_test_shared_state_with_facade`] instead.
-///
-/// The databases are empty (schema only, no rows) so happy-path
-/// tests can stage their own fixtures via the service APIs and
-/// observe round-trip behavior.
+/// Compatibility name for tests that need an empty, database-backed
+/// application. Persistence is owned by the real facade; no database
+/// handles are copied into `AppState`.
 pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
-    let temp = tempfile::tempdir().expect("create tempdir for test DBs");
-    let paths = DbPaths {
-        config_db: temp.path().join("config.sqlite"),
-        cache_db: temp.path().join("metadata.sqlite"),
-        secrets_db: temp.path().join("pass.redb"),
-        key_file: None,
-    };
-    let key = SecretsKey::generate();
-    let dbs = open_databases(&paths, &key).expect("open test databases");
-
-    let services = Arc::new(Services::new(create_test_runtime()));
-
-    let app_state = AppState {
-        user_config: UserConfig::default(),
-        pass_rules: vec![],
-        backend_selector: BackendSelector::new_native(),
-        fallback_backend: SevenZipCli::detect(None).expect("7z executable not found for tests"),
-        encrypted_crc_policy: "on_open".to_string(),
-        db_paths: Some(paths),
-        dbs: Some(dbs),
-        signals: arclain_ui::core::signals::AppSignals::new(),
-    };
-    let signals = app_state.signals.clone();
-
-    let plugin_ui_jobs = arclain_ui::features::plugins::application::PluginUiJobs::new(
-        None,
-        services.tokio_runtime.handle().clone(),
-    );
-    let image_assets = ImageAssetStore::without_source(services.tokio_runtime.handle().clone());
-    let shared = SharedState {
-        app_state: Arc::new(Mutex::new(app_state)),
-        services,
-        theme: AppTheme::new(false),
-        toaster: Arc::new(Mutex::new(Toaster::new())),
-        plugin_ui_jobs,
-        plugin_sessions: arclain_ui::features::plugins::application::PluginSessions::new(),
-        image_assets,
-        signals,
-        facade: None,
-        operation_origins: arclain_ui::core::operation_bridge::OperationOrigins::new(),
-        materialization_actions: arclain_ui::core::operation_bridge::MaterializationActions::new(),
-        external_open_leases: arclain_ui::core::operation_bridge::ExternalOpenLeases::new(),
-    };
-
-    (temp, shared)
+    create_test_shared_state_with_facade()
 }

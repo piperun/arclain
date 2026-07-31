@@ -3,8 +3,7 @@
 //! The startup-time sync this file used to also hold
 //! (`sync_configuration`: seeding organization rules and title filters
 //! from TOML defaults into the database) moved into `arclain_app::
-//! runtime::bootstrap::run` -- it needed nothing from `AppState` beyond
-//! `self.dbs`, which that function now has its own copy of during
+//! runtime::bootstrap::run`, where the application owns the database
 //! composition. `sync_configuration`'s only caller
 //! (`crates/ui/src/core/state/init.rs`) was removed along with it.
 
@@ -21,7 +20,7 @@ use super::AppState;
 /// the call, since the facade error itself doesn't know that.
 ///
 /// The one place this crate turns a structured facade error into a
-/// plain string -- `vault_ops.rs`/`password_ops.rs` share this via
+/// plain string. Vault and settings operations share it via
 /// `pub(super)` rather than each keeping their own copy.
 pub(super) fn describe_facade_error(
     context: &str,
@@ -76,49 +75,8 @@ impl AppState {
         }
     }
 
-    /// Re-syncs this state's still-legacy settings/vault mirror
-    /// (`user_config`, `pass_rules`, `encrypted_crc_policy`, `db_paths`,
-    /// `dbs`) from `arclain_app::ArclainApp`'s own live state, and
-    /// refreshes the reactive settings signals from the facade's own
-    /// snapshot so already-rendered UI picks up the change on the next
-    /// frame.
-    ///
-    /// The signals are filled from `settings()` rather than from the
-    /// legacy composition beside them: that is the shape every reader
-    /// now works in, and reading it from the facade means the frontend
-    /// never has to know how a preference is stored to display it.
-    ///
-    /// Settings/secrets/vault mutations go through the facade first
-    /// (see `vault_ops.rs`/`password_ops.rs`/`settings_controller.rs`);
-    /// this is the one place that pulls the result back afterward,
-    /// closing the loop the facade's own `take_legacy_composition` doc
-    /// comment describes -- call this once, right after any such facade
-    /// call succeeds. `backend_selector`/`fallback_backend` are
-    /// untouched: no settings/vault mutation ever changes them.
-    ///
-    /// Blocks briefly on `runtime` -- see `vault_ops.rs`'s own module
-    /// doc comment for why that's the right choice from a synchronous
-    /// egui action handler.
-    pub fn refresh_settings_from_facade(
-        &mut self,
-        facade: &arclain_app::ArclainApp,
-        runtime: &tokio::runtime::Handle,
-    ) -> anyhow::Result<()> {
-        let legacy = facade
-            .take_legacy_composition()
-            .map_err(|error| anyhow::anyhow!("refreshing settings from facade: {error:?}"))?;
-        self.user_config = legacy.user_config;
-        self.pass_rules = legacy.pass_rules;
-        self.encrypted_crc_policy = legacy.encrypted_crc_policy;
-        self.db_paths = legacy.db_paths;
-        self.dbs = legacy.dbs;
-        self.refresh_settings_signals(facade, runtime)
-    }
-
     /// Fills the reactive settings mirrors from the facade's own
-    /// snapshot. Split out of [`Self::refresh_settings_from_facade`] so
-    /// startup can populate them once without also re-taking a legacy
-    /// composition it already holds.
+    /// snapshot.
     ///
     /// **A failure here must not be swallowed at startup.** Until this
     /// lands, the mirrors hold `Default` DTOs, and those are not a
@@ -160,7 +118,7 @@ impl AppState {
     /// comment for why that's the right choice from a synchronous egui
     /// action handler.
     pub fn submit_settings_patch(
-        &mut self,
+        &self,
         facade: &arclain_app::ArclainApp,
         runtime: &tokio::runtime::Handle,
         build_patch: impl FnOnce(u64) -> arclain_app::settings::SettingsPatch,
@@ -175,7 +133,7 @@ impl AppState {
                 .await
                 .map_err(|error| describe_facade_error("saving settings", error))
         })?;
-        self.refresh_settings_from_facade(facade, runtime)?;
+        self.refresh_settings_signals(facade, runtime)?;
         Ok(snapshot)
     }
 }
@@ -203,8 +161,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("create test directory");
         let facade = bootstrap_test_facade(&temp);
         let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
-        // Built before the shutdown below, which also closes
-        // `take_legacy_composition`.
+        // Built before the shutdown below.
         let state = app_state_from_facade(&facade);
 
         // The placeholder these mirrors start on is the dangerous value:

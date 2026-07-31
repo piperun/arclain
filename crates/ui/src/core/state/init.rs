@@ -3,11 +3,9 @@
 //! `AppState::new` used to perform the entire application composition
 //! sequence directly (directories, configuration, databases, backends,
 //! plugins, ...). That sequence now lives in `arclain_app::ArclainApp::
-//! bootstrap`, which this function calls and then unpacks via
-//! `take_legacy_composition` into this crate's still-existing `AppState`
-//! shape -- unmigrated call sites elsewhere in this crate keep reading
-//! `shared_state.app_state` exactly as before. `Services` is now only the
-//! egui-owned executor that awaits facade work. What's left here is
+//! bootstrap`, which this function calls without unpacking backend
+//! services into frontend state. `Services` is now only the egui-owned
+//! executor that awaits facade work. What's left here is
 //! genuinely UI-only: `AppSignals` construction, supplying the facade's
 //! one `AppSignals`-shaped fallback closure, and loading persisted UI state
 //! into signals. Plugin runtime wiring is application-owned; the fallback
@@ -30,18 +28,7 @@ impl AppState {
         let facade =
             arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig::system_default())
                 .map_err(|error| anyhow::anyhow!("Failed to bootstrap application: {error:?}"))?;
-        let legacy = facade
-            .take_legacy_composition()
-            .map_err(|error| anyhow::anyhow!("Failed to take legacy composition: {error:?}"))?;
-
         let me = Self {
-            user_config: legacy.user_config.clone(),
-            pass_rules: legacy.pass_rules.clone(),
-            backend_selector: legacy.backend_selector,
-            fallback_backend: legacy.fallback_backend,
-            encrypted_crc_policy: legacy.encrypted_crc_policy,
-            db_paths: legacy.db_paths,
-            dbs: legacy.dbs,
             signals: AppSignals::new(),
         };
 

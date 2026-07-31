@@ -186,7 +186,7 @@ pub fn handle_action(
                 *security_state.error.write() = "Settings are unavailable right now".to_string();
                 return;
             };
-            let mut state = shared.app_state.lock();
+            let state = shared.app_state.lock();
             if let Err(e) = state.apply_preferences(
                 facade,
                 &shared.services.tokio_runtime,
@@ -204,7 +204,7 @@ pub fn handle_action(
                 tracing::error!("Cannot save archive settings: settings facade is unavailable");
                 return;
             };
-            let mut state = shared.app_state.lock();
+            let state = shared.app_state.lock();
             let patch_result = state.submit_settings_patch(
                 facade,
                 &shared.services.tokio_runtime,
@@ -239,7 +239,7 @@ pub fn handle_action(
                 tracing::error!("Cannot save the collision policy: settings facade is unavailable");
                 return;
             };
-            let mut state = shared.app_state.lock();
+            let state = shared.app_state.lock();
             let patch_result = state.submit_settings_patch(
                 facade,
                 &shared.services.tokio_runtime,
@@ -270,7 +270,7 @@ pub fn handle_action(
                 return;
             };
             let hotkey_bindings_json = serde_json::to_string(&bindings).ok();
-            let mut state = shared.app_state.lock();
+            let state = shared.app_state.lock();
             let patch_result = state.submit_settings_patch(
                 facade,
                 &shared.services.tokio_runtime,
@@ -303,7 +303,7 @@ pub fn handle_action(
                 *security_state.error.write() = "Settings are unavailable right now".to_string();
                 return;
             };
-            let mut state = shared.app_state.lock();
+            let state = shared.app_state.lock();
             if let Err(e) = state.move_vault(facade, &shared.services.tokio_runtime, &dest_path) {
                 *security_state.error.write() = format!("Failed to move vault: {}", e);
             } else {
@@ -315,7 +315,7 @@ pub fn handle_action(
                 *security_state.error.write() = "Settings are unavailable right now".to_string();
                 return;
             };
-            let mut state = shared.app_state.lock();
+            let state = shared.app_state.lock();
             if let Err(e) =
                 state.rekey_vault(facade, &shared.services.tokio_runtime, &new_key_file_path)
             {
@@ -389,7 +389,7 @@ pub fn handle_action(
                 tracing::error!("Cannot save general settings: settings facade is unavailable");
                 return;
             };
-            let mut state = shared.app_state.lock();
+            let state = shared.app_state.lock();
             let patch_result = state.submit_settings_patch(
                 facade,
                 &shared.services.tokio_runtime,
@@ -440,7 +440,7 @@ pub fn handle_action(
             // patch here means nothing was written, matching this
             // handler's pre-facade "validate before any mutation"
             // guarantee.
-            let mut state = shared.app_state.lock();
+            let state = shared.app_state.lock();
             let patch_result = state.submit_settings_patch(
                 facade,
                 &shared.services.tokio_runtime,
@@ -512,7 +512,7 @@ pub fn handle_action(
             let _ = shared
                 .app_state
                 .lock()
-                .refresh_settings_from_facade(facade, &shared.services.tokio_runtime);
+                .refresh_settings_signals(facade, &shared.services.tokio_runtime);
             network_state.socks5_password_configured = shared
                 .signals()
                 .network_settings
@@ -549,7 +549,7 @@ pub fn handle_action(
                     let _ = shared
                         .app_state
                         .lock()
-                        .refresh_settings_from_facade(facade, &shared.services.tokio_runtime);
+                        .refresh_settings_signals(facade, &shared.services.tokio_runtime);
                     network_state.socks5_password.set(String::new());
                     network_state.socks5_password_configured = false;
                     tracing::info!("Saved SOCKS5 password cleared");
@@ -645,7 +645,7 @@ pub fn handle_action(
                 tracing::error!("[SaveServer] settings facade is unavailable");
                 return;
             };
-            let mut state = shared.app_state.lock();
+            let state = shared.app_state.lock();
             let patch_result = state.submit_settings_patch(
                 facade,
                 &shared.services.tokio_runtime,
@@ -692,7 +692,7 @@ pub fn handle_action(
                         let _ = shared
                             .app_state
                             .lock()
-                            .refresh_settings_from_facade(facade, &shared.services.tokio_runtime);
+                            .refresh_settings_signals(facade, &shared.services.tokio_runtime);
                         server_state.api_key.set(String::new());
                         server_state.api_key_configured = true;
                     }
@@ -971,6 +971,7 @@ mod tests {
         shared: SharedState,
         core_services: Arc<CoreServices>,
         config_service: Arc<ConfigService>,
+        dbs: arclain_core::ConfigDbs,
         previous: UserConfig,
         previous_password: String,
         proxy_listener: TcpListener,
@@ -1037,10 +1038,11 @@ mod tests {
             // longer receives CoreServices. They let the regression tests
             // prove persistence and live routing against the exact services
             // owned by the facade.
-            let core_services = facade
+            let legacy = facade
                 .take_legacy_composition()
-                .expect("take core-service test probes")
-                .core_services;
+                .expect("take core-service test probes");
+            let core_services = legacy.core_services;
+            let dbs = legacy.dbs.expect("test vault must be available");
             let config_service = core_services
                 .config_service
                 .clone()
@@ -1051,6 +1053,7 @@ mod tests {
                 shared,
                 core_services,
                 config_service,
+                dbs,
                 previous,
                 previous_password,
                 proxy_listener,
@@ -1061,11 +1064,8 @@ mod tests {
         fn assert_previous_settings_unchanged(&self) {
             self.assert_previous_non_secret_settings_unchanged();
 
-            let state = self.shared.app_state.lock();
-            let secret = state
+            let secret = self
                 .dbs
-                .as_ref()
-                .unwrap()
                 .secrets
                 .get_secret("proxy:socks5")
                 .expect("read proxy secret")
@@ -1074,10 +1074,6 @@ mod tests {
         }
 
         fn assert_previous_non_secret_settings_unchanged(&self) {
-            let state = self.shared.app_state.lock();
-            assert_proxy_fields_eq(&state.user_config, &self.previous, "app state");
-            drop(state);
-
             let signal = self.shared.signals.network_settings.get();
             assert_network_signal_matches(&signal, &self.previous);
             let persisted = self
@@ -1220,8 +1216,7 @@ mod tests {
         fixture.assert_previous_runtime_proxy_unchanged();
 
         let observable_state = format!(
-            "{:?} {:?} {:?}",
-            fixture.shared.app_state.lock().user_config,
+            "{:?} {:?}",
             fixture.shared.signals.network_settings.get(),
             fixture.shared.toaster.lock()
         );
@@ -1290,20 +1285,17 @@ mod tests {
             &fixture.shared,
         );
 
-        let state = fixture.shared.app_state.lock();
-        assert!(!state.user_config.socks5_enabled);
-        assert_eq!(state.user_config.socks5_address.as_deref(), Some(""));
-        assert!(state.user_config.socks5_username.is_none());
-        let secret = state
+        let signal = fixture.shared.signals.network_settings.get();
+        assert!(!signal.socks5_enabled);
+        assert_eq!(signal.socks5_address.as_deref(), Some(""));
+        assert!(signal.socks5_username.is_none());
+        let secret = fixture
             .dbs
-            .as_ref()
-            .unwrap()
             .secrets
             .get_secret("proxy:socks5")
             .unwrap()
             .expect("blank password must preserve the stored secret");
         assert_eq!(&*secret, fixture.previous_password.as_str());
-        drop(state);
 
         let persisted = fixture.config_service.get_user_config().unwrap();
         assert!(!persisted.socks5_enabled);
@@ -1331,11 +1323,8 @@ mod tests {
             &fixture.shared,
         );
 
-        let state = fixture.shared.app_state.lock();
-        let secret = state
+        let secret = fixture
             .dbs
-            .as_ref()
-            .unwrap()
             .secrets
             .get_secret("proxy:socks5")
             .expect("read proxy secret after explicit clear");
@@ -1415,11 +1404,8 @@ mod tests {
     fn save_network_reenable_matches_startup_proxy_defaults_and_explicit_overrides() {
         let fixture = ProxySaveFixture::new();
         // Seed the explicit per-plugin opt-out through the facade
-        // itself -- it, not `AppState.user_config`, is what
-        // `SaveNetwork` now reads its starting point from (see
-        // `submit_settings_patch`), so mutating the legacy mirror
-        // directly would no longer have any effect on the save this
-        // test is about to trigger.
+        // itself -- it is what `SaveNetwork` reads its starting point
+        // from through `submit_settings_patch`.
         let facade = fixture
             .shared
             .facade
@@ -1512,11 +1498,8 @@ mod tests {
         const NEW_PASSWORD: &str = "new-proxy-password-4b65";
         let fixture = ProxySaveFixture::new();
         {
-            let state = fixture.shared.app_state.lock();
-            state
+            fixture
                 .dbs
-                .as_ref()
-                .unwrap()
                 .config
                 .with_connection(|connection| {
                     connection.execute_batch(
@@ -1629,12 +1612,11 @@ mod tests {
         );
 
         // Nothing persisted: still at first-run defaults.
-        let state = shared.app_state.lock();
+        let network = shared.signals.network_settings.get();
         assert!(
-            !state.user_config.socks5_enabled,
+            !network.socks5_enabled,
             "no vault available -- the save must not have applied"
         );
-        drop(state);
 
         let diagnostics = format!("{:?}", shared.toaster.lock());
         assert!(diagnostics.contains("Network settings were not saved"));
@@ -1646,11 +1628,8 @@ mod tests {
     fn pending_proxy_marker_blocks_new_save_before_mutation() {
         let fixture = ProxySaveFixture::new();
         {
-            let state = fixture.shared.app_state.lock();
-            state
+            fixture
                 .dbs
-                .as_ref()
-                .unwrap()
                 .secrets
                 .set_secret("journal:proxy-settings", "invalid-marker")
                 .unwrap();
@@ -1673,12 +1652,9 @@ mod tests {
 
         fixture.assert_previous_settings_unchanged();
         fixture.assert_previous_runtime_proxy_unchanged();
-        let state = fixture.shared.app_state.lock();
         assert_eq!(
-            state
+            fixture
                 .dbs
-                .as_ref()
-                .unwrap()
                 .secrets
                 .get_secret("journal:proxy-settings")
                 .unwrap()

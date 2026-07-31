@@ -70,26 +70,14 @@ pub fn bootstrap_test_facade(temp: &TempDir) -> arclain_app::ArclainApp {
     .expect("bootstrap a test facade")
 }
 
-/// Unpacks a bootstrapped facade into an `AppState` mirror, exactly the
-/// way `AppState::new` does at startup.
+/// Builds frontend state without unpacking any application-owned
+/// services, exactly the way `AppState::new` does at startup.
 ///
 /// Deliberately stops there: it does **not** seed the settings signals.
 /// They are left at their placeholder so a test can choose whether to
 /// fill them, and so a test about what happens when that fill *fails*
 /// has a real un-filled state to observe.
-pub fn app_state_from_facade(facade: &arclain_app::ArclainApp) -> AppState {
-    let legacy = facade
-        .take_legacy_composition()
-        .expect("take legacy composition for the test fixture");
+pub fn app_state_from_facade(_facade: &arclain_app::ArclainApp) -> AppState {
     let signals = AppSignals::new();
-    AppState {
-        user_config: legacy.user_config,
-        pass_rules: legacy.pass_rules,
-        backend_selector: legacy.backend_selector,
-        fallback_backend: legacy.fallback_backend,
-        encrypted_crc_policy: legacy.encrypted_crc_policy,
-        db_paths: legacy.db_paths,
-        dbs: legacy.dbs,
-        signals,
-    }
+    AppState { signals }
 }

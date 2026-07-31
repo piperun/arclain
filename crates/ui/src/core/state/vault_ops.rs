@@ -7,11 +7,7 @@
 //! `ArclainApp::update_settings`/`move_vault`/`rekey_vault`. This file's
 //! job is now the same one every other migrated call site has: build a
 //! patch/request from the UI's draft form values, submit it to the
-//! facade, and mirror the result back into `AppState` via
-//! `refresh_settings_from_facade` (`config_ops.rs`) so the ~200
-//! not-yet-migrated call sites elsewhere in this crate that still read
-//! `AppState.dbs`/`user_config`/`pass_rules`/`db_paths` directly keep
-//! seeing accurate values.
+//! facade, and refresh the frontend's non-secret settings signals.
 //!
 //! Settings facade calls are `async`, but every caller here is a plain
 //! synchronous egui action handler (`settings_controller.rs`). `runtime`
@@ -24,7 +20,7 @@
 //! more than what this file did before: the actual database I/O these
 //! calls perform is the same synchronous rusqlite/redb work that once ran
 //! directly inline in the frame, now routed through the facade instead
-//! of touching `self.dbs` by hand.
+//! of touching database handles by hand.
 
 use super::config_ops::describe_facade_error;
 use super::AppState;
@@ -50,12 +46,12 @@ fn optional_string_patch(value: Option<String>) -> PatchValue<String> {
 
 impl AppState {
     /// Apply Preferences changes: persist `Set` overrides through the
-    /// facade's `update_settings`, then re-sync this state's mirror.
+    /// facade's `update_settings`, then refresh the settings signals.
     /// `None` for any parameter means "leave that setting unchanged" --
     /// the same meaning it always had here, now expressed as
     /// `PatchValue::Keep` rather than an omitted `set_config` call.
     pub fn apply_preferences(
-        &mut self,
+        &self,
         facade: &ArclainApp,
         runtime: &Handle,
         key_file_path: Option<String>,
@@ -76,12 +72,7 @@ impl AppState {
         Ok(())
     }
 
-    pub fn move_vault(
-        &mut self,
-        facade: &ArclainApp,
-        runtime: &Handle,
-        dest_path: &str,
-    ) -> Result<()> {
+    pub fn move_vault(&self, facade: &ArclainApp, runtime: &Handle, dest_path: &str) -> Result<()> {
         let result = runtime
             .block_on(facade.move_vault(PathBuf::from(dest_path)))
             .map_err(|error| describe_facade_error("moving the vault", error));
@@ -89,7 +80,7 @@ impl AppState {
     }
 
     pub fn rekey_vault(
-        &mut self,
+        &self,
         facade: &ArclainApp,
         runtime: &Handle,
         new_key_file_path: &str,
@@ -100,22 +91,16 @@ impl AppState {
         self.refresh_mirror_after_vault_operation(facade, runtime, result)
     }
 
-    /// Refreshes this state's `dbs`/`user_config`/`pass_rules` mirror
-    /// after a vault operation regardless of whether it succeeded or
-    /// failed, then returns the operation's own outcome.
+    /// Refreshes the frontend's settings signals after a vault operation
+    /// regardless of whether it succeeded or failed, then returns the
+    /// operation's own outcome.
     ///
     /// A *failed* `move_vault`/`rekey_vault` still closes the shared
     /// vault handle on its way in, before the actual move/rekey I/O
     /// runs (see `ReDb::close`'s own doc comment in `arclain_db`) --
-    /// so skipping the refresh on the error path, as this used to do,
-    /// left `self.dbs` holding a stale `Some(_)` whose `secrets` handle
-    /// was already permanently closed underneath it. Any of this
-    /// crate's ~200 not-yet-migrated call sites that only check
-    /// "`self.dbs` is `Some`" to decide the vault is available would
-    /// take that branch and then fail at first actual use, instead of
-    /// failing closed consistently with the facade's own
-    /// `mutable.dbs == None` state. Calling this on both outcomes
-    /// keeps the two copies in agreement either way.
+    /// so skipping the refresh on the error path would leave the UI's
+    /// `vault_available` signal stale even though the application has
+    /// already failed closed.
     ///
     /// If the refresh *itself* fails while the operation had already
     /// failed, the operation's own (more actionable) error is what the
@@ -124,12 +109,12 @@ impl AppState {
     /// but the refresh failed, the refresh error is returned as-is
     /// (there is no more-relevant error to prefer over it).
     fn refresh_mirror_after_vault_operation(
-        &mut self,
+        &self,
         facade: &ArclainApp,
         runtime: &Handle,
         result: Result<()>,
     ) -> Result<()> {
-        match self.refresh_settings_from_facade(facade, runtime) {
+        match self.refresh_settings_signals(facade, runtime) {
             Ok(()) => result,
             Err(refresh_error) => match result {
                 Ok(()) => Err(refresh_error),
@@ -149,22 +134,20 @@ impl AppState {
 mod tests {
     use crate::test_support::{app_state_from_facade, bootstrap_test_facade};
 
-    /// The "NB2" fix: a *failed* `move_vault` still closes the shared
-    /// vault handle on its way in (`run_move_vault` calls
-    /// `close_vault_handle` before ever attempting the actual file
-    /// move -- see that function's own doc comment in
-    /// `arclain_app::runtime::settings_ops`), so `AppState.dbs`,
-    /// obtained earlier via `take_legacy_composition`, is left holding
-    /// a `Some(_)` whose `secrets` handle is now permanently closed
-    /// unless this mirror is refreshed on the error path too.
+    /// A failed move closes the application-owned vault before the file
+    /// operation runs, so the frontend must refresh its availability
+    /// signal even on the error path.
     #[test]
     fn move_vault_failure_still_refreshes_the_mirror_to_none() {
         let temp = tempfile::tempdir().unwrap();
         let facade = bootstrap_test_facade(&temp);
         let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
-        let mut state = app_state_from_facade(&facade);
+        let state = app_state_from_facade(&facade);
+        state
+            .refresh_settings_signals(&facade, runtime.handle())
+            .expect("read initial vault availability");
         assert!(
-            state.dbs.is_some(),
+            state.signals.security_settings.read().vault_available,
             "a fresh bootstrap must have a usable vault"
         );
 
@@ -185,9 +168,8 @@ mod tests {
             .expect_err("moving into a blocked destination must fail");
 
         assert!(
-            state.dbs.is_none(),
-            "a failed move_vault must refresh the mirror to None, matching the facade's own \
-             mutable.dbs -- not leave a stale Some(_) whose secrets handle is already closed"
+            !state.signals.security_settings.read().vault_available,
+            "a failed move_vault must refresh the signal to unavailable"
         );
     }
 
@@ -197,9 +179,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let facade = bootstrap_test_facade(&temp);
         let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
-        let mut state = app_state_from_facade(&facade);
+        let state = app_state_from_facade(&facade);
+        state
+            .refresh_settings_signals(&facade, runtime.handle())
+            .expect("read initial vault availability");
         assert!(
-            state.dbs.is_some(),
+            state.signals.security_settings.read().vault_available,
             "a fresh bootstrap must have a usable vault"
         );
 
@@ -217,9 +202,8 @@ mod tests {
             .expect_err("rekeying with a missing key file must fail");
 
         assert!(
-            state.dbs.is_none(),
-            "a failed rekey_vault must refresh the mirror to None, matching the facade's own \
-             mutable.dbs -- not leave a stale Some(_) whose secrets handle is already closed"
+            !state.signals.security_settings.read().vault_available,
+            "a failed rekey_vault must refresh the signal to unavailable"
         );
     }
 }
