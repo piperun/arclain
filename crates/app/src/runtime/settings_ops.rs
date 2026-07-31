@@ -85,8 +85,8 @@ use crate::challenge::SecretInput;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::settings::{
     self, CacheMaintenanceReport, CacheMaintenanceTask, GametaServerInfo, NetworkProbeReport,
-    PasswordRuleInput, PasswordRuleSummary, ProbeStepDto, SettingsPatch, SettingsSnapshot,
-    Socks5Candidate,
+    PasswordRuleEditInput, PasswordRuleInput, PasswordRuleSummary, ProbeStepDto, SettingsPatch,
+    SettingsSnapshot, Socks5Candidate,
 };
 
 use super::AppRuntime;
@@ -884,7 +884,7 @@ pub(super) async fn run_upsert_password_rule(
         Some(secret) => secret.expose_secret().to_string(),
         None => {
             let Some(index) = existing_index else {
-                return Err(password_required_for_new_rule_error());
+                return Err(settings::password_required_for_new_rule_error());
             };
             rules[index].password.clone()
         }
@@ -905,6 +905,63 @@ pub(super) async fn run_upsert_password_rule(
 
     let mut mutable = inner.session.mutable.write();
     mutable.pass_rules = rules;
+    Ok(mutable
+        .pass_rules
+        .iter()
+        .map(settings::summarize_pass_rule)
+        .collect())
+}
+
+pub(super) async fn run_replace_password_rules(
+    inner: &Arc<AppRuntime>,
+    edits: Vec<PasswordRuleEditInput>,
+) -> Result<Vec<PasswordRuleSummary>, ApplicationError> {
+    let _write_guard = inner.settings_write_lock.lock().await;
+
+    let (dbs, current_rules) = {
+        let mutable = inner.session.mutable.read();
+        let dbs = mutable.dbs.clone().ok_or_else(vault_unavailable_error)?;
+        (dbs, mutable.pass_rules.clone())
+    };
+    let existing_names: std::collections::HashSet<&str> = current_rules
+        .iter()
+        .map(|rule| rule.name.as_str())
+        .collect();
+    settings::validate_password_rule_edit_inputs(&edits, &existing_names)?;
+
+    let existing_by_name: std::collections::HashMap<&str, &arclain_core::PassRule> = current_rules
+        .iter()
+        .map(|rule| (rule.name.as_str(), rule))
+        .collect();
+    let mut replacement = Vec::with_capacity(edits.len());
+    for edit in edits {
+        let password = match edit.password {
+            Some(secret) => secret.expose_secret().to_string(),
+            None => {
+                let original_name = edit
+                    .original_name
+                    .as_deref()
+                    .ok_or_else(settings::password_required_for_new_rule_error)?;
+                existing_by_name
+                    .get(original_name)
+                    .ok_or_else(settings::password_rule_original_name_not_found_error)?
+                    .password
+                    .clone()
+            }
+        };
+        replacement.push(arclain_core::PassRule {
+            name: edit.name,
+            pattern: edit.pattern,
+            password,
+            priority: edit.priority,
+            enabled: edit.enabled,
+        });
+    }
+
+    persist_pass_rules(inner, &dbs, replacement.clone()).await?;
+
+    let mut mutable = inner.session.mutable.write();
+    mutable.pass_rules = replacement;
     Ok(mutable
         .pass_rules
         .iter()
@@ -1759,16 +1816,6 @@ fn vault_key_file_missing_error() -> ApplicationError {
     )
     .with_recoverability(Recoverability::UserAction)
     .with_field("security.key_file_path")
-}
-
-fn password_required_for_new_rule_error() -> ApplicationError {
-    ApplicationError::new(
-        ApplicationErrorKind::InvalidInput,
-        "a new password rule requires a password",
-    )
-    .with_diagnostic("password was None and no existing rule with this name has one to keep")
-    .with_recoverability(Recoverability::UserAction)
-    .with_field("password")
 }
 
 fn rule_not_found_error(name: &str) -> ApplicationError {

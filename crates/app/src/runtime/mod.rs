@@ -1453,6 +1453,21 @@ impl ArclainApp {
         .await?
     }
 
+    /// Atomically replaces the complete password-rule list edited by a
+    /// frontend. Existing rows are identified by `original_name`, allowing a
+    /// rename with `password: None` to preserve the stored secret without
+    /// exposing it to the caller. Returns non-secret summaries of the saved
+    /// list.
+    pub async fn replace_password_rules(
+        &self,
+        rules: Vec<crate::settings::PasswordRuleEditInput>,
+    ) -> Result<Vec<crate::settings::PasswordRuleSummary>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_replace_password_rules(&inner, rules).await
+        })
+        .await?
+    }
+
     /// Deletes the password rule named `name`.
     /// `ApplicationErrorKind::NotFound` if no rule has that name.
     pub async fn delete_password_rule(

@@ -572,6 +572,26 @@ pub struct PasswordRuleInput {
     pub password: Option<SecretInput>,
 }
 
+/// One row in a complete password-rule editor save.
+///
+/// `original_name` identifies the stored rule this row was loaded from,
+/// allowing a frontend to rename it without ever receiving its password.
+/// `password: None` preserves that identified rule's stored password. A row
+/// with no `original_name` is new and therefore must carry a password.
+///
+/// Not `Clone`/`Serialize`/`Deserialize`: like [`PasswordRuleInput`], this
+/// may carry a live [`SecretInput`], and those restrictions are contagious
+/// on purpose.
+#[derive(Debug)]
+pub struct PasswordRuleEditInput {
+    pub original_name: Option<String>,
+    pub name: String,
+    pub pattern: String,
+    pub priority: u32,
+    pub enabled: bool,
+    pub password: Option<SecretInput>,
+}
+
 /// One archive to reopen when a frontend restores a previous session.
 /// Frontend-neutral: carries only what [`ArclainApp::
 /// start_open_archive`](crate::runtime::ArclainApp::start_open_archive)
@@ -1094,16 +1114,62 @@ fn path_to_string(path: PathBuf) -> String {
 pub(crate) fn validate_password_rule_input(
     rule: &PasswordRuleInput,
 ) -> Result<(), ApplicationError> {
-    if rule.name.trim().is_empty() {
+    validate_password_rule_fields(&rule.name, &rule.pattern)
+}
+
+/// Validates a complete password-rule edit before any secret is resolved or
+/// persistence is attempted. Identity and result-name uniqueness are checked
+/// across the whole list so the caller can safely replace it atomically.
+pub(crate) fn validate_password_rule_edit_inputs(
+    edits: &[PasswordRuleEditInput],
+    existing_names: &std::collections::HashSet<&str>,
+) -> Result<(), ApplicationError> {
+    let mut used_original_names = std::collections::HashSet::new();
+    let mut result_names = std::collections::HashSet::new();
+
+    for edit in edits {
+        validate_password_rule_fields(&edit.name, &edit.pattern)?;
+
+        if !result_names.insert(edit.name.as_str()) {
+            return Err(invalid_input_error(
+                "name",
+                "password rule names must be unique",
+            ));
+        }
+
+        match edit.original_name.as_deref() {
+            Some(original_name) => {
+                if !existing_names.contains(original_name) {
+                    return Err(password_rule_original_name_not_found_error());
+                }
+                if !used_original_names.insert(original_name) {
+                    return Err(invalid_input_error(
+                        "original_name",
+                        "password rule original names must be unique",
+                    ));
+                }
+            }
+            None if edit.password.is_none() => {
+                return Err(password_required_for_new_rule_error());
+            }
+            None => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_password_rule_fields(name: &str, pattern: &str) -> Result<(), ApplicationError> {
+    if name.trim().is_empty() {
         return Err(invalid_input_error("name", "rule name must not be empty"));
     }
-    if rule.pattern.trim().is_empty() {
+    if pattern.trim().is_empty() {
         return Err(invalid_input_error(
             "pattern",
             "rule pattern must not be empty",
         ));
     }
-    if regex::Regex::new(&rule.pattern).is_err() {
+    if regex::Regex::new(pattern).is_err() {
         return Err(invalid_input_error(
             "pattern",
             "rule pattern is not a valid regular expression",
@@ -1117,6 +1183,20 @@ fn invalid_input_error(field: &'static str, summary: &'static str) -> Applicatio
         .with_recoverability(Recoverability::UserAction)
         .with_suggested_action(SuggestedAction::ChooseDestination)
         .with_field(field)
+}
+
+pub(crate) fn password_required_for_new_rule_error() -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::InvalidInput,
+        "a new password rule requires a password",
+    )
+    .with_diagnostic("password was None and no existing rule identity has one to keep")
+    .with_recoverability(Recoverability::UserAction)
+    .with_field("password")
+}
+
+pub(crate) fn password_rule_original_name_not_found_error() -> ApplicationError {
+    invalid_input_error("original_name", "password rule original name was not found")
 }
 
 #[cfg(test)]

@@ -34,7 +34,7 @@ use arclain_app::challenge::SecretInput;
 use arclain_app::error::ApplicationErrorKind;
 use arclain_app::settings::{
     ArchiveSettingsPatch, BackendModeDto, GametaConnectionStatusDto, NetworkSettingsPatch,
-    PasswordRuleInput, PatchValue, SecuritySettingsPatch, SettingsPatch,
+    PasswordRuleEditInput, PasswordRuleInput, PatchValue, SecuritySettingsPatch, SettingsPatch,
 };
 use arclain_app::{ArclainApp, BootstrapConfig};
 
@@ -1645,6 +1645,283 @@ fn upsert_password_rule_without_a_password_keeps_the_existing_one() {
         Some("original-password-71ac"),
         "the stored password must not change when password: None updates an existing rule"
     );
+}
+
+#[test]
+fn replace_password_rules_renames_without_exposing_or_changing_password() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    runtime
+        .block_on(app.upsert_password_rule(PasswordRuleInput {
+            name: "before rename".to_string(),
+            pattern: r"^before".to_string(),
+            priority: 5,
+            enabled: true,
+            password: Some(SecretInput::new("rename-secret-5c31".to_string())),
+        }))
+        .expect("seed rule");
+
+    let summaries = runtime
+        .block_on(app.replace_password_rules(vec![PasswordRuleEditInput {
+            original_name: Some("before rename".to_string()),
+            name: "after rename".to_string(),
+            pattern: r"^after".to_string(),
+            priority: 9,
+            enabled: false,
+            password: None,
+        }]))
+        .expect("rename without replacement password");
+
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].name, "after rename");
+    assert_eq!(summaries[0].pattern, r"^after");
+    assert_eq!(summaries[0].priority, 9);
+    assert!(!summaries[0].enabled);
+    assert!(summaries[0].password_configured);
+    assert_eq!(
+        raw_pass_rule_password(&app, "after rename").as_deref(),
+        Some("rename-secret-5c31")
+    );
+    assert!(raw_pass_rule_password(&app, "before rename").is_none());
+}
+
+#[test]
+fn replace_password_rules_replaces_password_when_supplied() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    runtime
+        .block_on(app.upsert_password_rule(PasswordRuleInput {
+            name: "replace me".to_string(),
+            pattern: "old-pattern".to_string(),
+            priority: 1,
+            enabled: true,
+            password: Some(SecretInput::new("old-secret-95ec".to_string())),
+        }))
+        .expect("seed rule");
+
+    runtime
+        .block_on(app.replace_password_rules(vec![PasswordRuleEditInput {
+            original_name: Some("replace me".to_string()),
+            name: "replace me".to_string(),
+            pattern: "new-pattern".to_string(),
+            priority: 2,
+            enabled: true,
+            password: Some(SecretInput::new("new-secret-f200".to_string())),
+        }]))
+        .expect("replace password");
+
+    assert_eq!(
+        raw_pass_rule_password(&app, "replace me").as_deref(),
+        Some("new-secret-f200")
+    );
+}
+
+#[test]
+fn replace_password_rules_rejects_new_rule_without_password_atomically() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    runtime
+        .block_on(app.upsert_password_rule(PasswordRuleInput {
+            name: "existing".to_string(),
+            pattern: "existing-pattern".to_string(),
+            priority: 1,
+            enabled: true,
+            password: Some(SecretInput::new("existing-secret-b70a".to_string())),
+        }))
+        .expect("seed rule");
+
+    let error = runtime
+        .block_on(app.replace_password_rules(vec![
+            PasswordRuleEditInput {
+                original_name: Some("existing".to_string()),
+                name: "existing changed".to_string(),
+                pattern: "changed-pattern".to_string(),
+                priority: 2,
+                enabled: false,
+                password: None,
+            },
+            PasswordRuleEditInput {
+                original_name: None,
+                name: "new without password".to_string(),
+                pattern: "new-pattern".to_string(),
+                priority: 3,
+                enabled: true,
+                password: None,
+            },
+        ]))
+        .expect_err("new rule without a password must reject the whole replacement");
+
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(error.field.as_deref(), Some("password"));
+    let summaries = runtime.block_on(app.password_rules()).unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].name, "existing");
+    assert_eq!(summaries[0].pattern, "existing-pattern");
+    assert!(summaries[0].enabled);
+    assert_eq!(
+        raw_pass_rule_password(&app, "existing").as_deref(),
+        Some("existing-secret-b70a")
+    );
+}
+
+#[test]
+fn replace_password_rules_rejects_duplicate_original_names() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    runtime
+        .block_on(app.upsert_password_rule(PasswordRuleInput {
+            name: "one source".to_string(),
+            pattern: "source-pattern".to_string(),
+            priority: 1,
+            enabled: true,
+            password: Some(SecretInput::new("source-secret-f931".to_string())),
+        }))
+        .expect("seed rule");
+
+    let error = runtime
+        .block_on(app.replace_password_rules(vec![
+            PasswordRuleEditInput {
+                original_name: Some("one source".to_string()),
+                name: "first result".to_string(),
+                pattern: "first-pattern".to_string(),
+                priority: 1,
+                enabled: true,
+                password: None,
+            },
+            PasswordRuleEditInput {
+                original_name: Some("one source".to_string()),
+                name: "second result".to_string(),
+                pattern: "second-pattern".to_string(),
+                priority: 2,
+                enabled: true,
+                password: None,
+            },
+        ]))
+        .expect_err("one stored rule cannot back two edited rows");
+
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(error.field.as_deref(), Some("original_name"));
+    let summaries = runtime.block_on(app.password_rules()).unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].name, "one source");
+}
+
+#[test]
+fn replace_password_rules_rejects_duplicate_result_names() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    for (name, password) in [
+        ("first", "first-secret-65ea"),
+        ("second", "second-secret-c8ed"),
+    ] {
+        runtime
+            .block_on(app.upsert_password_rule(PasswordRuleInput {
+                name: name.to_string(),
+                pattern: format!("{name}-pattern"),
+                priority: 1,
+                enabled: true,
+                password: Some(SecretInput::new(password.to_string())),
+            }))
+            .expect("seed rule");
+    }
+
+    let error = runtime
+        .block_on(app.replace_password_rules(vec![
+            PasswordRuleEditInput {
+                original_name: Some("first".to_string()),
+                name: "same result".to_string(),
+                pattern: "first-pattern".to_string(),
+                priority: 1,
+                enabled: true,
+                password: None,
+            },
+            PasswordRuleEditInput {
+                original_name: Some("second".to_string()),
+                name: "same result".to_string(),
+                pattern: "second-pattern".to_string(),
+                priority: 1,
+                enabled: true,
+                password: None,
+            },
+        ]))
+        .expect_err("two edited rows cannot have the same resulting name");
+
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(error.field.as_deref(), Some("name"));
+    let summaries = runtime.block_on(app.password_rules()).unwrap();
+    assert_eq!(summaries.len(), 2);
+    assert!(summaries.iter().any(|rule| rule.name == "first"));
+    assert!(summaries.iter().any(|rule| rule.name == "second"));
+}
+
+#[test]
+fn replace_password_rules_rejects_unknown_original_name() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    let error = runtime
+        .block_on(app.replace_password_rules(vec![PasswordRuleEditInput {
+            original_name: Some("not stored".to_string()),
+            name: "renamed".to_string(),
+            pattern: "pattern".to_string(),
+            priority: 1,
+            enabled: true,
+            password: None,
+        }]))
+        .expect_err("an unknown original identity must be rejected");
+
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(error.field.as_deref(), Some("original_name"));
+    assert!(runtime.block_on(app.password_rules()).unwrap().is_empty());
+}
+
+#[test]
+fn replace_password_rules_persistence_failure_keeps_memory_unchanged() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    runtime
+        .block_on(app.upsert_password_rule(PasswordRuleInput {
+            name: "memory sentinel".to_string(),
+            pattern: "before-persistence-failure".to_string(),
+            priority: 1,
+            enabled: true,
+            password: Some(SecretInput::new("memory-secret-929a".to_string())),
+        }))
+        .expect("seed rule");
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    legacy.dbs.expect("vault must be available").secrets.close();
+
+    let error = runtime
+        .block_on(app.replace_password_rules(vec![PasswordRuleEditInput {
+            original_name: Some("memory sentinel".to_string()),
+            name: "memory sentinel".to_string(),
+            pattern: "must-not-land".to_string(),
+            priority: 99,
+            enabled: false,
+            password: None,
+        }]))
+        .expect_err("closed vault must reject persistence");
+
+    assert_eq!(error.kind, ApplicationErrorKind::Persistence);
+    let summaries = runtime.block_on(app.password_rules()).unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].name, "memory sentinel");
+    assert_eq!(summaries[0].pattern, "before-persistence-failure");
+    assert_eq!(summaries[0].priority, 1);
+    assert!(summaries[0].enabled);
 }
 
 #[test]
