@@ -35,9 +35,9 @@ use arclain_app::ids::{ArchiveSessionId, PluginSessionId};
 // `arclain_plugins` ever receives from the real facade, only useful here
 // to hand-build a sample document for one serde round-trip test.
 use arclain_app::plugins::{
-    PluginActionDto, PluginActionRequest, PluginBadgeDto, PluginCapabilityDto,
-    PluginExtensionPointDto, PluginHostIntentDto, PluginToastLevelDto, PluginTopTabDto,
-    PluginUiDocument,
+    is_plugin_disabled_refusal, PluginActionDto, PluginActionRequest, PluginBadgeDto,
+    PluginCapabilityDto, PluginExtensionPointDto, PluginHostIntentDto, PluginToastLevelDto,
+    PluginTopTabDto, PluginUiDocument,
 };
 use arclain_app::{ArclainApp, BootstrapConfig};
 
@@ -107,10 +107,19 @@ fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
 /// see `archive_sessions.rs::bootstrap_app`'s identical rationale for the
 /// 7-Zip seed.
 fn bootstrap_app_with_plugin(temp: &tempfile::TempDir, plugin_name: &str) -> ArclainApp {
+    bootstrap_app_with_plugins(temp, &[plugin_name])
+}
+
+/// [`bootstrap_app_with_plugin`] with more than one fixture installed --
+/// what the enabled-gate tests need to prove the gate is *per plugin*:
+/// disabling one must leave every other plugin's sessions working.
+fn bootstrap_app_with_plugins(temp: &tempfile::TempDir, plugin_names: &[&str]) -> ArclainApp {
     let paths = support::temp_paths(temp.path());
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
     std::fs::create_dir_all(&paths.plugins_dir).expect("create plugins dir");
-    install_plugin_fixture(&paths.plugins_dir, plugin_name);
+    for plugin_name in plugin_names {
+        install_plugin_fixture(&paths.plugins_dir, plugin_name);
+    }
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
         worker_threads: None,
@@ -1275,4 +1284,255 @@ fn plugin_ui_updated_operation_result_round_trips_through_serde() {
 
     assert_eq!(restored, result);
     assert!(json.contains("\"type\":\"plugin_ui_updated\""));
+}
+
+// ===========================================================================
+// The enabled gate: a disabled plugin does not run.
+//
+// Every test here drives `ArclainApp` itself rather than the session store
+// underneath it, because the property under test is exactly that the
+// refusal holds *whichever* facade entry point a frontend reaches for --
+// a check that lives one layer down and is only exercised through a stub
+// would prove nothing about the surface a renderer actually calls.
+// ===========================================================================
+
+#[test]
+fn open_plugin_session_refuses_a_disabled_plugin() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), false))
+        .expect("disabling a known plugin must succeed");
+
+    let error = runtime
+        .block_on(app.open_plugin_session("ui-demo".to_string(), PluginExtensionPointDto::MainPage))
+        .expect_err("a disabled plugin must not open a session");
+
+    assert_eq!(error.kind, ApplicationErrorKind::PermissionDenied);
+    assert!(is_plugin_disabled_refusal(&error));
+    // The gate and the read model answer from the same enabled flag, so
+    // there is no state in which `plugins()` advertises a plugin the gate
+    // then refuses to open, or the reverse.
+    let summaries = runtime.block_on(app.plugins()).unwrap();
+    assert!(
+        !summaries
+            .iter()
+            .find(|summary| summary.id == "ui-demo")
+            .expect("ui-demo is still reported while disabled")
+            .enabled
+    );
+}
+
+#[test]
+fn open_plugin_session_for_archive_refuses_a_disabled_plugin() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), false))
+        .unwrap();
+
+    // The archive-browser info-panel path: it opens a slot for whatever
+    // plugin a panel item names, so it is the entry point most likely to
+    // reach a plugin the user has switched off.
+    let error = runtime
+        .block_on(app.open_plugin_session_for_archive(
+            "ui-demo".to_string(),
+            PluginExtensionPointDto::Panel,
+            None,
+        ))
+        .expect_err("the explicit-origin open must be gated too");
+
+    assert!(is_plugin_disabled_refusal(&error));
+}
+
+#[test]
+fn the_disabled_refusal_is_distinguishable_from_an_unknown_plugin() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), false))
+        .unwrap();
+
+    let disabled = runtime
+        .block_on(app.open_plugin_session("ui-demo".to_string(), PluginExtensionPointDto::MainPage))
+        .unwrap_err();
+    let unknown = runtime
+        .block_on(app.open_plugin_session(
+            "does-not-exist".to_string(),
+            PluginExtensionPointDto::MainPage,
+        ))
+        .unwrap_err();
+
+    // The two repairs are different -- draw nothing and keep the item vs.
+    // drop a stale reference -- so a frontend must be able to tell them
+    // apart without reading prose.
+    assert_ne!(disabled.kind, unknown.kind);
+    assert_eq!(unknown.kind, ApplicationErrorKind::NotFound);
+    assert!(is_plugin_disabled_refusal(&disabled));
+    assert!(!is_plugin_disabled_refusal(&unknown));
+    // And the refusal names which plugin it is about, since the caller
+    // may have asked on behalf of a slot it no longer holds the id for.
+    assert_eq!(disabled.diagnostic.as_deref(), Some("plugin id: ui-demo"));
+}
+
+#[test]
+fn a_disabled_plugin_stops_serving_the_document_of_a_session_that_was_already_open() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+    let snapshot = runtime
+        .block_on(app.open_plugin_session("ui-demo".to_string(), PluginExtensionPointDto::Panel))
+        .expect("opening while enabled must succeed");
+    let before = runtime
+        .block_on(app.plugin_ui_document(snapshot.session_id))
+        .expect("an enabled plugin's document is served");
+
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), false))
+        .unwrap();
+
+    // The panel is on screen and its plugin was just switched off: the
+    // retained document is that plugin's own content, so it is withheld
+    // rather than served one last time.
+    let refused = runtime
+        .block_on(app.plugin_ui_document(snapshot.session_id))
+        .expect_err("a disabled plugin's document must not be served");
+    assert!(is_plugin_disabled_refusal(&refused));
+    // Withheld, not discarded, and not a closed session either -- the
+    // refusal is not the `NotFound` an unknown session id produces.
+    assert_ne!(refused.kind, ApplicationErrorKind::NotFound);
+
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), true))
+        .unwrap();
+
+    let after = runtime
+        .block_on(app.plugin_ui_document(snapshot.session_id))
+        .expect("re-enabling resumes the same session");
+    assert_eq!(
+        after, before,
+        "a disable/enable round trip must not mint a new revision or re-fetch",
+    );
+}
+
+#[test]
+fn an_action_against_a_disabled_plugins_session_fails_the_operation_without_advancing_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+    let snapshot = runtime
+        .block_on(app.open_plugin_session("ui-demo".to_string(), PluginExtensionPointDto::MainPage))
+        .unwrap();
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), false))
+        .unwrap();
+
+    let operation_id = runtime
+        .block_on(app.start_plugin_action(PluginActionRequest {
+            session_id: snapshot.session_id,
+            node_id: "demo_btn".to_string(),
+            action: PluginActionDto::Activate,
+        }))
+        .expect("start_plugin_action accepts any well-formed request");
+
+    // Refused where an unknown session is refused -- as the operation's
+    // own terminal state, not a request-level `Err` -- so a frontend
+    // watching the operation stream needs no second failure channel.
+    match runtime.block_on(wait_for_terminal_state(&app, operation_id)) {
+        OperationState::Failed { error } => assert!(
+            is_plugin_disabled_refusal(&error),
+            "expected the disabled refusal, got {error:?}",
+        ),
+        other => panic!("expected Failed for a disabled plugin's action, got {other:?}"),
+    }
+
+    // Nothing was published: no new revision, and the document that comes
+    // back after re-enabling is the one the session already had.
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), true))
+        .unwrap();
+    let document = runtime
+        .block_on(app.plugin_ui_document(snapshot.session_id))
+        .unwrap();
+    assert_eq!(
+        document, snapshot.document,
+        "a refused dispatch must not advance the session",
+    );
+}
+
+#[test]
+fn close_plugin_session_still_succeeds_while_its_plugin_is_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let runtime = foreign_runtime();
+    let snapshot = runtime
+        .block_on(app.open_plugin_session("ui-demo".to_string(), PluginExtensionPointDto::MainPage))
+        .unwrap();
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), false))
+        .unwrap();
+
+    // Teardown is the frontend's own bookkeeping, not something the
+    // plugin does, so disabling must not turn correct cleanup into an
+    // error path.
+    runtime
+        .block_on(app.close_plugin_session(snapshot.session_id))
+        .expect("closing a disabled plugin's session must still succeed");
+
+    let error = runtime
+        .block_on(app.close_plugin_session(snapshot.session_id))
+        .unwrap_err();
+    assert_eq!(
+        error.kind,
+        ApplicationErrorKind::NotFound,
+        "and the session really is gone afterwards",
+    );
+}
+
+#[test]
+fn disabling_one_plugin_leaves_every_other_plugins_session_working() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_plugins(&temp, &["ui-demo", "facade-test-fixture"]);
+    let runtime = foreign_runtime();
+    let fixture = runtime
+        .block_on(app.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::MainPage,
+        ))
+        .unwrap();
+
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), false))
+        .unwrap();
+
+    // Opening, reading and dispatching all still work for the plugin that
+    // was not disabled -- the gate is per plugin, not a global switch.
+    runtime
+        .block_on(app.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .expect("an enabled plugin still opens sessions");
+    runtime
+        .block_on(app.plugin_ui_document(fixture.session_id))
+        .expect("an enabled plugin still serves its document");
+    let operation_id = runtime
+        .block_on(app.start_plugin_action(PluginActionRequest {
+            session_id: fixture.session_id,
+            node_id: "multi-action".to_string(),
+            action: PluginActionDto::Activate,
+        }))
+        .unwrap();
+    let update = runtime.block_on(wait_for_plugin_ui_updated(&app, operation_id));
+    assert_eq!(update.document.revision, 2);
+    assert_eq!(
+        update.intents.len(),
+        3,
+        "the fixture's own three host intents still arrive",
+    );
 }
