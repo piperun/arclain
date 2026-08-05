@@ -55,7 +55,11 @@ use arclain_app::operations::pipeline::{
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 
 use arclain_core::{ArchiveBackend, ArchiveInfo, ArchiveKind, BackendCapabilities};
-use gameta_core::{MetadataSource, ProductMetadata};
+// Re-exported by `arclain_core` under the same feature that provides the
+// store these rows are seeded into, so the metadata tests below name one
+// crate rather than reaching for the underlying metadata crate directly.
+#[cfg(feature = "gameta")]
+use arclain_core::{MetadataSource, ProductMetadata};
 
 fn foreign_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -1566,6 +1570,7 @@ fn start_organize_a_wrong_password_response_raises_another_challenge_then_the_co
 /// if those two ever computed the sanitized stem differently in the
 /// future, this test's independently-computed `expected_dest_path`
 /// would stop matching one of them.
+#[cfg(feature = "gameta")]
 #[test]
 fn start_organize_dry_run_preview_path_matches_the_real_runs_output_path_when_metadata_exists() {
     let runtime = foreign_runtime();
@@ -1683,6 +1688,7 @@ fn start_organize_dry_run_preview_path_matches_the_real_runs_output_path_when_me
 /// resolve_folder_with_metadata}` both compute the identical stem), so
 /// `Folder` mode proves the same thing `Convert`'s `Archive` mode would
 /// without needing a real, working 7-Zip installed to observe it.
+#[cfg(feature = "gameta")]
 #[test]
 fn start_organize_and_start_pipeline_agree_on_the_metadata_driven_stem() {
     let runtime = foreign_runtime();
@@ -2564,6 +2570,7 @@ fn seed_metadata_driven_rule_and_profile(app: &ArclainApp) -> (i64, i64) {
 
 /// Saves one DLsite library row for the placeholder product code every
 /// fixture in this section uses.
+#[cfg(feature = "gameta")]
 fn seed_library_title(app: &ArclainApp, title: &str) {
     let library_service = app
         .take_legacy_composition()
@@ -2643,6 +2650,10 @@ fn report_plugin_title(
 /// progress message: the fake backend's "pack" writes a marker naming
 /// the directories it was handed, which for `execute_organization_plan`
 /// is the organized root folder itself.
+///
+/// Needs the library half of the disagreement, so it needs the feature
+/// that provides the library.
+#[cfg(feature = "gameta")]
 #[test]
 fn a_session_bound_organize_applies_the_previewed_plan_not_the_library_metadata() {
     let runtime = foreign_runtime();
@@ -2753,6 +2764,11 @@ fn a_session_bound_organize_applies_the_previewed_plan_not_the_library_metadata(
 /// is none*: falling back to the library for a session that reports
 /// nothing would apply a plan the user never previewed (the preview
 /// would have shown the metadata-less one).
+///
+/// Seeds the library it must not fall back to, and expects the
+/// code-stemmed output only the detection tier produces, so both halves
+/// need the feature.
+#[cfg(feature = "gameta")]
 #[test]
 fn a_session_with_no_plugin_metadata_never_falls_back_to_the_library() {
     let runtime = foreign_runtime();
@@ -3150,10 +3166,20 @@ fn two_archives_with_no_metadata_title_do_not_collapse_onto_one_output() {
         .filter_map(|entry| entry.file_name().into_string().ok())
         .collect();
     produced.sort();
+    // The rung the blank title falls to differs by feature -- the
+    // detected product code with the metadata stack, the source stem
+    // without it -- but the guarantee under test does not: two archives,
+    // two outputs, never one overwriting the other.
+    #[cfg(feature = "gameta")]
+    let expected = vec!["RJ000001.zip".to_string(), "RJ000002.zip".to_string()];
+    #[cfg(not(feature = "gameta"))]
+    let expected = vec![
+        "[RJ000001] First.zip".to_string(),
+        "[RJ000002] Second.zip".to_string(),
+    ];
     assert_eq!(
-        produced,
-        vec!["RJ000001.zip".to_string(), "RJ000002.zip".to_string()],
-        "each archive must keep its own output name, taken from its detected code"
+        produced, expected,
+        "each archive must keep its own output name"
     );
 }
 
@@ -3187,6 +3213,12 @@ fn a_blank_metadata_title_falls_back_to_the_source_stem() {
 /// and cannot normally carry a separator, so this pins the guarantee
 /// rather than a reachable bug: a title that is refused falls through to
 /// the code, and the code is proven a plain component before it is used.
+///
+/// The code arm itself only exists with the `gameta` feature -- a lean
+/// build's refused title falls straight through to the source stem
+/// (`a_blank_metadata_title_falls_back_to_the_source_stem` covers that
+/// tier at both settings).
+#[cfg(feature = "gameta")]
 #[test]
 fn a_refused_title_falls_through_to_a_checked_product_code() {
     let runtime = foreign_runtime();

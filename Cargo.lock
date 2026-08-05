@@ -384,7 +384,6 @@ dependencies = [
  "arclain_signals",
  "crc32fast",
  "dirs",
- "gameta_core",
  "parking_lot",
  "regex",
  "serde",

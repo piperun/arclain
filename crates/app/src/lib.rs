@@ -107,6 +107,15 @@
 //! other operation request -- and binds the session it previewed, so
 //! what a panel applies is the plan it showed (see
 //! [`operations::OrganizeRequest::archive_session_id`]).
+//!
+//! # Cargo features
+//!
+//! `gameta` (default-on) -- the metadata stack end to end: the
+//! diesel-backed metadata store, DLSite filename detection, and the
+//! plugin metadata host-function engine. A `default-features = false`
+//! embedding is a lean archive manager: open/list/extract/organize and
+//! pipelines all work, and every metadata surface answers absent through
+//! the same paths a service-less runtime already exercised.
 
 pub mod archive;
 pub mod challenge;

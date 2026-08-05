@@ -60,8 +60,21 @@ const MAX_COMPRESSION_LEVEL: u8 = 9;
 /// detector gates metadata-backed organization rules and metadata lookup.
 /// Frontends use this query instead of importing the core utility that owns
 /// the underlying Gameta-compatible detection algorithm.
+///
+/// Without the `gameta` feature there is no detector behind it, so every
+/// name answers `false` -- metadata-backed rules match nothing rather
+/// than failing, which is how the whole metadata surface behaves in a
+/// lean build.
 pub fn has_dlsite_product_code(archive_name: &str) -> bool {
-    arclain_core::utilities::has_dlsite_code(archive_name)
+    #[cfg(feature = "gameta")]
+    {
+        arclain_core::utilities::has_dlsite_code(archive_name)
+    }
+    #[cfg(not(feature = "gameta"))]
+    {
+        let _ = archive_name;
+        false
+    }
 }
 
 // ============================================================================

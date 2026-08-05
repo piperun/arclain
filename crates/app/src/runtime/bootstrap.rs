@@ -527,6 +527,7 @@ pub(crate) fn run(
             }
         }
 
+        #[cfg(feature = "gameta")]
         if let Some(library_service) = core_services.library_service.clone() {
             manager.set_library_service(library_service);
         }

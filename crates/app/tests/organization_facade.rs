@@ -74,6 +74,7 @@ fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
     .expect("bootstrap must succeed")
 }
 
+#[cfg(feature = "gameta")]
 #[test]
 fn dlsite_product_code_detection_is_available_through_the_facade_vocabulary() {
     assert!(has_dlsite_product_code("[RJ123456] Game Title.zip"));
@@ -81,6 +82,20 @@ fn dlsite_product_code_detection_is_available_through_the_facade_vocabulary() {
     assert!(has_dlsite_product_code("BJ12345678"));
     assert!(!has_dlsite_product_code("ordinary-archive.zip"));
     assert!(!has_dlsite_product_code("RJ12345.zip"));
+}
+
+/// The other half of that contract. The query is facade vocabulary, so a
+/// lean build still answers it -- same name, same signature, callable by
+/// the same frontend -- but with no detector compiled behind it every
+/// name answers "no code", which is precisely how metadata-backed rules
+/// come to match nothing instead of failing.
+#[cfg(not(feature = "gameta"))]
+#[test]
+fn dlsite_product_code_detection_answers_absent_without_the_metadata_stack() {
+    assert!(!has_dlsite_product_code("[RJ123456] Game Title.zip"));
+    assert!(!has_dlsite_product_code("vj123456_voice.rar"));
+    assert!(!has_dlsite_product_code("BJ12345678"));
+    assert!(!has_dlsite_product_code("ordinary-archive.zip"));
 }
 
 fn build_zip_fixture(dir: &Path, name: &str, entries: &[(&str, &[u8])]) -> PathBuf {

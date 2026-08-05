@@ -142,7 +142,9 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use arclain_core::backends::BackendSelector;
-use arclain_core::services::{LibraryService, OrganizationService};
+#[cfg(feature = "gameta")]
+use arclain_core::services::LibraryService;
+use arclain_core::services::OrganizationService;
 use arclain_core::utilities::{auto_password_for, PassRule};
 use arclain_core::{
     execute_pipeline, ArchiveBackend, ArchiveInfo, CompressionLevel, ConvertFormat, GameMetadata,
@@ -676,6 +678,7 @@ fn build_pipeline_context(inner: &Arc<AppRuntime>) -> PipelineContext {
 
     PipelineContext {
         organization_service: services.organization_service.clone(),
+        #[cfg(feature = "gameta")]
         library_service: services.library_service.clone(),
         backend_for: Arc::new(move |path: &Path| {
             resolve_backend(path, &backend_selector, override_backend.as_ref())
@@ -761,6 +764,7 @@ fn resolve_backend(
 /// this the single copy on this side of the boundary; `executor.rs`'s
 /// own remains the second, still guarded by
 /// `start_organize_and_start_pipeline_agree_on_the_metadata_driven_stem`.
+#[cfg(feature = "gameta")]
 pub(super) fn resolve_metadata(
     archive_name: &str,
     library_service: Option<&Arc<LibraryService>>,
@@ -770,6 +774,13 @@ pub(super) fn resolve_metadata(
     let id = format!("dlsite:{code}");
     let product = lib.get_metadata(&id).ok().flatten()?;
     GameMetadata::from_json(&product.to_plugin_json_string()).ok()
+}
+
+/// Metadata resolution requires the `gameta` feature; a lean build
+/// resolves nothing and naming falls through to the file-stem tier.
+#[cfg(not(feature = "gameta"))]
+pub(super) fn resolve_metadata_absent() -> Option<GameMetadata> {
+    None
 }
 
 /// Picks the output stem for one input, mirroring `crates/core/src/
@@ -803,6 +814,7 @@ fn stem_from(input: &Path, metadata: Option<&GameMetadata>) -> std::ffi::OsStrin
             }
         }
     }
+    #[cfg(feature = "gameta")]
     if let Some(name) = input.file_name().and_then(|n| n.to_str()) {
         if let Some(code) = arclain_core::utilities::detect_dlsite_code(name) {
             if let Some(safe) = arclain_core::utilities::title_filter::plain_file_component(&code) {
@@ -882,7 +894,16 @@ impl PlanMetadata {
     fn resolve(&self, archive_name: &str, ctx: &OrganizeContext) -> Option<GameMetadata> {
         match self {
             Self::Session(metadata) => metadata.clone(),
+            #[cfg(feature = "gameta")]
             Self::LibraryLookup => resolve_metadata(archive_name, ctx.library_service.as_ref()),
+            #[cfg(not(feature = "gameta"))]
+            Self::LibraryLookup => {
+                // Nothing to look the archive name up *in* without the
+                // feature that provides the store, so neither input is
+                // read -- the signature stays the same either way.
+                let _ = (archive_name, ctx);
+                resolve_metadata_absent()
+            }
         }
     }
 }
@@ -972,6 +993,7 @@ pub(super) async fn resolve_rule_and_profile(
 struct OrganizeContext {
     backend_selector: BackendSelector,
     override_backend: Option<Arc<dyn ArchiveBackend>>,
+    #[cfg(feature = "gameta")]
     library_service: Option<Arc<LibraryService>>,
     organization_service: Option<Arc<OrganizationService>>,
     config_db_path: Option<PathBuf>,
@@ -982,6 +1004,7 @@ fn build_organize_context(inner: &Arc<AppRuntime>) -> OrganizeContext {
     OrganizeContext {
         backend_selector: inner.backend_selector(),
         override_backend: inner.archive_backend_override(),
+        #[cfg(feature = "gameta")]
         library_service: services.library_service.clone(),
         organization_service: services.organization_service.clone(),
         config_db_path: services

@@ -285,6 +285,7 @@ fn preview_blocking(
 
     let mut entries = Vec::with_capacity(paths.len());
     for path in &paths {
+        #[cfg(feature = "gameta")]
         let metadata = super::processing_ops::resolve_metadata(
             // The executor keys its lookup on the input's file name
             // (`executor.rs::run_one`), so this does too -- keying on
@@ -295,6 +296,8 @@ fn preview_blocking(
                 .unwrap_or(""),
             services.library_service.as_ref(),
         );
+        #[cfg(not(feature = "gameta"))]
+        let metadata = super::processing_ops::resolve_metadata_absent();
         let mut per_file = template.clone();
         per_file.input = Some(arclain_core::PipelineInput::Files(vec![path.clone()]));
         let mut preview =

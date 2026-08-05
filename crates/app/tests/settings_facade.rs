@@ -1452,6 +1452,11 @@ fn gameta_api_key_set_is_reflected_and_never_leaks() {
 /// the broadened pattern is what the very first `password_rules()` read
 /// reports -- proving the rewrite lands before anything can read a rule,
 /// which is the whole reason it belongs here rather than in a frontend.
+///
+/// Broadens *to the product code*, which is the tier the `gameta`
+/// feature provides; the twin below covers the same startup rewrite in a
+/// lean build, where derivation starts at the maker bracket instead.
+#[cfg(feature = "gameta")]
 #[test]
 fn bootstrap_broadens_a_narrow_auto_saved_password_rule() {
     let runtime = foreign_runtime();
@@ -1515,6 +1520,58 @@ fn bootstrap_broadens_a_narrow_auto_saved_password_rule() {
         .block_on(reopened.password_rules())
         .expect("password rules must be readable");
     assert_eq!(rules[0].pattern, "(?i)RJ100001");
+}
+
+/// The same startup rewrite in a lean build. The product-code tier is
+/// not compiled there, so a narrow auto-saved rule broadens to the
+/// maker bracket instead -- still before the first `password_rules()`
+/// read, which is the part this test exists to pin. Without it the
+/// broadening pass would be exercised only by builds that happen to
+/// carry the metadata stack.
+#[cfg(not(feature = "gameta"))]
+#[test]
+fn bootstrap_broadens_a_narrow_auto_saved_password_rule() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+
+    const ARCHIVE: &str = "[Crew Name] Some Title v2.zip";
+    support::seed_named_pass_rule(
+        &paths,
+        &format!("Auto-saved: {ARCHIVE}"),
+        &regex::escape(ARCHIVE),
+        "stored-password",
+    );
+
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .expect("bootstrap must succeed");
+
+    assert_eq!(
+        app.startup_password_rule_upgrades(),
+        1,
+        "the one narrow auto-saved rule must be reported as upgraded"
+    );
+
+    let rules = runtime
+        .block_on(app.password_rules())
+        .expect("password rules must be readable");
+    assert_eq!(rules.len(), 1);
+    assert_eq!(
+        rules[0].pattern, r"^\[Crew Name\]",
+        "the rule must already be broadened by the first read"
+    );
+    assert!(
+        rules[0].password_configured,
+        "broadening a pattern must not disturb the stored password"
+    );
 }
 
 /// A rule the user wrote or renamed carries neither half of the

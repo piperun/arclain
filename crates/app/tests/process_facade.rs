@@ -21,7 +21,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use arclain_app::error::ApplicationErrorKind;
-use arclain_app::event::{OperationResult, OperationState};
+#[cfg(feature = "gameta")]
+use arclain_app::event::OperationResult;
+use arclain_app::event::OperationState;
+// Only the metadata tests below open a session of their own.
+#[cfg(feature = "gameta")]
 use arclain_app::ids::ArchiveSessionId;
 use arclain_app::operations::pipeline::{
     CompressionLevelDto, OutputArtifactDto, OutputCollisionPolicyDto, PipelineDestinationDto,
@@ -106,6 +110,7 @@ fn build_zip_fixture(dir: &Path, name: &str, entries: &[(&str, &[u8])]) -> PathB
     path
 }
 
+#[cfg(feature = "gameta")]
 async fn open_session(app: &ArclainApp, archive: &Path) -> ArchiveSessionId {
     let mut events = app.subscribe_operations();
     app.start_open_archive(arclain_app::archive::OpenArchiveRequest {
@@ -133,6 +138,7 @@ async fn open_session(app: &ArclainApp, archive: &Path) -> ArchiveSessionId {
 /// Writes plugin-reported metadata onto a session exactly the way a
 /// plugin's `emit_metadata` host call does -- through the installed
 /// `ActiveTabBridge`, the only path that reaches session metadata.
+#[cfg(feature = "gameta")]
 fn report_plugin_title(app: &ArclainApp, session_id: ArchiveSessionId, title: &str) {
     let bridge = app.active_tab_bridge(|_| panic!("fallback must not run: the session exists"));
     bridge.set_session_metadata(
@@ -149,6 +155,7 @@ fn report_plugin_title(app: &ArclainApp, session_id: ArchiveSessionId, title: &s
 /// pipeline executor resolves output names from, and therefore the one
 /// `preview_pipeline` resolves from too. `take_legacy_composition` is a
 /// one-time take, so every row a test needs is seeded in one call.
+#[cfg(feature = "gameta")]
 fn seed_library_titles(app: &ArclainApp, rows: &[(&str, &str)]) {
     let library_service = app
         .take_legacy_composition()
@@ -159,7 +166,7 @@ fn seed_library_titles(app: &ArclainApp, rows: &[(&str, &str)]) {
         .expect("library_service must be composed for a freshly bootstrapped app");
     for (product_id, title) in rows {
         let mut product =
-            gameta_core::ProductMetadata::new(gameta_core::MetadataSource::DLSite, product_id);
+            arclain_core::ProductMetadata::new(arclain_core::MetadataSource::DLSite, product_id);
         product.title = Some((*title).to_string());
         library_service
             .save_metadata(&product)
@@ -1060,6 +1067,7 @@ fn a_preview_can_run_a_saved_preset_and_an_unknown_one_is_not_found() {
 /// The predicted output name comes from the DLsite library, resolved
 /// **per input** by the same lookup the executor performs -- so a
 /// preview and a run name the same file the same way.
+#[cfg(feature = "gameta")]
 #[test]
 fn library_metadata_names_the_predicted_output_per_input() {
     let runtime = foreign_runtime();
@@ -1105,7 +1113,10 @@ fn library_metadata_names_the_predicted_output_per_input() {
 
 /// A product code with no library row falls back to the bare code --
 /// `arclain_core`'s own `stem_from` ladder, reached through the same
-/// resolution the executor uses.
+/// resolution the executor uses. The code rung of that ladder is part of
+/// the metadata stack, so a lean build names the input from its own stem
+/// instead and this pins the rung rather than the ladder.
+#[cfg(feature = "gameta")]
 #[test]
 fn an_input_with_no_library_row_is_named_from_its_detected_code() {
     let runtime = foreign_runtime();
@@ -1142,6 +1153,7 @@ fn an_input_with_no_library_row_is_named_from_its_detected_code() {
 /// It also pins that plugin-reported *session* metadata reaches neither
 /// end. A session reporting a different title stays open across both; if
 /// either end ever consults one again, the paths diverge and this fails.
+#[cfg(feature = "gameta")]
 #[test]
 fn a_preview_predicts_exactly_the_path_start_pipeline_writes() {
     let runtime = foreign_runtime();
