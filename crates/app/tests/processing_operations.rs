@@ -3214,11 +3214,13 @@ fn a_blank_metadata_title_falls_back_to_the_source_stem() {
 /// rather than a reachable bug: a title that is refused falls through to
 /// the code, and the code is proven a plain component before it is used.
 ///
-/// The code arm itself only exists with the `gameta` feature -- a lean
-/// build's refused title falls straight through to the source stem
-/// (`a_blank_metadata_title_falls_back_to_the_source_stem` covers that
-/// tier at both settings).
-#[cfg(feature = "gameta")]
+/// The *refusal* is what matters most here, and it happens before any
+/// code-tier logic: a plugin-reported title that is not a plain file
+/// component must never become one, whatever is compiled below it. So
+/// this runs at both feature settings and only the rung it lands on
+/// differs -- the sibling covering the blank-title case cannot stand in
+/// for it, because a blank title short-circuits on `is_empty` and never
+/// reaches the component check at all.
 #[test]
 fn a_refused_title_falls_through_to_a_checked_product_code() {
     let runtime = foreign_runtime();
@@ -3241,10 +3243,17 @@ fn a_refused_title_falls_through_to_a_checked_product_code() {
         "..",
     );
 
+    // Below the refused title the tier chain differs: the detected
+    // product code with the metadata stack compiled, the input's own
+    // file stem without it. Either way the refused title itself never
+    // reaches the output name.
+    #[cfg(feature = "gameta")]
+    let expected = vec![destination.join("RJ123456.zip")];
+    #[cfg(not(feature = "gameta"))]
+    let expected = vec![destination.join("[RJ123456] Placeholder.zip")];
     assert_eq!(
-        produced,
-        vec![destination.join("RJ123456.zip")],
-        "the refused title must fall through to the detected code"
+        produced, expected,
+        "the refused title must fall through to the next naming tier"
     );
 }
 
