@@ -160,3 +160,11 @@ frontend-boundary:
 
 test-frontend-boundary:
     {{python}} scripts/test_frontend_boundary.py
+
+# ─── feature gate ─────────────────────────────────────────────────────────
+# Proves a lean `arclain_app` pulls in no gameta crate, then runs the lean
+# check and the two feature-off test suites the defaults workspace never
+# compiles (scripts/_gate_lean.py).
+
+gate-lean:
+    {{python}} scripts/_gate_lean.py
