@@ -42,31 +42,13 @@ pub struct LibraryService {
 }
 
 impl LibraryService {
+    /// Open the metadata backend on `db_path`.
+    ///
+    /// Stale cr-sqlite triggers on this database are cleared by
+    /// `arclain_db::open_databases`, which every process runs on this same
+    /// file before reaching here — the repair is shared because every cache
+    /// consumer writes through the file, not only this service.
     pub fn new(db_path: &Path) -> Result<Self> {
-        // Drop stale cr-sqlite triggers before diesel touches the DB.
-        // These triggers reference crsql_internal_sync_bit which no longer exists
-        // and cause every INSERT/UPDATE to fail.
-        if db_path.exists() {
-            if let Ok(conn) = arclain_db::DbConnection::open(db_path) {
-                let triggers: Vec<String> = conn
-                    .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")
-                    .and_then(|mut s| {
-                        s.query_map([], |row| row.get(0))
-                            .map(|rows| rows.filter_map(|r| r.ok()).collect())
-                    })
-                    .unwrap_or_default();
-                for trigger in &triggers {
-                    let _ = conn.execute_batch(&format!("DROP TRIGGER IF EXISTS \"{}\"", trigger));
-                }
-                if !triggers.is_empty() {
-                    tracing::info!(
-                        "[LibraryService] Dropped {} stale triggers from metadata DB",
-                        triggers.len()
-                    );
-                }
-            }
-        }
-
         let backend = DieselBackend::new_local_sync(db_path)
             .map_err(|e| anyhow::anyhow!("Failed to create metadata backend: {}", e))?;
 

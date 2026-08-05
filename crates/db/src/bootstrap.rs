@@ -62,6 +62,53 @@ pub struct ConfigDbs {
     pub cache_pool: DieselPool,
 }
 
+/// Drop leftover replication triggers from the cache database.
+///
+/// A database written by an older build carries triggers from the
+/// since-removed cr-sqlite sync layer. Their bodies call
+/// `crsql_internal_sync_bit`, a function nothing registers on the
+/// connection any more, so every INSERT and UPDATE that fires one fails
+/// outright. Arclain itself creates no triggers on this file, so any
+/// trigger present is such a leftover and is dropped.
+///
+/// This belongs at the shared open rather than in any one consumer's
+/// constructor: the cache index, the content cache and the metadata
+/// backend all write through this same file, so a repair owned by one of
+/// them leaves the others broken whenever that one is not constructed.
+///
+/// Best effort by design. A file that cannot be opened or queried here is
+/// left to `CacheDb::open`'s own corrupt-file recovery, and the connection
+/// is dropped before that runs so the file stays replaceable on Windows. A
+/// database that does not exist yet is left alone rather than created.
+fn drop_stale_sync_triggers(db_path: &Path) {
+    if !db_path.exists() {
+        return;
+    }
+    let Ok(conn) = crate::DbConnection::open(db_path) else {
+        return;
+    };
+
+    let triggers: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get(0))
+                .map(|rows| rows.filter_map(|row| row.ok()).collect())
+        })
+        .unwrap_or_default();
+
+    for trigger in &triggers {
+        let _ = conn.execute_batch(&format!("DROP TRIGGER IF EXISTS \"{}\"", trigger));
+    }
+
+    if !triggers.is_empty() {
+        tracing::info!(
+            "[Bootstrap] Dropped {} stale triggers from the cache database",
+            triggers.len()
+        );
+    }
+}
+
 /// Open all databases, initializing schemas if needed
 pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
     // Open config database using new module
@@ -71,6 +118,9 @@ pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
     // Create Diesel pool for config
     let config_pool = DieselPool::new(&paths.config_db)
         .with_context(|| "Failed to create config database pool")?;
+
+    // Repair the cache database before anything opens a handle on it.
+    drop_stale_sync_triggers(&paths.cache_db);
 
     // Open cache database
     let cache_db = CacheDb::open(&paths.cache_db)
@@ -106,4 +156,78 @@ pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
         config_pool,
         cache_pool,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DbConnection;
+
+    /// A cache database left behind by an older build carries cr-sqlite
+    /// replication triggers whose bodies call `crsql_internal_sync_bit`.
+    /// Nothing registers that function any more, so every write that fires
+    /// one fails -- and every consumer of this file writes through it, not
+    /// just the metadata backend. Opening the databases must clear them,
+    /// whatever else the process goes on to construct.
+    #[test]
+    fn open_databases_clears_stale_sync_triggers_from_the_cache_database() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let paths = DbPaths {
+            config_db: temp.path().join("config.sqlite"),
+            cache_db: temp.path().join("metadata.sqlite"),
+            secrets_db: temp.path().join("secrets.redb"),
+            key_file: None,
+        };
+
+        // Seed the cache database the way an older build left it, and
+        // prove the trigger really does break writes before the repair.
+        {
+            let seeded = DbConnection::open(&paths.cache_db).unwrap();
+            seeded
+                .execute_batch(
+                    "CREATE TABLE legacy_rows (id INTEGER PRIMARY KEY, value TEXT);
+                     CREATE TRIGGER legacy_rows_sync AFTER INSERT ON legacy_rows
+                     BEGIN
+                         SELECT crsql_internal_sync_bit();
+                     END;",
+                )
+                .unwrap();
+            let blocked = seeded
+                .execute("INSERT INTO legacy_rows (value) VALUES ('before')", [])
+                .expect_err("the stale trigger must break writes before the repair");
+            assert!(
+                blocked.to_string().contains("crsql_internal_sync_bit"),
+                "unexpected pre-repair failure: {blocked}"
+            );
+        }
+
+        let dbs = open_databases(&paths, &SecretsKey::generate()).unwrap();
+
+        let conn = DbConnection::open(&paths.cache_db).unwrap();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0, "the stale trigger survived the shared open");
+
+        // The write the trigger used to block now goes through...
+        conn.execute("INSERT INTO legacy_rows (value) VALUES ('after')", [])
+            .expect("writes must work once the stale trigger is gone");
+
+        // ...as does one on a table created after the open, through the
+        // shared handle every cache consumer writes on.
+        dbs.metadata
+            .db()
+            .with_connection(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE post_open_rows (id INTEGER PRIMARY KEY, value TEXT);
+                     INSERT INTO post_open_rows (value) VALUES ('after');",
+                )?;
+                Ok(())
+            })
+            .expect("the shared cache handle must accept writes after the repair");
+    }
 }
