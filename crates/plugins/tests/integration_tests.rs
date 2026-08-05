@@ -95,7 +95,6 @@ fn bundled_dlsite_plugin_loads_against_current_host() {
         .instantiate(
             dlsite.manifest.capabilities.to_capabilities(),
             dlsite.manifest.rate_limits.http_requests_per_minute,
-            None,
             HashMap::new(),
             None,
         )

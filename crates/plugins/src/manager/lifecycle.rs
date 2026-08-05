@@ -836,13 +836,15 @@ impl PluginManager {
         let mut instance = loaded.instantiate_with_plugin_log_dir(
             capabilities.clone(),
             rate_limit,
-            self.library_service.clone(),
             settings,
             self.active_tab_bridge.clone(),
             &self.plugin_log_dir,
         )?;
 
         // Inject optional services
+        if let Some(ref lib_svc) = self.library_service {
+            instance.set_library_service(Some(lib_svc.clone()));
+        }
         if let Some(ref client) = self.gameta_client {
             instance.set_gameta_client(Some(client.clone()));
         }

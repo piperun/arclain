@@ -10,6 +10,7 @@ mod metadata;
 mod plugin_logger;
 mod settings;
 mod temp_storage;
+mod write_budget;
 
 #[cfg(test)]
 mod tests;
@@ -184,7 +185,7 @@ pub struct HostFunctions {
     /// first snapshot populates the manager-side cache.
     pub settings_dirty: Arc<AtomicBool>,
     pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
-    metadata_write_budget: metadata::MetadataWriteBudget,
+    metadata_write_budget: write_budget::MetadataWriteBudget,
     pub library_service: Option<Arc<arclain_core::LibraryService>>,
     pub content_cache: Option<Arc<arclain_data::ContentCache>>,
     pub gameta_client: Option<Arc<arclain_network::features::gameta_client::GametaClient>>,
@@ -299,7 +300,7 @@ impl HostFunctions {
             settings: Arc::new(Mutex::new(initial_settings)),
             settings_dirty: Arc::new(AtomicBool::new(true)),
             network_log: Arc::new(Mutex::new(Vec::new())),
-            metadata_write_budget: metadata::MetadataWriteBudget::default(),
+            metadata_write_budget: write_budget::MetadataWriteBudget::default(),
             library_service: None,
             content_cache: None,
             gameta_client: None,
