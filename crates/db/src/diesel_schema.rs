@@ -84,8 +84,10 @@ diesel::table! {
     }
 }
 
-// product_metadata table is now managed by gameta_database.
-// See gameta_database::diesel_backend::schema for the canonical definition.
+// product_metadata is deliberately absent from this schema: its rows are
+// read and written through LibraryService's diesel backend, which the
+// `gameta` feature supplies. The table SQL this crate creates still
+// matches gameta's schema shape -- see library::migration.
 
 diesel::table! {
     /// Product content blobs (covers, samples, etc.)

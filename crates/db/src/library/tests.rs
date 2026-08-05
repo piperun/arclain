@@ -1,7 +1,8 @@
 //! Unit tests for library module (Diesel API)
 //!
-//! Metadata CRUD tests have been removed — metadata operations are now handled
-//! by gameta_database::DieselBackend (tested in gameta's own test suite).
+//! Metadata CRUD is not tested here: those operations run through
+//! LibraryService's diesel backend, which the `gameta` feature supplies,
+//! and are covered by that backend's own test suite.
 //! Completeness score tests live in library::metadata::tests.
 
 use crate::library::content::{

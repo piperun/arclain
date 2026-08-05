@@ -2,9 +2,9 @@
 //!
 //! Tests pool/connection management and MetadataStore construction.
 //!
-//! Note: Metadata CRUD tests have been removed — metadata operations are now
-//! handled by `gameta_database::DieselBackend` through `LibraryService`,
-//! and are tested in gameta's own test suite.
+//! Note: metadata CRUD is not covered here — those operations run through
+//! `LibraryService`'s diesel backend, which the `gameta` feature supplies,
+//! and are tested in that backend's own suite.
 
 use arclain_db::{CacheDb, DieselPool, MetadataStore, SqliteDb};
 use diesel::prelude::*;

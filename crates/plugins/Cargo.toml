@@ -32,7 +32,9 @@ default = ["gameta"]
 # The metadata host-function engine (LibraryService-backed store access
 # and the host-side DLSite HTML parser). The WIT surface is identical
 # with it off: every metadata host fn stays registered and answers with
-# the same absent shapes a service-less runtime already produces.
+# an absent shape. That matches a service-less runtime on the
+# service-backed read paths; emit, count validation ordering and the
+# fallback tiers differ -- see host_functions::metadata_absent.
 gameta = [
     "dep:gameta_lib",
     "arclain_core/gameta",

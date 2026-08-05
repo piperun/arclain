@@ -3,10 +3,23 @@
 //! Compiled in place of `metadata.rs` when the `gameta` feature is off.
 //! The WIT surface must stay identical at both settings, so every entry
 //! point the `Host` impl dispatches to exists here with the same
-//! signature and answers with the exact absent shape a service-less
-//! runtime already produces — same strings, same log levels, same
-//! return values. A plugin cannot distinguish "engine compiled out"
-//! from "engine present but no LibraryService configured".
+//! signature and answers with the absent shape a service-less runtime
+//! already produces — same strings, same log levels, same return
+//! values.
+//!
+//! On the service-backed read paths that is indistinguishable from
+//! "engine present but no LibraryService configured". Three paths do
+//! differ, because the engine does work before or beyond the store
+//! lookup:
+//!
+//! - the emit entry points answer `false` outright, where the engine
+//!   parses the payload, keys the write budget, saves through the data
+//!   service, fires the UI signal and reports success — none of which
+//!   needs a LibraryService;
+//! - `cached_metadata_count` reports the missing service first, where
+//!   the engine validates the source argument before looking for it;
+//! - `get_product_metadata` answers `None`, where the engine falls
+//!   through to its cache and server tiers after the store misses.
 //!
 //! The emit entry points answer `false` before any source parsing:
 //! source validation, write-budget keying and the ProductMetadata

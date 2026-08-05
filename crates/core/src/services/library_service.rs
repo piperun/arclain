@@ -265,7 +265,9 @@ impl LibraryService {
 
 /// Bridge to `arclain_data::MetadataReader` so `MetadataStoreResolver`
 /// can hold `Arc<dyn MetadataReader>` without depending on this crate.
-/// See `arclain_data::traits` for why.
+/// The trait, the resolver and this impl are all behind `gameta`, so
+/// they compile together or not at all. See `arclain_data::traits` for
+/// why the dep points this way.
 impl arclain_data::MetadataReader for LibraryService {
     fn get_metadata(&self, id: &str) -> Result<Option<ProductMetadata>> {
         LibraryService::get_metadata(self, id)

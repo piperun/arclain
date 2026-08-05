@@ -3222,7 +3222,7 @@ fn a_blank_metadata_title_falls_back_to_the_source_stem() {
 /// for it, because a blank title short-circuits on `is_empty` and never
 /// reaches the component check at all.
 #[test]
-fn a_refused_title_falls_through_to_a_checked_product_code() {
+fn a_refused_title_falls_through_to_the_next_naming_tier() {
     let runtime = foreign_runtime();
     let temp = scratch_tempdir();
     let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));

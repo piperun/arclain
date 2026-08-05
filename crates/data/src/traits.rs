@@ -10,6 +10,10 @@
 //! These traits flip the dep: `arclain_data` declares the surface it
 //! needs, `arclain_core` implements it on its services. The cycle is
 //! broken; UI now reaches `ContentCache` through `arclain_core`.
+//!
+//! `CacheIndex` is unconditional. `MetadataReader` and the
+//! `MetadataStoreResolver` written in its types compile only with the
+//! `gameta` feature — without it there is no metadata store to read.
 
 use anyhow::Result;
 #[cfg(feature = "gameta")]

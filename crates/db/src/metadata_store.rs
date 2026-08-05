@@ -10,7 +10,8 @@ use std::path::PathBuf;
 /// - Schema migration from arclain's old format to gameta's format
 /// - Cache index operations for binary content tracking
 ///
-/// Product metadata CRUD is handled by `LibraryService` via `gameta_database::DieselBackend`.
+/// Product metadata CRUD is handled by `LibraryService`'s diesel backend,
+/// which the `gameta` feature supplies.
 #[derive(Clone)]
 pub struct MetadataStore {
     db: SqliteDb,
