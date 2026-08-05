@@ -98,7 +98,12 @@ fn drop_stale_sync_triggers(db_path: &Path) {
         .unwrap_or_default();
 
     for trigger in &triggers {
-        let _ = conn.execute_batch(&format!("DROP TRIGGER IF EXISTS \"{}\"", trigger));
+        // Double any embedded quote so the name stays inside its
+        // identifier: a raw interpolation would let a trigger named
+        // `evil"quote` close the identifier early, fail the drop with the
+        // error swallowed below, and still be counted as dropped.
+        let quoted_trigger = trigger.replace('"', "\"\"");
+        let _ = conn.execute_batch(&format!("DROP TRIGGER IF EXISTS \"{quoted_trigger}\""));
     }
 
     if !triggers.is_empty() {
@@ -169,6 +174,13 @@ mod tests {
     /// one fails -- and every consumer of this file writes through it, not
     /// just the metadata backend. Opening the databases must clear them,
     /// whatever else the process goes on to construct.
+    ///
+    /// One of the seeded triggers carries a double quote in its name, which
+    /// SQLite accepts and the repair must therefore survive: dropping it
+    /// takes a doubled quote in the identifier, and an unescaped `DROP
+    /// TRIGGER` leaves it in place -- silently, since the drop error is
+    /// swallowed. Both triggers sit on the same table, so a survivor keeps
+    /// blocking the write this test makes at the end.
     #[test]
     fn open_databases_clears_stale_sync_triggers_from_the_cache_database() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -180,21 +192,38 @@ mod tests {
         };
 
         // Seed the cache database the way an older build left it, and
-        // prove the trigger really does break writes before the repair.
+        // prove the triggers really do break writes before the repair.
         {
             let seeded = DbConnection::open(&paths.cache_db).unwrap();
             seeded
                 .execute_batch(
-                    "CREATE TABLE legacy_rows (id INTEGER PRIMARY KEY, value TEXT);
-                     CREATE TRIGGER legacy_rows_sync AFTER INSERT ON legacy_rows
-                     BEGIN
-                         SELECT crsql_internal_sync_bit();
-                     END;",
+                    r#"CREATE TABLE legacy_rows (id INTEGER PRIMARY KEY, value TEXT);
+                       CREATE TRIGGER legacy_rows_sync AFTER INSERT ON legacy_rows
+                       BEGIN
+                           SELECT crsql_internal_sync_bit();
+                       END;
+                       CREATE TRIGGER "evil""quote_trigger" AFTER INSERT ON legacy_rows
+                       BEGIN
+                           SELECT crsql_internal_sync_bit();
+                       END;"#,
                 )
                 .unwrap();
+
+            let seeded_triggers: i64 = seeded
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                seeded_triggers, 2,
+                "the fixture must plant both a plain and a quoted-name trigger"
+            );
+
             let blocked = seeded
                 .execute("INSERT INTO legacy_rows (value) VALUES ('before')", [])
-                .expect_err("the stale trigger must break writes before the repair");
+                .expect_err("the stale triggers must break writes before the repair");
             assert!(
                 blocked.to_string().contains("crsql_internal_sync_bit"),
                 "unexpected pre-repair failure: {blocked}"
@@ -204,18 +233,22 @@ mod tests {
         let dbs = open_databases(&paths, &SecretsKey::generate()).unwrap();
 
         let conn = DbConnection::open(&paths.cache_db).unwrap();
-        let remaining: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'",
-                [],
-                |row| row.get(0),
-            )
+        let surviving: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
             .unwrap();
-        assert_eq!(remaining, 0, "the stale trigger survived the shared open");
+        assert!(
+            surviving.is_empty(),
+            "stale triggers survived the shared open: {surviving:?}"
+        );
 
-        // The write the trigger used to block now goes through...
+        // The write the triggers used to block now goes through...
         conn.execute("INSERT INTO legacy_rows (value) VALUES ('after')", [])
-            .expect("writes must work once the stale trigger is gone");
+            .expect("writes must work once the stale triggers are gone");
 
         // ...as does one on a table created after the open, through the
         // shared handle every cache consumer writes on.
