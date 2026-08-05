@@ -1,7 +1,9 @@
 pub mod content;
+#[cfg(feature = "gameta")]
 pub mod metadata;
 pub mod migration;
 
+#[cfg(feature = "gameta")]
 pub use metadata::{CompletenessScore, MetadataSource, ProductMetadata};
 
 pub use content::{

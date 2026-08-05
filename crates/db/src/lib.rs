@@ -91,8 +91,10 @@ pub mod library;
 pub mod pipeline_runs;
 pub use library::{
     delete_product_content, get_all_content, get_cover, get_screenshots, save_product_content,
-    CompletenessScore, ContentType, MetadataSource, ProductContent, ProductMetadata,
+    ContentType, ProductContent,
 };
+#[cfg(feature = "gameta")]
+pub use library::{CompletenessScore, MetadataSource, ProductMetadata};
 pub use pipeline_runs::{
     begin_pipeline_run, ensure_pipeline_runs_table, find_completed_run, flag_stale_in_progress,
     list_interrupted_since, mark_run_completed, mark_run_failed,

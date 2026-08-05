@@ -517,7 +517,6 @@ dependencies = [
  "diesel",
  "dirs",
  "gameta_core",
- "gameta_database",
  "libsqlite3-sys",
  "rand 0.9.4",
  "redb",

@@ -25,9 +25,14 @@ uuid = { version = "1.0", features = ["v4"] }
 tracing.workspace = true
 chrono.workspace = true
 
-# External gameta dependencies (https://codeberg.org/0xdev/gameta)
-gameta_core = { path = "../../../../codeberg/gameta/gameta_core", version = "=0.5.0" }
-gameta_database = { path = "../../../../codeberg/gameta/gameta_database", version = "=0.5.0" }
+# External gameta dependency (https://codeberg.org/0xdev/gameta)
+gameta_core = { path = "../../../../codeberg/gameta/gameta_core", version = "=0.5.0", optional = true }
+
+[features]
+default = ["gameta"]
+# The gameta metadata stack (types re-exported from `library::metadata`).
+# Off: arclain_db is pure arclain persistence — no gameta code compiled.
+gameta = ["dep:gameta_core"]
 
 [dev-dependencies]
 tempfile.workspace = true
