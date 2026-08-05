@@ -6,10 +6,18 @@
 mod archive;
 
 mod logging;
+#[cfg(feature = "gameta")]
+mod metadata;
+#[cfg(not(feature = "gameta"))]
+#[path = "metadata_absent.rs"]
 mod metadata;
 mod plugin_logger;
 mod settings;
 mod temp_storage;
+// Without `gameta` the emit path answers false before admission, so the
+// budget has no caller; the state stays so `HostFunctions` keeps one
+// shape at both settings.
+#[cfg_attr(not(feature = "gameta"), allow(dead_code))]
 mod write_budget;
 
 #[cfg(test)]
@@ -185,7 +193,9 @@ pub struct HostFunctions {
     /// first snapshot populates the manager-side cache.
     pub settings_dirty: Arc<AtomicBool>,
     pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
+    #[cfg_attr(not(feature = "gameta"), allow(dead_code))]
     metadata_write_budget: write_budget::MetadataWriteBudget,
+    #[cfg(feature = "gameta")]
     pub library_service: Option<Arc<arclain_core::LibraryService>>,
     pub content_cache: Option<Arc<arclain_data::ContentCache>>,
     pub gameta_client: Option<Arc<arclain_network::features::gameta_client::GametaClient>>,
@@ -301,6 +311,7 @@ impl HostFunctions {
             settings_dirty: Arc::new(AtomicBool::new(true)),
             network_log: Arc::new(Mutex::new(Vec::new())),
             metadata_write_budget: write_budget::MetadataWriteBudget::default(),
+            #[cfg(feature = "gameta")]
             library_service: None,
             content_cache: None,
             gameta_client: None,
@@ -324,6 +335,7 @@ impl HostFunctions {
         self.mode == HostMode::MetadataValidation
     }
 
+    #[cfg(feature = "gameta")]
     pub fn set_library_service(&mut self, lib_svc: Arc<arclain_core::LibraryService>) {
         // Register MetadataStore resolver with DataService
         let resolver = Arc::new(arclain_data::MetadataStoreResolver::new(
@@ -568,6 +580,11 @@ impl HostFunctions {
             .with_store_sources([])
     }
 
+    // Gameta SERVER plumbing, deliberately compiled at both feature
+    // settings: without `gameta` its one production caller (the
+    // metadata engine's network fallback) is gone, but the policy
+    // tests still exercise it.
+    #[cfg_attr(not(feature = "gameta"), allow(dead_code))]
     pub(super) fn with_authorized_gameta_request<T>(
         &self,
         request: impl FnOnce(usize) -> T,

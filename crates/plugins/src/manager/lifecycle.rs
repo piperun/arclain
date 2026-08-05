@@ -842,6 +842,7 @@ impl PluginManager {
         )?;
 
         // Inject optional services
+        #[cfg(feature = "gameta")]
         if let Some(ref lib_svc) = self.library_service {
             instance.set_library_service(Some(lib_svc.clone()));
         }

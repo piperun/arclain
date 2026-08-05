@@ -810,6 +810,7 @@ impl PluginInstance {
     }
 
     /// Set the library service for host functions
+    #[cfg(feature = "gameta")]
     pub fn set_library_service(&mut self, lib_svc: Option<Arc<arclain_core::LibraryService>>) {
         let host = self.store.data_mut();
         match lib_svc {

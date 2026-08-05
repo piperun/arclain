@@ -216,6 +216,7 @@ fn attach_gameta_fixture(
     policy_client
 }
 
+#[cfg(feature = "gameta")]
 #[test]
 fn product_metadata_local_db_hit_precedes_cache_and_consumes_no_network_permit() {
     let library_root = tempfile::tempdir().unwrap();
@@ -256,6 +257,7 @@ fn product_metadata_local_db_hit_precedes_cache_and_consumes_no_network_permit()
         .expect("local database hit must not consume a network permit");
 }
 
+#[cfg(feature = "gameta")]
 #[test]
 fn product_metadata_owned_cache_hit_precedes_gameta_and_consumes_no_network_permit() {
     let raw_json = br#"{"work_name":"Cached title","maker_name":"Cached circle"}"#.to_vec();
@@ -286,6 +288,7 @@ fn product_metadata_owned_cache_hit_precedes_gameta_and_consumes_no_network_perm
         .expect("plugin-owned cache hit must not consume a network permit");
 }
 
+#[cfg(feature = "gameta")]
 #[test]
 fn cached_metadata_migration_reads_only_the_calling_plugin_owner() {
     let (_root, cache, manager) = owner_cache_fixture();
@@ -820,6 +823,7 @@ fn archive_path_requires_archive_metadata_read_capability() {
     assert!(Host::list_archive_files(&mut host).is_err());
 }
 
+#[cfg(feature = "gameta")]
 #[test]
 fn populated_library_queries_require_archive_metadata_read_capability() {
     let library_root = tempfile::tempdir().unwrap();
@@ -1076,6 +1080,7 @@ fn default_metadata_request_omits_unauthorized_local_sources_but_keeps_network()
     assert!(!request.allows_store_to(arclain_data::DataSource::ContentCache));
 }
 
+#[cfg(feature = "gameta")]
 #[test]
 fn cached_metadata_migration_persists_only_with_metadata_write_capability() {
     let raw_json = br#"{"work_name":"Cached title","maker_name":"Cached circle"}"#.to_vec();
@@ -1140,6 +1145,7 @@ fn emit_metadata_requires_archive_metadata_write_capability() {
     );
 }
 
+#[cfg(feature = "gameta")]
 #[test]
 fn emit_metadata_rejects_oversized_json_and_product_ids_without_side_effects() {
     let library_root = tempfile::tempdir().unwrap();
@@ -1426,6 +1432,7 @@ fn plugin_owned_temp_directory_is_removed_when_host_state_drops() {
     );
 }
 
+#[cfg(feature = "gameta")]
 #[test]
 fn granted_archive_metadata_capabilities_reach_read_and_write_hostcalls() {
     let library_root = tempfile::tempdir().unwrap();
@@ -1491,6 +1498,7 @@ fn granted_archive_metadata_capabilities_reach_read_and_write_hostcalls() {
 /// a session (`active_archive_session_id` is `Some`), the write must go
 /// through `set_session_metadata` with that exact session id -- not
 /// `set_active_tab_metadata`.
+#[cfg(feature = "gameta")]
 #[test]
 fn panel_driven_emit_with_an_active_session_writes_via_set_session_metadata() {
     let capabilities = [PluginCapability::ArchiveMetadataWrite]
@@ -1529,6 +1537,7 @@ fn panel_driven_emit_with_an_active_session_writes_via_set_session_metadata() {
 /// open (`active_archive_session_id` is `None`, the default), the write
 /// must fall back to `set_active_tab_metadata` -- restoring the
 /// pre-decoupling behavior -- rather than being silently dropped.
+#[cfg(feature = "gameta")]
 #[test]
 fn panel_driven_emit_with_no_active_session_falls_back_to_set_active_tab_metadata() {
     let capabilities = [PluginCapability::ArchiveMetadataWrite]
@@ -1560,6 +1569,7 @@ fn panel_driven_emit_with_no_active_session_falls_back_to_set_active_tab_metadat
     );
 }
 
+#[cfg(feature = "gameta")]
 #[test]
 fn metadata_summary_accepts_max_external_id_after_dlsite_prefixing() {
     let external_id = "X".repeat(256);
@@ -1585,6 +1595,7 @@ fn metadata_summary_accepts_max_external_id_after_dlsite_prefixing() {
     assert_eq!(summaries[0].title.as_deref(), Some("Maximum external id"));
 }
 
+#[cfg(feature = "gameta")]
 #[test]
 fn source_explicit_metadata_apis_page_count_summarize_and_record_provenance() {
     let library_root = tempfile::tempdir().unwrap();
@@ -1675,14 +1686,17 @@ impl TestActiveTabBridge {
         self.metadata.lock().clone()
     }
 
+    #[cfg(feature = "gameta")]
     fn set_active_session_id(&self, id: Option<u64>) {
         *self.active_session_id.lock() = id;
     }
 
+    #[cfg(feature = "gameta")]
     fn session_metadata_calls(&self) -> Vec<(u64, Option<serde_json::Value>)> {
         self.session_metadata_calls.lock().clone()
     }
 
+    #[cfg(feature = "gameta")]
     fn active_tab_metadata_calls(&self) -> Vec<Option<serde_json::Value>> {
         self.active_tab_metadata_calls.lock().clone()
     }

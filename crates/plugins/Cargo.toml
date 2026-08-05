@@ -4,9 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-arclain_core = { path = "../core" }
-arclain_db = { path = "../db" }
-arclain_data = { path = "../data" }
+arclain_core = { path = "../core", default-features = false }
+arclain_db = { path = "../db", default-features = false }
+arclain_data = { path = "../data", default-features = false }
 wasmtime = { version = "=47.0.1", features = ["component-model", "cache"] }
 wasmtime-wasi = "=47.0.1"
 anyhow.workspace = true
@@ -25,7 +25,20 @@ chrono.workspace = true
 cap-std = "=4.0.2"
 cap-fs-ext = "=4.0.2"
 # External gameta dependency (https://codeberg.org/0xdev/gameta)
-gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", version = "=0.5.0", features = ["dlsite"] }
+gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", version = "=0.5.0", features = ["dlsite"], optional = true }
+
+[features]
+default = ["gameta"]
+# The metadata host-function engine (LibraryService-backed store access
+# and the host-side DLSite HTML parser). The WIT surface is identical
+# with it off: every metadata host fn stays registered and answers with
+# the same absent shapes a service-less runtime already produces.
+gameta = [
+    "dep:gameta_lib",
+    "arclain_core/gameta",
+    "arclain_db/gameta",
+    "arclain_data/gameta",
+]
 
 [target.'cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple", target_os = "redox"))'.dependencies]
 rustix = { version = "=1.1.4", features = ["fs"] }

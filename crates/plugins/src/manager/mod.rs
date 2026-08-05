@@ -65,6 +65,7 @@ pub struct PluginManager {
     pub(crate) loader: PluginLoader,
     pub(crate) plugins: Arc<RwLock<HashMap<PluginIdentityKey, ManagedPlugin>>>,
     pub(crate) enabled_plugins: Arc<RwLock<HashMap<PluginIdentityKey, bool>>>,
+    #[cfg(feature = "gameta")]
     pub(crate) library_service: Option<Arc<arclain_core::LibraryService>>,
     pub(crate) content_cache: Option<Arc<arclain_data::ContentCache>>,
     pub(crate) resource_manager: Option<Arc<arclain_data::ResourceManager>>,
@@ -153,6 +154,7 @@ impl PluginManager {
             loader,
             plugins,
             enabled_plugins,
+            #[cfg(feature = "gameta")]
             library_service: None,
             content_cache: None,
             resource_manager: None,
@@ -199,6 +201,7 @@ impl PluginManager {
     }
 
     /// Update the library service for all plugins
+    #[cfg(feature = "gameta")]
     pub fn set_library_service(&mut self, lib_svc: Arc<arclain_core::LibraryService>) {
         self.library_service = Some(lib_svc.clone());
         for instance in self.instance_snapshot() {
