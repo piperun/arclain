@@ -12,10 +12,13 @@
 //! broken; UI now reaches `ContentCache` through `arclain_core`.
 
 use anyhow::Result;
-use arclain_db::{CacheEntry, CacheType, ProductMetadata};
+#[cfg(feature = "gameta")]
+use arclain_db::ProductMetadata;
+use arclain_db::{CacheEntry, CacheType};
 
 /// Read+write surface for the persistent product-metadata store.
 /// Implemented by `arclain_core::LibraryService`.
+#[cfg(feature = "gameta")]
 pub trait MetadataReader: Send + Sync {
     /// Look up a metadata row by its full id (e.g. `"dlsite:RJ001"`).
     fn get_metadata(&self, id: &str) -> Result<Option<ProductMetadata>>;

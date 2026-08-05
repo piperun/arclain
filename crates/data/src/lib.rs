@@ -10,16 +10,19 @@ pub mod features;
 pub mod shared;
 pub mod traits;
 
-pub use traits::{CacheIndex, MetadataReader};
+pub use traits::CacheIndex;
+#[cfg(feature = "gameta")]
+pub use traits::MetadataReader;
 
 // Re-export main types at crate root
 pub use features::api::{
     DataRequest, DataResult, DataService, DataSource, DataStatus, SourceChain,
 };
 pub use features::content_cache::{CacheLimits, CacheOwner, ContentCache};
+#[cfg(feature = "gameta")]
+pub use features::resolver::MetadataStoreResolver;
 pub use features::resolver::{
-    ContentCacheResolver, DataSourceResolver, MetadataStoreResolver, NetworkResolver, ResolveError,
-    ServerResolver,
+    ContentCacheResolver, DataSourceResolver, NetworkResolver, ResolveError, ServerResolver,
 };
 pub use features::streaming_download::fetch_url_to_cache;
 // MemoryResolver is intentionally not re-exported — it's only used by

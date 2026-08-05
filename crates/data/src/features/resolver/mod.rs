@@ -5,6 +5,7 @@
 
 mod content;
 mod memory;
+#[cfg(feature = "gameta")]
 mod metadata;
 mod network;
 pub mod server;
@@ -14,6 +15,7 @@ pub use content::ContentCacheResolver;
 // `memory::MemoryResolver` is intentionally not re-exported here —
 // it's only constructed inside its own module's tests, so neither
 // `arclain_data` nor downstream crates ever need it.
+#[cfg(feature = "gameta")]
 pub use metadata::MetadataStoreResolver;
 pub use network::NetworkResolver;
 pub use server::ServerResolver;

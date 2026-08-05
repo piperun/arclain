@@ -18,6 +18,12 @@ arclain_db = { path = "../db" }
 arclain-network = { path = "../network" }
 indexmap = { version = "2.12.1", features = ["serde"] }
 
+[features]
+default = ["gameta"]
+# Forwards arclain_db's gameta types; gates MetadataReader + the
+# metadata-store resolver, which are written in those types.
+gameta = ["arclain_db/gameta"]
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
