@@ -504,4 +504,20 @@ mod tests {
             PathBuf::from("/dst/Original.zip")
         );
     }
+
+    /// Without the `gameta` feature the detected-code tier is not
+    /// compiled, so the fallback chain ends one rung earlier: a name
+    /// carrying a product code is not stripped down to the bare code,
+    /// it keeps the input's own stem.
+    #[cfg(not(feature = "gameta"))]
+    #[test]
+    fn without_gameta_a_coded_name_falls_through_to_the_file_stem() {
+        let input = PathBuf::from("/src/[RJ123456] Game.zip");
+        let output = PipelineOutput::NewFolder(PathBuf::from("/dst"));
+        assert_eq!(
+            output.resolve_with_metadata(&input, "zip", None),
+            PathBuf::from("/dst/[RJ123456] Game.zip"),
+            "the inert code tier must leave naming on the input's stem"
+        );
+    }
 }

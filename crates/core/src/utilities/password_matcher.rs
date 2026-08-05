@@ -238,6 +238,23 @@ mod tests {
         assert_eq!(derive_pattern_for("App [BJ200000].zip"), "(?i)BJ200000");
     }
 
+    /// Without the `gameta` feature the code tier is not compiled, so a
+    /// filename that carries nothing but a product code derives the
+    /// literal escape — the narrowest pattern, matching that one archive.
+    /// The lean build must never *widen* an auto-saved rule to a
+    /// cross-archive code match it has no detector for.
+    #[cfg(not(feature = "gameta"))]
+    #[test]
+    fn derive_pattern_without_gameta_falls_to_the_literal_tier() {
+        let pattern = derive_pattern_for("RJ123456.zip");
+        assert_eq!(pattern, regex::escape("RJ123456.zip"));
+
+        let re = Regex::new(&pattern).unwrap();
+        assert!(re.is_match("RJ123456.zip"));
+        assert!(!re.is_match("rj123456.zip")); // no case-insensitive code match
+        assert!(!re.is_match("Some Title [RJ123456] v2.zip"));
+    }
+
     /// No code present, but a leading bracket — fall through to
     /// maker-bracket pattern. Matches any archive that *starts with*
     /// the same bracket.
@@ -287,6 +304,21 @@ mod tests {
     fn derive_pattern_code_wins_over_bracket() {
         let pattern = derive_pattern_for("[Crew] Title [RJ100003] v1.zip");
         assert_eq!(pattern, "(?i)RJ100003");
+    }
+
+    /// The same both-signals filename without the `gameta` feature: the
+    /// code tier is not compiled, so derivation starts at the maker
+    /// bracket instead of winning on the code.
+    #[cfg(not(feature = "gameta"))]
+    #[test]
+    fn derive_pattern_without_gameta_falls_to_the_bracket_tier() {
+        let pattern = derive_pattern_for("[Maker-Name] RJ123456 Game.zip");
+        assert_eq!(pattern, r"^\[Maker\-Name\]");
+
+        let re = Regex::new(&pattern).unwrap();
+        assert!(re.is_match("[Maker-Name] RJ123456 Game.zip"));
+        assert!(re.is_match("[Maker-Name] Another Game.7z"));
+        assert!(!re.is_match("[Other Maker] RJ123456 Game.zip"));
     }
 
     // -------- upgrade_auto_saved_rules --------

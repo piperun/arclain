@@ -700,6 +700,22 @@ mod tests {
         );
     }
 
+    /// The other half of that contract: without the `gameta` feature
+    /// there is no store to look the code up in, so the same archive
+    /// name resolves nothing at all and naming falls through to the
+    /// file-stem tier. Asserted here so a lean build that silently
+    /// grew a metadata path would fail rather than pass unnoticed.
+    #[cfg(not(feature = "gameta"))]
+    #[test]
+    fn resolve_metadata_without_gameta_resolves_nothing_for_a_coded_archive() {
+        let ctx = PipelineContext::minimal(|_| anyhow::bail!("no backend"));
+
+        assert!(
+            resolve_metadata("[RJ123456] Placeholder Game.zip", &ctx).is_none(),
+            "metadata must not resolve without the feature that provides the store"
+        );
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn folder_staging_copy_failure_preserves_existing_output() {
