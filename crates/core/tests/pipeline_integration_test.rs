@@ -234,12 +234,8 @@ fn executor_end_to_end_idempotent_rerun() {
     let backend_for = move |p: &std::path::Path| selector_cloned.select(p);
 
     let ctx = PipelineContext {
-        organization_service: None,
-        #[cfg(feature = "gameta")]
-        library_service: None,
-        backend_for: Arc::new(backend_for),
         config_db: Some(db.clone()),
-        default_collision_policy: None,
+        ..PipelineContext::minimal(backend_for)
     };
 
     // 2. First run — should produce output and log one in_progress→completed row.
@@ -709,17 +705,13 @@ fn smart_rerun_with_matching_db_row_skips_work() {
     .unwrap();
 
     let ctx = PipelineContext {
-        organization_service: None,
-        #[cfg(feature = "gameta")]
-        library_service: None,
-        backend_for: Arc::new(|path| -> anyhow::Result<Arc<dyn ArchiveBackend>> {
+        config_db: Some(db.clone()),
+        ..PipelineContext::minimal(|path| -> anyhow::Result<Arc<dyn ArchiveBackend>> {
             panic!(
                 "Smart rerun should skip without extracting {}",
                 path.display()
             )
-        }),
-        config_db: Some(db.clone()),
-        default_collision_policy: None,
+        })
     };
 
     let mut skipped: Vec<(PathBuf, String)> = Vec::new();
@@ -794,12 +786,8 @@ fn smart_rerun_with_different_pipeline_reruns() {
     };
 
     let ctx = PipelineContext {
-        organization_service: None,
-        #[cfg(feature = "gameta")]
-        library_service: None,
-        backend_for: Arc::new(|_| panic!("should not extract — Smart with no match must Fail")),
         config_db: Some(db.clone()),
-        default_collision_policy: None,
+        ..PipelineContext::minimal(|_| panic!("should not extract — Smart with no match must Fail"))
     };
 
     let mut failures: Vec<String> = Vec::new();
@@ -872,12 +860,8 @@ fn smart_rerun_reruns_when_output_was_deleted() {
     // Backend that would be reached IF skip didn't trigger — we expect it to
     // error out cleanly (not panic) so the test surfaces as FileFailed.
     let ctx = PipelineContext {
-        organization_service: None,
-        #[cfg(feature = "gameta")]
-        library_service: None,
-        backend_for: Arc::new(|_| anyhow::bail!("no real backend in this test")),
         config_db: Some(db.clone()),
-        default_collision_policy: None,
+        ..PipelineContext::minimal(|_| anyhow::bail!("no real backend in this test"))
     };
 
     let mut failures: Vec<String> = Vec::new();
@@ -926,12 +910,8 @@ fn db_records_run_with_in_progress_then_completed() {
 
     let db = open_pipeline_runs_db();
     let ctx = PipelineContext {
-        organization_service: None,
-        #[cfg(feature = "gameta")]
-        library_service: None,
-        backend_for: Arc::new(|_| panic!("unreachable")),
         config_db: Some(db.clone()),
-        default_collision_policy: None,
+        ..PipelineContext::minimal(|_| panic!("unreachable"))
     };
 
     execute_pipeline(&pipeline, tmp.path(), &ctx, |_| {}).unwrap();
@@ -1016,14 +996,7 @@ fn folder_output_leaves_extracted_tree_on_disk() {
 
     let selector = Arc::new(BackendSelector::default());
     let selector_cloned = selector.clone();
-    let ctx = PipelineContext {
-        organization_service: None,
-        #[cfg(feature = "gameta")]
-        library_service: None,
-        backend_for: Arc::new(move |p: &std::path::Path| selector_cloned.select(p)),
-        config_db: None,
-        default_collision_policy: None,
-    };
+    let ctx = PipelineContext::minimal(move |p: &std::path::Path| selector_cloned.select(p));
 
     let mut failures: Vec<String> = Vec::new();
     let mut completions: Vec<PathBuf> = Vec::new();
@@ -1089,12 +1062,8 @@ fn folder_output_smart_skips_on_rerun() {
     let selector = Arc::new(BackendSelector::default());
     let selector_cloned = selector.clone();
     let ctx = PipelineContext {
-        organization_service: None,
-        #[cfg(feature = "gameta")]
-        library_service: None,
-        backend_for: Arc::new(move |p: &std::path::Path| selector_cloned.select(p)),
         config_db: Some(db.clone()),
-        default_collision_policy: None,
+        ..PipelineContext::minimal(move |p: &std::path::Path| selector_cloned.select(p))
     };
 
     // First run — produces the folder
