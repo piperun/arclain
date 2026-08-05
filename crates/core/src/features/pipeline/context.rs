@@ -3,7 +3,9 @@
 
 use crate::archive::ArchiveBackend;
 use crate::features::pipeline::types::OutputCollisionPolicy;
-use crate::services::{LibraryService, OrganizationService};
+#[cfg(feature = "gameta")]
+use crate::services::LibraryService;
+use crate::services::OrganizationService;
 use anyhow::Result;
 use arclain_db::SqliteDb;
 use std::path::Path;
@@ -13,6 +15,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct PipelineContext {
     pub organization_service: Option<Arc<OrganizationService>>,
+    #[cfg(feature = "gameta")]
     pub library_service: Option<Arc<LibraryService>>,
     pub backend_for: Arc<dyn Fn(&Path) -> Result<Arc<dyn ArchiveBackend>> + Send + Sync>,
     /// Config DB handle for recording pipeline runs (dedup + audit). `None`
@@ -33,6 +36,7 @@ impl PipelineContext {
     ) -> Self {
         Self {
             organization_service: None,
+            #[cfg(feature = "gameta")]
             library_service: None,
             backend_for: Arc::new(backend_for),
             config_db: None,

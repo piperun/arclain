@@ -24,16 +24,16 @@ zeroize.workspace = true
 base64.workspace = true
 sha2.workspace = true
 blake3 = "1.8"
-arclain_db = { path = "../db" }
-arclain_data = { path = "../data" }
+arclain_db = { path = "../db", default-features = false }
+arclain_data = { path = "../data", default-features = false }
 arclain_checksum = { path = "../checksum" }
 arclain-network = { path = "../network" }
 arclain_app_fs = { path = "../app_fs" }
 
 # External gameta dependencies (https://codeberg.org/0xdev/gameta)
-gameta_core = { path = "../../../../codeberg/gameta/gameta_core", version = "=0.5.0" }
-gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", version = "=0.5.0", features = ["dlsite"] }
-gameta_database = { path = "../../../../codeberg/gameta/gameta_database", version = "=0.5.0" }
+gameta_core = { path = "../../../../codeberg/gameta/gameta_core", version = "=0.5.0", optional = true }
+gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", version = "=0.5.0", features = ["dlsite"], optional = true }
+gameta_database = { path = "../../../../codeberg/gameta/gameta_database", version = "=0.5.0", optional = true }
 # Match arclain-network's TLS stack (rustls only) so the binary doesn't
 # pull in two TLS implementations side-by-side (audit: TLS stack split).
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls", "gzip"] }
@@ -54,6 +54,22 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 [features]
 integration-tests = []
+default = ["gameta"]
+# The gameta metadata stack: LibraryService (diesel-backed store),
+# DLSite filename detection, and the type re-exports. Off: archive,
+# password-rule (regex tiers), organize and pipeline features all work;
+# metadata lookups resolve to nothing.
+gameta = [
+    "dep:gameta_core",
+    "dep:gameta_lib",
+    "dep:gameta_database",
+    "arclain_db/gameta",
+    "arclain_data/gameta",
+]
+
+[[test]]
+name = "dlsite_pipeline"
+required-features = ["gameta"]
 
 [dev-dependencies]
 tempfile.workspace = true

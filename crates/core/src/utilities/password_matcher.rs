@@ -3,6 +3,7 @@
 //! This module provides password matching logic that was previously in ConfigStore.
 //! It takes a list of PassRule and matches against archive names/file entries.
 
+#[cfg(feature = "gameta")]
 use crate::utilities::dlsite::detect_dlsite_code;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -91,6 +92,8 @@ pub fn auto_password_for(
 ///    specific cross-archive identifier — same code means same
 ///    product across versions, mirrors, re-encodings, etc. Pattern
 ///    is case-insensitive so `rj100001` and `RJ100001` both fire.
+///    Requires the `gameta` feature — without it this tier is not
+///    compiled and derivation starts at the maker bracket.
 /// 2. **Leading bracket-enclosed maker name** (`[Maker-Name] ...`).
 ///    Common DLsite/scene convention for tagging the publisher;
 ///    same bracket usually means the same passphrase across an
@@ -100,6 +103,7 @@ pub fn auto_password_for(
 ///    User can manually broaden the pattern in the Password Rules
 ///    settings if they want it to match more than one archive.
 pub fn derive_pattern_for(filename: &str) -> String {
+    #[cfg(feature = "gameta")]
     if let Some(code) = detect_dlsite_code(filename) {
         // Case-insensitive literal-code match. The code is
         // alphanumeric so escape is technically redundant, but
@@ -210,6 +214,7 @@ mod tests {
     /// cross-archive identifier. The derived pattern matches the
     /// code only, case-insensitively, so different filenames with
     /// the same code all fire the same rule.
+    #[cfg(feature = "gameta")]
     #[test]
     fn derive_pattern_picks_dlsite_code() {
         let pattern = derive_pattern_for("Some Title [RJ100001] v2.zip");
@@ -226,6 +231,7 @@ mod tests {
     }
 
     /// VJ / BJ codes work the same as RJ — same detector.
+    #[cfg(feature = "gameta")]
     #[test]
     fn derive_pattern_picks_vj_and_bj_codes() {
         assert_eq!(derive_pattern_for("Game [VJ500000].zip"), "(?i)VJ500000");
@@ -276,6 +282,7 @@ mod tests {
 
     /// Edge case: filename with BOTH a leading bracket AND a code.
     /// Code wins (priority 1).
+    #[cfg(feature = "gameta")]
     #[test]
     fn derive_pattern_code_wins_over_bracket() {
         let pattern = derive_pattern_for("[Crew] Title [RJ100003] v1.zip");
@@ -286,6 +293,7 @@ mod tests {
 
     /// An auto-saved rule whose filename carries an RJ code gets its
     /// literal pattern broadened to the case-insensitive code match.
+    #[cfg(feature = "gameta")]
     #[test]
     fn upgrade_broadens_rj_coded_auto_saved_rule() {
         let rules = vec![auto_saved("Some Title [RJ100001] v1.zip")];
@@ -325,6 +333,7 @@ mod tests {
     }
 
     /// Running the pass twice is a no-op the second time (idempotent).
+    #[cfg(feature = "gameta")]
     #[test]
     fn upgrade_is_idempotent() {
         let rules = vec![auto_saved("Game [RJ100001].zip")];
@@ -337,6 +346,7 @@ mod tests {
 
     /// Mixed set: only the RJ-coded auto-saved rule changes; the plain
     /// one and the hand-named one ride through untouched, order kept.
+    #[cfg(feature = "gameta")]
     #[test]
     fn upgrade_only_touches_matching_rules() {
         let rules = vec![

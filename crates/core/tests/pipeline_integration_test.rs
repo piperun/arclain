@@ -235,6 +235,7 @@ fn executor_end_to_end_idempotent_rerun() {
 
     let ctx = PipelineContext {
         organization_service: None,
+        #[cfg(feature = "gameta")]
         library_service: None,
         backend_for: Arc::new(backend_for),
         config_db: Some(db.clone()),
@@ -709,6 +710,7 @@ fn smart_rerun_with_matching_db_row_skips_work() {
 
     let ctx = PipelineContext {
         organization_service: None,
+        #[cfg(feature = "gameta")]
         library_service: None,
         backend_for: Arc::new(|path| -> anyhow::Result<Arc<dyn ArchiveBackend>> {
             panic!(
@@ -793,6 +795,7 @@ fn smart_rerun_with_different_pipeline_reruns() {
 
     let ctx = PipelineContext {
         organization_service: None,
+        #[cfg(feature = "gameta")]
         library_service: None,
         backend_for: Arc::new(|_| panic!("should not extract — Smart with no match must Fail")),
         config_db: Some(db.clone()),
@@ -870,6 +873,7 @@ fn smart_rerun_reruns_when_output_was_deleted() {
     // error out cleanly (not panic) so the test surfaces as FileFailed.
     let ctx = PipelineContext {
         organization_service: None,
+        #[cfg(feature = "gameta")]
         library_service: None,
         backend_for: Arc::new(|_| anyhow::bail!("no real backend in this test")),
         config_db: Some(db.clone()),
@@ -923,6 +927,7 @@ fn db_records_run_with_in_progress_then_completed() {
     let db = open_pipeline_runs_db();
     let ctx = PipelineContext {
         organization_service: None,
+        #[cfg(feature = "gameta")]
         library_service: None,
         backend_for: Arc::new(|_| panic!("unreachable")),
         config_db: Some(db.clone()),
@@ -1013,6 +1018,7 @@ fn folder_output_leaves_extracted_tree_on_disk() {
     let selector_cloned = selector.clone();
     let ctx = PipelineContext {
         organization_service: None,
+        #[cfg(feature = "gameta")]
         library_service: None,
         backend_for: Arc::new(move |p: &std::path::Path| selector_cloned.select(p)),
         config_db: None,
@@ -1084,6 +1090,7 @@ fn folder_output_smart_skips_on_rerun() {
     let selector_cloned = selector.clone();
     let ctx = PipelineContext {
         organization_service: None,
+        #[cfg(feature = "gameta")]
         library_service: None,
         backend_for: Arc::new(move |p: &std::path::Path| selector_cloned.select(p)),
         config_db: Some(db.clone()),

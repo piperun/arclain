@@ -2,9 +2,11 @@
 //!
 //! Handles initialization, connection pooling, and dependency injection.
 
+#[cfg(feature = "gameta")]
+use crate::services::LibraryService;
 use crate::services::{
-    CacheService, ConfigService, LibraryService, NetworkProxyPersistenceService,
-    OrganizationService, ProxyRecoveryOutcome, UiService,
+    CacheService, ConfigService, NetworkProxyPersistenceService, OrganizationService,
+    ProxyRecoveryOutcome, UiService,
 };
 use anyhow::{Context, Result};
 use arclain_db::{DbPaths, SqliteDb};
@@ -31,6 +33,7 @@ pub struct Services {
     pub config_db: Option<Arc<SqliteDb>>,
 
     // Core Domain Services
+    #[cfg(feature = "gameta")]
     pub library_service: Option<Arc<LibraryService>>,
     pub organization_service: Option<Arc<OrganizationService>>,
     pub config_service: Option<Arc<ConfigService>>,
@@ -66,6 +69,7 @@ impl Services {
             domain_whitelist,
             db_paths: None,
             config_db: None,
+            #[cfg(feature = "gameta")]
             library_service: None,
             organization_service: None,
             config_service: None,
@@ -126,6 +130,7 @@ impl Services {
         let cache_svc = Arc::new(CacheService::new(dbs.cache_pool.clone()));
 
         // Library Service (uses gameta_database::DieselBackend for metadata CRUD)
+        #[cfg(feature = "gameta")]
         let library_svc = Arc::new(LibraryService::new(&paths.cache_db)?);
 
         // Organization Service
@@ -222,7 +227,10 @@ impl Services {
         // Assign to self
         self.config_service = Some(config_svc);
         self.cache_service = Some(cache_svc);
-        self.library_service = Some(library_svc);
+        #[cfg(feature = "gameta")]
+        {
+            self.library_service = Some(library_svc);
+        }
         self.organization_service = Some(org_svc);
         self.ui_service = Some(ui_svc);
         self.cache_dir = cache_dir;

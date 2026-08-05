@@ -609,6 +609,7 @@ fn walk_collect(
 /// matched metadata as a result. See
 /// `resolve_metadata_recovers_the_seeded_title_not_just_the_detected_product_code`
 /// below for the regression proof.
+#[cfg(feature = "gameta")]
 fn resolve_metadata(
     archive_name: &str,
     ctx: &PipelineContext,
@@ -621,6 +622,17 @@ fn resolve_metadata(
         &product.to_plugin_json_string(),
     )
     .ok()
+}
+
+/// Metadata resolution requires the `gameta` feature; without it every
+/// archive resolves no metadata and naming falls through to the
+/// detected-code/file-stem tiers.
+#[cfg(not(feature = "gameta"))]
+fn resolve_metadata(
+    _archive_name: &str,
+    _ctx: &PipelineContext,
+) -> Option<crate::features::organization::metadata::GameMetadata> {
+    None
 }
 
 #[cfg(test)]
@@ -654,6 +666,7 @@ mod tests {
     /// `resolve_metadata` resolves the seeded title, and that the actual
     /// naming outcome (`PipelineOutput::resolve_with_metadata`) is
     /// title-based, not the raw detected code.
+    #[cfg(feature = "gameta")]
     #[test]
     fn resolve_metadata_recovers_the_seeded_title_not_just_the_detected_product_code() {
         let dir = tempfile::TempDir::new().unwrap();

@@ -5,6 +5,7 @@
 
 mod cache_service;
 mod config_service;
+#[cfg(feature = "gameta")]
 mod library_service;
 mod manager;
 mod merge_service;
@@ -15,6 +16,7 @@ mod ui_service;
 
 pub use cache_service::CacheService;
 pub use config_service::ConfigService;
+#[cfg(feature = "gameta")]
 pub use library_service::{
     LibraryService, MetadataSummary, METADATA_SUMMARY_MAX_IDS, METADATA_SUMMARY_MAX_ID_BYTES,
     METADATA_SUMMARY_MAX_STORED_ID_BYTES, METADATA_SUMMARY_TITLE_CHARS,

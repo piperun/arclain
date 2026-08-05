@@ -34,18 +34,19 @@ pub use features::pipeline::{
     PipelinePreview, PipelineProgress, PipelineStep, PresetsFile, PreviewEntry, ProcessPreset,
     SavedPreset, COLLISION_POLICY_CONFIG_KEY,
 };
+pub use services::{CacheService, ConfigService, OrganizationService, UiService};
+#[cfg(feature = "gameta")]
 pub use services::{
-    CacheService, ConfigService, LibraryService, MetadataSummary, OrganizationService, UiService,
-    METADATA_SUMMARY_MAX_IDS, METADATA_SUMMARY_MAX_ID_BYTES, METADATA_SUMMARY_MAX_STORED_ID_BYTES,
-    METADATA_SUMMARY_TITLE_CHARS,
+    LibraryService, MetadataSummary, METADATA_SUMMARY_MAX_IDS, METADATA_SUMMARY_MAX_ID_BYTES,
+    METADATA_SUMMARY_MAX_STORED_ID_BYTES, METADATA_SUMMARY_TITLE_CHARS,
 };
 pub use utilities::{init_logging, FileOpener, OpenStrategy};
 
 // Re-export UI/DB types so consumers don't need to import arclain_db directly
 pub use arclain_db::{ActionType, CacheType, DisplayMode, UiItem, UiRegion, UserConfig};
-pub use arclain_db::{
-    CacheEntry, CompletenessScore, MetadataSource, ProductContent, ProductMetadata,
-};
+pub use arclain_db::{CacheEntry, ProductContent};
+#[cfg(feature = "gameta")]
+pub use arclain_db::{CompletenessScore, MetadataSource, ProductMetadata};
 
 // Additional db re-exports for the UI / state layer. These were
 // previously imported directly from `arclain_db` across `crates/ui`
@@ -68,7 +69,9 @@ pub use arclain_db::{
 // `arclain_app`'s image surface), so the only remaining consumers —
 // `arclain_data`'s and `arclain_plugins`' own tests — name it on
 // `arclain_data` directly, which both crates already depend on.
+#[cfg(feature = "gameta")]
+pub use arclain_data::MetadataReader;
 pub use arclain_data::{
     CacheIndex, ContentCache, DataRequest, DataService, DataSource, DataSourceResolver,
-    MetadataReader, ResolveError, ResourceConfig, ResourceManager,
+    ResolveError, ResourceConfig, ResourceManager,
 };

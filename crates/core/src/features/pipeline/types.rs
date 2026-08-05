@@ -173,6 +173,8 @@ impl PipelineOutput {
 ///      this archive).
 ///   2. Detected product code from the filename — strips any
 ///      group/scene prefix and uses the bare code as the stem.
+///      Requires the `gameta` feature; without it this tier is not
+///      compiled and the raw file stem is the only fallback.
 ///   3. Raw input file stem (last resort, also covers archives that
 ///      don't match any product-code regex).
 fn stem_from(input: &Path, metadata: Option<&GameMetadata>) -> OsString {
@@ -199,6 +201,7 @@ fn stem_from(input: &Path, metadata: Option<&GameMetadata>) -> OsString {
         }
     }
 
+    #[cfg(feature = "gameta")]
     if let Some(name) = input.file_name().and_then(|n| n.to_str()) {
         if let Some(code) = crate::utilities::detect_dlsite_code(name) {
             if let Some(safe) = crate::utilities::title_filter::plain_file_component(&code) {
@@ -473,6 +476,7 @@ mod tests {
     /// so it would be *returned*, naming every title-less output the
     /// same thing and colliding the moment two of them share a
     /// directory.
+    #[cfg(feature = "gameta")]
     #[test]
     fn an_empty_title_falls_back_instead_of_being_named_untitled() {
         let input = PathBuf::from("/src/[RJ123456] Original.rar");

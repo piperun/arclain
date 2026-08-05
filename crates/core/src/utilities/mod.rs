@@ -12,6 +12,7 @@
 pub mod checked_relative_path;
 pub mod checksum_service;
 
+#[cfg(feature = "gameta")]
 pub mod dlsite;
 pub mod file_opener;
 pub mod filesystem;
@@ -24,6 +25,7 @@ pub mod title_filter;
 #[allow(unused_imports)] // Internal boundary for archive and plan consumers.
 pub(crate) use checked_relative_path::CheckedRelativePath;
 pub use checksum_service::{ChecksumService, RecoveryAction, VerifyResult};
+#[cfg(feature = "gameta")]
 pub use dlsite::{detect_dlsite_code, has_dlsite_code};
 pub use file_opener::{FileOpener, OpenStrategy};
 pub use filesystem::rename_no_replace;
