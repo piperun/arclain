@@ -14,7 +14,7 @@ cacache = "13"
 ssri = "9"
 sha2.workspace = true
 
-arclain_db = { path = "../db" }
+arclain_db = { path = "../db", default-features = false }
 arclain-network = { path = "../network" }
 indexmap = { version = "2.12.1", features = ["serde"] }
 
