@@ -49,7 +49,7 @@ def gameta_lines(command: list[str]) -> list[str] | None:
     )
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
-        print(f"gate-lean: `{' '.join(command)}` failed")
+        print(f"check-gameta: `{' '.join(command)}` failed")
         return None
     return [
         line.lstrip(TREE_GLYPHS)
@@ -64,19 +64,19 @@ def assert_trees() -> int:
     if defaults is None:
         return 1
     if not defaults:
-        print("gate-lean control failed: defaults tree shows no gameta")
+        print("check-gameta control failed: defaults tree shows no gameta")
         return 1
 
     lean = gameta_lines(LEAN_TREE)
     if lean is None:
         return 1
     if lean:
-        print("gate-lean FAILED: gameta in the no-default-features tree:")
+        print("check-gameta FAILED: gameta in the no-default-features tree:")
         for line in lean:
             print(line)
         return 1
 
-    print(f"gate-lean OK (defaults tree: {len(defaults)} gameta lines, lean tree: 0)")
+    print(f"check-gameta OK (defaults tree: {len(defaults)} gameta lines, lean tree: 0)")
     return 0
 
 
