@@ -335,9 +335,13 @@ impl AppRuntime {
     /// any archive format, which is why the encrypted-CRC backfill
     /// computes through it rather than a format's primary backend
     /// (whose `crc32_of_entry` may return the stored header value:
-    /// zeroed for AES zip entries). Cheap: `SevenZipCli` clones its
-    /// resolved executable path.
-    pub(crate) fn fallback_backend(&self) -> arclain_core::backends::sevenz_cli::SevenZipCli {
+    /// zeroed for AES zip entries). `None` when bootstrap found no
+    /// 7-Zip; callers degrade rather than fail, since nothing that
+    /// merely *browses* an archive needs it. Cheap: `SevenZipCli` clones
+    /// its resolved executable path.
+    pub(crate) fn fallback_backend(
+        &self,
+    ) -> Option<arclain_core::backends::sevenz_cli::SevenZipCli> {
         self.session.fallback_backend.clone()
     }
 

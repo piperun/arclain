@@ -145,11 +145,11 @@ impl std::fmt::Debug for ExtractPlan {
 pub trait ExtractRunner: Send + Sync {
     /// Whether the external tool this runner depends on is available
     /// right now. Checked immediately before every spawn attempt, not
-    /// just once at bootstrap: a 7-Zip executable present at bootstrap
-    /// time can still be deleted or moved before an extraction actually
-    /// starts (the same "double-check at use time" `SessionStore::
-    /// sevenzip_still_available` already performs for `capabilities()`/
-    /// `health()`).
+    /// just once at bootstrap: bootstrap succeeds whether or not a 7-Zip
+    /// was ever found, and one that *was* found can still be deleted or
+    /// moved before an extraction actually starts (the same
+    /// "double-check at use time" `SessionStore::sevenzip_still_available`
+    /// already performs for `capabilities()`/`health()`).
     fn tool_available(&self) -> bool;
 
     /// Starts one extraction attempt. Returns a handle the operation
@@ -254,29 +254,43 @@ const RECENT_OUTPUT_CAPACITY: usize = 20;
 
 /// Production [`ExtractRunner`]: spawns the real 7-Zip CLI exactly the
 /// way the pre-facade UI did (see the module doc comment).
+///
+/// `cli` is `None` when bootstrap found no 7-Zip at all. That is not a
+/// startup failure -- archives still list and index through the native
+/// backends -- so the absence surfaces here instead, at the moment an
+/// extraction is actually requested: [`Self::tool_available`] reports
+/// false and the operation fails with [`missing_tool_error`], the same
+/// error a 7-Zip deleted after bootstrap already produced.
 pub(crate) struct SevenZipRunner {
-    cli: SevenZipCli,
+    cli: Option<SevenZipCli>,
 }
 
 impl SevenZipRunner {
-    pub(crate) fn new(cli: SevenZipCli) -> Self {
+    pub(crate) fn new(cli: Option<SevenZipCli>) -> Self {
         Self { cli }
     }
 }
 
 impl ExtractRunner for SevenZipRunner {
     fn tool_available(&self) -> bool {
-        self.cli.exe_path().exists()
+        self.cli.as_ref().is_some_and(|cli| cli.exe_path().exists())
     }
 
     fn spawn(&self, plan: &ExtractPlan) -> Result<Box<dyn RunningExtraction>, ApplicationError> {
+        // Unreachable through the operation worker, which checks
+        // `tool_available()` immediately before every spawn -- but this
+        // is the only honest answer for a direct caller, and it is the
+        // same error that check produces.
+        let Some(cli) = self.cli.as_ref() else {
+            return Err(missing_tool_error());
+        };
         let handle = match plan.selection() {
-            ExtractSelection::WholeArchive => self.cli.spawn_extract_all_with_progress(
+            ExtractSelection::WholeArchive => cli.spawn_extract_all_with_progress(
                 plan.source_path(),
                 plan.destination(),
                 plan.password(),
             ),
-            ExtractSelection::Files(files) => self.cli.spawn_extract_files_with_progress(
+            ExtractSelection::Files(files) => cli.spawn_extract_files_with_progress(
                 plan.source_path(),
                 plan.destination(),
                 files,

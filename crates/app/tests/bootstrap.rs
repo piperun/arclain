@@ -18,14 +18,14 @@
 //! unit tests next to the pure computation it exercises
 //! (`crates/app/src/runtime/session_store.rs`), matching how this
 //! workspace already tests other `pub(crate)` logic (see
-//! `crates/app/src/operations/registry.rs`). Forcing those exact
-//! combinations through a real `bootstrap()` call is not hermetically
-//! possible for the "missing 7z"/"missing unrar" cases (no test seam
-//! exists for unrar; forcing 7z absent makes `bootstrap()` itself fail
-//! fatally -- see `missing_external_tools_fails_bootstrap_cleanly` below)
-//! -- so this file covers `bootstrap()`'s own behavior end-to-end, and
-//! `session_store.rs` covers the capability/health computation in
-//! isolation.
+//! `crates/app/src/operations/registry.rs`). Forcing every one of those
+//! combinations through a real `bootstrap()` call is still not
+//! hermetically possible (no test seam exists for unrar), so
+//! `session_store.rs` covers the computation in isolation and this file
+//! covers `bootstrap()`'s own behavior end-to-end -- including the
+//! missing-7z case, which reaches `capabilities()`/`health()` now that
+//! bootstrap degrades instead of failing (see
+//! `a_missing_sevenzip_degrades_capabilities_instead_of_failing_bootstrap`).
 
 mod support;
 
@@ -215,19 +215,23 @@ fn corrupt_configuration_database_is_tolerated() {
     assert!(health.degraded_components.iter().any(|c| c == "database"));
 }
 
-/// An explicit `sevenzip_path` that does not exist on disk must make
-/// bootstrap fail cleanly with `ExternalToolMissing`, matching today's
-/// behavior of failing when 7-Zip cannot be found -- just via a
-/// structured `ApplicationError` instead of a panic.
+/// A 7-Zip that cannot be resolved must degrade the application, not
+/// stop it from starting: browsing an archive never invokes the CLI, so
+/// bootstrap succeeds and reports the reduced surface through
+/// `capabilities()`/`health()` instead. An explicit `sevenzip_path` that
+/// does not exist on disk is the deterministic seam for "no 7-Zip"
+/// (`SevenZipCli::detect` trusts an explicit path, so bootstrap's own
+/// existence check is what rejects it) and needs no control over the
+/// machine's real `PATH`.
 #[test]
-fn missing_external_tools_fails_bootstrap_cleanly() {
+fn a_missing_sevenzip_degrades_capabilities_instead_of_failing_bootstrap() {
     let temp = tempfile::tempdir().unwrap();
     let paths = support::temp_paths(temp.path());
     let nonexistent = temp.path().join("no-such-7z-executable");
     assert!(!nonexistent.exists());
     support::seed_working_sevenzip_config(&paths, &nonexistent);
 
-    let error = ArclainApp::bootstrap(BootstrapConfig {
+    let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
         worker_threads: None,
         archive_backend_override: None,
@@ -235,9 +239,47 @@ fn missing_external_tools_fails_bootstrap_cleanly() {
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
     })
-    .expect_err("bootstrap must fail when the configured 7-Zip path does not exist");
+    .expect("a configured 7-Zip path that does not exist must not fail bootstrap");
 
-    assert_eq!(error.kind, ApplicationErrorKind::ExternalToolMissing);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let capabilities = runtime
+        .block_on(app.capabilities())
+        .expect("capabilities() must succeed");
+
+    let sevenzip = capabilities
+        .external_tools
+        .iter()
+        .find(|tool| tool.tool == "7z")
+        .expect("7-Zip capability");
+    assert!(!sevenzip.available);
+    assert_eq!(sevenzip.resolved_path, None);
+
+    // Absence is reported honestly all the way down: with no CLI tier to
+    // union in, zip and rar advertise only their read-only native
+    // backends, while the native 7z backend stays full-featured.
+    let backend = |name: &str| {
+        capabilities
+            .archive_backends
+            .iter()
+            .find(|b| b.backend == name)
+            .unwrap_or_else(|| panic!("{name} backend capability"))
+            .clone()
+    };
+    assert!(backend("zip").can_list && !backend("zip").can_create);
+    assert!(backend("rar").can_list && !backend("rar").can_create);
+    assert!(backend("7z").can_create);
+
+    let health = runtime
+        .block_on(app.health())
+        .expect("health() must succeed");
+    assert!(health.degraded_components.iter().any(|c| c == "sevenzip"));
+    assert!(
+        !health.ready,
+        "extract/create/convert are unavailable, so the app is degraded -- just not dead"
+    );
 }
 
 /// A plugin package that exists but fails to load (invalid manifest)

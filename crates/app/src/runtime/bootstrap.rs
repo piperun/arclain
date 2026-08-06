@@ -46,7 +46,7 @@ use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion, UserConfig};
 use arclain_core::{ContentCache, ResourceConfig, ResourceManager};
 use arclain_plugins::PluginManager;
 
-use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
+use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::operations::{ChallengeWaiters, OperationRegistry};
 
 use super::paths::AppPaths;
@@ -328,32 +328,37 @@ pub(crate) fn run(
     }
 
     // -- backend selector and fallback --
-    // A 7-Zip executable that cannot be found (or an explicitly
-    // configured one that does not exist on disk) is fatal, matching
-    // this app's existing behavior: every archive format's backend
-    // chain ultimately falls back to the 7-Zip CLI, so nothing archive-
-    // related works without it. `SevenZipCli::detect` itself does not
-    // verify an *explicit* path exists (it trusts the caller); the
-    // `exe_path().exists()` check below closes that gap so a stale
-    // configured path is treated the same as "not found" rather than
-    // silently accepted and failing later on first use.
+    // A missing 7-Zip degrades the application; it does not stop it from
+    // starting. The native backends list and index zip/rar/7z on their
+    // own, `capabilities()`/`health()` report the reduced surface (zip
+    // and rar read-only, "sevenzip" degraded), and every operation that
+    // genuinely needs the CLI -- extract, create, convert -- checks for
+    // it at invocation and fails with its own message naming the tool.
+    // Refusing to boot made all of that unreachable.
+    //
+    // `SevenZipCli::detect` does not verify an *explicit* path exists
+    // (it trusts the caller); the `exe_path().exists()` check below
+    // closes that gap so a stale configured path is treated the same as
+    // "not found" rather than silently accepted and failing later on
+    // first use.
     let sevenzip_path_override = overrides
         .sevenzip_path
         .or_else(|| user_config.sevenzip_path.as_ref().map(PathBuf::from));
     let fallback_backend = match SevenZipCli::detect(sevenzip_path_override.as_deref()) {
-        Ok(cli) if cli.exe_path().exists() => cli,
+        Ok(cli) if cli.exe_path().exists() => {
+            info!("7-Zip CLI backend initialized as fallback");
+            Some(cli)
+        }
         _ => {
-            return Err(ApplicationError::new(
-                ApplicationErrorKind::ExternalToolMissing,
-                "7-Zip executable not found",
-            )
-            .with_diagnostic("searched PATH and the configured sevenzip_path, found neither")
-            .with_recoverability(Recoverability::UserAction)
-            .with_suggested_action(SuggestedAction::InstallExternalTool)
-            .with_field("sevenzip_path"));
+            warn!(
+                "7-Zip not found (searched PATH and the configured sevenzip_path); \
+                 archives remain browsable but read-only, and extract, create and \
+                 convert are unavailable until 7-Zip is installed or its path is \
+                 configured"
+            );
+            None
         }
     };
-    info!("7-Zip CLI backend initialized as fallback");
 
     let backend_selector = BackendSelector::new_native();
     info!("Backend selector initialized (native mode with fallbacks)");

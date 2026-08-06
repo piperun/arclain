@@ -55,6 +55,57 @@ fn foreign_runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
+/// Serializes every test that replaces `PATH`. `std::env::set_var` is
+/// process-global while cargo runs this binary's tests on parallel
+/// threads, so two concurrent swaps could restore each other's emptied
+/// value and leave `PATH` clobbered for the rest of the run.
+static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Points `PATH` at an empty directory for as long as it is alive, and
+/// restores the original value on drop -- including while unwinding from
+/// a failed assert, so one failure cannot cascade into the rest of the
+/// run.
+///
+/// Emptying `PATH` does what seeding a bogus `sevenzip_path` cannot:
+/// `BackendSelector::select` probes for the CLI with
+/// `SevenZipCli::detect(None)`, which ignores the configured path and
+/// searches `PATH` alone, so only an empty `PATH` makes an archive
+/// operation genuinely CLI-free on a developer machine that has 7-Zip
+/// installed. Lives here rather than in `support` because this is its
+/// only user; promote it if a second test binary needs one.
+/// (`crates/core`'s selector unit tests carry their own equivalent --
+/// a test helper cannot cross a crate boundary.)
+struct EmptyPath {
+    _guard: std::sync::MutexGuard<'static, ()>,
+    _dir: tempfile::TempDir,
+    original: Option<std::ffi::OsString>,
+}
+
+impl EmptyPath {
+    fn set() -> Self {
+        let guard = PATH_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().expect("create an empty directory to point PATH at");
+        let original = std::env::var_os("PATH");
+        std::env::set_var("PATH", dir.path());
+        Self {
+            _guard: guard,
+            _dir: dir,
+            original,
+        }
+    }
+}
+
+impl Drop for EmptyPath {
+    fn drop(&mut self) {
+        match self.original.take() {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+}
+
 fn dummy_sevenzip(temp: &tempfile::TempDir) -> PathBuf {
     support::create_dummy_executable(temp.path(), sevenzip_exe_name())
 }
@@ -70,10 +121,13 @@ fn sevenzip_exe_name() -> &'static str {
 }
 
 /// Bootstraps an `ArclainApp` against an isolated temp profile, with a
-/// working (dummy-path) 7-Zip so `BackendSelector::select` never fails
-/// its own internal `SevenZipCli::detect` fallback probe -- every native
-/// backend's fallback chain calls this unconditionally, even when the
-/// fallback itself is never exercised.
+/// working (dummy-path) 7-Zip so the resolved-tool half of
+/// `capabilities()`/`health()` is deterministic regardless of what the
+/// machine running the test has installed. Backend *selection* does not
+/// depend on it either way: `BackendSelector::select` attaches the CLI
+/// only when it detects one, and every fixture here is a real ZIP the
+/// native backend serves on its own (see
+/// `an_archive_opens_and_lists_with_no_sevenzip_anywhere`).
 fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
     let paths = support::temp_paths(temp.path());
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
@@ -232,6 +286,81 @@ fn opening_a_real_zip_completes_with_an_indexed_snapshot() {
         // matching the pre-facade UI's own case-insensitive Name sort --
         // not a "folders after files" grouping (there is no such rule).
         assert_eq!(nested_names, ["data", "Game.exe"]);
+    });
+}
+
+/// The point of attaching the 7-Zip CLI lazily: on a machine with no
+/// 7-Zip at all -- none configured, none on `PATH` -- an archive still
+/// opens and lists, because nothing on that path invokes the CLI. Both
+/// resolution routes are closed here, because they are independent:
+/// bootstrap honours the configured `sevenzip_path`, while
+/// `BackendSelector::select` probes with `SevenZipCli::detect(None)`,
+/// which searches `PATH` alone.
+#[test]
+fn an_archive_opens_and_lists_with_no_sevenzip_anywhere() {
+    let _path = EmptyPath::set();
+    assert!(
+        arclain_core::backends::sevenz_cli::SevenZipCli::detect(None).is_err(),
+        "control: 7-Zip must be undetectable for this test to mean anything"
+    );
+
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    let nonexistent = temp.path().join("no-such-7z-executable");
+    assert!(!nonexistent.exists());
+    support::seed_working_sevenzip_config(&paths, &nonexistent);
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .expect("bootstrap must succeed with no 7-Zip anywhere");
+
+    let archive_path = build_zip_fixture(
+        temp.path(),
+        "fixture.zip",
+        &[
+            ("readme.txt", b"hello" as &[u8]),
+            ("game/Game.exe", b"binary-content"),
+        ],
+    );
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: archive_path.clone(),
+                password: None,
+            })
+            .await
+            .expect("start_open_archive must be accepted");
+
+        let snapshot = wait_for_archive_opened(&app, operation_id).await;
+        assert_eq!(snapshot.archive_type, "zip");
+        assert_eq!(
+            snapshot.entry_count, 3,
+            "2 files + 1 synthesized folder (game)"
+        );
+
+        let page = app
+            .list_entries(
+                snapshot.session_id,
+                ListEntriesRequest {
+                    directory: ArchivePath::root(),
+                    sort_key: EntrySortKey::Name,
+                    sort_direction: SortDirection::Ascending,
+                    name_filter: None,
+                    offset: 0,
+                    limit: 100,
+                },
+            )
+            .await
+            .expect("list_entries must succeed with no 7-Zip present");
+        let names: Vec<&str> = page.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["game", "readme.txt"]);
     });
 }
 

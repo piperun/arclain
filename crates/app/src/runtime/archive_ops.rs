@@ -640,9 +640,20 @@ pub(super) async fn run_backfill_encrypted_crcs(
     // `crc32_of_entry` may return the *stored* header value -- zeroed for
     // AES zip entries). Mirrored here; a bootstrap-injected override
     // backend wins for the same reason it wins in `resolve_backend`.
+    //
+    // With no 7-Zip and no override there is no backend that can produce
+    // a trustworthy CRC here, so the backfill computes nothing -- the
+    // same "nothing to report" outcome it already returns when no
+    // password or no runtime handle is available. It is best-effort by
+    // construction (every per-entry failure below is already dropped),
+    // and reporting zero computed sums is honest, where hashing stored
+    // header values would not be.
     let backend: Arc<dyn ArchiveBackend> = match inner.archive_backend_override() {
         Some(backend) => backend,
-        None => Arc::new(inner.fallback_backend()),
+        None => match inner.fallback_backend() {
+            Some(cli) => Arc::new(cli),
+            None => return Ok(unchanged),
+        },
     };
     let archive_path = source_path.clone();
     let computed: Vec<(String, String)> = handle

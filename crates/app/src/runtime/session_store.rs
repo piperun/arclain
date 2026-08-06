@@ -151,11 +151,11 @@ pub(crate) fn compute_capabilities(
 /// `database`, `plugins` (the plugin *runtime*/engine constructing
 /// successfully -- not whether any individual plugin is installed;
 /// `PluginManager::new`+`init()` succeeds with zero plugins loaded just
-/// as often as with several), and `sevenzip` (every archive format's
-/// backend chain ultimately falls back to the 7-Zip CLI, so nothing
-/// archive-related works without it -- see `bootstrap::run`'s own doc
-/// comment on why a missing 7-Zip fails bootstrap outright rather than
-/// reaching `health()` at all in that state).
+/// as often as with several), and `sevenzip` (browsing an archive does
+/// not need the CLI, but extracting, creating and converting one all do,
+/// so an application without it cannot do the work a user came for).
+/// "Required" here means *not fully operational without it*, not *cannot
+/// start*: bootstrap succeeds with no 7-Zip and reports it here instead.
 ///
 /// `unrar` is the one **optional** component: its absence is reported
 /// in `degraded_components` (a frontend may still want to warn the user
@@ -206,7 +206,9 @@ pub struct LegacyComposition {
     pub user_config: UserConfig,
     pub pass_rules: Vec<PassRule>,
     pub backend_selector: BackendSelector,
-    pub fallback_backend: SevenZipCli,
+    /// `None` when bootstrap found no 7-Zip -- see [`SessionStore::
+    /// fallback_backend`].
+    pub fallback_backend: Option<SevenZipCli>,
     pub encrypted_crc_policy: String,
     pub db_paths: Option<DbPaths>,
     /// `None` only if bootstrap itself could not open the encrypted
@@ -232,7 +234,11 @@ pub(crate) struct SessionStore {
     pub(crate) resource_manager: Option<Arc<ResourceManager>>,
     pub(crate) checksum_service: Option<Arc<ChecksumService>>,
     pub(crate) backend_selector: BackendSelector,
-    pub(crate) fallback_backend: SevenZipCli,
+    /// The 7-Zip CLI bootstrap resolved, or `None` when there was none to
+    /// resolve. Absence is recorded rather than fatal: the native
+    /// backends list and index zip/rar/7z without it, and the operations
+    /// that do need it check availability at invocation time.
+    pub(crate) fallback_backend: Option<SevenZipCli>,
     /// Whether `arclain_core::backends::UnrarCli::detect()` found an
     /// UnRAR CLI executable. Not `Option<PathBuf>`: `UnrarCli` exposes no
     /// path accessor -- see [`compute_capabilities`]'s doc comment.
@@ -261,24 +267,28 @@ pub(crate) struct SessionStore {
 }
 
 impl SessionStore {
-    /// Whether the 7-Zip executable this instance detected at bootstrap
-    /// is still there. A live filesystem check, not a cached flag:
-    /// bootstrap requires 7-Zip to succeed (see `bootstrap::run`), so a
-    /// freshly-composed `SessionStore` always starts out `true`, but the
-    /// executable could be deleted or moved *after* bootstrap and
-    /// *before* a later `capabilities()`/`health()` call -- exactly the
-    /// scenario the "missing 7z" integration test in
-    /// `tests/bootstrap.rs` exercises, since forcing this false at
-    /// bootstrap time itself is not reachable (a missing 7-Zip fails
-    /// bootstrap outright).
+    /// Whether a 7-Zip executable is available to this instance right
+    /// now: one was resolved at bootstrap *and* it is still on disk. A
+    /// live filesystem check rather than a cached flag, because both
+    /// halves can be false independently -- bootstrap succeeds with no
+    /// 7-Zip at all (`fallback_backend` is `None`), and one that *was*
+    /// resolved can be deleted or moved after bootstrap and before a
+    /// later `capabilities()`/`health()` call.
     fn sevenzip_still_available(&self) -> bool {
-        self.fallback_backend.exe_path().exists()
+        self.sevenzip_path().is_some()
+    }
+
+    /// The resolved 7-Zip executable, or `None` if none was found at
+    /// bootstrap or it has since disappeared.
+    fn sevenzip_path(&self) -> Option<&std::path::Path> {
+        self.fallback_backend
+            .as_ref()
+            .map(SevenZipCli::exe_path)
+            .filter(|path| path.exists())
     }
 
     pub(crate) fn capabilities(&self) -> AppCapabilities {
-        let sevenzip_path = self
-            .sevenzip_still_available()
-            .then(|| self.fallback_backend.exe_path());
+        let sevenzip_path = self.sevenzip_path();
         compute_capabilities(
             sevenzip_path,
             self.unrar_available,
