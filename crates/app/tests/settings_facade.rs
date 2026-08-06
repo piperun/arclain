@@ -131,10 +131,11 @@ fn dummy_sevenzip(temp: &tempfile::TempDir) -> PathBuf {
 }
 
 /// Bootstraps an `ArclainApp` against an isolated temp profile -- see
-/// `archive_sessions.rs::bootstrap_app`'s identical doc comment for why
-/// the dummy 7-Zip seeding is required even though no test here touches
-/// an archive backend at all (`BackendSelector::select`'s fallback probe
-/// runs unconditionally during bootstrap).
+/// `archive_sessions.rs::bootstrap_app`'s doc comment for why the dummy
+/// 7-Zip is seeded even though no test here touches an archive backend
+/// at all: it makes the resolved-tool half of `capabilities()`/
+/// `health()` deterministic regardless of what the machine running the
+/// test has installed. Bootstrap itself no longer depends on it.
 fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
     let paths = support::temp_paths(temp.path());
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));

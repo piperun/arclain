@@ -914,12 +914,14 @@ fn shutdown_then_dropping_the_app_in_the_same_async_context_does_not_panic() {
 
 /// `health()`/`capabilities()` must reflect whether the 7-Zip
 /// executable this instance detected at bootstrap is *still* there,
-/// not a value frozen at bootstrap time. Reachable, unlike forcing
-/// 7-Zip absent *at bootstrap* (which fails bootstrap outright -- see
-/// `missing_external_tools_fails_bootstrap_cleanly`), by deleting the
-/// detected executable *after* a successful bootstrap. Also proves
-/// 7-Zip is a *required* component (unlike unrar): its removal clears
-/// `ready`.
+/// not a value frozen at bootstrap time. This is the half where a 7-Zip
+/// that *was* present is deleted after a successful bootstrap; the half
+/// where there was never one to detect is
+/// `a_missing_sevenzip_degrades_capabilities_instead_of_failing_bootstrap`.
+/// Bootstrap succeeds in both cases -- browsing an archive never invokes
+/// the CLI, and the operations that need it check at invocation -- which
+/// is why both are reachable here at all. Also proves 7-Zip is a
+/// *required* component (unlike unrar): its removal clears `ready`.
 #[test]
 fn health_reflects_sevenzip_removed_after_bootstrap() {
     let temp = tempfile::tempdir().unwrap();
