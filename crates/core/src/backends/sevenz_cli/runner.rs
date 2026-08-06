@@ -33,7 +33,11 @@ impl SevenZipCli {
             }
         }
 
-        error!("7-Zip executable not found in PATH");
+        // Not an error at this level: native-mode backend selection
+        // probes for the CLI on every archive it opens and carries on
+        // without one. Callers for whom absence *is* fatal propagate
+        // this `Err` with their own context, so severity belongs there.
+        debug!("7-Zip executable not found in PATH");
         Err(anyhow!(
             "7z/7za/7zz not found on PATH. Please install 7-Zip (or provide path in settings)."
         ))
