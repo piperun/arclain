@@ -150,22 +150,30 @@ push-release:
     git push origin master
     git push origin $(git tag --points-at HEAD)
 
-# ─── frontend boundary ────────────────────────────────────────────────────
-# Reports Cargo.toml + source-tree violations of the headless/GUI crate
-# split (scripts/frontend_boundary.py). A nonzero exit is expected until
-# the app-facade migration removes the direct headless deps it flags.
+# ─── invariant checks ─────────────────────────────────────────────────────
+# `just check` (all), `just check gameta`, `just check boundary`.
 
-frontend-boundary:
+# Run invariant checks. subject: all (default) | gameta | boundary.
+check subject="all":
+    just _check-{{subject}}
+
+_check-all:
+    just _check-gameta
+    just _check-boundary
+
+# The gameta feature's contract: a no-default-features `arclain_app`
+# pulls in no gameta crate, that configuration compiles with all targets,
+# and the two feature-off test suites the defaults workspace never
+# compiles both pass (scripts/_check_gameta.py).
+_check-gameta:
+    {{python}} scripts/_check_gameta.py
+
+# The headless/GUI crate split: reports Cargo.toml + source-tree
+# violations (scripts/frontend_boundary.py). A nonzero exit is expected
+# until the app-facade migration removes the direct headless deps it
+# flags.
+_check-boundary:
     {{python}} scripts/frontend_boundary.py
 
 test-frontend-boundary:
     {{python}} scripts/test_frontend_boundary.py
-
-# ─── feature gate ─────────────────────────────────────────────────────────
-# Checks the gameta feature's contract: a no-default-features `arclain_app`
-# pulls in no gameta crate, that configuration compiles with all targets,
-# and the two feature-off test suites the defaults workspace never compiles
-# both pass (scripts/_check_gameta.py).
-
-check-gameta:
-    {{python}} scripts/_check_gameta.py
