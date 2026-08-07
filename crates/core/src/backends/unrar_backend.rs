@@ -99,21 +99,22 @@ impl ArchiveBackend for UnrarBackend {
                         path: filename,
                         size: entry.unpacked_size,
                         packed_size: 0,
-                        // `file_time` is an MS-DOS packed word, decoded
-                        // by the converter ZIP times take -- but what it
-                        // *means* depends on the RAR version, and only
-                        // one of the two is zone-stable.
+                        // `file_time` is an MS-DOS packed word, taken
+                        // through the wall-clock policy ZIP times take
+                        // (interpreted in the reader's local zone,
+                        // stored as the UTC instant that reading
+                        // denotes). How the word got here depends on
+                        // the RAR version, and the policy serves both:
                         //
-                        // RAR4 stores such a word directly: a wall clock
-                        // with no zone attached, which survives this trip
-                        // unchanged. RAR5 stores a UTC file time instead,
-                        // and the unrar library manufactures this word
-                        // from it in *the reader's* local zone -- so a
-                        // RAR5 entry's time arrives skewed by whatever
-                        // offset this machine is in, and two machines
-                        // list the same archive differently. The true
-                        // instant is in the file, but the safe crate's
-                        // API exposes only this already-converted word.
+                        // RAR4 stores such a word directly -- a wall
+                        // clock with no zone attached, so its local
+                        // reading is the one WinRAR and Explorer show.
+                        // RAR5 stores a UTC file time instead, which
+                        // the unrar library renders into *the reader's*
+                        // local zone to manufacture this word; the
+                        // policy's conversion back through the same
+                        // zone cancels that, so the stored instant is
+                        // the very one the header records.
                         modified: crate::backends::entry_time::from_msdos(entry.file_time),
                         is_dir,
                         encrypted,
