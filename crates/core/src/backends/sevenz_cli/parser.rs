@@ -130,7 +130,15 @@ impl SevenZipCli {
                 .get("Packed Size")
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(0);
-            let modified = map.get("Modified").map(|s| s.to_string());
+            // Normalized, never passed through: 7-Zip prints a dot and
+            // seven sub-second digits, which is not the shape a consumer
+            // of `ArchiveEntry::modified` parses -- so passing the text
+            // along left every entry this tier listed dateless. A value
+            // that does not parse yields no time rather than a string
+            // that reads as populated and resolves to nothing.
+            let modified = map
+                .get("Modified")
+                .and_then(|s| crate::backends::entry_time::from_cli_text(s));
             let crc32 = map
                 .get("CRC")
                 .map(|s| s.trim().to_uppercase())
@@ -275,5 +283,87 @@ impl SevenZipCli {
             headers_encrypted,
             encryption_method,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn parse(slt: &str) -> ArchiveInfo {
+        SevenZipCli {
+            exe: PathBuf::from("7z"),
+        }
+        .parse_list_slt(Path::new("timestamped.7z"), slt)
+    }
+
+    /// A verbatim `7z l -slt` entry block, captured from 7-Zip 26.02.
+    /// The `Modified` value carries a dot and seven sub-second digits,
+    /// which is not the shape consumers parse -- passing it through left
+    /// every entry from this tier dateless.
+    #[test]
+    fn a_real_slt_block_yields_a_time_in_the_shape_consumers_parse() {
+        let info = parse(
+            "\
+----------
+Path = timestamped.txt
+Size = 29
+Packed Size = 33
+Modified = 2026-05-04 13:37:20.0000000
+Attributes = A_ -rw-rw-rw-
+CRC = 71C29FC3
+Encrypted = -
+Method = LZMA2:12
+",
+        );
+
+        let entry = info
+            .entries
+            .iter()
+            .find(|entry| entry.path == "timestamped.txt")
+            .expect("the block's entry is parsed");
+        assert_eq!(entry.modified.as_deref(), Some("2026-05-04 13:37:20"));
+    }
+
+    /// A directory entry carries a time of its own, in the same shape,
+    /// and must be normalized the same way rather than only files being
+    /// handled.
+    #[test]
+    fn a_directory_entrys_time_is_normalized_too() {
+        let info = parse(
+            "\
+----------
+Path = emptydir
+Size = 0
+Modified = 2026-08-07 19:47:58.5437627
+Attributes = D
+",
+        );
+
+        assert!(info.entries[0].is_dir, "control: the entry is a directory");
+        assert_eq!(
+            info.entries[0].modified.as_deref(),
+            Some("2026-08-07 19:47:58")
+        );
+    }
+
+    /// A value this parser cannot make sense of -- a truncated line, or a
+    /// future 7-Zip printing something else entirely -- must report no
+    /// time. Reporting the raw text instead is what left this tier's
+    /// entries dateless while looking populated.
+    #[test]
+    fn a_value_that_does_not_parse_reports_none() {
+        let info = parse(
+            "\
+----------
+Path = odd.txt
+Size = 1
+Modified = not a timestamp
+Attributes = A
+",
+        );
+
+        assert_eq!(info.entries[0].modified, None);
     }
 }

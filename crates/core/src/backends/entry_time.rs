@@ -5,8 +5,10 @@
 //! consumers recover a real timestamp by parsing that exact shape. A
 //! backend that invents its own layout still *looks* populated while
 //! parsing back to nothing downstream, so the layout is written once here
-//! rather than once per backend, and each archive format's own on-disk
-//! encoding gets a converter into it.
+//! rather than once per backend, and every source a backend can read a
+//! time from gets a converter into it: an archive format's own on-disk
+//! encoding for the native tiers, and an archiver's printed output for
+//! the CLI tiers.
 
 /// Renders one civil date-time in the shape described above.
 fn civil(year: u32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> String {
@@ -51,6 +53,56 @@ pub(super) fn from_msdos(packed: u32) -> Option<String> {
     zip::DateTime::try_from_msdos(date_part, time_part)
         .ok()
         .map(from_zip_datetime)
+}
+
+/// Normalizes a date-time an archiver's own command-line tool printed.
+///
+/// The CLI tiers do not decode a header themselves -- they read back text
+/// their tool already formatted, which is *close* to this shape but not
+/// it: 7-Zip prints `2026-05-04 13:37:20.0000000` and unrar prints
+/// `2026-05-04 13:37:20,000000000`, both carrying a sub-second remainder
+/// this shape has no room for, behind a different separator each. Passing
+/// either through verbatim yields a string consumers reject outright,
+/// leaving the entry dateless with nothing reporting a problem -- so the
+/// text is parsed into fields and re-rendered here rather than trimmed,
+/// and anything that does not parse becomes `None` honestly.
+///
+/// The seconds field is optional: unrar's short form prints `hh:mm`.
+/// Sub-second precision is dropped, which this shape cannot carry anyway.
+pub(super) fn from_cli_text(value: &str) -> Option<String> {
+    let (date_part, time_part) = value.trim().split_once(' ')?;
+
+    let mut date_fields = date_part.split('-');
+    let year: u32 = date_fields.next()?.parse().ok()?;
+    let month: u32 = date_fields.next()?.parse().ok()?;
+    let day: u32 = date_fields.next()?.parse().ok()?;
+    if date_fields.next().is_some() {
+        return None;
+    }
+
+    // Cut the sub-second remainder off whichever separator introduced it.
+    let time_part = time_part.trim().split([',', '.']).next()?;
+    let mut time_fields = time_part.split(':');
+    let hour: u32 = time_fields.next()?.parse().ok()?;
+    let minute: u32 = time_fields.next()?.parse().ok()?;
+    let second: u32 = match time_fields.next() {
+        Some(field) => field.parse().ok()?,
+        None => 0,
+    };
+    if time_fields.next().is_some() {
+        return None;
+    }
+
+    // Exactly the ranges the consuming parser accepts, so nothing this
+    // returns can be rejected downstream.
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+
+    Some(civil(year, month, day, hour, minute, second))
 }
 
 /// Renders an absolute instant, given as whole seconds since the Unix
