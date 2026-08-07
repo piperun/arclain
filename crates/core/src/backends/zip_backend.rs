@@ -116,7 +116,7 @@ impl ArchiveBackend for ZipBackend {
 
                     let modified = file
                         .last_modified()
-                        .map(crate::backends::entry_time::from_zip_datetime);
+                        .and_then(crate::backends::entry_time::from_zip_datetime);
 
                     entries.push(ArchiveEntry {
                         path: file.name().to_string(),

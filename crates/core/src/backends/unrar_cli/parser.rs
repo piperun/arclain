@@ -154,8 +154,16 @@ Details: RAR 1.5
     /// every one of them: the label it looked for is not the label this
     /// build prints, and the value it would have kept is a shape
     /// consumers reject.
+    ///
+    /// What unrar prints is its own local-zone rendering of the entry's
+    /// time, so the expectation is that wall clock put through the
+    /// wall-clock policy in `crate::backends::entry_time` -- derived via
+    /// `chrono::Local`, which keeps the assertion zone-stable.
     #[test]
     fn a_real_vt_block_yields_a_time_in_the_shape_consumers_parse() {
+        let expected = crate::backends::entry_time::test_support::utc_wire_string_of_local_wall(
+            2026, 5, 4, 13, 37, 20,
+        );
         let info = parse(REAL_VT_OUTPUT);
 
         let entry = info
@@ -163,13 +171,16 @@ Details: RAR 1.5
             .iter()
             .find(|entry| entry.path == "timestamped.txt")
             .expect("the block's entry is parsed");
-        assert_eq!(entry.modified.as_deref(), Some("2026-05-04 13:37:20"));
+        assert_eq!(entry.modified.as_deref(), Some(expected.as_str()));
     }
 
     /// unrar's label differs by platform and message catalogue, so every
     /// spelling it is known to print must resolve to the same value.
     #[test]
     fn every_label_this_tool_is_known_to_print_is_recognized() {
+        let expected = crate::backends::entry_time::test_support::utc_wire_string_of_local_wall(
+            2026, 5, 4, 13, 37, 20,
+        );
         for label in ["Modified", "mtime", "Time", "Last write time"] {
             let output = format!(
                 "        Name: a.txt\n        Type: File\n  {label}: 2026-05-04 13:37:20\n"
@@ -177,7 +188,7 @@ Details: RAR 1.5
             let info = parse(&output);
             assert_eq!(
                 info.entries[0].modified.as_deref(),
-                Some("2026-05-04 13:37:20"),
+                Some(expected.as_str()),
                 "the {label:?} spelling must be recognized"
             );
         }

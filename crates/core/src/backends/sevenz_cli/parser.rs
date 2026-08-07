@@ -302,8 +302,16 @@ mod tests {
     /// The `Modified` value carries a dot and seven sub-second digits,
     /// which is not the shape consumers parse -- passing it through left
     /// every entry from this tier dateless.
+    ///
+    /// What 7-Zip prints is its own local-zone rendering of the entry's
+    /// time, so the expectation is that wall clock put through the
+    /// wall-clock policy in `crate::backends::entry_time` -- derived via
+    /// `chrono::Local`, which keeps the assertion zone-stable.
     #[test]
     fn a_real_slt_block_yields_a_time_in_the_shape_consumers_parse() {
+        let expected = crate::backends::entry_time::test_support::utc_wire_string_of_local_wall(
+            2026, 5, 4, 13, 37, 20,
+        );
         let info = parse(
             "\
 ----------
@@ -323,7 +331,7 @@ Method = LZMA2:12
             .iter()
             .find(|entry| entry.path == "timestamped.txt")
             .expect("the block's entry is parsed");
-        assert_eq!(entry.modified.as_deref(), Some("2026-05-04 13:37:20"));
+        assert_eq!(entry.modified.as_deref(), Some(expected.as_str()));
     }
 
     /// A directory entry carries a time of its own, in the same shape,
@@ -331,6 +339,9 @@ Method = LZMA2:12
     /// handled.
     #[test]
     fn a_directory_entrys_time_is_normalized_too() {
+        let expected = crate::backends::entry_time::test_support::utc_wire_string_of_local_wall(
+            2026, 8, 7, 19, 47, 58,
+        );
         let info = parse(
             "\
 ----------
@@ -342,10 +353,7 @@ Attributes = D
         );
 
         assert!(info.entries[0].is_dir, "control: the entry is a directory");
-        assert_eq!(
-            info.entries[0].modified.as_deref(),
-            Some("2026-08-07 19:47:58")
-        );
+        assert_eq!(info.entries[0].modified.as_deref(), Some(expected.as_str()));
     }
 
     /// A value this parser cannot make sense of -- a truncated line, or a
@@ -360,6 +368,25 @@ Attributes = D
 Path = odd.txt
 Size = 1
 Modified = not a timestamp
+Attributes = A
+",
+        );
+
+        assert_eq!(info.entries[0].modified, None);
+    }
+
+    /// A date whose fields are individually in range but which no
+    /// calendar contains -- February 30th -- names no instant, so it must
+    /// report no time rather than a string that reads as a real date and
+    /// converts to an arbitrary one.
+    #[test]
+    fn a_calendar_impossible_date_reports_none() {
+        let info = parse(
+            "\
+----------
+Path = odd.txt
+Size = 1
+Modified = 2026-02-30 10:00:00.0000000
 Attributes = A
 ",
         );

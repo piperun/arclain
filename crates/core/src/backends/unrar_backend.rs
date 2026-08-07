@@ -619,10 +619,14 @@ mod tests {
     }
 
     /// RAR4 stores the entry time as an MS-DOS word holding a wall clock
-    /// with no zone attached, and unrar round-trips it `SetDos` (read as
-    /// local) then `GetDos` (written back as local) -- the identity in
-    /// whatever zone the reader happens to be in. The fields asserted
-    /// here are therefore the fields the file holds, on every machine.
+    /// with no zone attached (the fixture's word, FTIME `0x5CA46CAA` at
+    /// offset 0x28, reads 2026-05-04 13:37:20), and unrar round-trips it
+    /// `SetDos`/`GetDos` -- the identity. What this backend *stores* for
+    /// it is the policy in `crate::backends::entry_time`: the wall clock
+    /// interpreted in the reader's local zone (the reading Explorer and
+    /// WinRAR show for the same file) and converted to UTC. The
+    /// expectation derives through `chrono::Local` from the same wall
+    /// fields, so the assertion holds in every zone.
     ///
     /// The fixture is hand-built rather than packed by WinRAR because
     /// RAR 7 removed the ability to *create* this format (`-ma4` is gone);
@@ -631,38 +635,44 @@ mod tests {
     /// land around 02:00-03:00 local, in spring and autumn), so no zone
     /// can render this wall clock ambiguous or nonexistent.
     #[test]
-    fn a_rar4_entrys_wall_clock_is_reported_as_the_file_stores_it() {
+    fn a_rar4_wall_clock_is_stored_as_the_utc_instant_it_denotes_locally() {
+        let expected = crate::backends::entry_time::test_support::utc_wire_string_of_local_wall(
+            2026, 5, 4, 13, 37, 20,
+        );
+
         assert_eq!(
             listed_time("timestamped-rar4.rar").as_deref(),
-            Some("2026-05-04 13:37:20"),
-            "a RAR4 entry must report the wall clock its MS-DOS word holds"
+            Some(expected.as_str()),
+            "a RAR4 wall clock must be stored as the UTC instant its \
+             local-zone reading denotes"
         );
     }
 
     /// RAR5 stores no MS-DOS word at all: the time lives in the file
-    /// header's extra area as a 64-bit Windows FILETIME in UTC, and the
+    /// header's extra area as a 64-bit Windows FILETIME in UTC (the
+    /// fixture's is `0x01DCDBBA5DE59800` = Unix 1777894640), and the
     /// unrar library manufactures the word this backend reads by
     /// rendering that instant into *the reader's* local zone.
     ///
-    /// A RAR5 entry's reported time is therefore zone-dependent by
-    /// construction -- two machines list the same archive differently --
-    /// and this pins that, deriving the expectation from the instant the
-    /// fixture records rather than hardcoding one zone's answer.
-    /// Reporting the true instant instead would mean reading the raw
-    /// header's `mtime_low`/`mtime_high`, which the safe `unrar` crate
-    /// does not expose.
+    /// The wall-clock policy in `crate::backends::entry_time` then
+    /// interprets that rendering back through the same zone, so the two
+    /// conversions cancel and the stored time is the very instant the
+    /// header records, in every zone. Nothing truncates on the way: the
+    /// word's seconds field has two-second granularity, the instant's
+    /// seconds (:20) are even, and every present-day zone offset is a
+    /// whole number of minutes, so the local rendering keeps them even.
     #[test]
-    fn a_rar5_entrys_utc_instant_is_reported_in_the_readers_local_zone() {
+    fn a_rar5_utc_instant_survives_the_round_trip_through_the_readers_zone() {
         let expected = chrono::DateTime::from_timestamp(FIXTURE_UNIX_SECONDS, 0)
             .expect("the fixture's instant is representable")
-            .with_timezone(&chrono::Local)
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
 
         assert_eq!(
             listed_time("timestamped-rar5.rar").as_deref(),
             Some(expected.as_str()),
-            "a RAR5 entry's UTC instant must arrive rendered into this machine's zone"
+            "a RAR5 entry must store the UTC instant its header records, \
+             with the library's local rendering cancelled back out"
         );
     }
 }

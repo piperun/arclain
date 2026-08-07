@@ -80,3 +80,8 @@ rand.workspace = true
 # and features this package already depends on normally, so it adds
 # nothing to the dependency tree.
 zip = "7.0.0"
+# Real IANA zones for `backends::entry_time`'s DST-edge tests: the
+# ambiguous/nonexistent wall-clock branches cannot be exercised through
+# `chrono::Local` zone-stably (a UTC machine has no DST edges), so the
+# tests drive the zone-generic resolver with a fixed zone instead.
+chrono-tz = "0.10"
