@@ -27,16 +27,24 @@ pub(super) fn from_zip_datetime(value: zip::DateTime) -> String {
 }
 
 /// Renders an MS-DOS packed date-time -- the date in the high half, the
-/// time in the low half -- as RAR headers carry it.
+/// time in the low half.
 ///
-/// The encoding is the same one a ZIP header uses, so it is decoded with
-/// the same reader ZIP times already go through: that reader validates
-/// every field, so a header with a garbage or absent time (which RAR
-/// reports as an all-zero word) yields `None` rather than a nonsense date
-/// that would read as a real one.
+/// Decoded with the reader ZIP times already go through, which validates
+/// every field, so an absent time (an all-zero word) or a garbage one
+/// yields `None` rather than a nonsense date that would read as a real
+/// one.
 ///
-/// Like a ZIP header's, the recorded fields are local wall-clock with no
-/// zone attached; they are rendered exactly as recorded.
+/// **The fields are a wall clock with no zone attached, and this renders
+/// them exactly as given.** Whether that faithfully describes the archive
+/// depends on where the word came from:
+///
+/// - A ZIP header, and a RAR4 header, genuinely store such a word. It
+///   means the same thing on every machine.
+/// - A RAR5 header stores a UTC file time instead; the unrar library
+///   converts it into a word like this using *the reader's* local zone
+///   before this backend ever sees it. Those entries are therefore
+///   zone-dependent -- the conversion has already happened, and it is not
+///   reversible from here.
 pub(super) fn from_msdos(packed: u32) -> Option<String> {
     let date_part = (packed >> 16) as u16;
     let time_part = (packed & 0xFFFF) as u16;
@@ -101,11 +109,18 @@ mod tests {
         assert_eq!(from_msdos((13u32 << 5 | 4) << 16), None);
     }
 
-    /// A pre-Gregorian instant has no representation in this shape, and
-    /// must not be rendered as a negative or truncated year.
+    /// An instant before year zero has no representation in this shape,
+    /// and must not be rendered as a negative or truncated year.
     #[test]
     fn from_unix_seconds_rejects_instants_before_year_zero() {
         assert_eq!(from_unix_seconds(-70_000_000_000_000), None);
+    }
+
+    /// Merely being before the *Unix* epoch is not out of range, though:
+    /// archives predating 1970 exist, and must floor to the earlier
+    /// second rather than truncating toward the epoch.
+    #[test]
+    fn from_unix_seconds_still_renders_instants_before_the_unix_epoch() {
         assert_eq!(
             from_unix_seconds(-1).as_deref(),
             Some("1969-12-31 23:59:59")

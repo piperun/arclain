@@ -99,11 +99,21 @@ impl ArchiveBackend for UnrarBackend {
                         path: filename,
                         size: entry.unpacked_size,
                         packed_size: 0,
-                        // A RAR header records the entry's modification
-                        // time as an MS-DOS packed word, the same
-                        // encoding a ZIP header uses -- so it renders
-                        // into `ArchiveEntry::modified` through the same
-                        // converter ZIP times take.
+                        // `file_time` is an MS-DOS packed word, decoded
+                        // by the converter ZIP times take -- but what it
+                        // *means* depends on the RAR version, and only
+                        // one of the two is zone-stable.
+                        //
+                        // RAR4 stores such a word directly: a wall clock
+                        // with no zone attached, which survives this trip
+                        // unchanged. RAR5 stores a UTC file time instead,
+                        // and the unrar library manufactures this word
+                        // from it in *the reader's* local zone -- so a
+                        // RAR5 entry's time arrives skewed by whatever
+                        // offset this machine is in, and two machines
+                        // list the same archive differently. The true
+                        // instant is in the file, but the safe crate's
+                        // API exposes only this already-converted word.
                         modified: crate::backends::entry_time::from_msdos(entry.file_time),
                         is_dir,
                         encrypted,
@@ -586,29 +596,73 @@ impl ArchiveBackend for UnrarBackend {
 mod tests {
     use super::*;
 
-    /// A one-entry RAR built by WinRAR from a file stamped
-    /// `2026-05-04 13:37:20`. An MS-DOS header time is zone-less, so
-    /// every machine that reads this fixture decodes those very fields.
-    fn timestamped_fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/timestamped.rar")
+    /// The instant both fixtures were built from: 2026-05-04 11:37:20 UTC,
+    /// which is 13:37:20 in the zone they were packed in.
+    const FIXTURE_UNIX_SECONDS: i64 = 1_777_894_640;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
     }
 
-    #[test]
-    fn listed_entries_carry_the_modification_time_the_header_records() {
+    fn listed_time(fixture_name: &str) -> Option<String> {
         let info = UnrarBackend::new()
-            .list(&timestamped_fixture(), None)
+            .list(&fixture(fixture_name), None)
             .expect("the fixture lists");
-
-        let entry = info
-            .entries
+        info.entries
             .iter()
             .find(|entry| entry.path == "timestamped.txt")
-            .expect("the fixture's entry is listed");
+            .expect("the fixture's entry is listed")
+            .modified
+            .clone()
+    }
+
+    /// RAR4 stores the entry time as an MS-DOS word holding a wall clock
+    /// with no zone attached, and unrar round-trips it `SetDos` (read as
+    /// local) then `GetDos` (written back as local) -- the identity in
+    /// whatever zone the reader happens to be in. The fields asserted
+    /// here are therefore the fields the file holds, on every machine.
+    ///
+    /// The fixture is hand-built rather than packed by WinRAR because
+    /// RAR 7 removed the ability to *create* this format (`-ma4` is gone);
+    /// it is 104 bytes and `unrar t` verifies it. 13:37:20 on 2026-05-04
+    /// is deliberately nowhere near a daylight-saving transition (those
+    /// land around 02:00-03:00 local, in spring and autumn), so no zone
+    /// can render this wall clock ambiguous or nonexistent.
+    #[test]
+    fn a_rar4_entrys_wall_clock_is_reported_as_the_file_stores_it() {
+        assert_eq!(
+            listed_time("timestamped-rar4.rar").as_deref(),
+            Some("2026-05-04 13:37:20"),
+            "a RAR4 entry must report the wall clock its MS-DOS word holds"
+        );
+    }
+
+    /// RAR5 stores no MS-DOS word at all: the time lives in the file
+    /// header's extra area as a 64-bit Windows FILETIME in UTC, and the
+    /// unrar library manufactures the word this backend reads by
+    /// rendering that instant into *the reader's* local zone.
+    ///
+    /// A RAR5 entry's reported time is therefore zone-dependent by
+    /// construction -- two machines list the same archive differently --
+    /// and this pins that, deriving the expectation from the instant the
+    /// fixture records rather than hardcoding one zone's answer.
+    /// Reporting the true instant instead would mean reading the raw
+    /// header's `mtime_low`/`mtime_high`, which the safe `unrar` crate
+    /// does not expose.
+    #[test]
+    fn a_rar5_entrys_utc_instant_is_reported_in_the_readers_local_zone() {
+        let expected = chrono::DateTime::from_timestamp(FIXTURE_UNIX_SECONDS, 0)
+            .expect("the fixture's instant is representable")
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
 
         assert_eq!(
-            entry.modified.as_deref(),
-            Some("2026-05-04 13:37:20"),
-            "a RAR entry must report the time its header records"
+            listed_time("timestamped-rar5.rar").as_deref(),
+            Some(expected.as_str()),
+            "a RAR5 entry's UTC instant must arrive rendered into this machine's zone"
         );
     }
 }
