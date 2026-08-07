@@ -37,8 +37,10 @@ pub fn format_size(bytes: u64) -> String {
 /// epoch. Howard Hinnant's `civil_from_days` (public domain) -- the exact
 /// inverse of the `days_from_civil` the application facade uses to parse
 /// a backend's `modified` string into
-/// [`ArchiveEntryDto::modified_at_unix_ms`], so a timestamp that made
-/// that trip comes back out unchanged.
+/// [`ArchiveEntryDto::modified_at_unix_ms`]. Only the out-of-chrono-range
+/// fallback of [`format_modified_unix_ms`] still renders through this;
+/// every representable instant goes through chrono's local conversion
+/// instead.
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -56,23 +58,44 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 /// `"YYYY-MM-DD HH:MM:SS"` string the file list's Modified column shows,
 /// or the empty string when the entry carries no timestamp.
 ///
-/// That format is not a new choice: it is the one every archive backend
-/// that reports a usable date already produced, and the one the facade
-/// parses back out of, so a row's Modified cell reads exactly as it did
-/// before the DTO carried a real timestamp instead of a display string.
+/// The DTO carries a true UTC instant; the cell shows **the viewer's
+/// local zone's reading of it** -- what Explorer and 7-Zip's own GUI
+/// show for the same file -- in the same fixed-width shape every backend
+/// reports times in. The zone conversion lives here, on the display
+/// edge, and nowhere else: everything upstream of this function stores
+/// and passes the instant itself.
 ///
-/// The round trip is only lossless for backends whose own `modified`
-/// string matched that shape in the first place -- see this module's
-/// tests, and the DTO-gap note in the browser-model migration report,
-/// for which ones do not.
+/// An instant beyond chrono's representable years (an absurd `i64` a
+/// corrupt or adversarial entry can put in the DTO) falls back to
+/// rendering its raw UTC civil fields: no real zone means anything out
+/// there, and the fallback keeps the conversion total -- deterministic
+/// and panic-free -- instead of correct only for plausible dates.
 pub fn format_modified_unix_ms(modified_at_unix_ms: Option<i64>) -> String {
     let Some(milliseconds) = modified_at_unix_ms else {
         return String::new();
     };
     // Euclidean division so a pre-1970 timestamp floors toward the
-    // earlier day rather than truncating toward zero (which would report
-    // the wrong date, and a negative time of day).
+    // earlier second rather than truncating toward zero (which would
+    // land in the wrong second, and on the wrong day at day edges).
     let seconds = milliseconds.div_euclid(1000);
+
+    if let Some(instant) = chrono::DateTime::from_timestamp(seconds, 0) {
+        use chrono::{Datelike, Timelike};
+        // Field-formatted rather than strftime'd: chrono's `%Y` pads a
+        // five-digit year with a `+` sign, while this column's shape is
+        // plain zero-padded digits for every representable year.
+        let local = instant.with_timezone(&chrono::Local);
+        return format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            local.year(),
+            local.month(),
+            local.day(),
+            local.hour(),
+            local.minute(),
+            local.second()
+        );
+    }
+
     let (year, month, day) = civil_from_days(seconds.div_euclid(86_400));
     let second_of_day = seconds.rem_euclid(86_400);
     format!(
@@ -213,55 +236,74 @@ mod tests {
     // format_modified_unix_ms
     // =========================================================================
 
+    /// The Modified-cell string the display policy assigns to an
+    /// instant: its rendering in the viewer's local zone. Derived
+    /// through chrono alone (never through the code under test), so the
+    /// assertion stays zone-stable -- it encodes "this instant, read on
+    /// this machine's clock", not one zone's hardcoded answer.
+    fn expected_local_render(unix_seconds: i64) -> String {
+        chrono::DateTime::from_timestamp(unix_seconds, 0)
+            .expect("test instants are representable")
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    }
+
     #[test]
     fn no_timestamp_renders_as_an_empty_modified_cell() {
         assert_eq!(format_modified_unix_ms(None), "");
     }
 
     #[test]
-    fn the_epoch_renders_as_its_own_civil_date() {
-        assert_eq!(format_modified_unix_ms(Some(0)), "1970-01-01 00:00:00");
+    fn the_epoch_renders_as_the_viewers_local_reading_of_it() {
+        assert_eq!(format_modified_unix_ms(Some(0)), expected_local_render(0));
     }
 
-    /// The shape every backend that reports a usable date produces, and
-    /// the shape the facade parses back out of, must survive the trip
-    /// through `modified_at_unix_ms` byte for byte -- otherwise the file
-    /// list's Modified column silently changes format.
+    /// The DTO carries a true UTC instant; the Modified column shows the
+    /// viewer's own clock's reading of that instant (what Explorer and
+    /// 7-Zip's GUI show for the same file), in the same fixed-width
+    /// shape every backend reports times in.
     #[test]
-    fn a_canonical_backend_timestamp_round_trips_byte_for_byte() {
+    fn a_stored_instant_renders_as_the_viewers_local_wall_clock() {
         // 2024-01-15 10:30:00 UTC
         assert_eq!(
             format_modified_unix_ms(Some(1_705_314_600_000)),
-            "2024-01-15 10:30:00"
+            expected_local_render(1_705_314_600)
         );
         // 2000-02-29 23:59:59 UTC -- a leap day, and the last second of it
         assert_eq!(
             format_modified_unix_ms(Some(951_868_799_000)),
-            "2000-02-29 23:59:59"
+            expected_local_render(951_868_799)
         );
         // 2100-03-01 00:00:00 UTC -- the century that is not a leap year
         assert_eq!(
             format_modified_unix_ms(Some(4_107_542_400_000)),
-            "2100-03-01 00:00:00"
+            expected_local_render(4_107_542_400)
         );
     }
 
     /// Sub-second precision is not part of the displayed format, so a
     /// timestamp inside a second floors to that second rather than
-    /// rounding into the next one.
+    /// rounding into the next one -- asserted zone-free by comparing
+    /// against the same second's own rendering.
     #[test]
     fn sub_second_precision_floors_within_its_own_second() {
-        assert_eq!(format_modified_unix_ms(Some(999)), "1970-01-01 00:00:00");
+        assert_eq!(
+            format_modified_unix_ms(Some(999)),
+            format_modified_unix_ms(Some(0))
+        );
     }
 
-    /// Truncating division would report the day *after* a pre-epoch
-    /// timestamp, with a negative time of day. Nothing in this workspace
-    /// produces such an archive, but flooring is what makes the
-    /// conversion total rather than accidentally correct only for dates
-    /// after 1970.
+    /// Truncating division would land a pre-epoch timestamp inside the
+    /// wrong second. Nothing in this workspace produces such an archive,
+    /// but flooring is what makes the conversion total rather than
+    /// accidentally correct only for dates after 1970.
     #[test]
-    fn a_pre_epoch_timestamp_floors_to_the_earlier_day() {
-        assert_eq!(format_modified_unix_ms(Some(-1000)), "1969-12-31 23:59:59");
+    fn a_pre_epoch_timestamp_floors_to_the_earlier_second() {
+        assert_eq!(
+            format_modified_unix_ms(Some(-1000)),
+            expected_local_render(-1)
+        );
     }
 
     /// The timestamp arrives from a DTO built out of an archive's own
@@ -310,7 +352,8 @@ mod tests {
         assert_eq!(row.size, "2.0 KB");
         assert_eq!(row.compressed, "1.0 KB");
         assert_eq!(row.ratio, "50%");
-        assert_eq!(row.modified, "2024-01-15 10:30:00");
+        // 2024-01-15 10:30:00 UTC, shown on the viewer's own clock.
+        assert_eq!(row.modified, expected_local_render(1_705_314_600));
         assert_eq!(row.crc32, "AABBCCDD");
         assert!(!row.is_folder);
         assert!(!row.encrypted);

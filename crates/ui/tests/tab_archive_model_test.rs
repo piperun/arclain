@@ -464,7 +464,7 @@ fn a_zip_entrys_modified_date_survives_the_trip_through_the_dto() {
             .find(|row| row.archive_path == "readme.txt")
             .unwrap()
             .modified,
-        "the rendered timestamp must match the backend's own string byte for byte"
+        "both render paths must produce the identical Modified cell"
     );
 }
 

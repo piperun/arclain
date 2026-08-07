@@ -835,8 +835,16 @@ fn the_rendered_browser_draws_dto_rows_and_keeps_selection_and_expansion_across_
         ["game/Game.exe", "game/data"],
         "the file list must draw the browsed directory's own entries"
     );
+    // The DTO's instant (2024-01-15 10:30:00 UTC), shown on the
+    // viewer's own clock -- derived via chrono so the assertion holds
+    // in every zone.
+    let expected_modified = chrono::DateTime::from_timestamp(1_705_314_600, 0)
+        .expect("the seeded instant is representable")
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
     assert_eq!(
-        drawn.entries[0].modified, "2024-01-15 10:30:00",
+        drawn.entries[0].modified, expected_modified,
         "a rendered row's Modified cell comes from the DTO's own timestamp"
     );
     assert!(
