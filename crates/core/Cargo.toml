@@ -74,3 +74,9 @@ required-features = ["gameta"]
 [dev-dependencies]
 tempfile.workspace = true
 rand.workspace = true
+# Builds a content-encrypted ZIP fixture in-process for
+# `tests/encrypted_zip_extraction.rs`, so the no-7-Zip configuration it
+# exercises needs no 7-Zip to set itself up either. Same crate, version
+# and features this package already depends on normally, so it adds
+# nothing to the dependency tree.
+zip = "7.0.0"

@@ -11,12 +11,20 @@ use tracing::{debug, info, warn};
 use zip::ZipArchive;
 
 /// What this backend says when asked to extract content it has no way to
-/// decrypt. The 7-Zip CLI tier behind it does have that way, so a caller
-/// with a fallback chain reads this as "try the next tier", and a caller
-/// without one reads a message naming the password protection it is up
-/// against.
+/// decrypt.
+///
+/// The opening phrase is load-bearing, not decoration. The application
+/// layer decides whether a failure deserves a password prompt by looking
+/// for a set of known phrases in whatever the backend chain reported, and
+/// this is one of them (it is 7-Zip's own wording for the same
+/// condition). On a machine with a 7-Zip CLI the chain would contribute
+/// recognizable wording of its own anyway -- but with no CLI installed
+/// this tier *is* the whole chain, and without a phrase the layer above
+/// knows, an encrypted archive fails as an ordinary error and the user is
+/// never asked for the password that would have opened it.
 const ENCRYPTED_ENTRY_MESSAGE: &str =
-    "ZIP contains encrypted files - use 7z CLI backend for password-protected ZIPs";
+    "Password for encrypted archive not specified - ZIP contents \
+     are encrypted and the native backend cannot decrypt them (the 7z CLI backend can)";
 
 /// Fails if any requested entry is one this backend cannot decrypt.
 ///
@@ -35,11 +43,14 @@ fn reject_encrypted_requests(archive: &mut ZipArchive<File>, files: &[String]) -
         let Some(index) = archive.index_for_name(name) else {
             continue;
         };
-        let encrypted = archive
+        // A header this backend cannot even read is propagated rather
+        // than assumed decryptable: treating it as "not encrypted" would
+        // drop the name straight back into the warn-and-continue path
+        // this check exists to close.
+        let entry = archive
             .by_index_raw(index)
-            .map(|entry| entry.encrypted())
-            .unwrap_or(false);
-        if encrypted {
+            .with_context(|| format!("Failed to read the header of ZIP entry {name}"))?;
+        if entry.encrypted() {
             return Err(anyhow!("{ENCRYPTED_ENTRY_MESSAGE} (entry: {name})"));
         }
     }
