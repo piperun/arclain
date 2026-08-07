@@ -12,8 +12,12 @@ use tracing::{info, warn};
 /// are password-protected", say -- while the CLI tier behind it can only
 /// report its own exit status. Dropping the primary's reason leaves a
 /// caller with a diagnostic that names no cause it can act on.
-fn both_failed_context(primary_name: &str, primary_error: &anyhow::Error) -> String {
-    format!("Both backends failed to extract files ({primary_name}: {primary_error:#})")
+fn both_failed_context(
+    operation: &str,
+    primary_name: &str,
+    primary_error: &anyhow::Error,
+) -> String {
+    format!("Both backends failed to {operation} ({primary_name}: {primary_error:#})")
 }
 
 /// A backend that tries a primary backend first, then falls back to a secondary backend if it fails
@@ -159,10 +163,7 @@ impl ArchiveBackend for FallbackBackend {
                 self.fallback
                     .extract_all(path, dest, password)
                     .with_context(|| {
-                        format!(
-                            "Both {} and {} backends failed to extract",
-                            self.primary_name, self.fallback_name
-                        )
+                        both_failed_context("extract the archive", &self.primary_name, &e)
                     })
             }
         }
@@ -182,10 +183,9 @@ impl ArchiveBackend for FallbackBackend {
                     "{} backend failed to extract files: {}. Falling back to {}",
                     self.primary_name, e, self.fallback_name
                 );
-                let refusal = both_failed_context(&self.primary_name, &e);
                 self.fallback
                     .extract_files(path, dest, files, password)
-                    .context(refusal)
+                    .with_context(|| both_failed_context("extract files", &self.primary_name, &e))
             }
         }
     }
@@ -226,10 +226,9 @@ impl ArchiveBackend for FallbackBackend {
                     "{} backend failed to extract files: {}. Falling back to {}",
                     self.primary_name, e, self.fallback_name
                 );
-                let refusal = both_failed_context(&self.primary_name, &e);
                 self.fallback
                     .extract_files_with_progress(path, dest, files, password, progress, cancel)
-                    .context(refusal)
+                    .with_context(|| both_failed_context("extract files", &self.primary_name, &e))
             }
         }
     }
@@ -253,7 +252,9 @@ impl ArchiveBackend for FallbackBackend {
                 );
                 self.fallback
                     .extract_directory(path, dest, dir_path, password)
-                    .with_context(|| "Both backends failed to extract directory")
+                    .with_context(|| {
+                        both_failed_context("extract directory", &self.primary_name, &e)
+                    })
             }
         }
     }
@@ -292,7 +293,7 @@ impl ArchiveBackend for FallbackBackend {
                 );
                 self.fallback
                     .extract(archive, dest, entries, password, progress, cancel)
-                    .with_context(|| "Both backends failed to extract")
+                    .with_context(|| both_failed_context("extract", &self.primary_name, &e))
             }
         }
     }
@@ -366,7 +367,7 @@ impl ArchiveBackend for FallbackBackend {
                 );
                 self.fallback
                     .read_text_file(archive, path_in_archive, password)
-                    .with_context(|| "Both backends failed to read file")
+                    .with_context(|| both_failed_context("read file", &self.primary_name, &e))
             }
         }
     }
@@ -420,7 +421,7 @@ impl ArchiveBackend for FallbackBackend {
                 );
                 self.fallback
                     .crc32_of_entry(archive, path_in_archive, password)
-                    .with_context(|| "Both backends failed to get CRC")
+                    .with_context(|| both_failed_context("get CRC", &self.primary_name, &e))
             }
         }
     }
