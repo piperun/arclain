@@ -99,7 +99,12 @@ impl ArchiveBackend for UnrarBackend {
                         path: filename,
                         size: entry.unpacked_size,
                         packed_size: 0,
-                        modified: None, // entry.file_time
+                        // A RAR header records the entry's modification
+                        // time as an MS-DOS packed word, the same
+                        // encoding a ZIP header uses -- so it renders
+                        // into `ArchiveEntry::modified` through the same
+                        // converter ZIP times take.
+                        modified: crate::backends::entry_time::from_msdos(entry.file_time),
                         is_dir,
                         encrypted,
                         // Note: file_crc access might trigger computation if not lazy.
@@ -574,5 +579,36 @@ impl ArchiveBackend for UnrarBackend {
         }
 
         Err(anyhow!("Entry not found: {}", path_in_archive))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-entry RAR built by WinRAR from a file stamped
+    /// `2026-05-04 13:37:20`. An MS-DOS header time is zone-less, so
+    /// every machine that reads this fixture decodes those very fields.
+    fn timestamped_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/timestamped.rar")
+    }
+
+    #[test]
+    fn listed_entries_carry_the_modification_time_the_header_records() {
+        let info = UnrarBackend::new()
+            .list(&timestamped_fixture(), None)
+            .expect("the fixture lists");
+
+        let entry = info
+            .entries
+            .iter()
+            .find(|entry| entry.path == "timestamped.txt")
+            .expect("the fixture's entry is listed");
+
+        assert_eq!(
+            entry.modified.as_deref(),
+            Some("2026-05-04 13:37:20"),
+            "a RAR entry must report the time its header records"
+        );
     }
 }

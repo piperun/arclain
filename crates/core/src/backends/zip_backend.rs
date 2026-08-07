@@ -67,17 +67,9 @@ impl ArchiveBackend for ZipBackend {
                         has_encrypted = true;
                     }
 
-                    let modified = file.last_modified().map(|dt| {
-                        format!(
-                            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-                            dt.year(),
-                            dt.month(),
-                            dt.day(),
-                            dt.hour(),
-                            dt.minute(),
-                            dt.second()
-                        )
-                    });
+                    let modified = file
+                        .last_modified()
+                        .map(crate::backends::entry_time::from_zip_datetime);
 
                     entries.push(ArchiveEntry {
                         path: file.name().to_string(),

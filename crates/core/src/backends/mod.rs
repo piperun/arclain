@@ -1,3 +1,4 @@
+mod entry_time;
 pub mod fallback_backend;
 pub mod selector;
 pub mod sevenz_backend;
