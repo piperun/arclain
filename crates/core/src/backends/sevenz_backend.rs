@@ -176,16 +176,32 @@ impl ArchiveBackend for SevenZBackend {
         let pwd = password.map(Password::from).unwrap_or_else(Password::empty);
 
         let reader = ArchiveReader::open(path, pwd).context("Failed to open 7z archive")?;
+        let archive = reader.archive();
 
-        let mut entries = Vec::with_capacity(reader.archive().files.len());
+        let mut entries = Vec::with_capacity(archive.files.len());
         let mut any_encrypted = false;
         let headers_encrypted = false; // 7z-rust2 doesn't easily expose this
 
-        // Access the archive's files directly
-        for entry in &reader.archive().files {
+        for (index, entry) in archive.files.iter().enumerate() {
             let is_dir = entry.is_directory;
-            // Check if the entry has encryption by checking if it has a stream and other indicators
-            let encrypted = entry.has_stream && !entry.is_directory && entry.has_crc;
+            // An entry is encrypted iff the block carrying its stream
+            // decodes through an AES coder. A streamless entry -- a
+            // directory, an empty file -- maps to no block and has
+            // nothing for a cipher to cover. (Having a stream and a CRC
+            // is NOT a signal: nearly every stored file has both,
+            // encrypted or not.)
+            let encrypted = archive
+                .stream_map
+                .file_block_index
+                .get(index)
+                .copied()
+                .flatten()
+                .and_then(|block_index| archive.blocks.get(block_index))
+                .is_some_and(|block| {
+                    block.coders.iter().any(|coder| {
+                        coder.encoder_method_id() == sevenz_rust2::EncoderMethod::ID_AES256_SHA256
+                    })
+                });
 
             if encrypted {
                 any_encrypted = true;
@@ -1200,6 +1216,67 @@ mod listing_tests {
         writer.finish().unwrap();
     }
 
+    /// Opens a writer for `archive`; `password` switches the content
+    /// coder chain to AES-256 + LZMA2, `encrypt_header` additionally
+    /// encrypts the header itself (7-Zip's `-mhe=on`, "encrypt file
+    /// names").
+    fn writer_for(
+        archive: &Path,
+        password: Option<&str>,
+        encrypt_header: bool,
+    ) -> sevenz_rust2::ArchiveWriter<File> {
+        use sevenz_rust2::encoder_options::AesEncoderOptions;
+
+        let mut writer = sevenz_rust2::ArchiveWriter::create(archive).unwrap();
+        writer.set_encrypt_header(encrypt_header);
+        if let Some(password) = password {
+            writer.set_content_methods(vec![
+                AesEncoderOptions::new(Password::from(password)).into(),
+                sevenz_rust2::EncoderMethod::LZMA2.into(),
+            ]);
+        }
+        writer
+    }
+
+    fn push_file(writer: &mut sevenz_rust2::ArchiveWriter<File>, name: &str, contents: &[u8]) {
+        writer
+            .push_archive_entry(
+                sevenz_rust2::ArchiveEntry::new_file(name),
+                Some(Cursor::new(contents.to_vec())),
+            )
+            .unwrap();
+    }
+
+    fn push_directory(writer: &mut sevenz_rust2::ArchiveWriter<File>, name: &str) {
+        writer
+            .push_archive_entry(
+                sevenz_rust2::ArchiveEntry::new_directory(name),
+                None::<Cursor<Vec<u8>>>,
+            )
+            .unwrap();
+    }
+
+    /// Records a zero-byte file the way 7-Zip records one: as an empty
+    /// stream, with no block behind it. (Passing an empty *reader*
+    /// instead would push a zero-length substream through the content
+    /// coder chain -- a real, AES-coded block for an encrypted archive,
+    /// which is not the shape this helper is for.)
+    fn push_empty_file(writer: &mut sevenz_rust2::ArchiveWriter<File>, name: &str) {
+        writer
+            .push_archive_entry(
+                sevenz_rust2::ArchiveEntry::new_file(name),
+                None::<Cursor<Vec<u8>>>,
+            )
+            .unwrap();
+    }
+
+    fn entry<'info>(info: &'info ArchiveInfo, path: &str) -> &'info ArchiveEntry {
+        info.entries
+            .iter()
+            .find(|entry| entry.path == path)
+            .unwrap_or_else(|| panic!("{path:?} is listed"))
+    }
+
     /// The listed time must be the instant the archive actually records,
     /// rendered in the shape consumers parse `ArchiveEntry::modified`
     /// back out of -- not a derived approximation, and not an ISO form
@@ -1227,5 +1304,125 @@ mod listing_tests {
             "a 7z entry must report the instant its header records, in \
              the shape every backend reports times in"
         );
+    }
+
+    /// An archive with no AES coder anywhere has nothing encrypted in
+    /// it, and its listing must say so at both levels: no entry carries
+    /// the flag, and the archive-level summary reports neither
+    /// encryption nor a method. (Every stored file has a stream and a
+    /// CRC -- neither is a signal of encryption.)
+    #[test]
+    fn a_plain_archives_entries_are_not_marked_encrypted() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("plain.7z");
+        let mut writer = writer_for(&archive, None, false);
+        push_file(&mut writer, "readme.txt", b"plain contents");
+        push_directory(&mut writer, "sub");
+        writer.finish().unwrap();
+
+        let info = SevenZBackend::new()
+            .list(&archive, None)
+            .expect("the archive lists");
+
+        assert!(
+            !entry(&info, "readme.txt").encrypted,
+            "a plain file entry must not be marked encrypted"
+        );
+        assert!(
+            !entry(&info, "sub").encrypted,
+            "a directory entry must not be marked encrypted"
+        );
+        assert!(
+            !info.encrypted,
+            "an archive with no encrypted entry must not be summarized as encrypted"
+        );
+        assert_eq!(info.encryption_method, None);
+    }
+
+    /// In an AES archive the flag is per entry, not per archive: a file
+    /// whose stream decodes through the AES coder is encrypted, while a
+    /// streamless entry -- a directory, an empty-stream file -- has no
+    /// data for the cipher to cover and must not carry the flag.
+    ///
+    /// The header itself is left in the clear here (7-Zip's default
+    /// without `-mhe=on`), which is why the structure lists without any
+    /// password.
+    #[test]
+    fn an_aes_archives_file_entries_are_marked_encrypted_but_streamless_entries_are_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("aes.7z");
+        let mut writer = writer_for(&archive, Some("correct-password"), false);
+        push_file(&mut writer, "secret.txt", b"classified contents");
+        push_empty_file(&mut writer, "empty.txt");
+        push_directory(&mut writer, "sub");
+        writer.finish().unwrap();
+
+        let info = SevenZBackend::new()
+            .list(&archive, None)
+            .expect("a content-encrypted archive lists without its password");
+
+        assert!(
+            entry(&info, "secret.txt").encrypted,
+            "an AES-coded file entry must be marked encrypted"
+        );
+        assert!(
+            !entry(&info, "empty.txt").encrypted,
+            "an empty file has no stream and must not be marked encrypted"
+        );
+        assert!(
+            !entry(&info, "sub").encrypted,
+            "a directory has no stream and must not be marked encrypted"
+        );
+        assert!(info.encrypted, "the archive-level summary must report it");
+        assert_eq!(info.encryption_method.as_deref(), Some("7z"));
+    }
+
+    /// With the header encrypted too (`-mhe=on`), the listing itself
+    /// needs the password: without one the open fails outright, and with
+    /// it the entries decode as AES-coded and carry the flag.
+    ///
+    /// The fixture carries thirty entries rather than one because the
+    /// writer's header encryption is best-effort: `finish` falls back to
+    /// a *plain* header whenever the encrypted form would not undercut
+    /// the raw one by at least 20 bytes, which a single-entry header
+    /// always trips. Thirty long, repetitive names give it a header
+    /// worth hiding, so the encrypted path genuinely engages.
+    ///
+    /// (`headers_encrypted` in the summary stays `false` even then --
+    /// `sevenz_rust2::Archive` retains no trace of whether the header it
+    /// decoded was encrypted, so this backend has nothing to report it
+    /// from. The CLI tier does report it for the same archive.)
+    #[test]
+    fn a_header_encrypted_archive_lists_only_with_its_password_and_marks_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("mhe.7z");
+        let mut writer = writer_for(&archive, Some("correct-password"), true);
+        for index in 0..30 {
+            push_file(
+                &mut writer,
+                &format!("a-header-worth-hiding-from-passwordless-eyes/file-{index:02}.txt"),
+                b"classified contents",
+            );
+        }
+        writer.finish().unwrap();
+
+        assert!(
+            SevenZBackend::new().list(&archive, None).is_err(),
+            "a header-encrypted archive must not list without its password"
+        );
+
+        let info = SevenZBackend::new()
+            .list(&archive, Some("correct-password"))
+            .expect("the password decrypts the header for listing");
+
+        assert!(
+            entry(
+                &info,
+                "a-header-worth-hiding-from-passwordless-eyes/file-00.txt"
+            )
+            .encrypted,
+            "an AES-coded entry behind an encrypted header must carry the flag"
+        );
+        assert!(info.encrypted);
     }
 }
