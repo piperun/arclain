@@ -121,40 +121,29 @@ impl SevenZBackend {
         Self
     }
 
-    /// Convert NtTime to ISO 8601 string format
+    /// Renders an entry's Windows file time as the `modified` string
+    /// every backend reports.
+    ///
+    /// A 7z header records a true instant -- 100-nanosecond ticks from
+    /// 1601 -- rather than the zone-less wall clock a ZIP or RAR header
+    /// carries, so it is rendered in UTC and converts back to that very
+    /// instant on any machine in any zone. 7-Zip's own GUI shows the same
+    /// instant in the viewer's local time, so the two read the same
+    /// moment offset from each other by that zone's UTC offset.
     fn format_time(nt_time: sevenz_rust2::NtTime) -> Option<String> {
-        use std::time::SystemTime;
+        /// Ticks of the archive's clock in one second.
+        const TICKS_PER_SECOND: i128 = 10_000_000;
 
-        let system_time: SystemTime = nt_time.into();
+        // The crate's own constant rather than a hardcoded 1601-to-1970
+        // tick count, and `i128` throughout so an entry predating 1970
+        // (which the 1601 epoch permits) subtracts without wrapping.
+        let ticks = i128::from(u64::from(nt_time));
+        let epoch = i128::from(u64::from(sevenz_rust2::NtTime::UNIX_EPOCH));
+        // Euclidean division so a pre-1970 instant floors toward the
+        // earlier second rather than truncating toward the epoch.
+        let seconds = i64::try_from((ticks - epoch).div_euclid(TICKS_PER_SECOND)).ok()?;
 
-        // Convert to a readable format
-        if let Ok(duration) = system_time.duration_since(SystemTime::UNIX_EPOCH) {
-            let secs = duration.as_secs();
-
-            // Basic ISO 8601 formatting without external dependencies
-            // Calculate date/time components from Unix timestamp
-            const SECONDS_PER_DAY: u64 = 86400;
-            const DAYS_FROM_0_TO_1970: i64 = 719162; // Days from year 0 to Unix epoch
-
-            let days_since_epoch = (secs / SECONDS_PER_DAY) as i64;
-            let seconds_today = secs % SECONDS_PER_DAY;
-
-            let hours = seconds_today / 3600;
-            let minutes = (seconds_today % 3600) / 60;
-            let seconds = seconds_today % 60;
-
-            // Simplified date calculation (good enough for display)
-            let days_from_year_0 = days_since_epoch + DAYS_FROM_0_TO_1970;
-            let year = (days_from_year_0 / 365) as u32; // Approximation
-
-            // Format as ISO 8601-ish (simplified)
-            Some(format!(
-                "{:04}-01-01T{:02}:{:02}:{:02}Z",
-                year, hours, minutes, seconds
-            ))
-        } else {
-            None
-        }
+        crate::backends::entry_time::from_unix_seconds(seconds)
     }
 }
 
@@ -1182,5 +1171,61 @@ mod path_safety_tests {
             .unwrap_err();
 
         assert_eq!(std::fs::read(outside).unwrap(), b"original");
+    }
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::time::{Duration, SystemTime};
+
+    /// 2026-05-04 11:37:20 UTC, as whole seconds since the Unix epoch.
+    const FIXTURE_UNIX_SECONDS: u64 = 1_777_894_640;
+
+    fn write_archive_stamped_at(archive: &Path, entry_name: &str, unix_seconds: u64) {
+        let stamp = sevenz_rust2::NtTime::try_from(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(unix_seconds),
+        )
+        .unwrap();
+        let mut entry = sevenz_rust2::ArchiveEntry::new_file(entry_name);
+        entry.has_last_modified_date = true;
+        entry.last_modified_date = stamp;
+
+        let mut writer = sevenz_rust2::ArchiveWriter::create(archive).unwrap();
+        writer.set_encrypt_header(false);
+        writer
+            .push_archive_entry(entry, Some(Cursor::new(b"stamped contents".to_vec())))
+            .unwrap();
+        writer.finish().unwrap();
+    }
+
+    /// The listed time must be the instant the archive actually records,
+    /// rendered in the shape consumers parse `ArchiveEntry::modified`
+    /// back out of -- not a derived approximation, and not an ISO form
+    /// with a `T` separator and a `Z` suffix, which parses back to
+    /// nothing and leaves every 7z entry dateless downstream.
+    #[test]
+    fn listed_entries_carry_the_instant_the_archive_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("stamped.7z");
+        write_archive_stamped_at(&archive, "stamped.txt", FIXTURE_UNIX_SECONDS);
+
+        let info = SevenZBackend::new()
+            .list(&archive, None)
+            .expect("the archive lists");
+
+        let entry = info
+            .entries
+            .iter()
+            .find(|entry| entry.path == "stamped.txt")
+            .expect("the entry is listed");
+
+        assert_eq!(
+            entry.modified.as_deref(),
+            Some("2026-05-04 11:37:20"),
+            "a 7z entry must report the instant its header records, in \
+             the shape every backend reports times in"
+        );
     }
 }

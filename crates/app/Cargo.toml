@@ -86,3 +86,9 @@ arclain_db = { path = "../db", default-features = false }
 # (`tests/archive_sessions.rs`) -- same crate/version `arclain_core`
 # already depends on, so this adds no new crate to the dependency tree.
 zip = "7.0.0"
+# Builds a real 7z fixture with an exact recorded timestamp for the same
+# tests, so the entry-time assertion pins a known instant instead of
+# whatever a checked-in binary happened to bake in. Same crate/version
+# and features `arclain_core` already depends on, so this too adds no
+# new crate to the dependency tree.
+sevenz-rust2 = { version = "0.19.4", features = ["compress", "aes256"] }

@@ -163,6 +163,31 @@ fn build_zip_fixture(dir: &Path, name: &str, entries: &[(&str, &[u8])]) -> PathB
     path
 }
 
+/// 2026-05-04 11:37:20 UTC, the instant [`build_7z_fixture`] records.
+const SEVENZ_FIXTURE_UNIX_SECONDS: u64 = 1_777_894_640;
+
+/// Builds a single-entry 7z fixture at `dir/name` whose entry records
+/// exactly [`SEVENZ_FIXTURE_UNIX_SECONDS`], so an assertion on the
+/// timestamp the facade reports pins a known instant.
+fn build_7z_fixture(dir: &Path, name: &str, entry_path: &str, content: &[u8]) -> PathBuf {
+    let path = dir.join(name);
+    let stamp = sevenz_rust2::NtTime::try_from(
+        std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(SEVENZ_FIXTURE_UNIX_SECONDS),
+    )
+    .expect("construct a fixed 7z fixture timestamp");
+    let mut entry = sevenz_rust2::ArchiveEntry::new_file(entry_path);
+    entry.has_last_modified_date = true;
+    entry.last_modified_date = stamp;
+
+    let mut writer = sevenz_rust2::ArchiveWriter::create(&path).expect("create 7z fixture file");
+    writer.set_encrypt_header(false);
+    writer
+        .push_archive_entry(entry, Some(std::io::Cursor::new(content.to_vec())))
+        .expect("write 7z fixture entry");
+    writer.finish().expect("finish 7z fixture");
+    path
+}
+
 async fn recv_state(
     receiver: &mut tokio::sync::broadcast::Receiver<arclain_app::event::OperationEvent>,
 ) -> OperationState {
@@ -214,6 +239,60 @@ async fn wait_for_archive_opened(
             _ => panic!("archive open did not complete within the test deadline"),
         }
     }
+}
+
+/// A backend's `modified` string only survives the trip into
+/// `ArchiveEntryDto::modified_at_unix_ms` if it is written in the one
+/// fixed-width shape the facade parses; anything else -- an ISO form with
+/// a `T` separator and a `Z` suffix, say -- is dropped silently, leaving
+/// the entry dateless with nothing in the backend or the facade reporting
+/// a problem. This asserts the 7z backend's own times make that trip, and
+/// arrive as the instant the archive recorded.
+#[test]
+fn a_real_7z_entrys_recorded_time_reaches_the_facade_as_a_real_timestamp() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let archive_path = build_7z_fixture(temp.path(), "fixture.7z", "stamped.txt", b"stamped");
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: archive_path.clone(),
+                password: None,
+            })
+            .await
+            .expect("start_open_archive must be accepted");
+
+        let snapshot = wait_for_archive_opened(&app, operation_id).await;
+        let page = app
+            .list_entries(
+                snapshot.session_id,
+                ListEntriesRequest {
+                    directory: ArchivePath::root(),
+                    sort_key: EntrySortKey::Name,
+                    sort_direction: SortDirection::Ascending,
+                    name_filter: None,
+                    offset: 0,
+                    limit: 100,
+                },
+            )
+            .await
+            .expect("list_entries at root must succeed");
+
+        let entry = page
+            .entries
+            .iter()
+            .find(|entry| entry.name == "stamped.txt")
+            .expect("the fixture's entry is listed");
+
+        assert_eq!(
+            entry.modified_at_unix_ms,
+            Some(i64::try_from(SEVENZ_FIXTURE_UNIX_SECONDS).unwrap() * 1000),
+            "a 7z entry must reach the facade carrying the instant the \
+             archive records, not `None` from a rejected time string"
+        );
+    });
 }
 
 #[test]
