@@ -145,7 +145,16 @@ fn dialog_harness(shared: &SharedState) -> Harness<'static> {
 /// test that polled with it would open the very session the render under
 /// test is supposed to open -- and keep passing with the cutover reverted.
 fn step_until(harness: &mut Harness<'static>, what: &str, condition: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // Sized to fail a session that never opens, not to race the machine.
+    // Every test in this file builds its own application, and each one
+    // brings up its own WASM engine with no compilation cache between
+    // them -- so on the first run after a clean build, all nine compile
+    // the same fixture component from scratch, at once, on whatever
+    // cores are left over. That is a cold-start cost, not a stall, and a
+    // budget tight enough to trip over it fails whole batches while
+    // nothing is wrong. Waiting longer costs a healthy run nothing: the
+    // loop returns the frame the condition holds.
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         harness.step();
         if condition() {
