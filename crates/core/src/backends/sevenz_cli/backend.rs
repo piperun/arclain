@@ -184,6 +184,7 @@ impl ArchiveBackend for SevenZipCli {
 
         // Add specific files to extract, respecting command line length limits
         let mut total_arg_len: usize = args.iter().map(|a| a.len() + 1).sum();
+        let mut requested: Vec<&str> = Vec::with_capacity(files.len());
 
         for file in files {
             let file_os = OsString::from(file);
@@ -195,44 +196,54 @@ impl ArchiveBackend for SevenZipCli {
             }
 
             args.push(file_os);
+            requested.push(file);
             total_arg_len = new_len;
         }
 
-        self.run_status(args)?;
+        // 7-Zip's exit status alone cannot tell extraction apart from
+        // extracting nothing: file arguments matching no entry are
+        // answered "Everything is Ok" with status 0. Success here
+        // therefore means the requested output is on disk -- without
+        // that, a caller is handed a path that does not exist and
+        // reports a bare "file not found" in place of whatever actually
+        // went wrong. Collected before the status is propagated so the
+        // two can be reported together.
+        let extraction = self.run_status(args);
+        let missing: Vec<&str> = requested
+            .iter()
+            .copied()
+            .filter(|file| !dest.join(file).exists())
+            .collect();
 
-        // Verify extraction worked by checking if at least some files exist
-        let sample_files: Vec<_> = files.iter().take(3).collect();
-        let mut found_count = 0;
-        for file in &sample_files {
-            let full_path = dest.join(file);
-            if full_path.exists() {
-                found_count += 1;
-            } else {
-                debug!("Sample file not found after extraction: {:?}", full_path);
+        // 7-Zip's own diagnosis takes precedence when it failed: it
+        // names the cause -- a wrong or absent password, most often --
+        // that "nothing arrived" on its own cannot.
+        if let Err(error) = extraction {
+            if missing.is_empty() {
+                return Err(error);
             }
+            return Err(error.context(format!(
+                "7-Zip produced no output for {} of {} requested entries",
+                missing.len(),
+                requested.len()
+            )));
         }
 
-        if found_count == 0 && !sample_files.is_empty() {
-            error!(
-                "CRITICAL: 7z extraction returned success but 0/{} sample files found in {:?}",
-                sample_files.len(),
-                dest
-            );
-            // List what IS in dest to help debug
-            if let Ok(entries) = std::fs::read_dir(dest) {
-                for entry in entries.take(5) {
-                    if let Ok(e) = entry {
-                        error!("  Found in dest: {}", e.path().display());
-                    }
-                }
-            }
-        } else {
-            info!(
-                "Files extracted successfully ({}/{} sample files verified)",
-                found_count,
-                sample_files.len()
-            );
+        if !missing.is_empty() {
+            return Err(anyhow!(
+                "7-Zip reported success but produced no output for {} of {} requested entries \
+                 in {}: {:?}",
+                missing.len(),
+                requested.len(),
+                dest.display(),
+                missing.iter().take(10).collect::<Vec<_>>()
+            ));
         }
+
+        info!(
+            "Files extracted successfully ({} entries verified)",
+            requested.len()
+        );
 
         Ok(())
     }

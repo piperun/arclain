@@ -4,6 +4,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
 
+/// The context an "both tiers refused" failure carries, quoting why the
+/// primary tier bowed out.
+///
+/// The primary is the tier that inspects the archive's own headers, so
+/// its refusal is often the only statement of *why* -- "these contents
+/// are password-protected", say -- while the CLI tier behind it can only
+/// report its own exit status. Dropping the primary's reason leaves a
+/// caller with a diagnostic that names no cause it can act on.
+fn both_failed_context(primary_name: &str, primary_error: &anyhow::Error) -> String {
+    format!("Both backends failed to extract files ({primary_name}: {primary_error:#})")
+}
+
 /// A backend that tries a primary backend first, then falls back to a secondary backend if it fails
 pub struct FallbackBackend {
     primary: Arc<dyn ArchiveBackend>,
@@ -170,9 +182,10 @@ impl ArchiveBackend for FallbackBackend {
                     "{} backend failed to extract files: {}. Falling back to {}",
                     self.primary_name, e, self.fallback_name
                 );
+                let refusal = both_failed_context(&self.primary_name, &e);
                 self.fallback
                     .extract_files(path, dest, files, password)
-                    .with_context(|| "Both backends failed to extract files")
+                    .context(refusal)
             }
         }
     }
@@ -213,9 +226,10 @@ impl ArchiveBackend for FallbackBackend {
                     "{} backend failed to extract files: {}. Falling back to {}",
                     self.primary_name, e, self.fallback_name
                 );
+                let refusal = both_failed_context(&self.primary_name, &e);
                 self.fallback
                     .extract_files_with_progress(path, dest, files, password, progress, cancel)
-                    .with_context(|| "Both backends failed to extract files")
+                    .context(refusal)
             }
         }
     }

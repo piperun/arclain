@@ -10,6 +10,42 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 use zip::ZipArchive;
 
+/// What this backend says when asked to extract content it has no way to
+/// decrypt. The 7-Zip CLI tier behind it does have that way, so a caller
+/// with a fallback chain reads this as "try the next tier", and a caller
+/// without one reads a message naming the password protection it is up
+/// against.
+const ENCRYPTED_ENTRY_MESSAGE: &str =
+    "ZIP contains encrypted files - use 7z CLI backend for password-protected ZIPs";
+
+/// Fails if any requested entry is one this backend cannot decrypt.
+///
+/// [`ZipArchive::by_name`] refuses an encrypted entry outright, and the
+/// per-file extraction loops treat a `by_name` failure as "this archive
+/// has no such name" and carry on -- right for a name that genuinely is
+/// not there, silently wrong for one that is but is encrypted. Without
+/// this check such a request finishes reporting success with nothing
+/// written, no fallback tier attempted, and the caller left holding a
+/// path that does not exist.
+///
+/// Raw access throughout: reading an encrypted entry's *header* needs no
+/// password, only reading its content does.
+fn reject_encrypted_requests(archive: &mut ZipArchive<File>, files: &[String]) -> Result<()> {
+    for name in files {
+        let Some(index) = archive.index_for_name(name) else {
+            continue;
+        };
+        let encrypted = archive
+            .by_index_raw(index)
+            .map(|entry| entry.encrypted())
+            .unwrap_or(false);
+        if encrypted {
+            return Err(anyhow!("{ENCRYPTED_ENTRY_MESSAGE} (entry: {name})"));
+        }
+    }
+    Ok(())
+}
+
 /// Native ZIP backend using the `zip` crate
 #[derive(Clone)]
 pub struct ZipBackend;
@@ -120,9 +156,7 @@ impl ArchiveBackend for ZipBackend {
         for i in 0..archive.len() {
             if let Ok(entry) = archive.by_index_raw(i) {
                 if entry.encrypted() {
-                    return Err(anyhow!(
-                        "ZIP contains encrypted files - use 7z CLI backend for password-protected ZIPs"
-                    ));
+                    return Err(anyhow!(ENCRYPTED_ENTRY_MESSAGE));
                 }
             }
         }
@@ -151,15 +185,13 @@ impl ArchiveBackend for ZipBackend {
         let file = File::open(path).context("Failed to open ZIP file")?;
         let mut archive = ZipArchive::new(file).context("Failed to read ZIP archive")?;
 
+        reject_encrypted_requests(&mut archive, files)?;
+
         std::fs::create_dir_all(dest)?;
 
         for filename in files {
             match archive.by_name(filename) {
                 Ok(mut zip_file) => {
-                    if zip_file.encrypted() {
-                        return Err(anyhow!("File is encrypted - use 7z CLI backend"));
-                    }
-
                     let outpath = dest.join(zip_file.mangled_name());
 
                     if zip_file.is_dir() {
@@ -200,6 +232,17 @@ impl ArchiveBackend for ZipBackend {
         use rayon::prelude::*;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
+        // Once, before the parallel loop: the per-file arm below cannot
+        // tell an encrypted entry from an absent one, so the decision has
+        // to be made here where the whole request is still in view.
+        {
+            let probe = File::open(path)
+                .with_context(|| format!("Failed to open zip: {}", path.display()))?;
+            let mut archive = ZipArchive::new(probe)
+                .with_context(|| format!("Failed to read zip: {}", path.display()))?;
+            reject_encrypted_requests(&mut archive, files)?;
+        }
+
         let total = files.len();
         let processed = AtomicUsize::new(0);
 
@@ -221,10 +264,6 @@ impl ArchiveBackend for ZipBackend {
 
             match archive.by_name(filename) {
                 Ok(mut zip_file) => {
-                    if zip_file.encrypted() {
-                        return Err(anyhow!("File is encrypted - use 7z CLI backend"));
-                    }
-
                     let outpath = dest.join(zip_file.mangled_name());
 
                     if zip_file.is_dir() {
