@@ -44,6 +44,18 @@ http_requests_per_minute = 10
     temp_dir
 }
 
+fn bundled_plugins_dir() -> PathBuf {
+    env::var_os("ARCLAIN_BUNDLED_PLUGIN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(|path| path.parent())
+                .expect("crates/plugins should live two levels below repo root")
+                .join("plugins")
+        })
+}
+
 #[test]
 fn test_plugin_manager_creation() {
     let temp_dir = TempDir::new().unwrap();
@@ -73,18 +85,7 @@ fn test_plugin_manager_init_empty_directory() {
 fn bundled_dlsite_plugin_loads_against_current_host() {
     // Override lets us point this same assertion at packaged plugin dirs
     // when diagnosing a user's local install.
-    let plugins_dir = env::var_os("ARCLAIN_BUNDLED_PLUGIN_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            manifest_dir
-                .parent()
-                .and_then(|p| p.parent())
-                .expect("crates/plugins should live two levels below repo root")
-                .join("plugins")
-        });
-
-    let loader = PluginLoader::new(plugins_dir).unwrap();
+    let loader = PluginLoader::new(bundled_plugins_dir()).unwrap();
     let discovered = loader.discover_plugins().unwrap();
     let dlsite = discovered
         .iter()
@@ -103,6 +104,34 @@ fn bundled_dlsite_plugin_loads_against_current_host() {
     instance.init().unwrap();
     let metadata = instance.get_metadata().unwrap();
     assert_eq!(metadata.id, "dlsite-metadata");
+}
+
+#[test]
+fn bundled_ui_demo_round_trips_through_wirt_world() {
+    let loader = PluginLoader::new(bundled_plugins_dir()).unwrap();
+    let discovered = loader.discover_plugins().unwrap();
+    let demo = discovered
+        .iter()
+        .find(|plugin| plugin.manifest.plugin.id == "ui-demo")
+        .expect("bundled ui-demo manifest should be discovered");
+    let mut instance = loader
+        .load_plugin(demo)
+        .unwrap()
+        .instantiate(
+            demo.manifest.capabilities.to_capabilities(),
+            demo.manifest.rate_limits.http_requests_per_minute,
+            HashMap::new(),
+            None,
+        )
+        .unwrap();
+
+    instance.init().unwrap();
+    assert_eq!(instance.get_metadata().unwrap().id, "ui-demo");
+    let layout = instance
+        .get_ui_layout(arclain_plugins::types::PluginExtensionPoint::MainPage)
+        .unwrap();
+    assert!(!layout.elements().is_empty());
+    assert!(instance.send_ui_event("demo_btn", None).unwrap().is_empty());
 }
 
 #[test]

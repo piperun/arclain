@@ -863,11 +863,18 @@ class TestWirtAbi(unittest.TestCase):
     def test_one_versioned_wit_source_and_no_arclain_namespace(self):
         canonical = REPO_ROOT / "crates" / "wirt" / "wit" / "plugin.wit"
         legacy = REPO_ROOT / "wit" / "arclain.wit"
+        sdk = (REPO_ROOT / "plugin-sdk" / "src" / "lib.rs").read_text(
+            encoding="utf-8",
+        )
         self.assertTrue(canonical.is_file())
         self.assertFalse(legacy.exists())
         self.assertEqual(
             canonical.read_text(encoding="utf-8").splitlines()[0],
             "package wirt:plugin@0.1.0;",
+        )
+        self.assertRegex(
+            sdk,
+            r'path\s*:\s*"\.\./crates/wirt/wit/plugin\.wit"',
         )
 
         roots = (
@@ -889,7 +896,14 @@ class TestWirtAbi(unittest.TestCase):
         for root in roots:
             for path in root.rglob("*.rs"):
                 text = path.read_text(encoding="utf-8")
-                if "arclain::plugin" in text or "arclain.wit" in text:
+                if any(
+                    marker in text
+                    for marker in (
+                        "archust_plugin_sdk::arclain",
+                        "arclain::plugin",
+                        "arclain.wit",
+                    )
+                ):
                     offenders.append(path.relative_to(REPO_ROOT).as_posix())
         self.assertEqual(offenders, [])
 
