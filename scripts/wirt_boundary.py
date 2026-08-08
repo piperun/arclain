@@ -46,12 +46,17 @@ def dependency_violations(workspace_root: Path) -> list[str]:
         return ["crates/wirt/Cargo.toml: missing neutral crate manifest"]
     with manifest.open("rb") as handle:
         document = tomllib.load(handle)
-    names = sorted(
-        name
-        for table in dependency_tables(document)
-        for name in table
-        if forbidden(name)
-    )
+    names = []
+    for table in dependency_tables(document):
+        for name, dependency in table.items():
+            package = (
+                dependency.get("package", name)
+                if isinstance(dependency, dict)
+                else name
+            )
+            if forbidden(package):
+                names.append(package)
+    names.sort()
     return [f"crates/wirt/Cargo.toml: forbidden dependency {name}" for name in names]
 
 

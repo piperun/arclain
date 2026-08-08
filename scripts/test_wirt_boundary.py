@@ -38,6 +38,26 @@ class TestWirtBoundary(unittest.TestCase):
                 ["crates/wirt/Cargo.toml: forbidden dependency arclain_core"],
             )
 
+    def test_renamed_product_dependency_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n'
+                '[dependencies]\n'
+                'neutral = { package = "arclain_core", path = "../core" }\n',
+                encoding="utf-8",
+            )
+            (crate / "src" / "lib.rs").write_text(
+                "use neutral::Service;\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                wirt_boundary.violations(root),
+                ["crates/wirt/Cargo.toml: forbidden dependency arclain_core"],
+            )
+
     def test_product_source_import_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
