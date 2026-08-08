@@ -3,14 +3,14 @@ use tempfile::TempDir;
 
 fn valid_manifest(id: &str) -> PluginManifest {
     PluginManifest {
-        plugin: crate::types::PluginInfoConfig {
+        plugin: crate::PluginInfoConfig {
             id: id.to_string(),
             name: "Test Plugin".to_string(),
             version: "1.0.0".to_string(),
             author: "Test Author".to_string(),
             description: "A test plugin".to_string(),
         },
-        capabilities: crate::types::CapabilitiesConfig::default(),
+        capabilities: crate::CapabilitiesConfig::default(),
         rate_limits: Default::default(),
     }
 }
@@ -73,14 +73,14 @@ fn test_manifest_validation() {
     let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
 
     let manifest = PluginManifest {
-        plugin: crate::types::PluginInfoConfig {
+        plugin: crate::PluginInfoConfig {
             id: "test-plugin".to_string(),
             name: "Test Plugin".to_string(),
             version: "1.0.0".to_string(),
             author: "Test Author".to_string(),
             description: "A test plugin".to_string(),
         },
-        capabilities: crate::types::CapabilitiesConfig {
+        capabilities: crate::CapabilitiesConfig {
             network: false,
             network_domains: vec![],
             archive_metadata_read: true,
@@ -101,7 +101,7 @@ fn test_invalid_manifest() {
     let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
 
     let manifest = PluginManifest {
-        plugin: crate::types::PluginInfoConfig {
+        plugin: crate::PluginInfoConfig {
             id: "".to_string(), // Empty ID
             name: "Test Plugin".to_string(),
             version: "1.0.0".to_string(),
@@ -122,23 +122,20 @@ fn plugin_id_is_one_portable_non_reserved_component() {
         "name ", "café", "рlugin",
     ] {
         assert!(
-            crate::types::PluginId::parse(invalid).is_err(),
+            crate::PluginId::parse(invalid).is_err(),
             "accepted unsafe plugin id {invalid:?}",
         );
     }
 
     for valid in ["dlsite-metadata", "ui_demo", "Plugin2"] {
-        assert_eq!(
-            crate::types::PluginId::parse(valid).unwrap().as_str(),
-            valid
-        );
+        assert_eq!(crate::PluginId::parse(valid).unwrap().as_str(), valid);
     }
 }
 
 #[test]
 fn plugin_id_rejects_more_than_64_bytes() {
-    assert!(crate::types::PluginId::parse("a".repeat(64)).is_ok());
-    assert!(crate::types::PluginId::parse("a".repeat(65)).is_err());
+    assert!(crate::PluginId::parse("a".repeat(64)).is_ok());
+    assert!(crate::PluginId::parse("a".repeat(65)).is_err());
 }
 
 #[test]

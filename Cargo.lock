@@ -8767,8 +8767,11 @@ name = "wirt"
 version = "2.3.2"
 dependencies = [
  "anyhow",
+ "cap-fs-ext",
+ "cap-std",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "toml 0.9.12+spec-1.1.0",
  "tracing",

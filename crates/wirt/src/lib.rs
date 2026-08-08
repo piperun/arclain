@@ -14,6 +14,7 @@ pub mod action_policy;
 pub mod conversions;
 mod error;
 pub mod limits;
+pub mod loader;
 mod manifest;
 pub mod model;
 pub mod rules;
@@ -27,6 +28,7 @@ pub use limits::{
     MAX_CORE_INSTANCES, MAX_LINEAR_MEMORY_BYTES, MAX_MEMORIES, MAX_PLUGIN_GUEST_DATA_BYTES,
     MAX_PLUGIN_METADATA_BYTES, MAX_TABLES, MAX_TABLE_ELEMENTS,
 };
+pub use loader::{DiscoveredPlugin, PluginLoader, TrustedPluginRoot};
 pub use manifest::{
     CapabilitiesConfig, PluginCapability, PluginId, PluginIdentityKey, PluginInfo,
     PluginInfoConfig, PluginManifest, PluginMetadata, RateLimits, REQUEST_FETCH_CAPABILITIES,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -16,6 +17,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestWirtBoundary(unittest.TestCase):
+    def test_secure_loader_ownership_is_structural(self):
+        neutral_loader = REPO_ROOT / "crates" / "wirt" / "src" / "loader" / "mod.rs"
+        neutral_tests = REPO_ROOT / "crates" / "wirt" / "src" / "loader" / "tests.rs"
+        product_tests = REPO_ROOT / "crates" / "plugins" / "src" / "loader" / "tests.rs"
+
+        self.assertTrue(neutral_loader.is_file())
+        self.assertTrue(neutral_tests.is_file())
+        self.assertFalse(product_tests.exists())
+
+        with (REPO_ROOT / "crates" / "wirt" / "Cargo.toml").open("rb") as handle:
+            dependencies = tomllib.load(handle)["dependencies"]
+        self.assertEqual(dependencies["cap-std"], "=4.0.2")
+        self.assertEqual(dependencies["cap-fs-ext"], "=4.0.2")
+
     def test_product_manager_stays_out_of_wirt(self):
         self.assertTrue(
             (REPO_ROOT / "crates" / "plugins" / "src" / "manager" / "mod.rs").is_file()
