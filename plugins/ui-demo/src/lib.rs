@@ -28,7 +28,7 @@ impl archust_plugin_sdk::Guest for Component {
         use archust_plugin_sdk::wirt::plugin::ui::*;
 
         match extension_point.as_str() {
-            "Sidebar" => PluginLayout::Single(vec![
+            "MainPage" => PluginLayout::Single(vec![
                 UiElement::Label(LabelConfig {
                     text: "UI Demo Plugin".to_string(),
                     bold: true,

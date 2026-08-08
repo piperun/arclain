@@ -43,8 +43,13 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use wasmtime::component::ResourceTable;
-use wasmtime::ResourceLimiter;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+
+#[allow(unused_imports)]
+pub(crate) use wirt::{
+    PluginStoreLimiter, StoreQuotaExceeded, StoreQuotaKind, MAX_CORE_INSTANCES,
+    MAX_LINEAR_MEMORY_BYTES, MAX_MEMORIES, MAX_TABLES, MAX_TABLE_ELEMENTS,
+};
 
 use temp_storage::PluginTempStorage;
 
@@ -70,80 +75,6 @@ fn sandboxed_wasi_ctx() -> WasiCtx {
     // No inherited stdio, argv, environment, or filesystem preopens. Guest
     // diagnostics must cross the bounded host logging API instead.
     WasiCtxBuilder::new().build()
-}
-
-pub(crate) const MAX_LINEAR_MEMORY_BYTES: usize = 256 * 1024 * 1024;
-pub(crate) const MAX_TABLE_ELEMENTS: usize = 100_000;
-// `ResourceLimiter::instances` counts the component's adapter-internal core
-// instances, not user-visible plugin instances. Each Store still owns exactly
-// one `PluginWorld`; 32 accommodates the 20 core instances used by current
-// components while bounding malformed components.
-pub(crate) const MAX_CORE_INSTANCES: usize = 32;
-pub(crate) const MAX_TABLES: usize = 8;
-pub(crate) const MAX_MEMORIES: usize = 4;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum StoreQuotaKind {
-    Memory,
-    Table,
-}
-
-#[derive(Debug)]
-pub(crate) struct StoreQuotaExceeded {
-    pub(crate) kind: StoreQuotaKind,
-}
-
-impl std::fmt::Display for StoreQuotaExceeded {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("plugin store resource quota exceeded")
-    }
-}
-
-impl std::error::Error for StoreQuotaExceeded {}
-
-#[derive(Debug, Default)]
-pub(crate) struct PluginStoreLimiter;
-
-impl ResourceLimiter for PluginStoreLimiter {
-    fn memory_growing(
-        &mut self,
-        _current: usize,
-        desired: usize,
-        _maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        if desired > MAX_LINEAR_MEMORY_BYTES {
-            return Err(wasmtime::Error::new(StoreQuotaExceeded {
-                kind: StoreQuotaKind::Memory,
-            }));
-        }
-        Ok(true)
-    }
-
-    fn table_growing(
-        &mut self,
-        _current: usize,
-        desired: usize,
-        _maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        if desired > MAX_TABLE_ELEMENTS {
-            return Err(wasmtime::Error::new(StoreQuotaExceeded {
-                kind: StoreQuotaKind::Table,
-            }));
-        }
-        Ok(true)
-    }
-
-    fn instances(&self) -> usize {
-        MAX_CORE_INSTANCES
-    }
-
-    fn tables(&self) -> usize {
-        MAX_TABLES
-    }
-
-    fn memories(&self) -> usize {
-        MAX_MEMORIES
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -640,6 +571,12 @@ impl WasiView for HostFunctions {
             ctx: &mut self.ctx,
             table: &mut self.table,
         }
+    }
+}
+
+impl wirt::WirtStoreState for HostFunctions {
+    fn store_limiter(&mut self) -> &mut PluginStoreLimiter {
+        &mut self.store_limiter
     }
 }
 

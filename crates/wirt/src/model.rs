@@ -273,6 +273,15 @@ impl Default for PluginLayout {
 }
 
 impl PluginLayout {
+    pub fn elements(&self) -> Vec<&PluginUiElement> {
+        match self {
+            Self::Single { elements } => elements.iter().collect(),
+            Self::Split {
+                sidebar, content, ..
+            } => sidebar.iter().chain(content).collect(),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         match self {
             Self::Single { elements } => elements.is_empty(),

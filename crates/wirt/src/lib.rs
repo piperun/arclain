@@ -13,16 +13,19 @@ pub mod bindings {
 pub mod action_policy;
 pub mod conversions;
 mod error;
-mod limits;
+pub mod limits;
 mod manifest;
 pub mod model;
 pub mod rules;
+pub mod runtime;
 pub mod ui_model;
 
 pub use bindings::{wirt, PluginWorld};
 pub use error::{PluginError, Result};
 pub use limits::{
-    metadata_value_within_limit, MAX_PLUGIN_GUEST_DATA_BYTES, MAX_PLUGIN_METADATA_BYTES,
+    metadata_value_within_limit, PluginStoreLimiter, StoreQuotaExceeded, StoreQuotaKind,
+    MAX_CORE_INSTANCES, MAX_LINEAR_MEMORY_BYTES, MAX_MEMORIES, MAX_PLUGIN_GUEST_DATA_BYTES,
+    MAX_PLUGIN_METADATA_BYTES, MAX_TABLES, MAX_TABLE_ELEMENTS,
 };
 pub use manifest::{
     CapabilitiesConfig, PluginCapability, PluginId, PluginIdentityKey, PluginInfo,
@@ -35,3 +38,4 @@ pub use model::{
 pub use rules::{
     MoveFileRule, MoveRule, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger,
 };
+pub use runtime::{LoadedComponent, PluginInstance, WasmRuntime, WirtStoreState};
