@@ -95,6 +95,31 @@ class TestWirtBoundary(unittest.TestCase):
                 ["crates/wirt/Cargo.toml: forbidden dependency arclain_core"],
             )
 
+    def test_workspace_inherited_product_alias_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/wirt"]\n'
+                '[workspace.dependencies]\n'
+                'neutral = { package = "arclain_core", path = "crates/core" }\n',
+                encoding="utf-8",
+            )
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n'
+                '[dependencies]\nneutral.workspace = true\n',
+                encoding="utf-8",
+            )
+            (crate / "src" / "lib.rs").write_text(
+                "pub struct Neutral;\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                wirt_boundary.violations(root),
+                ["crates/wirt/Cargo.toml: forbidden dependency arclain_core"],
+            )
+
     def test_product_source_import_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -112,6 +137,134 @@ class TestWirtBoundary(unittest.TestCase):
                 wirt_boundary.violations(root),
                 ["crates/wirt/src/lib.rs:1: forbidden import gameta_lib"],
             )
+
+    def test_path_attribute_escaping_wirt_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            (crate / "src" / "lib.rs").write_text(
+                '#[path = "../../../plugins/ui-demo/src/lib.rs"]\nmod product;\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.violations(root),
+                [
+                    "crates/wirt/src/lib.rs:1: compiled source path escapes "
+                    "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+                ],
+            )
+
+    def test_literal_include_escaping_wirt_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            (crate / "src" / "lib.rs").write_text(
+                'include!(r"../../../plugins/ui-demo/src/lib.rs");\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.violations(root),
+                [
+                    "crates/wirt/src/lib.rs:1: compiled source path escapes "
+                    "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+                ],
+            )
+
+    def test_cfg_attr_path_escaping_wirt_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            (crate / "src" / "lib.rs").write_text(
+                '#[cfg_attr(test, path = "../../../plugins/ui-demo/src/lib.rs")]\n'
+                "mod product;\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.violations(root),
+                [
+                    "crates/wirt/src/lib.rs:1: compiled source path escapes "
+                    "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+                ],
+            )
+
+    def test_dynamic_include_is_rejected_when_confinement_cannot_be_proven(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            (crate / "src" / "lib.rs").write_text(
+                'include!(concat!("../", "generated.rs"));\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.violations(root),
+                ["crates/wirt/src/lib.rs:1: include! path is not a string literal"],
+            )
+
+    def test_path_attribute_resolving_inside_wirt_is_allowed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src" / "runtime").mkdir(parents=True)
+            (crate / "tests" / "support").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            (crate / "src" / "runtime" / "tests.rs").write_text(
+                '#[path = "../../tests/support/stub_host.rs"]\nmod stub_host;\n',
+                encoding="utf-8",
+            )
+            (crate / "tests" / "support" / "stub_host.rs").write_text(
+                "pub struct StubHost;\n", encoding="utf-8"
+            )
+
+            self.assertEqual(wirt_boundary.violations(root), [])
+
+    def test_comments_and_string_literals_with_code_spellings_are_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            (crate / "src" / "lib.rs").write_text(
+                "/*\n"
+                "use arclain_core::Service;\n"
+                '#[path = "../../../plugins/ui-demo/src/lib.rs"]\n'
+                'include!("../../../plugins/ui-demo/src/lib.rs");\n'
+                "*/\n"
+                'const NORMAL: &str = "include!(\\\"../../../plugins/ui-demo/src/lib.rs\\\")";\n'
+                'const RAW: &str = r###"#[path = "../../../plugins/ui-demo/src/lib.rs"]"###;\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(wirt_boundary.violations(root), [])
 
     def test_just_check_wirt_executes_the_boundary_guard(self):
         result = subprocess.run(
