@@ -76,7 +76,16 @@ def dependency_violations(workspace_root: Path) -> list[str]:
     return [f"crates/wirt/Cargo.toml: forbidden dependency {name}" for name in names]
 
 
-def scan_normal_string(source: str, start: int, line: int) -> tuple[str | None, int, int]:
+def scan_escaped_literal(
+    source: str,
+    start: int,
+    line: int,
+    name: str,
+    *,
+    delimiter: str = '"',
+    single_character: bool = False,
+    ascii_only: bool = False,
+) -> tuple[str | None, int, int, str | None]:
     cursor = start + 1
     decoded: list[str] = []
     valid = True
@@ -91,9 +100,17 @@ def scan_normal_string(source: str, start: int, line: int) -> tuple[str | None, 
     }
     while cursor < len(source):
         value = source[cursor]
-        if value == '"':
-            return ("".join(decoded) if valid else None, cursor + 1, line)
+        if value == delimiter:
+            decoded_value = "".join(decoded)
+            if single_character and len(decoded_value) != 1:
+                valid = False
+            if ascii_only and any(ord(character) > 0x7F for character in decoded_value):
+                valid = False
+            error = None if valid else f"malformed {name}"
+            return (decoded_value if valid else None, cursor + 1, line, error)
         if value == "\n":
+            if single_character:
+                return None, cursor, line, f"unterminated {name}"
             decoded.append(value)
             line += 1
             cursor += 1
@@ -105,7 +122,7 @@ def scan_normal_string(source: str, start: int, line: int) -> tuple[str | None, 
 
         cursor += 1
         if cursor >= len(source):
-            return None, cursor, line
+            return None, cursor, line, f"unterminated {name}"
         escaped = source[cursor]
         if escaped in escapes:
             decoded.append(escapes[escaped])
@@ -137,29 +154,84 @@ def scan_normal_string(source: str, start: int, line: int) -> tuple[str | None, 
                 continue
         valid = False
         cursor += 1
-    return None, cursor, line
+    return None, cursor, line, f"unterminated {name}"
 
 
-def scan_raw_string(
-    source: str, start: int, line: int
-) -> tuple[str, int, int] | None:
-    if source[start] != "r":
-        return None
-    cursor = start + 1
+def raw_literal_at(source: str, start: int) -> tuple[str, str, str] | None:
+    forms = (
+        ("br", "literal", "raw byte string literal"),
+        ("cr", "literal", "raw C string literal"),
+        ("r", "string", "raw string literal"),
+    )
+    for prefix, kind, name in forms:
+        cursor = start + len(prefix)
+        if not source.startswith(prefix, start):
+            continue
+        while cursor < len(source) and source[cursor] == "#":
+            cursor += 1
+        if cursor < len(source) and source[cursor] == '"':
+            return prefix, kind, name
+    return None
+
+
+def scan_raw_literal(
+    source: str, start: int, line: int, prefix: str, name: str
+) -> tuple[str | None, int, int, str | None]:
+    cursor = start + len(prefix)
     while cursor < len(source) and source[cursor] == "#":
         cursor += 1
-    if cursor >= len(source) or source[cursor] != '"':
-        return None
 
-    hashes = source[start + 1 : cursor]
+    hashes = source[start + len(prefix) : cursor]
     content_start = cursor + 1
     terminator = '"' + hashes
     end = source.find(terminator, content_start)
     if end == -1:
         value = source[content_start:]
-        return value, len(source), line + value.count("\n")
+        return (
+            None,
+            len(source),
+            line + value.count("\n"),
+            f"unterminated {name}",
+        )
     value = source[content_start:end]
-    return value, end + len(terminator), line + value.count("\n")
+    if prefix == "br" and any(ord(character) > 0x7F for character in value):
+        return (
+            None,
+            end + len(terminator),
+            line + value.count("\n"),
+            f"malformed {name}",
+        )
+    return value, end + len(terminator), line + value.count("\n"), None
+
+
+def character_literal_at(source: str, start: int) -> bool:
+    if start + 1 >= len(source):
+        return True
+    first = source[start + 1]
+    if first == "\\" or first in "\r\n":
+        return True
+    if first.isalpha() or first == "_":
+        cursor = start + 2
+        while cursor < len(source) and (
+            source[cursor].isalnum() or source[cursor] == "_"
+        ):
+            cursor += 1
+        return cursor < len(source) and source[cursor] == "'"
+    return True
+
+
+def append_literal_token(
+    tokens: list[RustToken],
+    kind: str,
+    value: str | None,
+    error: str | None,
+    line: int,
+    offset: int,
+) -> None:
+    if error is not None:
+        tokens.append(RustToken("error", error, line, offset))
+    else:
+        tokens.append(RustToken(kind, value, line, offset))
 
 
 def rust_tokens(source: str) -> list[RustToken]:
@@ -178,6 +250,8 @@ def rust_tokens(source: str) -> list[RustToken]:
             cursor = len(source) if newline == -1 else newline
             continue
         if source.startswith("/*", cursor):
+            comment_line = line
+            comment_offset = cursor
             depth = 1
             cursor += 2
             while cursor < len(source) and depth:
@@ -191,18 +265,79 @@ def rust_tokens(source: str) -> list[RustToken]:
                     if source[cursor] == "\n":
                         line += 1
                     cursor += 1
+            if depth:
+                tokens.append(
+                    RustToken(
+                        "error",
+                        "unterminated block comment",
+                        comment_line,
+                        comment_offset,
+                    )
+                )
             continue
 
         token_line = line
         token_offset = cursor
-        raw_string = scan_raw_string(source, cursor, line)
-        if raw_string is not None:
-            decoded, cursor, line = raw_string
-            tokens.append(RustToken("string", decoded, token_line, token_offset))
+        raw_literal = raw_literal_at(source, cursor)
+        if raw_literal is not None:
+            prefix, kind, name = raw_literal
+            decoded, cursor, line, error = scan_raw_literal(
+                source, cursor, line, prefix, name
+            )
+            append_literal_token(
+                tokens, kind, decoded, error, token_line, token_offset
+            )
+            continue
+        if source.startswith("b'", cursor):
+            decoded, cursor, line, error = scan_escaped_literal(
+                source,
+                cursor + 1,
+                line,
+                "byte character literal",
+                delimiter="'",
+                single_character=True,
+                ascii_only=True,
+            )
+            append_literal_token(
+                tokens, "literal", decoded, error, token_line, token_offset
+            )
+            continue
+        if value == "'" and character_literal_at(source, cursor):
+            decoded, cursor, line, error = scan_escaped_literal(
+                source,
+                cursor,
+                line,
+                "character literal",
+                delimiter="'",
+                single_character=True,
+            )
+            append_literal_token(
+                tokens, "literal", decoded, error, token_line, token_offset
+            )
+            continue
+        if source.startswith('b"', cursor):
+            decoded, cursor, line, error = scan_escaped_literal(
+                source, cursor + 1, line, "byte string literal", ascii_only=True
+            )
+            append_literal_token(
+                tokens, "literal", decoded, error, token_line, token_offset
+            )
+            continue
+        if source.startswith('c"', cursor):
+            decoded, cursor, line, error = scan_escaped_literal(
+                source, cursor + 1, line, "C string literal"
+            )
+            append_literal_token(
+                tokens, "literal", decoded, error, token_line, token_offset
+            )
             continue
         if value == '"':
-            decoded, cursor, line = scan_normal_string(source, cursor, line)
-            tokens.append(RustToken("string", decoded, token_line, token_offset))
+            decoded, cursor, line, error = scan_escaped_literal(
+                source, cursor, line, "string literal"
+            )
+            append_literal_token(
+                tokens, "string", decoded, error, token_line, token_offset
+            )
             continue
         if value.isalpha() or value == "_":
             cursor += 1
@@ -326,7 +461,12 @@ def source_violations(workspace_root: Path) -> list[str]:
     for path in sorted(source_root.rglob("*.rs")) if source_root.exists() else []:
         tokens = rust_tokens(path.read_text(encoding="utf-8"))
         relative = path.relative_to(workspace_root).as_posix()
-        issues = import_issues(tokens)
+        issues = [
+            (token.offset, token.line, f"lexical error: {token.value}")
+            for token in tokens
+            if token.kind == "error"
+        ]
+        issues.extend(import_issues(tokens))
         for offset, line, literal in compiled_path_issues(tokens):
             if literal is None:
                 issues.append((offset, line, "include! path is not a string literal"))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import shutil
 import sys
 import tempfile
 import tomllib
@@ -17,6 +18,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestWirtBoundary(unittest.TestCase):
+    def source_violations(self, source: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            (crate / "src" / "lib.rs").write_text(source, encoding="utf-8")
+            return wirt_boundary.violations(root)
+
     def test_app_manifest_declares_neutral_model_and_product_adapter_edges(self):
         with (REPO_ROOT / "crates" / "app" / "Cargo.toml").open("rb") as handle:
             dependencies = tomllib.load(handle)["dependencies"]
@@ -265,6 +278,178 @@ class TestWirtBoundary(unittest.TestCase):
             )
 
             self.assertEqual(wirt_boundary.violations(root), [])
+
+    def test_opaque_literal_matrix_does_not_hide_a_following_include(self):
+        literals = (
+            ("character", "const VALUE: char = '\"';"),
+            ("byte character", "const VALUE: u8 = b'\"';"),
+            ("byte string", r'''const VALUE: &[u8] = b"harmless \" quote \\ slash";'''),
+            ("raw byte string", r'''const VALUE: &[u8] = br#"harmless " quote"#;'''),
+            (
+                "C string",
+                r'''const VALUE: &core::ffi::CStr = c"harmless \" quote";''',
+            ),
+            (
+                "raw C string",
+                r'''const VALUE: &core::ffi::CStr = cr#"harmless " quote"#;''',
+            ),
+        )
+        expected = [
+            "crates/wirt/src/lib.rs:2: compiled source path escapes "
+            "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+        ]
+
+        for name, literal in literals:
+            with self.subTest(literal=name):
+                source = (
+                    f"{literal}\n"
+                    'include!("../../../plugins/ui-demo/src/lib.rs");\n'
+                )
+                self.assertEqual(self.source_violations(source), expected)
+
+    def test_opaque_literal_contents_alone_have_no_boundary_meaning(self):
+        literals = (
+            ("character", "const VALUE: char = '\"';"),
+            ("byte character", "const VALUE: u8 = b'\"';"),
+            (
+                "byte string",
+                r'''const VALUE: &[u8] = b"include!(\"../../../plugins/ui-demo/src/lib.rs\")";''',
+            ),
+            (
+                "raw byte string",
+                r'''const VALUE: &[u8] = br#"include!("../../../plugins/ui-demo/src/lib.rs")"#;''',
+            ),
+            (
+                "C string",
+                r'''const VALUE: &core::ffi::CStr = c"include!(\"../../../plugins/ui-demo/src/lib.rs\")";''',
+            ),
+            (
+                "raw C string",
+                r'''const VALUE: &core::ffi::CStr = cr#"include!("../../../plugins/ui-demo/src/lib.rs")"#;''',
+            ),
+        )
+
+        for name, literal in literals:
+            with self.subTest(literal=name):
+                self.assertEqual(self.source_violations(f"{literal}\n"), [])
+
+    def test_lifetimes_and_labels_do_not_desynchronize_following_code(self):
+        source = (
+            "fn identity<'a>(value: &'a str) -> &'a str { "
+            "'label: { break 'label value } }\n"
+            'include!("../../../plugins/ui-demo/src/lib.rs");\n'
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:2: compiled source path escapes "
+                "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+            ],
+        )
+
+    def test_unterminated_or_malformed_lexical_forms_fail_closed(self):
+        cases = (
+            ("block comment", "/* never closes", "unterminated block comment"),
+            (
+                "normal string",
+                'const VALUE: &str = "never closes',
+                "unterminated string literal",
+            ),
+            (
+                "raw string",
+                'const VALUE: &str = r#"never closes',
+                "unterminated raw string literal",
+            ),
+            (
+                "character",
+                "const VALUE: char = '\"",
+                "unterminated character literal",
+            ),
+            (
+                "byte character",
+                "const VALUE: u8 = b'x",
+                "unterminated byte character literal",
+            ),
+            (
+                "byte string",
+                'const VALUE: &[u8] = b"never closes',
+                "unterminated byte string literal",
+            ),
+            (
+                "raw byte string",
+                'const VALUE: &[u8] = br#"never closes',
+                "unterminated raw byte string literal",
+            ),
+            (
+                "C string",
+                'const VALUE: &core::ffi::CStr = c"never closes',
+                "unterminated C string literal",
+            ),
+            (
+                "raw C string",
+                'const VALUE: &core::ffi::CStr = cr#"never closes',
+                "unterminated raw C string literal",
+            ),
+            (
+                "invalid escape",
+                'const VALUE: &str = "bad \\q escape";',
+                "malformed string literal",
+            ),
+            (
+                "oversized character",
+                "const VALUE: char = 'ab';",
+                "malformed character literal",
+            ),
+        )
+
+        for name, source, message in cases:
+            with self.subTest(lexical_form=name):
+                self.assertEqual(
+                    self.source_violations(source),
+                    [f"crates/wirt/src/lib.rs:1: lexical error: {message}"],
+                )
+
+    def test_literal_matrix_is_valid_rust(self):
+        rustc = shutil.which("rustc")
+        if rustc is None:
+            self.skipTest("rustc is required to validate the Rust literal fixture")
+        source = (
+            "const CHARACTER: char = '\"';\n"
+            "const BYTE_CHARACTER: u8 = b'\"';\n"
+            r'''const BYTE_STRING: &[u8] = b"harmless \" quote \\ slash";'''
+            "\n"
+            r'''const RAW_BYTE_STRING: &[u8] = br#"harmless " quote"#;'''
+            "\n"
+            r'''const C_STRING: &core::ffi::CStr = c"harmless \" quote";'''
+            "\n"
+            r'''const RAW_C_STRING: &core::ffi::CStr = cr#"harmless " quote"#;'''
+            "\n"
+            "fn identity<'a>(value: &'a str) -> &'a str { "
+            "'label: { break 'label value } }\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / "literal_fixture.rs"
+            fixture.write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [
+                    rustc,
+                    "--crate-type",
+                    "lib",
+                    "--edition",
+                    "2021",
+                    "--emit",
+                    "metadata",
+                    "-o",
+                    str(root / "literal_fixture.rmeta"),
+                    str(fixture),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_just_check_wirt_executes_the_boundary_guard(self):
         result = subprocess.run(
