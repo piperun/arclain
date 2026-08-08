@@ -165,6 +165,20 @@ fn step_until(harness: &mut Harness<'static>, what: &str, condition: impl Fn() -
     }
 }
 
+/// Runs frames until AccessKit exposes `label`, using `step_until`'s same
+/// load-tolerant deadline and polling cadence.
+fn step_until_label_visible(harness: &mut Harness<'static>, label: &str, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        harness.step();
+        if harness.query_by_label(label).is_some() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Draws frames until the open dialog's session exists, and returns it.
 fn step_until_session_open(
     harness: &mut Harness<'static>,
@@ -290,7 +304,7 @@ fn a_dialog_press_dispatches_through_the_facade_and_applies_its_result() {
     let session_id = step_until_session_open(&mut harness, &shared);
     let opened_revision = document(&shared, session_id).revision;
 
-    harness.get_by_label(ACTION_BUTTON).click();
+    harness.get_by_label(ACTION_BUTTON).click_accesskit();
     let origin_tab = active_tab(&shared);
     let display_name = shared
         .signals()
@@ -330,9 +344,12 @@ fn closing_the_dialog_window_releases_its_session() {
     let mut harness = dialog_harness(&shared);
     step_until_session_open(&mut harness, &shared);
 
-    harness.get_by_label("Close window").click();
-    harness.step();
-    assert!(!dialog_is_open(&shared), "the X must close the dialog");
+    harness.get_by_label("Close window").click_accesskit();
+    step_until(
+        &mut harness,
+        "the X never closed the dialog after its AccessKit action was invoked",
+        || !dialog_is_open(&shared),
+    );
     // The reconcile owns the session close, so it lands on the next frame.
     harness.step();
 
@@ -363,11 +380,11 @@ fn a_close_dialog_button_releases_the_session_without_reaching_the_plugin() {
     let mut harness = dialog_harness(&shared);
     step_until_session_open(&mut harness, &shared);
 
-    harness.get_by_label(CLOSE_BUTTON).click();
-    harness.step();
-    assert!(
-        !dialog_is_open(&shared),
-        "a CloseDialog button must be resolved by the host, not sent to the plugin"
+    harness.get_by_label(CLOSE_BUTTON).click_accesskit();
+    step_until(
+        &mut harness,
+        "the host never closed the dialog after its CloseDialog button was pressed",
+        || !dialog_is_open(&shared),
     );
     harness.step();
 
@@ -459,7 +476,11 @@ fn a_dialog_whose_tab_closed_is_dismissed_instead_of_reopening_every_frame() {
         "the dialog's session never opened while its tab was still open",
         move || sessions.session_id(&probe).is_some(),
     );
-    assert!(harness.query_by_label(FIRST_LAYOUT_LABEL).is_some());
+    step_until_label_visible(
+        &mut harness,
+        FIRST_LAYOUT_LABEL,
+        "the dialog's first document never became visible before its tab closed",
+    );
 
     let mut tabs = shared.signals().tabs.get();
     tabs.close(doomed_tab);
@@ -503,10 +524,17 @@ fn a_dialog_button_opens_a_page_the_facade_renderer_draws() {
 
     let mut harness = dialog_harness(&shared);
     step_until_session_open(&mut harness, &shared);
-    harness.get_by_label(OPEN_PAGE_BUTTON).click();
-    harness.step();
+    harness.get_by_label(OPEN_PAGE_BUTTON).click_accesskit();
 
-    let state = shared.signals().plugin_dialog_state.get();
+    let dialog_state = shared.signals().plugin_dialog_state.clone();
+    let navigation_state = dialog_state.clone();
+    step_until(
+        &mut harness,
+        "the dialog's OpenPage action never reached the shared page stack",
+        move || navigation_state.get().current_page() == Some((PLUGIN, "fixture-page", origin_tab)),
+    );
+
+    let state = dialog_state.get();
     assert_eq!(
         state.current_page(),
         Some((PLUGIN, "fixture-page", origin_tab)),
