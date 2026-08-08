@@ -104,8 +104,6 @@ def scan_escaped_literal(
             decoded_value = "".join(decoded)
             if single_character and len(decoded_value) != 1:
                 valid = False
-            if ascii_only and any(ord(character) > 0x7F for character in decoded_value):
-                valid = False
             error = None if valid else f"malformed {name}"
             return (decoded_value if valid else None, cursor + 1, line, error)
         if value == "\n":
@@ -116,6 +114,8 @@ def scan_escaped_literal(
             cursor += 1
             continue
         if value != "\\":
+            if ascii_only and ord(value) > 0x7F:
+                valid = False
             decoded.append(value)
             cursor += 1
             continue
@@ -148,6 +148,8 @@ def scan_escaped_literal(
             try:
                 decoded.append(chr(int(digits.replace("_", ""), 16)))
             except (ValueError, OverflowError):
+                valid = False
+            if ascii_only:
                 valid = False
             if end != -1:
                 cursor = end + 1

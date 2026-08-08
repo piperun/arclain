@@ -311,9 +311,14 @@ class TestWirtBoundary(unittest.TestCase):
         literals = (
             ("character", "const VALUE: char = '\"';"),
             ("byte character", "const VALUE: u8 = b'\"';"),
+            ("upper byte character escape", r"const VALUE: u8 = b'\xFF';"),
             (
                 "byte string",
                 r'''const VALUE: &[u8] = b"include!(\"../../../plugins/ui-demo/src/lib.rs\")";''',
+            ),
+            (
+                "upper byte string escapes",
+                r'''const VALUE: &[u8] = b"\x80\xFF";''',
             ),
             (
                 "raw byte string",
@@ -401,6 +406,16 @@ class TestWirtBoundary(unittest.TestCase):
                 "const VALUE: char = 'ab';",
                 "malformed character literal",
             ),
+            (
+                "Unicode escape in byte character",
+                r"const VALUE: u8 = b'\u{41}';",
+                "malformed byte character literal",
+            ),
+            (
+                "Unicode escape in byte string",
+                r'''const VALUE: &[u8] = b"\u{41}";''',
+                "malformed byte string literal",
+            ),
         )
 
         for name, source, message in cases:
@@ -417,7 +432,11 @@ class TestWirtBoundary(unittest.TestCase):
         source = (
             "const CHARACTER: char = '\"';\n"
             "const BYTE_CHARACTER: u8 = b'\"';\n"
+            r"const UPPER_BYTE_CHARACTER: u8 = b'\xFF';"
+            "\n"
             r'''const BYTE_STRING: &[u8] = b"harmless \" quote \\ slash";'''
+            "\n"
+            r'''const UPPER_BYTE_STRING: &[u8] = b"\x80\xFF";'''
             "\n"
             r'''const RAW_BYTE_STRING: &[u8] = br#"harmless " quote"#;'''
             "\n"
@@ -427,6 +446,10 @@ class TestWirtBoundary(unittest.TestCase):
             "\n"
             "fn identity<'a>(value: &'a str) -> &'a str { "
             "'label: { break 'label value } }\n"
+            r"const UNICODE_CHARACTER: char = '\u{1F980}';"
+            "\n"
+            r'''const UNICODE_STRING: &str = "\u{1F980}";'''
+            "\n"
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
