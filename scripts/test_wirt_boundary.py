@@ -16,15 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestWirtBoundary(unittest.TestCase):
-    def test_arclain_runtime_is_an_adapter_not_a_second_engine(self):
-        text = (
-            REPO_ROOT / "crates" / "plugins" / "src" / "runtime.rs"
-        ).read_text(encoding="utf-8")
-        self.assertIn("wirt::PluginInstance<HostFunctions>", text)
-        self.assertNotIn("wasmtime::component::Component", text)
-        self.assertNotIn("struct EpochTicker", text)
-        self.assertNotIn("FUEL_PER_EXPORT", text)
-
     def test_product_manager_stays_out_of_wirt(self):
         self.assertTrue(
             (REPO_ROOT / "crates" / "plugins" / "src" / "manager" / "mod.rs").is_file()

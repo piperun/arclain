@@ -270,3 +270,28 @@ impl PluginInstance {
         self.inner.get_top_tabs()
     }
 }
+
+#[cfg(test)]
+mod adapter_shape {
+    use super::{HostFunctions, LoadedPlugin, PluginInstance, WasmRuntime};
+
+    fn assert_runtime_is_exact_wirt_wrapper(adapter: WasmRuntime) {
+        let WasmRuntime(inner) = adapter;
+        let _: wirt::WasmRuntime = inner;
+    }
+
+    fn assert_loaded_plugin_is_exact_wirt_wrapper(adapter: LoadedPlugin) {
+        let LoadedPlugin { id, inner } = adapter;
+        let _: String = id;
+        let _: wirt::LoadedComponent = inner;
+    }
+
+    fn assert_plugin_instance_is_exact_wirt_wrapper(adapter: PluginInstance) {
+        let PluginInstance { inner } = adapter;
+        let _: wirt::PluginInstance<HostFunctions> = inner;
+    }
+
+    const _: fn(WasmRuntime) = assert_runtime_is_exact_wirt_wrapper;
+    const _: fn(LoadedPlugin) = assert_loaded_plugin_is_exact_wirt_wrapper;
+    const _: fn(PluginInstance) = assert_plugin_instance_is_exact_wirt_wrapper;
+}
