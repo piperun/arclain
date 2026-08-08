@@ -852,11 +852,36 @@ class TestPluginFetchRouting(unittest.TestCase):
         self.assertNotIn("should_use_proxy_for_plugin", host)
         self.assertNotIn("Fall through to the buffered path as a fallback", host)
 
-    def test_plugin_images_are_checked_and_host_images_remain_host_owned(self):
-        image_fetcher = self._source("crates/ui/src/shared/image_fetcher.rs")
+    def test_ui_plugin_images_stay_behind_the_application_dependency_boundary(self):
+        """Rust tests cover routing behavior; this gate enforces ownership."""
+        with (REPO_ROOT / "crates" / "ui" / "Cargo.toml").open("rb") as handle:
+            manifest = tomllib.load(handle)
 
-        self.assertIn("client.request_for_plugin(pid, request)", image_fetcher)
-        self.assertIn("Ok(client.request(request))", image_fetcher)
+        dependency_tables = [
+            manifest.get("dependencies", {}),
+            manifest.get("dev-dependencies", {}),
+            manifest.get("build-dependencies", {}),
+        ]
+        for target in manifest.get("target", {}).values():
+            dependency_tables.extend(
+                [
+                    target.get("dependencies", {}),
+                    target.get("dev-dependencies", {}),
+                    target.get("build-dependencies", {}),
+                ]
+            )
+
+        def package_names(dependencies):
+            return {
+                spec.get("package", name) if isinstance(spec, dict) else name
+                for name, spec in dependencies.items()
+            }
+
+        direct_packages = set().union(
+            *(package_names(dependencies) for dependencies in dependency_tables)
+        )
+        self.assertIn("arclain_app", direct_packages)
+        self.assertNotIn("arclain-network", direct_packages)
 
 
 class TestWirtAbi(unittest.TestCase):
