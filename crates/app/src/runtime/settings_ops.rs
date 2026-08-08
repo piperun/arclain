@@ -231,7 +231,13 @@ pub(super) async fn run_update_settings(
     // be in effect afterward (see that function's own doc comment).
     // Nothing is ever written, and the vault is never re-opened, until
     // every check below has passed.
-    let (current_crc_policy, current_collision_policy, current_db_paths, current_dbs) = {
+    let (
+        current_crc_policy,
+        current_collision_policy,
+        current_db_paths,
+        default_db_paths,
+        current_dbs,
+    ) = {
         let mutable = inner.session.mutable.read();
         if patch.expected_revision != mutable.revision {
             return Err(conflict_error(mutable.revision));
@@ -240,6 +246,7 @@ pub(super) async fn run_update_settings(
             mutable.encrypted_crc_policy.clone(),
             mutable.default_collision_policy.clone(),
             mutable.db_paths.clone(),
+            mutable.default_db_paths.clone(),
             mutable.dbs.clone(),
         )
     };
@@ -419,6 +426,7 @@ pub(super) async fn run_update_settings(
             repoint_vault_paths(
                 inner,
                 current_db_paths.clone(),
+                default_db_paths,
                 patch
                     .security
                     .as_ref()
@@ -1555,9 +1563,20 @@ async fn persist_app_config_policies(
 /// [`run_rekey_vault`], this *repoints* to a path the caller asserts
 /// already holds a valid vault (or accepts creating a fresh one there);
 /// it never copies or re-encrypts the current vault's contents.
+fn patched_vault_paths(
+    current_db_paths: Option<DbPaths>,
+    default_db_paths: &DbPaths,
+    patch: &crate::settings::SecuritySettingsPatch,
+) -> DbPaths {
+    let mut paths = current_db_paths.unwrap_or_else(|| default_db_paths.clone());
+    settings::apply_vault_path_patch(&mut paths, patch, default_db_paths);
+    paths
+}
+
 async fn repoint_vault_paths(
     inner: &Arc<AppRuntime>,
     current_db_paths: Option<DbPaths>,
+    default_db_paths: DbPaths,
     patch: &crate::settings::SecuritySettingsPatch,
 ) -> Result<
     (
@@ -1573,19 +1592,11 @@ async fn repoint_vault_paths(
         .ok_or_else(shutdown_mid_request_error)?;
     handle
         .spawn_blocking(move || {
-            let mut paths = current_db_paths.unwrap_or(
-                arclain_core::DbPaths::calculate_defaults("arclain").map_err(|error| {
-                    persistence_error("resolving default database paths", error)
-                })?,
-            );
-            let defaults = arclain_core::DbPaths::calculate_defaults("arclain")
-                .map_err(|error| persistence_error("resolving default database paths", error))?;
-
             // `Clear` on either field means "reset to `defaults`", not
             // "unset" -- see `settings::apply_vault_path_patch`'s own
             // doc comment (the "I6" fix) for why a vault path can never
             // simply be absent the way a directory override can.
-            settings::apply_vault_path_patch(&mut paths, &security_patch, &defaults);
+            let paths = patched_vault_paths(current_db_paths, &default_db_paths, &security_patch);
 
             // Persist the overrides before attempting to re-open, matching
             // `apply_preferences`'s own ordering: a crash between here and
@@ -1842,6 +1853,28 @@ fn internal_join_error(join_error: tokio::task::JoinError) -> ApplicationError {
 mod tests {
     use super::*;
     use arclain_network::features::proxy::ConnectionTestStep;
+
+    #[test]
+    fn clear_uses_the_bootstrapped_profile_defaults() {
+        use crate::settings::{PatchValue, SecuritySettingsPatch};
+
+        let defaults = DbPaths::for_data_dir(std::path::Path::new("profile"));
+        let mut current = defaults.clone();
+        current.secrets_db = PathBuf::from("custom/pass.redb");
+        current.key_file = Some(PathBuf::from("custom/master.key"));
+        let patch = SecuritySettingsPatch {
+            secrets_database_path: PatchValue::Clear,
+            key_file_path: PatchValue::Clear,
+            encrypted_crc_policy: PatchValue::Keep,
+        };
+
+        let candidate = patched_vault_paths(Some(current.clone()), &defaults, &patch);
+
+        assert_eq!(candidate.config_db, current.config_db);
+        assert_eq!(candidate.cache_db, current.cache_db);
+        assert_eq!(candidate.secrets_db, defaults.secrets_db);
+        assert_eq!(candidate.key_file, defaults.key_file);
+    }
 
     #[test]
     fn userinfo_redaction_leaves_an_ordinary_url_untouched() {

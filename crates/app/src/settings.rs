@@ -400,11 +400,10 @@ pub struct SecuritySettingsDto {
     /// Where a `Clear` on [`SecuritySettingsPatch::secrets_database_path`]
     /// would put the vault -- this install's computed default location.
     /// Reported so a frontend can show it (as a placeholder for an empty
-    /// override field, say) without resolving OS config directories of
-    /// its own. Resolved once at bootstrap, so it never changes for the
-    /// life of an application instance. `None` if it could not be
-    /// resolved at all, which is the same condition that makes `Clear`
-    /// fail.
+    /// override field, say) without resolving directories of its own.
+    /// Resolved once from the bootstrapped profile, so it never changes
+    /// for the life of an application instance. `None` only in the
+    /// unresolved pre-bootstrap placeholder DTO.
     pub default_secrets_database_path: Option<PathBuf>,
     /// See [`Self::default_secrets_database_path`], for the key file.
     pub default_key_file_path: Option<PathBuf>,
@@ -418,8 +417,8 @@ pub struct SecuritySettingsDto {
 /// to *some* concrete location on disk, so there is no "unset" state to
 /// clear to, the way there is for e.g. [`ArchiveSettingsPatch::
 /// cache_directory`]. `Clear` on either of these two fields instead
-/// means "reset to this install's computed default location"
-/// (`DbPaths::calculate_defaults`) -- applied by
+/// means "reset to this instance's bootstrapped default location" --
+/// applied by
 /// [`apply_vault_path_patch`], called from
 /// `settings_ops::repoint_vault_paths` (not by [`apply_security_value_patch`],
 /// which only covers `encrypted_crc_policy`), since it needs a `DbPaths`
@@ -493,15 +492,14 @@ impl Default for NetworkSettingsDto {
 /// exactly what a placeholder should claim.
 impl Default for SecuritySettingsDto {
     fn default() -> Self {
-        security_dto(&MutableSettings::new(
-            UserConfig::default(),
-            Vec::new(),
-            DEFAULT_ENCRYPTED_CRC_POLICY.to_string(),
-            default_collision_policy_token(),
-            None,
-            None,
-            None,
-        ))
+        Self {
+            secrets_database_path: None,
+            key_file_path: None,
+            default_secrets_database_path: None,
+            default_key_file_path: None,
+            encrypted_crc_policy: DEFAULT_ENCRYPTED_CRC_POLICY.to_string(),
+            vault_available: false,
+        }
     }
 }
 
@@ -701,13 +699,11 @@ pub(crate) struct MutableSettings {
     /// archive-settings field lives outside `user_config`.
     pub(crate) default_collision_policy: String,
     pub(crate) db_paths: Option<DbPaths>,
-    /// This install's computed default vault locations, resolved once at
-    /// bootstrap. Immutable for the life of the application: it is where
-    /// a `Clear` on either vault-path patch field resets *to*, not a
-    /// setting in its own right. Held here (rather than recomputed per
-    /// read) because resolving it touches OS config directories and
-    /// environment variables, which this module's conversions never do.
-    pub(crate) default_db_paths: Option<DbPaths>,
+    /// This instance's default vault locations, derived from its resolved
+    /// application profile once at bootstrap. Immutable for the life of
+    /// the application: it is where a `Clear` on either vault-path patch
+    /// field resets *to*, not a setting in its own right.
+    pub(crate) default_db_paths: DbPaths,
     pub(crate) dbs: Option<ConfigDbs>,
 }
 
@@ -718,7 +714,7 @@ impl MutableSettings {
         encrypted_crc_policy: String,
         default_collision_policy: String,
         db_paths: Option<DbPaths>,
-        default_db_paths: Option<DbPaths>,
+        default_db_paths: DbPaths,
         dbs: Option<ConfigDbs>,
     ) -> Self {
         Self {
@@ -803,14 +799,8 @@ pub(crate) fn security_dto(mutable: &MutableSettings) -> SecuritySettingsDto {
     SecuritySettingsDto {
         secrets_database_path: mutable.db_paths.as_ref().map(|p| p.secrets_db.clone()),
         key_file_path: mutable.db_paths.as_ref().and_then(|p| p.key_file.clone()),
-        default_secrets_database_path: mutable
-            .default_db_paths
-            .as_ref()
-            .map(|p| p.secrets_db.clone()),
-        default_key_file_path: mutable
-            .default_db_paths
-            .as_ref()
-            .and_then(|p| p.key_file.clone()),
+        default_secrets_database_path: Some(mutable.default_db_paths.secrets_db.clone()),
+        default_key_file_path: mutable.default_db_paths.key_file.clone(),
         encrypted_crc_policy: mutable.encrypted_crc_policy.clone(),
         vault_available: mutable.dbs.is_some(),
     }
@@ -1004,19 +994,17 @@ pub(crate) fn apply_security_value_patch(
 /// even though the *fields* it patches are `Option<PathBuf>`-shaped like
 /// [`ArchiveSettingsPatch::cache_directory`] -- unlike that field,
 /// `Clear` here does **not** mean `None`; it means "reset to
-/// `defaults`" (this install's own `DbPaths::calculate_defaults`
-/// result). See [`SecuritySettingsPatch`]'s own doc comment and
+/// `defaults`" (this instance's immutable bootstrapped profile paths).
+/// See [`SecuritySettingsPatch`]'s own doc comment and
 /// [`PatchValue`]'s "one documented exception" note for the full
 /// rationale -- a vault must always resolve to some concrete on-disk
 /// location, so there is no "no vault path" state the way there is "no
 /// cache directory override".
 ///
-/// Takes `paths`/`defaults` rather than reading them itself because
-/// resolving either requires I/O this module deliberately never
-/// performs (see this module's own top-level doc comment on why patch
-/// application stays pure) -- `settings_ops::repoint_vault_paths` is
-/// the only caller, and the only place that has a current `DbPaths` to
-/// patch and a computed `defaults` to fall back to.
+/// Takes `paths`/`defaults` rather than resolving them itself so patch
+/// application stays pure and cannot silently choose a different profile.
+/// `settings_ops::repoint_vault_paths` is the only caller, and it owns both
+/// the current paths and the default captured during bootstrap.
 pub(crate) fn apply_vault_path_patch(
     paths: &mut DbPaths,
     patch: &SecuritySettingsPatch,
@@ -1575,8 +1563,7 @@ mod tests {
     /// doc comments for why a vault path has no "unset" state to clear to.
     #[test]
     fn clear_on_vault_paths_resets_to_the_computed_defaults_not_to_unset() {
-        let defaults = DbPaths::calculate_defaults("arclain-settings-rs-test")
-            .expect("calculate_defaults is pure path computation and should not fail");
+        let defaults = DbPaths::for_data_dir(Path::new("/defaults"));
         let mut paths = defaults.clone();
         paths.secrets_db = PathBuf::from("/custom/secrets.redb");
         paths.key_file = Some(PathBuf::from("/custom/master.key"));
@@ -1600,8 +1587,7 @@ mod tests {
 
     #[test]
     fn set_overrides_a_vault_path_and_keep_leaves_the_other_untouched() {
-        let defaults = DbPaths::calculate_defaults("arclain-settings-rs-test")
-            .expect("calculate_defaults is pure path computation and should not fail");
+        let defaults = DbPaths::for_data_dir(Path::new("/defaults"));
         let mut paths = defaults.clone();
         paths.secrets_db = PathBuf::from("/custom/secrets.redb");
 

@@ -22,7 +22,7 @@ impl SecretsService {
         let mut paths = if let Some(p) = db_paths.clone() {
             p
         } else {
-            DbPaths::calculate_defaults("arclain")?
+            DbPaths::system_default("arclain")
         };
 
         let src = paths.secrets_db.clone();
@@ -72,7 +72,7 @@ impl SecretsService {
         let mut paths = if let Some(p) = db_paths.clone() {
             p
         } else {
-            DbPaths::calculate_defaults("arclain")?
+            DbPaths::system_default("arclain")
         };
 
         // Ensure current key exists

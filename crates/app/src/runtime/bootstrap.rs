@@ -256,12 +256,8 @@ pub(crate) fn run(
     );
 
     // -- configuration, user configuration --
-    let mut db_paths = DbPaths {
-        config_db: paths.databases_dir().join("config.sqlite"),
-        cache_db: paths.databases_dir().join("metadata.sqlite"),
-        secrets_db: paths.secrets_dir().join("pass.redb"),
-        key_file: Some(paths.secrets_dir().join("master.key")),
-    };
+    let default_db_paths = DbPaths::for_data_dir(&paths.data_dir);
+    let mut db_paths = default_db_paths.clone();
     let (secrets_path, key_path, crc_policy) =
         ConfigService::load_startup_config(&db_paths.config_db).unwrap_or((None, None, None));
 
@@ -597,7 +593,7 @@ pub(crate) fn run(
             encrypted_crc_policy,
             default_collision_policy,
             Some(db_paths),
-            DbPaths::calculate_defaults("arclain").ok(),
+            default_db_paths,
             dbs,
         )),
     };

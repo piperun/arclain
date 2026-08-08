@@ -302,23 +302,27 @@ fn first_run_defaults_reflect_a_fresh_bootstrap() {
     assert_eq!(snapshot.security.encrypted_crc_policy, "on_access");
     assert!(snapshot.security.vault_available);
 
-    // The computed default vault locations are reported independently of
-    // where this (temp-profile) instance actually put its vault, so a
-    // frontend can show what a `Clear` would reset to.
-    let computed_defaults =
-        arclain_core::DbPaths::calculate_defaults("arclain").expect("resolve default db paths");
+    // Defaults belong to this bootstrapped profile too: a `Clear` must
+    // never escape a caller-supplied `paths_override` and repoint the
+    // instance at the machine-wide Arclain profile.
+    let expected_secrets_dir = temp.path().join("data").join("secrets");
+    let expected_secrets_db = expected_secrets_dir.join("pass.redb");
+    let expected_key_file = expected_secrets_dir.join("master.key");
     assert_eq!(
         snapshot.security.default_secrets_database_path.as_deref(),
-        Some(computed_defaults.secrets_db.as_path())
+        Some(expected_secrets_db.as_path())
     );
     assert_eq!(
-        snapshot.security.default_key_file_path,
-        computed_defaults.key_file
+        snapshot.security.default_key_file_path.as_deref(),
+        Some(expected_key_file.as_path())
     );
-    assert_ne!(
+    assert_eq!(
         snapshot.security.secrets_database_path, snapshot.security.default_secrets_database_path,
-        "this test profile is deliberately not at the computed default location, so the two \
-         must be distinguishable"
+        "a first-run profile must report its live vault as the reset target"
+    );
+    assert_eq!(
+        snapshot.security.key_file_path, snapshot.security.default_key_file_path,
+        "a first-run profile must report its live key as the reset target"
     );
     assert_eq!(
         snapshot

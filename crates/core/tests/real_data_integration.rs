@@ -131,8 +131,7 @@ fn assert_dirs_equal(dir1: &Path, dir2: &Path) {
 /// Returns `None` if the production database or key file doesn't exist.
 /// Panics on unexpected errors (corrupt DB, wrong key, etc.)
 fn load_production_password_rules() -> Option<Vec<arclain_db::DbPassRule>> {
-    let db_paths =
-        DbPaths::calculate_defaults("arclain").expect("Failed to get default database paths");
+    let db_paths = DbPaths::system_default("arclain");
 
     info!("Production database paths:");
     info!("  Secrets DB: {:?}", db_paths.secrets_db);

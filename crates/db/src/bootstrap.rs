@@ -24,22 +24,27 @@ pub struct DbPaths {
 }
 
 impl DbPaths {
-    /// Calculate default paths without creating them.
-    /// Creation is now handled by arclain_core::dirs::AppDirectories.
-    pub fn calculate_defaults(app_name: &str) -> Result<Self> {
-        let base = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(app_name);
+    /// Build the canonical database paths under a resolved application
+    /// data directory without creating anything on disk.
+    pub fn for_data_dir(data_dir: &Path) -> Self {
+        let databases_dir = data_dir.join("databases");
+        let secrets_dir = data_dir.join("secrets");
 
-        let databases_dir = base.join("databases");
-        let secrets_dir = base.join("secrets");
-
-        Ok(Self {
+        Self {
             config_db: databases_dir.join("config.sqlite"),
             cache_db: databases_dir.join("metadata.sqlite"),
             secrets_db: secrets_dir.join("pass.redb"),
             key_file: Some(secrets_dir.join("master.key")),
-        })
+        }
+    }
+
+    /// Build the canonical paths for an application's OS-conventional
+    /// profile without creating anything on disk.
+    pub fn system_default(app_name: &str) -> Self {
+        let data_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(app_name);
+        Self::for_data_dir(&data_dir)
     }
 }
 
@@ -167,6 +172,32 @@ pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
 mod tests {
     use super::*;
     use crate::DbConnection;
+
+    #[test]
+    fn profile_relative_defaults_use_the_canonical_layout() {
+        let paths = DbPaths::for_data_dir(Path::new("profile"));
+
+        assert_eq!(
+            paths.config_db,
+            PathBuf::from("profile")
+                .join("databases")
+                .join("config.sqlite")
+        );
+        assert_eq!(
+            paths.cache_db,
+            PathBuf::from("profile")
+                .join("databases")
+                .join("metadata.sqlite")
+        );
+        assert_eq!(
+            paths.secrets_db,
+            PathBuf::from("profile").join("secrets").join("pass.redb")
+        );
+        assert_eq!(
+            paths.key_file,
+            Some(PathBuf::from("profile").join("secrets").join("master.key"))
+        );
+    }
 
     /// A cache database left behind by an older build carries cr-sqlite
     /// replication triggers whose bodies call `crsql_internal_sync_bit`.
