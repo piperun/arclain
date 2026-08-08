@@ -45,7 +45,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 HEADLESS_CRATES = {
     "app", "app_fs", "checksum", "core", "data", "db",
-    "network", "plugins", "signals",
+    "network", "plugins", "signals", "wirt",
 }
 GUI_CRATES = {"theme", "ui", "widgets"}
 

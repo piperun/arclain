@@ -47,7 +47,7 @@ class TestModuleConstants(unittest.TestCase):
             frontend_boundary.HEADLESS_CRATES,
             {
                 "app", "app_fs", "checksum", "core", "data", "db",
-                "network", "plugins", "signals",
+                "network", "plugins", "signals", "wirt",
             },
         )
         self.assertEqual(frontend_boundary.GUI_CRATES, {"theme", "ui", "widgets"})

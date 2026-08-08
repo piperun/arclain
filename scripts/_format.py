@@ -23,6 +23,7 @@ ROOT_PACKAGES = (
     "arclain_theme",
     "arclain_ui",
     "arclain_widgets",
+    "wirt",
 )
 STANDALONE_MANIFESTS = (
     "plugin-sdk/Cargo.toml",

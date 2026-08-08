@@ -69,6 +69,8 @@ class TestOwnedFormatting(unittest.TestCase):
         "arclain_ui",
         "--package",
         "arclain_widgets",
+        "--package",
+        "wirt",
     ]
     MANIFEST_COMMANDS = [
         ["cargo", "fmt", "--manifest-path", "plugin-sdk/Cargo.toml"],

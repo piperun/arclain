@@ -151,7 +151,8 @@ push-release:
     git push origin $(git tag --points-at HEAD)
 
 # ─── invariant checks ─────────────────────────────────────────────────────
-# `just check` (all), `just check gameta`, `just check boundary`.
+# `just check` (all), `just check gameta`, `just check boundary`, or
+# `just check wirt`.
 
 # Run invariant checks. subject: all (default) | gameta | boundary.
 check subject="all":
@@ -160,6 +161,7 @@ check subject="all":
 _check-all:
     just _check-gameta
     just _check-boundary
+    just _check-wirt
 
 # The gameta feature's contract: a no-default-features `arclain_app`
 # pulls in no gameta crate, that configuration compiles with all targets,
@@ -175,5 +177,12 @@ _check-gameta:
 _check-boundary:
     {{python}} scripts/frontend_boundary.py
 
+# Wirt must remain a product-neutral plugin kernel.
+_check-wirt:
+    {{python}} scripts/wirt_boundary.py
+
 test-frontend-boundary:
     {{python}} scripts/test_frontend_boundary.py
+
+test-wirt-boundary:
+    {{python}} scripts/test_wirt_boundary.py
