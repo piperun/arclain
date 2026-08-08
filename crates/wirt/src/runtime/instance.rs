@@ -142,6 +142,10 @@ impl<H: WirtStoreState> PluginInstance<H> {
                         .collect()
                 })
             },
+            // Account for the complete neutral rule. Description, category,
+            // size constraints, move data, and rename data are all
+            // guest-controlled output and must not disappear behind a lossy
+            // product-specific projection before quota validation.
             validate_serialized_result,
             PluginError::ExecutionError,
         )

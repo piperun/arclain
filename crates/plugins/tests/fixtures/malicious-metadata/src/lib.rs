@@ -40,9 +40,34 @@ impl archust_plugin_sdk::Guest for Component {
         }
     }
 
-    fn get_default_rules() -> Vec<archust_plugin_sdk::wirt::plugin::rules::PluginRuleDefinition>
-    {
-        vec![]
+    fn get_default_rules() -> Vec<archust_plugin_sdk::wirt::plugin::rules::PluginRuleDefinition> {
+        use archust_plugin_sdk::wirt::plugin::rules::{
+            PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger,
+        };
+
+        archust_plugin_sdk::info("neutral-only rule quota probe");
+        vec![PluginRuleDefinition {
+            name: "quota probe".to_string(),
+            category: "neutral category".to_string(),
+            description: Some("x".repeat(1024 * 1024)),
+            trigger: PluginRuleTrigger {
+                filename_pattern: None,
+                has_file: None,
+                extensions: None,
+                min_size: None,
+                max_size: None,
+                metadata_source: None,
+            },
+            actions: PluginRuleActions {
+                root_folder: None,
+                move_files: vec![],
+                move_to: None,
+                rename_pattern: None,
+                organize_content: false,
+                delete_original: false,
+                use_standard_layout: false,
+            },
+        }]
     }
 
     fn get_ui_layout(

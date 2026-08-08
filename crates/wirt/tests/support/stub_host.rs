@@ -8,6 +8,8 @@ pub struct StubHost {
     table: ResourceTable,
     ctx: WasiCtx,
     store_limiter: PluginStoreLimiter,
+    probe: String,
+    observed_log_calls: usize,
 }
 
 impl StubHost {
@@ -16,7 +18,21 @@ impl StubHost {
             table: ResourceTable::new(),
             ctx: WasiCtxBuilder::new().build(),
             store_limiter: PluginStoreLimiter,
+            probe: String::new(),
+            observed_log_calls: 0,
         }
+    }
+
+    pub fn set_probe(&mut self, value: impl Into<String>) {
+        self.probe = value.into();
+    }
+
+    pub fn probe(&self) -> &str {
+        &self.probe
+    }
+
+    pub fn observed_log_calls(&self) -> usize {
+        self.observed_log_calls
     }
 }
 
@@ -36,7 +52,9 @@ impl WirtStoreState for StubHost {
 }
 
 impl Host for StubHost {
-    fn log(&mut self, _level: LogLevel, _message: String) {}
+    fn log(&mut self, _level: LogLevel, _message: String) {
+        self.observed_log_calls += 1;
+    }
 
     fn log_network_activity(&mut self, _message: String) {}
 

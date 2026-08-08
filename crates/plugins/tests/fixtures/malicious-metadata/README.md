@@ -8,6 +8,11 @@ observable. Metadata retrieval also probes WASI arguments and environment,
 writes unique raw stdout/stderr sentinels while ignoring write errors, and
 returns the safe ID `args-leaked` if any process context is visible.
 
+Its `get-default-rules` export logs once and returns a rule whose neutral-only
+description is 1 MiB. Wirt runtime tests use that export to prove the complete
+neutral rule counts toward the serialized-result quota and that terminal reuse
+does not re-enter the guest.
+
 Regenerate the checked-in component from the repository root:
 
 ```powershell
@@ -19,4 +24,4 @@ Copy-Item target/plugin-fixture/wasm32-wasip2/release/malicious_metadata.wasm cr
 The generated `.wasm` is intentionally force-tracked despite the repository's
 global `*.wasm` ignore rule. Its SHA-256 is updated here whenever the fixture
 is regenerated:
-`D70D85D520EFB74B2865E26509DBF1E03C36B7827E1F5ABD618F0EB40803877A`.
+`2F3DDA860B9E7FBF8AC266511A037107D4EA948C4C7DFEC0D45261E390E46087`.
