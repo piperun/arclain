@@ -134,7 +134,7 @@ fn cached_metadata_page_with_query(
 fn metadata_summaries_with_query(
     ids: Vec<String>,
     query: impl FnOnce(&[&str], usize) -> anyhow::Result<Vec<arclain_core::MetadataSummary>>,
-) -> Vec<crate::arclain::plugin::host::MetadataSummary> {
+) -> Vec<wirt::bindings::wirt::plugin::host::MetadataSummary> {
     metadata_summaries_for_source_with_query("dlsite", ids, query).unwrap_or_default()
 }
 
@@ -142,9 +142,9 @@ fn metadata_summaries_for_source_with_query(
     source: &str,
     ids: Vec<String>,
     query: impl FnOnce(&[&str], usize) -> anyhow::Result<Vec<arclain_core::MetadataSummary>>,
-) -> Result<Vec<crate::arclain::plugin::host::MetadataSummary>, String> {
-    use crate::arclain::plugin::host::MetadataSummary;
+) -> Result<Vec<wirt::bindings::wirt::plugin::host::MetadataSummary>, String> {
     use std::collections::HashMap;
+    use wirt::bindings::wirt::plugin::host::MetadataSummary;
 
     let source = parse_metadata_source(source)?;
     if ids.is_empty() || ids.len() > MAX_METADATA_SUMMARY_IDS {
@@ -567,7 +567,7 @@ impl HostFunctions {
     pub(super) fn impl_get_metadata_summaries(
         &mut self,
         ids: Vec<String>,
-    ) -> Vec<crate::arclain::plugin::host::MetadataSummary> {
+    ) -> Vec<wirt::bindings::wirt::plugin::host::MetadataSummary> {
         let Some(lib_svc) = &self.library_service else {
             warn!("LibraryService not initialized");
             return Vec::new();
@@ -581,7 +581,7 @@ impl HostFunctions {
         &self,
         source: String,
         ids: Vec<String>,
-    ) -> Result<Vec<crate::arclain::plugin::host::MetadataSummary>, String> {
+    ) -> Result<Vec<wirt::bindings::wirt::plugin::host::MetadataSummary>, String> {
         let library = self
             .library_service
             .as_ref()

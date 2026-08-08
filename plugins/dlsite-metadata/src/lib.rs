@@ -149,7 +149,7 @@ pub(crate) fn get_total_image_count(state: &PluginState) -> usize {
     if let Some((product_id, _json, scraped)) = &state.browser_detail_cache {
         let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
         let has_cover = cover_url.is_some()
-            || archust_plugin_sdk::arclain::plugin::host::has_data(
+            || archust_plugin_sdk::wirt::plugin::host::has_data(
                 &gameta_lib::providers::dlsite::cache_keys::cover_key(product_id),
             );
         // Count non-empty, non-duplicate screenshot URLs
@@ -170,13 +170,13 @@ pub(crate) fn get_total_image_count(state: &PluginState) -> usize {
 }
 
 impl archust_plugin_sdk::Guest for Component {
-    fn get_metadata() -> archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+    fn get_metadata() -> archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
         // Pre-2026-05-07 the host's `runtime::get_metadata` returned a
         // hardcoded "Unknown Plugin" placeholder because the WIT had
         // no such export. install_plugin therefore couldn't derive a
         // stable id from a bare .wasm. Now it asks the plugin
         // directly. Values mirror dlsite-metadata.toml.
-        archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+        archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
             id: "dlsite-metadata".to_string(),
             name: "DLSite Metadata".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -192,20 +192,19 @@ impl archust_plugin_sdk::Guest for Component {
         info("DLSite Metadata plugin initialized");
 
         // Read plugin settings
-        let auto_fetch =
-            archust_plugin_sdk::arclain::plugin::host::get_setting("auto_fetch_enabled")
-                .unwrap_or_else(|| "true".to_string())
-                == "true";
-        let enable_cache = archust_plugin_sdk::arclain::plugin::host::get_setting("enable_cache")
+        let auto_fetch = archust_plugin_sdk::wirt::plugin::host::get_setting("auto_fetch_enabled")
             .unwrap_or_else(|| "true".to_string())
             == "true";
-        let cache_images = archust_plugin_sdk::arclain::plugin::host::get_setting("cache_images")
+        let enable_cache = archust_plugin_sdk::wirt::plugin::host::get_setting("enable_cache")
             .unwrap_or_else(|| "true".to_string())
             == "true";
-        let cache_videos = archust_plugin_sdk::arclain::plugin::host::get_setting("cache_videos")
+        let cache_images = archust_plugin_sdk::wirt::plugin::host::get_setting("cache_images")
+            .unwrap_or_else(|| "true".to_string())
+            == "true";
+        let cache_videos = archust_plugin_sdk::wirt::plugin::host::get_setting("cache_videos")
             .unwrap_or_else(|| "false".to_string())
             == "true";
-        let video_quality = archust_plugin_sdk::arclain::plugin::host::get_setting("video_quality")
+        let video_quality = archust_plugin_sdk::wirt::plugin::host::get_setting("video_quality")
             .unwrap_or_else(|| "best".to_string());
 
         STATE.with(|state| {
@@ -220,9 +219,8 @@ impl archust_plugin_sdk::Guest for Component {
         // NOTE: Auto-load happens when archive is opened, not at init time
     }
 
-    fn get_default_rules() -> Vec<archust_plugin_sdk::arclain::plugin::rules::PluginRuleDefinition>
-    {
-        use archust_plugin_sdk::arclain::plugin::rules::*;
+    fn get_default_rules() -> Vec<archust_plugin_sdk::wirt::plugin::rules::PluginRuleDefinition> {
+        use archust_plugin_sdk::wirt::plugin::rules::*;
 
         vec![PluginRuleDefinition {
             name: "DLSite Archive".to_string(),
@@ -250,12 +248,12 @@ impl archust_plugin_sdk::Guest for Component {
 
     fn get_ui_layout(
         extension_point: String,
-    ) -> archust_plugin_sdk::arclain::plugin::ui::PluginLayout {
+    ) -> archust_plugin_sdk::wirt::plugin::ui::PluginLayout {
         views::dispatch(&extension_point)
     }
 
-    fn get_top_tabs() -> Vec<archust_plugin_sdk::arclain::plugin::ui::TopTabConfig> {
-        use archust_plugin_sdk::arclain::plugin::ui::{BadgeConfig, TopTabConfig};
+    fn get_top_tabs() -> Vec<archust_plugin_sdk::wirt::plugin::ui::TopTabConfig> {
+        use archust_plugin_sdk::wirt::plugin::ui::{BadgeConfig, TopTabConfig};
 
         let cache_count = archust_plugin_sdk::cached_metadata_count("dlsite")
             .ok()
@@ -277,7 +275,7 @@ impl archust_plugin_sdk::Guest for Component {
     fn on_ui_event(
         id: String,
         value: Option<String>,
-    ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
+    ) -> Vec<archust_plugin_sdk::wirt::plugin::ui::PluginAction> {
         events::dispatch(id, value)
     }
 }

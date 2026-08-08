@@ -859,6 +859,41 @@ class TestPluginFetchRouting(unittest.TestCase):
         self.assertIn("Ok(client.request(request))", image_fetcher)
 
 
+class TestWirtAbi(unittest.TestCase):
+    def test_one_versioned_wit_source_and_no_arclain_namespace(self):
+        canonical = REPO_ROOT / "crates" / "wirt" / "wit" / "plugin.wit"
+        legacy = REPO_ROOT / "wit" / "arclain.wit"
+        self.assertTrue(canonical.is_file())
+        self.assertFalse(legacy.exists())
+        self.assertEqual(
+            canonical.read_text(encoding="utf-8").splitlines()[0],
+            "package wirt:plugin@0.1.0;",
+        )
+
+        roots = (
+            REPO_ROOT / "crates" / "plugins" / "src",
+            REPO_ROOT
+            / "crates"
+            / "plugins"
+            / "tests"
+            / "fixtures"
+            / "malicious-metadata"
+            / "src",
+            REPO_ROOT / "plugin-sdk" / "src",
+            REPO_ROOT / "plugins" / "dlsite-metadata" / "src",
+            REPO_ROOT / "plugins" / "facade-test-fixture" / "src",
+            REPO_ROOT / "plugins" / "gstreamer-preview" / "src",
+            REPO_ROOT / "plugins" / "ui-demo" / "src",
+        )
+        offenders = []
+        for root in roots:
+            for path in root.rglob("*.rs"):
+                text = path.read_text(encoding="utf-8")
+                if "arclain::plugin" in text or "arclain.wit" in text:
+                    offenders.append(path.relative_to(REPO_ROOT).as_posix())
+        self.assertEqual(offenders, [])
+
+
 class TestSmoke(unittest.TestCase):
     def test_helpers_import_cleanly(self):
         for name in ("_plugins", "_deps", "_package", "_ui"):

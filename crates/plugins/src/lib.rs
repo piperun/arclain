@@ -51,21 +51,6 @@ pub mod runtime;
 pub mod types;
 pub mod ui_model;
 
-// Generate bindings from WIT
-pub mod bindings {
-    wasmtime::component::bindgen!({
-        path: "../../wit/arclain.wit",
-        world: "plugin-world",
-    });
-}
-
-pub use bindings::arclain;
-// `bindings::PluginWorld` is the bindgen-generated trampoline used
-// only by `runtime.rs` inside this crate — exposed via `crate::`
-// path for runtime.rs's `use crate::PluginWorld`, but kept crate-
-// private so it doesn't leak into the public API.
-pub(crate) use bindings::PluginWorld;
-
 // Re-export main types
 pub use active_tab::ActiveTabBridge;
 pub use host_functions::HostFunctions;

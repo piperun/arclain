@@ -1,4 +1,4 @@
-package arclain:plugin;
+package wirt:plugin@0.1.0;
 
 interface host {
     // Logging

@@ -1,8 +1,8 @@
 //! Logging and messaging operations
 
 use super::HostFunctions;
-use crate::arclain::plugin::host::LogLevel;
 use tracing::{error, warn};
+use wirt::bindings::wirt::plugin::host::LogLevel;
 
 const MAX_NETWORK_LOG_ENTRIES: usize = 256;
 const MAX_NETWORK_LOG_BYTES: usize = 256 * 1024;

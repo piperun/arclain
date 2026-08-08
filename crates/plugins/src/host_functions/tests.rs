@@ -32,10 +32,10 @@ fn async_client(runtime: &tokio::runtime::Runtime) -> Arc<arclain_network::Async
 
 fn data_request(
     key: &str,
-    resource_type: crate::arclain::plugin::host::ResourceType,
-    sources: Vec<crate::arclain::plugin::host::DataSource>,
-) -> crate::arclain::plugin::host::DataRequest {
-    crate::arclain::plugin::host::DataRequest {
+    resource_type: wirt::bindings::wirt::plugin::host::ResourceType,
+    sources: Vec<wirt::bindings::wirt::plugin::host::DataSource>,
+) -> wirt::bindings::wirt::plugin::host::DataRequest {
+    wirt::bindings::wirt::plugin::host::DataRequest {
         key: key.to_string(),
         url: Some("https://example.invalid/data".to_string()),
         resource_type,
@@ -663,8 +663,8 @@ fn mixed_case_raw_metadata_reads_require_archive_metadata_read() {
         let request = host
             .build_data_request(data_request(
                 key,
-                crate::arclain::plugin::host::ResourceType::Binary,
-                vec![crate::arclain::plugin::host::DataSource::ContentCache],
+                wirt::bindings::wirt::plugin::host::ResourceType::Binary,
+                vec![wirt::bindings::wirt::plugin::host::DataSource::ContentCache],
             ))
             .expect_err("raw metadata source must be denied without metadata read");
         assert!(request.contains("no requested data source"));
@@ -673,7 +673,7 @@ fn mixed_case_raw_metadata_reads_require_archive_metadata_read() {
 
 #[test]
 fn mixed_case_raw_metadata_writeback_requires_archive_metadata_write() {
-    use crate::arclain::plugin::host::{DataSource, ResourceType};
+    use wirt::bindings::wirt::plugin::host::{DataSource, ResourceType};
 
     let capabilities = [
         PluginCapability::Network,
@@ -706,7 +706,7 @@ fn mixed_case_raw_metadata_writeback_requires_archive_metadata_write() {
 
 #[test]
 fn mixed_case_raw_metadata_stream_and_delete_require_metadata_write() {
-    use crate::arclain::plugin::host::{DataSource, ResourceType};
+    use wirt::bindings::wirt::plugin::host::{DataSource, ResourceType};
 
     let cache_root = tempfile::tempdir().unwrap();
     let index = Arc::new(RecordingCacheIndex::default());
@@ -848,7 +848,7 @@ fn populated_library_queries_require_archive_metadata_read_capability() {
 
 #[test]
 fn data_request_rejects_an_explicit_metadata_source_without_read_capability() {
-    use crate::arclain::plugin::host::{DataSource, DataStatus, ResourceType};
+    use wirt::bindings::wirt::plugin::host::{DataSource, DataStatus, ResourceType};
 
     let resolver = Arc::new(RecordingResolver::new(Some(b"private metadata".to_vec())));
     let mut host = host_functions("data-metadata-read-denial", Default::default(), 0);
@@ -913,7 +913,7 @@ fn data_cache_reads_require_file_read_and_hide_raw_metadata_keys() {
 
 #[test]
 fn data_network_writeback_respects_metadata_and_file_write_capabilities() {
-    use crate::arclain::plugin::host::{DataSource, ResourceType};
+    use wirt::bindings::wirt::plugin::host::{DataSource, ResourceType};
 
     for (write_capability, cache_source, wit_source) in [
         (
@@ -967,7 +967,7 @@ fn data_network_writeback_respects_metadata_and_file_write_capabilities() {
 
 #[test]
 fn raw_metadata_content_cache_writes_require_archive_metadata_write() {
-    use crate::arclain::plugin::host::{DataSource, ResourceType};
+    use wirt::bindings::wirt::plugin::host::{DataSource, ResourceType};
 
     for allow_metadata_write in [false, true] {
         let mut capabilities = [
@@ -1008,7 +1008,7 @@ fn raw_metadata_content_cache_writes_require_archive_metadata_write() {
 
 #[test]
 fn fetch_to_cache_rejects_metadata_poison_before_resolver_side_effects() {
-    use crate::arclain::plugin::host::{DataSource, ResourceType};
+    use wirt::bindings::wirt::plugin::host::{DataSource, ResourceType};
 
     let capabilities = [PluginCapability::Network, PluginCapability::FileWrite]
         .into_iter()
@@ -1031,7 +1031,7 @@ fn fetch_to_cache_rejects_metadata_poison_before_resolver_side_effects() {
 
 #[test]
 fn data_api_guest_returns_are_bounded_below_hostcall_fuel() {
-    use crate::arclain::plugin::host::{DataSource, DataStatus, ResourceType};
+    use wirt::bindings::wirt::plugin::host::{DataSource, DataStatus, ResourceType};
 
     let oversized = vec![0xA5; crate::types::MAX_PLUGIN_GUEST_DATA_BYTES + 1];
     let capabilities = [PluginCapability::FileRead, PluginCapability::Network]
@@ -1063,7 +1063,7 @@ fn data_api_guest_returns_are_bounded_below_hostcall_fuel() {
 
 #[test]
 fn default_metadata_request_omits_unauthorized_local_sources_but_keeps_network() {
-    use crate::arclain::plugin::host::ResourceType;
+    use wirt::bindings::wirt::plugin::host::ResourceType;
 
     let capabilities = [PluginCapability::Network].into_iter().collect();
     let host = host_functions("metadata-default-source-filter", capabilities, 0);

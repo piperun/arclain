@@ -107,8 +107,8 @@ const FIXTURE_CHILD_PAGE: &str = "Page:fixture-child";
 struct Component;
 
 impl archust_plugin_sdk::Guest for Component {
-    fn get_metadata() -> archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
-        archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+    fn get_metadata() -> archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
+        archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
             id: "facade-test-fixture".to_string(),
             name: "Facade Test Fixture".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -126,22 +126,21 @@ impl archust_plugin_sdk::Guest for Component {
         // defaults at load takes. The host seeds stored settings into the
         // instance before calling `init`, so this reads back whatever the
         // last load persisted.
-        let loads = archust_plugin_sdk::arclain::plugin::host::get_setting(LOAD_COUNT_SETTING_KEY)
+        let loads = archust_plugin_sdk::wirt::plugin::host::get_setting(LOAD_COUNT_SETTING_KEY)
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(0)
             + 1;
         archust_plugin_sdk::set_setting(LOAD_COUNT_SETTING_KEY, &loads.to_string());
     }
 
-    fn get_default_rules() -> Vec<archust_plugin_sdk::arclain::plugin::rules::PluginRuleDefinition>
-    {
+    fn get_default_rules() -> Vec<archust_plugin_sdk::wirt::plugin::rules::PluginRuleDefinition> {
         vec![]
     }
 
     fn get_ui_layout(
         extension_point: String,
-    ) -> archust_plugin_sdk::arclain::plugin::ui::PluginLayout {
-        use archust_plugin_sdk::arclain::plugin::ui::*;
+    ) -> archust_plugin_sdk::wirt::plugin::ui::PluginLayout {
+        use archust_plugin_sdk::wirt::plugin::ui::*;
 
         match extension_point.as_str() {
             "MainPage" => {
@@ -180,10 +179,8 @@ impl archust_plugin_sdk::Guest for Component {
                 UiElement::Label(LabelConfig {
                     text: format!(
                         "remembered:{}",
-                        archust_plugin_sdk::arclain::plugin::host::get_setting(
-                            REMEMBERED_SETTING_KEY
-                        )
-                        .unwrap_or_else(|| "unset".to_string()),
+                        archust_plugin_sdk::wirt::plugin::host::get_setting(REMEMBERED_SETTING_KEY)
+                            .unwrap_or_else(|| "unset".to_string()),
                     ),
                     bold: false,
                     size: None,
@@ -191,10 +188,8 @@ impl archust_plugin_sdk::Guest for Component {
                 UiElement::Label(LabelConfig {
                     text: format!(
                         "loads:{}",
-                        archust_plugin_sdk::arclain::plugin::host::get_setting(
-                            LOAD_COUNT_SETTING_KEY
-                        )
-                        .unwrap_or_else(|| "0".to_string()),
+                        archust_plugin_sdk::wirt::plugin::host::get_setting(LOAD_COUNT_SETTING_KEY)
+                            .unwrap_or_else(|| "0".to_string()),
                     ),
                     bold: false,
                     size: None,
@@ -275,8 +270,8 @@ impl archust_plugin_sdk::Guest for Component {
         }
     }
 
-    fn get_top_tabs() -> Vec<archust_plugin_sdk::arclain::plugin::ui::TopTabConfig> {
-        use archust_plugin_sdk::arclain::plugin::ui::{BadgeConfig, TopTabConfig};
+    fn get_top_tabs() -> Vec<archust_plugin_sdk::wirt::plugin::ui::TopTabConfig> {
+        use archust_plugin_sdk::wirt::plugin::ui::{BadgeConfig, TopTabConfig};
 
         // Every field distinct and constant: a count that is not the
         // priority, a `dot` that is not the default, and a colour the
@@ -299,8 +294,8 @@ impl archust_plugin_sdk::Guest for Component {
     fn on_ui_event(
         id: String,
         value: Option<String>,
-    ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
-        use archust_plugin_sdk::arclain::plugin::ui::*;
+    ) -> Vec<archust_plugin_sdk::wirt::plugin::ui::PluginAction> {
+        use archust_plugin_sdk::wirt::plugin::ui::*;
 
         match id.as_str() {
             "__page_init" => vec![PluginAction::SetPageDisplayName(

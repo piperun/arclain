@@ -558,6 +558,7 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "windows-sys 0.61.2",
+ "wirt",
 ]
 
 [[package]]
@@ -8764,6 +8765,9 @@ dependencies = [
 [[package]]
 name = "wirt"
 version = "2.3.2"
+dependencies = [
+ "wasmtime",
+]
 
 [[package]]
 name = "wit-bindgen"

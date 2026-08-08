@@ -47,7 +47,7 @@ pub(super) fn archive_entry_page(
 impl HostFunctions {
     pub(super) fn impl_current_archive_info(
         &mut self,
-    ) -> Option<crate::arclain::plugin::host::ArchiveInfo> {
+    ) -> Option<wirt::bindings::wirt::plugin::host::ArchiveInfo> {
         // Prefer the per-event context: if the dispatch worker
         // installed one, the handler is running for a specific
         // event's archive, not necessarily the currently active
@@ -61,7 +61,7 @@ impl HostFunctions {
         let path_buf = std::path::PathBuf::from(&archive);
         let filename: String = path_buf.file_name()?.to_str()?.to_string();
 
-        Some(crate::arclain::plugin::host::ArchiveInfo {
+        Some(wirt::bindings::wirt::plugin::host::ArchiveInfo {
             path: archive,
             filename,
         })

@@ -1,9 +1,9 @@
 use super::{archive_entry_count, archive_entry_page, HostFunctions, MAX_ARCHIVE_PAGE_ITEMS};
 use crate::active_tab::ActiveTabBridge;
-use crate::arclain::plugin::host::Host;
 use crate::types::PluginCapability;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use wirt::bindings::wirt::plugin::host::Host;
 
 #[test]
 fn archive_page_is_bounded_and_uses_stable_offsets() {

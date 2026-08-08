@@ -3,9 +3,9 @@ use archust_plugin_sdk::info;
 struct Component;
 
 impl archust_plugin_sdk::Guest for Component {
-    fn get_metadata() -> archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+    fn get_metadata() -> archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
         // Mirrors ui-demo.toml.
-        archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+        archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
             id: "ui-demo".to_string(),
             name: "UI Demo Plugin".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -18,15 +18,14 @@ impl archust_plugin_sdk::Guest for Component {
         info("UI Demo Plugin initialized via Component Model!");
     }
 
-    fn get_default_rules() -> Vec<archust_plugin_sdk::arclain::plugin::rules::PluginRuleDefinition>
-    {
+    fn get_default_rules() -> Vec<archust_plugin_sdk::wirt::plugin::rules::PluginRuleDefinition> {
         vec![]
     }
 
     fn get_ui_layout(
         extension_point: String,
-    ) -> archust_plugin_sdk::arclain::plugin::ui::PluginLayout {
-        use archust_plugin_sdk::arclain::plugin::ui::*;
+    ) -> archust_plugin_sdk::wirt::plugin::ui::PluginLayout {
+        use archust_plugin_sdk::wirt::plugin::ui::*;
 
         match extension_point.as_str() {
             "Sidebar" => PluginLayout::Single(vec![
@@ -99,7 +98,7 @@ impl archust_plugin_sdk::Guest for Component {
         }
     }
 
-    fn get_top_tabs() -> Vec<archust_plugin_sdk::arclain::plugin::ui::TopTabConfig> {
+    fn get_top_tabs() -> Vec<archust_plugin_sdk::wirt::plugin::ui::TopTabConfig> {
         // UI Demo doesn't register a top tab
         vec![]
     }
@@ -107,7 +106,7 @@ impl archust_plugin_sdk::Guest for Component {
     fn on_ui_event(
         id: String,
         value: Option<String>,
-    ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
+    ) -> Vec<archust_plugin_sdk::wirt::plugin::ui::PluginAction> {
         info(&format!("UI Event: {} = {:?}", id, value));
         vec![]
     }

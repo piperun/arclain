@@ -7,6 +7,7 @@ edition.workspace = true
 arclain_core = { path = "../core", default-features = false }
 arclain_db = { path = "../db", default-features = false }
 arclain_data = { path = "../data", default-features = false }
+wirt = { path = "../wirt" }
 wasmtime = { version = "=47.0.1", features = ["component-model", "cache"] }
 wasmtime-wasi = "=47.0.1"
 anyhow.workspace = true

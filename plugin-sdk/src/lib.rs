@@ -1,9 +1,9 @@
-//! Archust Plugin SDK - WASI Component Model bindings for Arclain plugins
+//! Archust Plugin SDK - WASI Component Model bindings for Wirt plugins
 
 // Generate WIT bindings in a submodule to avoid macro name conflicts
 pub mod bindings {
     wit_bindgen::generate!({
-        path: "../wit/arclain.wit",
+        path: "../crates/wirt/wit/plugin.wit",
         world: "plugin-world",
         pub_export_macro: true,
     });
@@ -15,30 +15,30 @@ pub use bindings::*;
 // Helper logging functions. All levels are subject to host entry/rate/daily
 // byte caps; admitted Warn/Error messages also reach application tracing.
 pub fn info(msg: &str) {
-    arclain::plugin::host::log(arclain::plugin::host::LogLevel::Info, msg);
+    wirt::plugin::host::log(wirt::plugin::host::LogLevel::Info, msg);
 }
 
 pub fn warn(msg: &str) {
-    arclain::plugin::host::log(arclain::plugin::host::LogLevel::Warn, msg);
+    wirt::plugin::host::log(wirt::plugin::host::LogLevel::Warn, msg);
 }
 
 pub fn error(msg: &str) {
-    arclain::plugin::host::log(arclain::plugin::host::LogLevel::Error, msg);
+    wirt::plugin::host::log(wirt::plugin::host::LogLevel::Error, msg);
 }
 
 pub fn debug(msg: &str) {
-    arclain::plugin::host::log(arclain::plugin::host::LogLevel::Debug, msg);
+    wirt::plugin::host::log(wirt::plugin::host::LogLevel::Debug, msg);
 }
 
 // Archive context helpers (`archive_metadata_read` required)
-pub fn current_archive_info() -> Option<arclain::plugin::host::ArchiveInfo> {
-    arclain::plugin::host::current_archive_info()
+pub fn current_archive_info() -> Option<wirt::plugin::host::ArchiveInfo> {
+    wirt::plugin::host::current_archive_info()
 }
 
 /// Publish metadata under `archive_metadata_write` using the payload's source.
 /// Prefer [`emit_metadata_for_source`] for new plugins.
 pub fn emit_metadata(metadata_json: &str) {
-    arclain::plugin::host::emit_metadata(metadata_json);
+    wirt::plugin::host::emit_metadata(metadata_json);
 }
 
 /// Publish metadata for an explicit source.
@@ -46,40 +46,40 @@ pub fn emit_metadata(metadata_json: &str) {
 /// The host rejects mismatched payload sources, oversized input, or writes
 /// beyond its per-plugin rate, distinct-ID, and session-byte quotas.
 pub fn emit_metadata_for_source(source: &str, metadata_json: &str) -> bool {
-    arclain::plugin::host::emit_metadata_for_source(source, metadata_json)
+    wirt::plugin::host::emit_metadata_for_source(source, metadata_json)
 }
 
 // Archive helpers (`archive_metadata_read` required for listing). The legacy
 // helper returns only the first bounded page.
 pub fn list_archive_files() -> Result<Vec<String>, String> {
-    arclain::plugin::host::list_archive_files()
+    wirt::plugin::host::list_archive_files()
 }
 
 pub fn archive_file_count() -> Result<u64, String> {
-    arclain::plugin::host::archive_file_count()
+    wirt::plugin::host::archive_file_count()
 }
 
 /// List at most 256 archive paths and 1 MiB of path text.
 pub fn list_archive_files_page(offset: u32, limit: u32) -> Result<Vec<String>, String> {
-    arclain::plugin::host::list_archive_files_page(offset, limit)
+    wirt::plugin::host::list_archive_files_page(offset, limit)
 }
 
 /// Rename the currently open archive file
 /// Takes a new filename (not full path) and returns the new full path on success
 /// Requires ArchiveModify capability in the plugin manifest
 pub fn rename_archive(new_name: &str) -> Result<String, String> {
-    arclain::plugin::host::rename_archive(new_name)
+    wirt::plugin::host::rename_archive(new_name)
 }
 
 /// Deprecated compatibility helper that writes an admitted message only to
 /// the bounded plugin log. It does not open a dialog or retain UI state.
 #[deprecated(note = "use returned UI actions or bounded plugin logging")]
 pub fn show_message(title: &str, message: &str) {
-    arclain::plugin::host::show_message(title, message);
+    wirt::plugin::host::show_message(title, message);
 }
 
 pub fn log_network_activity(msg: &str) {
-    arclain::plugin::host::log_network_activity(msg);
+    wirt::plugin::host::log_network_activity(msg);
 }
 
 /// Delete a content-cache entry (or a trailing-`*` pattern).
@@ -90,13 +90,13 @@ pub fn log_network_activity(msg: &str) {
 /// cache backend failures return `false`. Product metadata records are
 /// unaffected.
 pub fn invalidate_cache(key: &str) -> bool {
-    arclain::plugin::host::invalidate_cache(key)
+    wirt::plugin::host::invalidate_cache(key)
 }
 
 // === Data API Helpers ===
 
 // Only expose what plugins need - NOT cache internals
-pub use arclain::plugin::host::{DataRequest, DataResult, DataStatus, ResourceType};
+pub use wirt::plugin::host::{DataRequest, DataResult, DataStatus, ResourceType};
 
 /// Request data from a URL using the capability-filtered Data API.
 ///
@@ -112,7 +112,7 @@ pub fn request_data(key: &str, url: &str, resource_type: ResourceType) -> String
         product_id: None,
         sources: vec![], // Host decides the best sources
     };
-    arclain::plugin::host::request_data(&req)
+    wirt::plugin::host::request_data(&req)
 }
 
 /// Set a plugin setting within the host's retained-state quotas.
@@ -120,12 +120,12 @@ pub fn request_data(key: &str, url: &str, resource_type: ResourceType) -> String
 /// The host ignores writes beyond 128 entries, 128-byte keys, 64-KiB values,
 /// or 1 MiB aggregate text.
 pub fn set_setting(key: &str, value: &str) {
-    arclain::plugin::host::set_setting(key, value);
+    wirt::plugin::host::set_setting(key, value);
 }
 
 /// Poll for the status of a request
 pub fn poll_data(request_id: &str) -> DataResult {
-    arclain::plugin::host::poll_data(request_id)
+    wirt::plugin::host::poll_data(request_id)
 }
 
 /// Interval between `poll_data` calls when waiting for an in-flight
@@ -195,8 +195,8 @@ pub fn fetch_string_blocking(key: &str, url: &str) -> Result<String, String> {
 /// Use this for big blobs — videos, archive blobs — where
 /// `fetch_blocking` would force the full body through three buffers
 /// (host vec → ABI copy → plugin vec). Subsequent
-/// `arclain::plugin::host::has_data(key)` /
-/// `arclain::plugin::host::get_data(key)` see the cached entry the
+/// `wirt::plugin::host::has_data(key)` /
+/// `wirt::plugin::host::get_data(key)` see the cached entry the
 /// same way they would after a `fetch_blocking`, within the calling plugin's
 /// private cache namespace.
 /// Requires `network` + `file_write`; metadata resources and raw metadata
@@ -209,7 +209,7 @@ pub fn fetch_to_cache(key: &str, url: &str, resource_type: ResourceType) -> Resu
         product_id: None,
         sources: vec![],
     };
-    if arclain::plugin::host::fetch_to_cache(&req) {
+    if wirt::plugin::host::fetch_to_cache(&req) {
         Ok(())
     } else {
         Err(format!("fetch_to_cache failed for {}", key))
@@ -223,25 +223,25 @@ pub fn fetch_to_cache(key: &str, url: &str, resource_type: ResourceType) -> Resu
 /// written or launched. The manifest must still grant `file_read` before the
 /// stable denial is returned. `extension` is retained for ABI compatibility.
 pub fn play_cached_blob(key: &str, extension: &str) -> Result<(), String> {
-    arclain::plugin::host::play_cached_blob(key, extension)
+    wirt::plugin::host::play_cached_blob(key, extension)
 }
 
 /// Legacy DLSite-only compatibility listing of the first bounded page.
 pub fn list_cached_entries() -> Result<Vec<String>, String> {
-    Ok(arclain::plugin::host::list_cached_entries())
+    Ok(wirt::plugin::host::list_cached_entries())
 }
 
 pub fn cached_metadata_count(source: &str) -> Result<u64, String> {
-    arclain::plugin::host::cached_metadata_count(source)
+    wirt::plugin::host::cached_metadata_count(source)
 }
 
 /// List one source-explicit metadata page. `limit` must be at most 256.
 pub fn list_cached_metadata(source: &str, offset: u32, limit: u32) -> Result<Vec<String>, String> {
-    arclain::plugin::host::list_cached_metadata(source, offset, limit)
+    wirt::plugin::host::list_cached_metadata(source, offset, limit)
 }
 
 /// Re-export MetadataSummary for use in plugins
-pub use arclain::plugin::host::MetadataSummary;
+pub use wirt::plugin::host::MetadataSummary;
 
 /// Batch query for metadata summaries (id, title, geo_blocked).
 ///
@@ -249,14 +249,14 @@ pub use arclain::plugin::host::MetadataSummary;
 /// aggregate input/output budget before returning guest-owned strings. The
 /// database projects only id, bounded title, and geo-blocked fields.
 pub fn get_metadata_summaries(ids: Vec<String>) -> Vec<MetadataSummary> {
-    arclain::plugin::host::get_metadata_summaries(&ids)
+    wirt::plugin::host::get_metadata_summaries(&ids)
 }
 
 pub fn get_metadata_summaries_for_source(
     source: &str,
     ids: Vec<String>,
 ) -> Result<Vec<MetadataSummary>, String> {
-    arclain::plugin::host::get_metadata_summaries_for_source(source, &ids)
+    wirt::plugin::host::get_metadata_summaries_for_source(source, &ids)
 }
 
 /// Get full product metadata (maximum 4 MiB).
@@ -268,7 +268,7 @@ pub fn get_metadata_summaries_for_source(
 /// request-budget permit per actual HTTP request. Cache repair/migration
 /// persists only with `archive_metadata_write`.
 pub fn get_product_metadata(product_id: &str, source: &str) -> Option<String> {
-    arclain::plugin::host::get_product_metadata(product_id, source)
+    wirt::plugin::host::get_product_metadata(product_id, source)
 }
 
 /// Create a file in private temporary storage owned by this plugin instance.
@@ -277,5 +277,5 @@ pub fn get_product_metadata(product_id: &str, source: &str) -> Option<String> {
 /// collision-safe name. Each instance is limited to 128 files and 64 MiB
 /// cumulatively, and its storage is removed on unload. Returns the full path.
 pub fn create_file(filename: &str, content: &[u8]) -> Result<String, String> {
-    arclain::plugin::host::create_file(filename, content)
+    wirt::plugin::host::create_file(filename, content)
 }

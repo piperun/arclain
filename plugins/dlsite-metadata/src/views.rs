@@ -21,8 +21,8 @@ use archust_plugin_sdk::info;
 
 pub(crate) fn dispatch(
     extension_point: &str,
-) -> archust_plugin_sdk::arclain::plugin::ui::PluginLayout {
-    use archust_plugin_sdk::arclain::plugin::ui::{
+) -> archust_plugin_sdk::wirt::plugin::ui::PluginLayout {
+    use archust_plugin_sdk::wirt::plugin::ui::{
         ButtonAction, ButtonConfig, CarouselConfig, CheckboxConfig, DropdownConfig, ImageConfig,
         KeyValueListConfig, KeyValuePair, LabelConfig, ListContainerConfig, ListItemConfig,
         LoadingConfig, MetadataGridConfig, PluginLayout, SectionHeaderConfig, SettingsGroupHeader,
@@ -1178,7 +1178,7 @@ pub(crate) fn dispatch(
 
                         // Show cover if we have a URL or cached bytes
                         let show_cover = cover_url.is_some()
-                            || archust_plugin_sdk::arclain::plugin::host::has_data(&cover_key);
+                            || archust_plugin_sdk::wirt::plugin::host::has_data(&cover_key);
 
                         if show_cover {
                             if let Some(ref url) = cover_url {
@@ -1214,7 +1214,7 @@ pub(crate) fn dispatch(
                                     selected_id,
                                     i,
                                 );
-                                if archust_plugin_sdk::arclain::plugin::host::has_data(&key) {
+                                if archust_plugin_sdk::wirt::plugin::host::has_data(&key) {
                                     images.push((key, None));
                                 } else {
                                     break;

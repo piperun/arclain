@@ -65,7 +65,7 @@ impl HostFunctions {
     pub(super) fn impl_get_metadata_summaries(
         &mut self,
         _ids: Vec<String>,
-    ) -> Vec<crate::arclain::plugin::host::MetadataSummary> {
+    ) -> Vec<wirt::bindings::wirt::plugin::host::MetadataSummary> {
         warn!("LibraryService not initialized");
         Vec::new()
     }
@@ -74,7 +74,7 @@ impl HostFunctions {
         &self,
         _source: String,
         _ids: Vec<String>,
-    ) -> Result<Vec<crate::arclain::plugin::host::MetadataSummary>, String> {
+    ) -> Result<Vec<wirt::bindings::wirt::plugin::host::MetadataSummary>, String> {
         Err("LibraryService not initialized".to_string())
     }
 

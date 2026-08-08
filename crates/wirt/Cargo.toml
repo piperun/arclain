@@ -2,3 +2,6 @@
 name = "wirt"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+wasmtime = { version = "=47.0.1", features = ["component-model", "cache"] }

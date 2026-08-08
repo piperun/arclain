@@ -8,7 +8,7 @@ const STDERR_SENTINEL: &str = "ARCLAIN_VALIDATION_WASI_STDERR_SENTINEL_8C4D";
 struct Component;
 
 impl archust_plugin_sdk::Guest for Component {
-    fn get_metadata() -> archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+    fn get_metadata() -> archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
         use std::io::Write;
 
         let _ = std::io::stdout().write_all(format!("{STDOUT_SENTINEL}\n").as_bytes());
@@ -20,7 +20,7 @@ impl archust_plugin_sdk::Guest for Component {
         archust_plugin_sdk::warn(LOG_SENTINEL);
         archust_plugin_sdk::show_message(MESSAGE_SENTINEL, "must stay sandboxed");
 
-        archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+        archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
             id: if process_context_visible {
                 "args-leaked".to_string()
             } else {
@@ -40,25 +40,25 @@ impl archust_plugin_sdk::Guest for Component {
         }
     }
 
-    fn get_default_rules() -> Vec<archust_plugin_sdk::arclain::plugin::rules::PluginRuleDefinition>
+    fn get_default_rules() -> Vec<archust_plugin_sdk::wirt::plugin::rules::PluginRuleDefinition>
     {
         vec![]
     }
 
     fn get_ui_layout(
         _extension_point: String,
-    ) -> archust_plugin_sdk::arclain::plugin::ui::PluginLayout {
-        archust_plugin_sdk::arclain::plugin::ui::PluginLayout::Single(vec![])
+    ) -> archust_plugin_sdk::wirt::plugin::ui::PluginLayout {
+        archust_plugin_sdk::wirt::plugin::ui::PluginLayout::Single(vec![])
     }
 
-    fn get_top_tabs() -> Vec<archust_plugin_sdk::arclain::plugin::ui::TopTabConfig> {
+    fn get_top_tabs() -> Vec<archust_plugin_sdk::wirt::plugin::ui::TopTabConfig> {
         vec![]
     }
 
     fn on_ui_event(
         _id: String,
         _value: Option<String>,
-    ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
+    ) -> Vec<archust_plugin_sdk::wirt::plugin::ui::PluginAction> {
         vec![]
     }
 }

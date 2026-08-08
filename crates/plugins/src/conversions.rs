@@ -1,7 +1,7 @@
 //! WIT-binding ↔ host-type conversions.
 //!
 //! The wasmtime `bindgen!` macro generates one set of types under
-//! `crate::arclain::plugin::*` for the WASM ABI. The host uses a
+//! `wirt::bindings::wirt::plugin::*` for the WASM ABI. The host uses a
 //! parallel set under `crate::types::*` (UI elements, plugin actions,
 //! tab configs) and `arclain_core::*` (organization rules) that's
 //! `Send + Sync`, `Serialize`-able, and otherwise idiomatic Rust.
@@ -12,14 +12,14 @@
 //! (rule `From` impls — they're not type definitions and don't belong
 //! next to the host-side `PluginUiElement` / `PluginManifest` shapes).
 
-use crate::bindings::arclain::plugin::rules as wit_rules;
 use crate::types::PluginUiElement;
+use wirt::bindings::wirt::plugin::rules as wit_rules;
 
 pub(crate) fn convert_plugin_layout(
-    layout: crate::arclain::plugin::ui::PluginLayout,
+    layout: wirt::bindings::wirt::plugin::ui::PluginLayout,
 ) -> crate::types::PluginLayout {
-    use crate::arclain::plugin::ui::PluginLayout as WitLayout;
     use crate::types::PluginLayout as InternalLayout;
+    use wirt::bindings::wirt::plugin::ui::PluginLayout as WitLayout;
 
     match layout {
         WitLayout::Single(elements) => InternalLayout::Single {
@@ -34,7 +34,7 @@ pub(crate) fn convert_plugin_layout(
 }
 
 pub(crate) fn convert_top_tab_config(
-    config: crate::arclain::plugin::ui::TopTabConfig,
+    config: wirt::bindings::wirt::plugin::ui::TopTabConfig,
 ) -> crate::types::TopTabConfig {
     crate::types::TopTabConfig {
         id: config.id,
@@ -50,10 +50,10 @@ pub(crate) fn convert_top_tab_config(
 }
 
 pub(crate) fn convert_ui_element(
-    element: crate::arclain::plugin::ui::UiElement,
+    element: wirt::bindings::wirt::plugin::ui::UiElement,
 ) -> PluginUiElement {
-    use crate::arclain::plugin::ui::UiElement;
     use crate::types::PluginUiElement as InternalElement;
+    use wirt::bindings::wirt::plugin::ui::UiElement;
 
     match element {
         UiElement::Label(config) => InternalElement::Label {
@@ -131,10 +131,10 @@ pub(crate) fn convert_ui_element(
                     image_url: item.image_url,
                     selected: item.selected,
                     warning_icon: item.warning_icon.map(|i| match i {
-                        crate::arclain::plugin::ui::WarningIcon::Warning => {
+                        wirt::bindings::wirt::plugin::ui::WarningIcon::Warning => {
                             crate::types::WarningIcon::Warning
                         }
-                        crate::arclain::plugin::ui::WarningIcon::GlobeX => {
+                        wirt::bindings::wirt::plugin::ui::WarningIcon::GlobeX => {
                             crate::types::WarningIcon::GlobeX
                         }
                     }),
@@ -148,10 +148,10 @@ pub(crate) fn convert_ui_element(
         },
         UiElement::Warning(config) => InternalElement::Warning {
             icon: match config.icon {
-                crate::arclain::plugin::ui::WarningIcon::Warning => {
+                wirt::bindings::wirt::plugin::ui::WarningIcon::Warning => {
                     crate::types::WarningIcon::Warning
                 }
-                crate::arclain::plugin::ui::WarningIcon::GlobeX => {
+                wirt::bindings::wirt::plugin::ui::WarningIcon::GlobeX => {
                     crate::types::WarningIcon::GlobeX
                 }
             },
@@ -213,10 +213,10 @@ pub(crate) fn convert_ui_element(
 }
 
 pub(crate) fn convert_button_action(
-    action: crate::arclain::plugin::ui::ButtonAction,
+    action: wirt::bindings::wirt::plugin::ui::ButtonAction,
 ) -> crate::types::ButtonAction {
-    use crate::arclain::plugin::ui::ButtonAction as WitAction;
     use crate::types::ButtonAction as InternalAction;
+    use wirt::bindings::wirt::plugin::ui::ButtonAction as WitAction;
 
     match action {
         WitAction::None => InternalAction::None,
@@ -229,20 +229,20 @@ pub(crate) fn convert_button_action(
 }
 
 pub(crate) fn convert_plugin_action(
-    action: crate::arclain::plugin::ui::PluginAction,
+    action: wirt::bindings::wirt::plugin::ui::PluginAction,
 ) -> crate::types::PluginAction {
-    use crate::arclain::plugin::ui::PluginAction as WitAction;
     use crate::types::{PluginAction as InternalAction, ToastLevel};
+    use wirt::bindings::wirt::plugin::ui::PluginAction as WitAction;
 
     match action {
         WitAction::None => InternalAction::None,
         WitAction::ShowToast(config) => InternalAction::ShowToast {
             message: config.message,
             level: match config.level {
-                crate::arclain::plugin::ui::ToastLevel::Info => ToastLevel::Info,
-                crate::arclain::plugin::ui::ToastLevel::Success => ToastLevel::Success,
-                crate::arclain::plugin::ui::ToastLevel::Warning => ToastLevel::Warning,
-                crate::arclain::plugin::ui::ToastLevel::Error => ToastLevel::Error,
+                wirt::bindings::wirt::plugin::ui::ToastLevel::Info => ToastLevel::Info,
+                wirt::bindings::wirt::plugin::ui::ToastLevel::Success => ToastLevel::Success,
+                wirt::bindings::wirt::plugin::ui::ToastLevel::Warning => ToastLevel::Warning,
+                wirt::bindings::wirt::plugin::ui::ToastLevel::Error => ToastLevel::Error,
             },
         },
         WitAction::RefreshPanel(ep) => InternalAction::RefreshPanel {
@@ -264,50 +264,48 @@ pub(crate) fn convert_plugin_action(
 // Organization rules: WIT → arclain_core
 // ============================================================================
 //
-// These are the `From` impls invoked when a plugin's
-// `get_default_rules` return is folded into the host's organization
-// rule store (`Vec<wit_rules::PluginRuleDefinition>` →
-// `Vec<arclain_core::OrganizationRule>`).
+// This conversion folds a plugin's `get_default_rules` return into the host's
+// organization rule store (`Vec<wit_rules::PluginRuleDefinition>` →
+// `Vec<arclain_core::OrganizationRule>`). It cannot use `From` because both
+// types are now defined outside this host crate.
 
-impl From<wit_rules::PluginRuleDefinition> for arclain_core::OrganizationRule {
-    fn from(def: wit_rules::PluginRuleDefinition) -> Self {
-        arclain_core::OrganizationRule {
-            name: def.name,
-            priority: 100, // Plugins get high priority by default? Or config?
-            is_enabled: true,
-            trigger: def.trigger.into(),
-            actions: def.actions.into(),
-            ..Default::default()
-        }
+pub(crate) fn convert_plugin_rule_definition(
+    def: wit_rules::PluginRuleDefinition,
+) -> arclain_core::OrganizationRule {
+    arclain_core::OrganizationRule {
+        name: def.name,
+        priority: 100, // Plugins get high priority by default? Or config?
+        is_enabled: true,
+        trigger: convert_plugin_rule_trigger(def.trigger),
+        actions: convert_plugin_rule_actions(def.actions),
+        ..Default::default()
     }
 }
 
-impl From<wit_rules::PluginRuleTrigger> for arclain_core::RuleTrigger {
-    fn from(t: wit_rules::PluginRuleTrigger) -> Self {
-        arclain_core::RuleTrigger {
-            filename_pattern: t.filename_pattern,
-            has_file: t.has_file,
-            metadata_source: t.metadata_source,
-        }
+fn convert_plugin_rule_trigger(t: wit_rules::PluginRuleTrigger) -> arclain_core::RuleTrigger {
+    arclain_core::RuleTrigger {
+        filename_pattern: t.filename_pattern,
+        has_file: t.has_file,
+        metadata_source: t.metadata_source,
     }
 }
 
-impl From<wit_rules::PluginRuleActions> for arclain_core::RuleActions {
-    fn from(a: wit_rules::PluginRuleActions) -> Self {
-        arclain_core::RuleActions {
-            root_folder: a.root_folder,
-            move_files: a.move_files.into_iter().map(|m| m.into()).collect(),
-            use_standard_layout: a.use_standard_layout,
-            ..Default::default()
-        }
+fn convert_plugin_rule_actions(a: wit_rules::PluginRuleActions) -> arclain_core::RuleActions {
+    arclain_core::RuleActions {
+        root_folder: a.root_folder,
+        move_files: a
+            .move_files
+            .into_iter()
+            .map(convert_move_file_rule)
+            .collect(),
+        use_standard_layout: a.use_standard_layout,
+        ..Default::default()
     }
 }
 
-impl From<wit_rules::MoveFileRule> for arclain_core::MoveAction {
-    fn from(m: wit_rules::MoveFileRule) -> Self {
-        arclain_core::MoveAction {
-            pattern: m.pattern,
-            target: m.target,
-        }
+fn convert_move_file_rule(m: wit_rules::MoveFileRule) -> arclain_core::MoveAction {
+    arclain_core::MoveAction {
+        pattern: m.pattern,
+        target: m.target,
     }
 }

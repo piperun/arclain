@@ -32,10 +32,10 @@ pub(crate) fn bounded_plugin_settings(
 }
 
 use crate::active_tab::ActiveTabBridge;
-use crate::arclain::plugin::host::{Host, LogLevel};
 use crate::types::{PluginCapability, PluginId, Result as PluginResult};
 use arclain_data::DataService;
 use arclain_data::ResourceManager;
+use wirt::bindings::wirt::plugin::host::{Host, LogLevel};
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -436,14 +436,14 @@ impl HostFunctions {
     /// resolver's result body crosses back over the WASM boundary.
     fn build_data_request(
         &self,
-        request: crate::arclain::plugin::host::DataRequest,
+        request: wirt::bindings::wirt::plugin::host::DataRequest,
     ) -> std::result::Result<arclain_data::DataRequest, String> {
         use arclain_data::{DataSource, ResourceType};
 
         let resource_type = match request.resource_type {
-            crate::arclain::plugin::host::ResourceType::Binary => ResourceType::Binary,
-            crate::arclain::plugin::host::ResourceType::Image => ResourceType::Image,
-            crate::arclain::plugin::host::ResourceType::Json => ResourceType::Metadata,
+            wirt::bindings::wirt::plugin::host::ResourceType::Binary => ResourceType::Binary,
+            wirt::bindings::wirt::plugin::host::ResourceType::Image => ResourceType::Image,
+            wirt::bindings::wirt::plugin::host::ResourceType::Json => ResourceType::Metadata,
         };
 
         let mut req = self
@@ -463,7 +463,7 @@ impl HostFunctions {
             request.sources.iter().any(|source| {
                 matches!(
                     source,
-                    crate::arclain::plugin::host::DataSource::MetadataCache
+                    wirt::bindings::wirt::plugin::host::DataSource::MetadataCache
                 )
             })
         } else {
@@ -473,13 +473,15 @@ impl HostFunctions {
             || request.sources.iter().any(|source| {
                 matches!(
                     source,
-                    crate::arclain::plugin::host::DataSource::ContentCache
+                    wirt::bindings::wirt::plugin::host::DataSource::ContentCache
                 )
             });
-        let wants_memory_store = request
-            .sources
-            .iter()
-            .any(|source| matches!(source, crate::arclain::plugin::host::DataSource::Memory));
+        let wants_memory_store = request.sources.iter().any(|source| {
+            matches!(
+                source,
+                wirt::bindings::wirt::plugin::host::DataSource::Memory
+            )
+        });
 
         if let Some(url) = request.url {
             req = req.with_url(url);
@@ -492,23 +494,25 @@ impl HostFunctions {
         if !request.sources.is_empty() {
             for src in request.sources {
                 let (ds, allowed) = match src {
-                    crate::arclain::plugin::host::DataSource::MetadataCache => (
+                    wirt::bindings::wirt::plugin::host::DataSource::MetadataCache => (
                         DataSource::MetadataStore,
                         self.check_capability(PluginCapability::ArchiveMetadataRead),
                     ),
-                    crate::arclain::plugin::host::DataSource::ContentCache => (
+                    wirt::bindings::wirt::plugin::host::DataSource::ContentCache => (
                         DataSource::ContentCache,
                         self.check_capability(PluginCapability::FileRead)
                             && ((resource_type != ResourceType::Metadata
                                 && !is_raw_metadata_cache_key(&request.key))
                                 || self.check_capability(PluginCapability::ArchiveMetadataRead)),
                     ),
-                    crate::arclain::plugin::host::DataSource::LocalFile => (
+                    wirt::bindings::wirt::plugin::host::DataSource::LocalFile => (
                         DataSource::LocalFile,
                         self.check_capability(PluginCapability::FileRead),
                     ),
-                    crate::arclain::plugin::host::DataSource::Memory => (DataSource::Memory, true),
-                    crate::arclain::plugin::host::DataSource::Network => (
+                    wirt::bindings::wirt::plugin::host::DataSource::Memory => {
+                        (DataSource::Memory, true)
+                    }
+                    wirt::bindings::wirt::plugin::host::DataSource::Network => (
                         DataSource::Network,
                         self.check_capability(PluginCapability::Network),
                     ),
@@ -668,7 +672,7 @@ impl Host for HostFunctions {
         self.impl_set_setting(key, value)
     }
 
-    fn current_archive_info(&mut self) -> Option<crate::arclain::plugin::host::ArchiveInfo> {
+    fn current_archive_info(&mut self) -> Option<wirt::bindings::wirt::plugin::host::ArchiveInfo> {
         if self.is_metadata_validation() {
             return None;
         }
@@ -806,7 +810,7 @@ impl Host for HostFunctions {
     fn get_metadata_summaries(
         &mut self,
         ids: Vec<String>,
-    ) -> Vec<crate::arclain::plugin::host::MetadataSummary> {
+    ) -> Vec<wirt::bindings::wirt::plugin::host::MetadataSummary> {
         if self.is_metadata_validation() {
             return Vec::new();
         }
@@ -826,7 +830,7 @@ impl Host for HostFunctions {
         &mut self,
         source: String,
         ids: Vec<String>,
-    ) -> Result<Vec<crate::arclain::plugin::host::MetadataSummary>, String> {
+    ) -> Result<Vec<wirt::bindings::wirt::plugin::host::MetadataSummary>, String> {
         if self.is_metadata_validation() {
             return Err(METADATA_VALIDATION_DENIED.to_string());
         }
@@ -850,7 +854,7 @@ impl Host for HostFunctions {
     }
 
     // === Data API (unified) ===
-    fn request_data(&mut self, request: crate::arclain::plugin::host::DataRequest) -> String {
+    fn request_data(&mut self, request: wirt::bindings::wirt::plugin::host::DataRequest) -> String {
         if self.is_metadata_validation() {
             return METADATA_VALIDATION_DENIED.to_string();
         }
@@ -860,7 +864,7 @@ impl Host for HostFunctions {
         }
     }
 
-    fn fetch_to_cache(&mut self, request: crate::arclain::plugin::host::DataRequest) -> bool {
+    fn fetch_to_cache(&mut self, request: wirt::bindings::wirt::plugin::host::DataRequest) -> bool {
         if self.is_metadata_validation() {
             return false;
         }
@@ -869,7 +873,7 @@ impl Host for HostFunctions {
         }
         let metadata_write_required = matches!(
             request.resource_type,
-            crate::arclain::plugin::host::ResourceType::Json
+            wirt::bindings::wirt::plugin::host::ResourceType::Json
         ) || is_raw_metadata_cache_key(&request.key);
         if metadata_write_required && !self.check_capability(PluginCapability::ArchiveMetadataWrite)
         {
@@ -962,17 +966,17 @@ impl Host for HostFunctions {
         Err(EXTERNAL_LAUNCH_DENIED.to_string())
     }
 
-    fn poll_data(&mut self, request_id: String) -> crate::arclain::plugin::host::DataResult {
+    fn poll_data(&mut self, request_id: String) -> wirt::bindings::wirt::plugin::host::DataResult {
         if self.is_metadata_validation() {
-            return crate::arclain::plugin::host::DataResult {
-                status: crate::arclain::plugin::host::DataStatus::Failed,
+            return wirt::bindings::wirt::plugin::host::DataResult {
+                status: wirt::bindings::wirt::plugin::host::DataStatus::Failed,
                 data: None,
                 error: Some(METADATA_VALIDATION_DENIED.to_string()),
             };
         }
         if request_id == DATA_REQUEST_CAPABILITY_DENIED {
-            return crate::arclain::plugin::host::DataResult {
-                status: crate::arclain::plugin::host::DataStatus::Failed,
+            return wirt::bindings::wirt::plugin::host::DataResult {
+                status: wirt::bindings::wirt::plugin::host::DataStatus::Failed,
                 data: None,
                 error: Some(
                     "no requested data source is authorized by the plugin manifest".to_string(),
@@ -986,8 +990,8 @@ impl Host for HostFunctions {
             .as_ref()
             .is_some_and(|data| data.len() > crate::types::MAX_PLUGIN_GUEST_DATA_BYTES)
         {
-            return crate::arclain::plugin::host::DataResult {
-                status: crate::arclain::plugin::host::DataStatus::Failed,
+            return wirt::bindings::wirt::plugin::host::DataResult {
+                status: wirt::bindings::wirt::plugin::host::DataStatus::Failed,
                 data: None,
                 error: Some("data response exceeds plugin guest-return limit".to_string()),
             };
@@ -1000,7 +1004,7 @@ impl Host for HostFunctions {
         );
 
         // Map arclain_data::DataResult to buf-generated DataResult
-        use crate::arclain::plugin::host::{DataResult, DataStatus};
+        use wirt::bindings::wirt::plugin::host::{DataResult, DataStatus};
         DataResult {
             status: match result.status {
                 arclain_data::DataStatus::Pending => DataStatus::Pending,
@@ -1101,19 +1105,19 @@ impl Host for HostFunctions {
 }
 
 // Implement the ui::Host trait (empty - ui interface only defines types)
-impl crate::arclain::plugin::ui::Host for HostFunctions {}
+impl wirt::bindings::wirt::plugin::ui::Host for HostFunctions {}
 
 // Implement the rules::Host trait (empty - rules interface only defines types)
-impl crate::arclain::plugin::rules::Host for HostFunctions {}
+impl wirt::bindings::wirt::plugin::rules::Host for HostFunctions {}
 
 // Implement the meta::Host trait (empty - meta interface only defines types)
-impl crate::arclain::plugin::meta::Host for HostFunctions {}
+impl wirt::bindings::wirt::plugin::meta::Host for HostFunctions {}
 
 #[cfg(test)]
 mod validation_mode_tests {
     use super::*;
-    use crate::arclain::plugin::host::{DataRequest, DataSource, DataStatus, ResourceType};
     use tracing_test::traced_test;
+    use wirt::bindings::wirt::plugin::host::{DataRequest, DataSource, DataStatus, ResourceType};
 
     const FILE_SENTINEL: &str = "arclain-validation-host-boundary-sentinel.txt";
 
