@@ -44,8 +44,8 @@ const FIXTURE: &str = "facade-test-fixture";
 /// selection change can be shown drawing real other content rather than
 /// only the "nothing to configure" message.
 const OTHER: &str = "gstreamer-preview";
-/// Offers no `MainPage` at all, so it exercises the empty-document branch
-/// of the section.
+/// A third plugin with its own distinctive `MainPage`, proving each
+/// selection draws only that plugin's document.
 const DEMO: &str = "ui-demo";
 
 /// Copies a workspace plugin fixture into the folder layout the plugin
@@ -426,8 +426,8 @@ fn re_rendering_the_same_plugin_never_refetches_its_main_page() {
 /// owner, so a return re-reads the plugin's layout rather than re-drawing
 /// one fetched before the user left.
 ///
-/// Three plugins, so this covers both shapes the section can draw: one
-/// with real configuration of its own, and one with none at all.
+/// Three plugins, so each selection transition must replace the previous
+/// plugin's content while keeping exactly one session open.
 #[test]
 fn leaving_a_plugin_releases_its_session_and_the_next_one_draws_its_own_main_page() {
     let (_temp, shared) = shared_state_with_plugins(&[FIXTURE, OTHER, DEMO]);
@@ -468,8 +468,8 @@ fn leaving_a_plugin_releases_its_session_and_the_next_one_draws_its_own_main_pag
     );
     assert!(harness.query_by_label("Multi Action").is_none());
 
-    // A plugin that offers nothing says so, rather than drawing an empty
-    // section under the header.
+    // A third plugin draws its own MainPage, without content from either
+    // plugin selected before it.
     press_back(harness.state_mut());
     settle(&mut harness);
     harness.state_mut().state.selected_plugin = Some(DEMO.to_string());
@@ -479,14 +479,18 @@ fn leaving_a_plugin_releases_its_session_and_the_next_one_draws_its_own_main_pag
         opened(DEMO),
     );
     assert!(
-        harness
-            .query_by_label("This plugin does not provide configuration.")
-            .is_some(),
-        "a plugin that offers no MainPage must say so rather than draw an empty section"
+        harness.query_by_label("UI Demo Plugin").is_some(),
+        "the third plugin's distinctive MainPage heading must be drawn"
+    );
+    assert!(
+        harness.query_by_label("Click Me!").is_some(),
+        "the third plugin's distinctive MainPage controls must be drawn"
     );
     assert!(harness
         .query_by_label("Enable Hardware Acceleration")
         .is_none());
+    assert!(harness.query_by_label("layout-call-1").is_none());
+    assert!(harness.query_by_label("Multi Action").is_none());
 
     // Returning to the first plugin re-reads its layout: `layout-call-2`
     // is the fixture's own count of how many times the host has asked,
