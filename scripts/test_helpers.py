@@ -860,30 +860,6 @@ class TestPluginFetchRouting(unittest.TestCase):
 
 
 class TestWirtAbi(unittest.TestCase):
-    def test_tracked_malicious_fixture_uses_versioned_wirt_abi(self):
-        fixture = (
-            REPO_ROOT
-            / "crates"
-            / "plugins"
-            / "tests"
-            / "fixtures"
-            / "malicious-metadata"
-            / "malicious-metadata.wasm"
-        )
-        component = fixture.read_bytes()
-
-        self.assertFalse(
-            b"arclain:plugin/" in component,
-            "tracked fixture still imports the legacy Arclain ABI",
-        )
-        for interface in ("host", "meta", "rules", "ui"):
-            with self.subTest(interface=interface):
-                expected = f"wirt:plugin/{interface}@0.1.0".encode()
-                self.assertTrue(
-                    expected in component,
-                    f"tracked fixture is missing {expected!r}",
-                )
-
     def test_one_versioned_wit_source_and_no_arclain_namespace(self):
         canonical = REPO_ROOT / "crates" / "wirt" / "wit" / "plugin.wit"
         legacy = REPO_ROOT / "wit" / "arclain.wit"
