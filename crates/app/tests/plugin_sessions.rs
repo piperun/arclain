@@ -30,11 +30,11 @@ use arclain_app::ids::{ArchiveSessionId, PluginSessionId};
 // Every plugin-UI DTO type is reached through `arclain_app::plugins`, not
 // `arclain_plugins` directly -- proving the facade re-exports the full
 // transitive surface `PluginUiDocument`/`PluginActionRequest` expose (see
-// that module's own doc comment). `PluginLayout`/`PluginUiElement`/
-// `normalize_layout` are the one deliberate exception used later in this
-// file: they are pre-normalization, WIT-facing types nothing outside
-// `arclain_plugins` ever receives from the real facade, only useful here
-// to hand-build a sample document for one serde round-trip test.
+// that module's own doc comment). The Wirt-owned `PluginLayout`/
+// `PluginUiElement`/`normalize_layout` inputs used later are the one
+// deliberate exception: they are pre-normalization, WIT-facing types the
+// real facade never returns, only useful here to hand-build a sample
+// document for one serde round-trip test.
 use arclain_app::plugins::{
     is_plugin_disabled_refusal, PluginActionDto, PluginActionRequest, PluginBadgeDto,
     PluginCapabilityDto, PluginExtensionPointDto, PluginHostIntentDto, PluginToastLevelDto,
@@ -77,7 +77,7 @@ fn fixture_wasm_path(name: &str) -> PathBuf {
 /// `{name}.wasm`, built by `just plugins`) into `plugins_dir/{name}/`,
 /// the folder-mode layout `arclain_plugins::loader::PluginLoader::
 /// discover_plugins` expects. Exercising a real, running plugin instance
-/// (rather than a hand-built `arclain_plugins::types::PluginLayout`)
+/// (rather than a hand-built `wirt::PluginLayout`)
 /// proves the whole path end to end: WASM `get-ui-layout`/`on-ui-event`
 /// calls, normalization, and the facade session/action wiring together.
 ///
@@ -1647,14 +1647,14 @@ fn write_plugin_image_rejects_an_asset_over_the_size_cap() {
 /// round-trips and does not leak anything unexpected into its JSON shape.
 #[test]
 fn plugin_ui_updated_operation_result_round_trips_through_serde() {
-    let layout = arclain_plugins::types::PluginLayout::Single {
-        elements: vec![arclain_plugins::types::PluginUiElement::Label {
+    let layout = wirt::PluginLayout::Single {
+        elements: vec![wirt::PluginUiElement::Label {
             text: "hello".to_string(),
             bold: false,
             size: None,
         }],
     };
-    let root = arclain_plugins::ui_model::normalize_layout(&layout).unwrap();
+    let root = wirt::ui_model::normalize_layout(&layout).unwrap();
     let document = PluginUiDocument {
         session_id: PluginSessionId::from_raw(1),
         plugin_id: "ui-demo".to_string(),

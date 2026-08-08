@@ -33,6 +33,7 @@ zeroize.workspace = true
 arclain_app_fs = { path = "../app_fs" }
 arclain_core = { path = "../core", default-features = false }
 arclain_plugins = { path = "../plugins", default-features = false }
+wirt = { path = "../wirt" }
 # Task 10 (settings facade) reuses `ProxyConfig::validate_for_storage` for
 # `update_settings`'s SOCKS5 validation instead of re-deriving the same
 # userinfo-rejection logic a second time. Headless-to-headless, so this

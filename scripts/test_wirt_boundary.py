@@ -17,6 +17,21 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestWirtBoundary(unittest.TestCase):
+    def test_app_manifest_declares_neutral_model_and_product_adapter_edges(self):
+        with (REPO_ROOT / "crates" / "app" / "Cargo.toml").open("rb") as handle:
+            dependencies = tomllib.load(handle)["dependencies"]
+
+        self.assertEqual(dependencies["wirt"]["path"], "../wirt")
+        self.assertEqual(dependencies["arclain_plugins"]["path"], "../plugins")
+
+    def test_plugins_manifest_has_no_native_dialog_dependency(self):
+        with (REPO_ROOT / "crates" / "plugins" / "Cargo.toml").open(
+            "rb"
+        ) as handle:
+            dependencies = tomllib.load(handle)["dependencies"]
+
+        self.assertNotIn("rfd", dependencies)
+
     def test_secure_loader_ownership_is_structural(self):
         neutral_loader = REPO_ROOT / "crates" / "wirt" / "src" / "loader" / "mod.rs"
         neutral_tests = REPO_ROOT / "crates" / "wirt" / "src" / "loader" / "tests.rs"

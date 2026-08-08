@@ -19,7 +19,6 @@ toml = "0.9.8"
 parking_lot.workspace = true
 dirs.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }
-rfd = "0.16.0"
 tempfile.workspace = true
 arclain-network = { path = "../network" }
 chrono.workspace = true

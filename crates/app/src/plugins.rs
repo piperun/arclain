@@ -1,8 +1,8 @@
 //! Renderer-neutral plugin sessions: the application-facade wrapper
-//! around `arclain_plugins`'s host-side plugin manager and its
-//! renderer-neutral UI model (`arclain_plugins::ui_model`).
+//! around `arclain_plugins`'s host-side plugin manager and Wirt's
+//! renderer-neutral UI model (`wirt::ui_model`).
 //!
-//! `arclain_plugins::ui_model` defines the node/document *shape*
+//! `wirt::ui_model` defines the node/document *shape*
 //! (`PluginUiNodeDto`, `PluginUiNodeKind`, ...) with no awareness of this
 //! crate's opaque ids -- it cannot depend on `arclain_app` (the
 //! dependency runs the other way). This module supplies the one missing
@@ -41,7 +41,7 @@
 //!   is structural here instead: there is no per-frame poll left to
 //!   coalesce, so nothing to build a queue for.
 //! - Hidden/disabled action rejection, via
-//!   `arclain_plugins::ui_model::PluginUiNodeDto::find`.
+//!   `wirt::ui_model::PluginUiNodeDto::find`.
 //! - The plugin-*enabled* gate ([`require_enabled_plugin`]): one check,
 //!   applied to every surface that runs a plugin or serves what a plugin
 //!   authored, so "a disabled plugin does not run" is a property of this
@@ -102,8 +102,8 @@ use parking_lot::{Mutex as SyncMutex, RwLock as SyncRwLock};
 use tokio::sync::Mutex as AsyncMutex;
 
 use arclain_plugins::types::{PluginArchiveAccess, PluginArchiveContextId};
-use arclain_plugins::ui_model::{self, PluginUiNormalizeError};
 use arclain_plugins::{ActiveTabBridge, PluginError, PluginManager};
+use wirt::ui_model::{self, PluginUiNormalizeError};
 
 // Re-exported so a consumer of this facade (a Flutter/Dart bridge, a CLI,
 // this crate's own integration tests) never needs `arclain_plugins` as a
@@ -115,7 +115,7 @@ use arclain_plugins::{ActiveTabBridge, PluginError, PluginManager};
 // normalization failure is always converted into an `ApplicationError`
 // (see `normalize_error`) before it leaves this facade, so no consumer
 // ever needs to name the lower-level error type directly.
-pub use arclain_plugins::ui_model::{
+pub use wirt::ui_model::{
     PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginHostIntentDto,
     PluginImageDto, PluginKeyValueDto, PluginToastLevelDto, PluginToolbarButtonDto,
     PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto,
@@ -200,7 +200,7 @@ pub fn plugin_image_key_owner(cache_key: &str) -> Option<&str> {
 /// Rewrites every image-bearing node's cache key reference to the
 /// encoded form [`encode_plugin_image_cache_key`] produces, recursing
 /// into every container kind. Applied once, right after
-/// `arclain_plugins::ui_model::normalize_layout` succeeds -- see
+/// `wirt::ui_model::normalize_layout` succeeds -- see
 /// [`PluginSessionStore::fetch_and_normalize`].
 fn rewrite_cache_keys(mut node: PluginUiNodeDto, plugin_id: &str) -> PluginUiNodeDto {
     node.kind = match node.kind {
@@ -853,7 +853,7 @@ fn image_fetch_error(error: arclain_network::HttpError) -> ApplicationError {
 }
 
 // ============================================================================
-// Facade-level DTOs (wrap `arclain_plugins::ui_model` shapes with this
+// Facade-level DTOs (wrap `wirt::ui_model` shapes with this
 // crate's own opaque ids).
 // ============================================================================
 
@@ -955,9 +955,9 @@ pub struct PluginSummary {
     pub load_error: Option<String>,
 }
 
-/// A renderer-neutral plugin UI document: [`arclain_plugins::ui_model::
-/// PluginUiNodeDto`]'s normalized tree, plus the session/plugin/revision
-/// identity `arclain_plugins::ui_model` itself cannot carry (it has no
+/// A renderer-neutral plugin UI document: [`wirt::ui_model::PluginUiNodeDto`]'s
+/// normalized tree, plus the session/plugin/revision identity
+/// `wirt::ui_model` itself cannot carry (it has no
 /// dependency on this crate's opaque ids).
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct PluginUiDocument {
@@ -2143,7 +2143,7 @@ impl PluginSessionStore {
     /// `!visible || !enabled`. A `node_id` that does not name any node in
     /// the tree (a toolbar button's own id, or an internal lifecycle
     /// event) is dispatched normally -- see
-    /// `arclain_plugins::ui_model::PluginUiNodeDto::find`'s doc comment.
+    /// `wirt::ui_model::PluginUiNodeDto::find`'s doc comment.
     ///
     /// The enabled flag is re-evaluated at every boundary where this
     /// dispatch is about to act on the plugin's behalf again: before the
@@ -2252,7 +2252,7 @@ impl PluginSessionStore {
         // its guest, no intents handed to a frontend, no new revision.
         still_enabled()?;
 
-        let bounded = arclain_plugins::action_policy::bound_plugin_actions(actions);
+        let bounded = wirt::action_policy::bound_plugin_actions(actions);
         let mut intents = Vec::with_capacity(bounded.len());
         let mut outcome = BoundedActionOutcome::default();
         for action in bounded {
@@ -2345,8 +2345,8 @@ impl PluginSessionStore {
 
 fn to_host_extension_point(
     extension_point: &PluginExtensionPointDto,
-) -> arclain_plugins::types::PluginExtensionPoint {
-    use arclain_plugins::types::PluginExtensionPoint as HostExtensionPoint;
+) -> wirt::PluginExtensionPoint {
+    use wirt::PluginExtensionPoint as HostExtensionPoint;
     match extension_point {
         PluginExtensionPointDto::MainPage => HostExtensionPoint::MainPage,
         PluginExtensionPointDto::PluginButton => HostExtensionPoint::PluginButton,
@@ -2418,7 +2418,7 @@ async fn resolve_request_fetches(
     }
 }
 
-/// Applies one bounded (`arclain_plugins::action_policy`-passed)
+/// Applies one bounded (`wirt::action_policy`-passed)
 /// `PluginAction` to this dispatch's outcome: either a
 /// [`PluginHostIntentDto`] a renderer should react to, or a host-internal
 /// signal this layer resolves itself.
@@ -2435,12 +2435,12 @@ async fn resolve_request_fetches(
 /// refresh so a synchronously-satisfied fetch is already visible in the
 /// re-fetched layout.
 fn apply_bounded_action(
-    action: arclain_plugins::types::PluginAction,
+    action: wirt::PluginAction,
     plugin_id: &str,
     intents: &mut Vec<PluginHostIntentDto>,
     outcome: &mut BoundedActionOutcome,
 ) {
-    use arclain_plugins::types::PluginAction;
+    use wirt::PluginAction;
 
     match action {
         PluginAction::None => {}
@@ -2870,10 +2870,10 @@ impl ActiveTabBridge for ProductionActiveTabBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arclain_plugins::types::{PluginLayout, PluginUiElement};
-    use arclain_plugins::ui_model::PluginToastLevelDto;
     use std::collections::HashMap as StdHashMap;
     use std::sync::Mutex as StdMutex;
+    use wirt::ui_model::PluginToastLevelDto;
+    use wirt::{PluginLayout, PluginUiElement};
 
     /// Minimal in-memory `arclain_data::CacheIndex` -- enough to exercise
     /// `ContentCache::put`/`get_with_limit_for_owner` without a real
@@ -2978,6 +2978,9 @@ mod tests {
             revision: 1,
             root,
         };
+        fn accepts_wirt_root(_: &wirt::ui_model::PluginUiNodeDto) {}
+        accepts_wirt_root(&document.root);
+
         let json = serde_json::to_string(&document).unwrap();
         let restored: PluginUiDocument = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, document);
@@ -3621,7 +3624,7 @@ mod tests {
         let mut intents = Vec::new();
         let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
-            arclain_plugins::types::PluginAction::RefreshPanel {
+            wirt::PluginAction::RefreshPanel {
                 extension_point: "MainPage".to_string(),
             },
             "demo",
@@ -3641,7 +3644,7 @@ mod tests {
         let mut intents = Vec::new();
         let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
-            arclain_plugins::types::PluginAction::RequestFetch {
+            wirt::PluginAction::RequestFetch {
                 key: "dlsite:RJ000001".to_string(),
             },
             "demo",
@@ -3662,7 +3665,7 @@ mod tests {
         let mut outcome = BoundedActionOutcome::default();
         for key in ["dlsite:RJ1", "fanza:VJ2"] {
             apply_bounded_action(
-                arclain_plugins::types::PluginAction::RequestFetch {
+                wirt::PluginAction::RequestFetch {
                     key: key.to_string(),
                 },
                 "demo",
@@ -4112,9 +4115,9 @@ mod tests {
         let mut intents = Vec::new();
         let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
-            arclain_plugins::types::PluginAction::ShowToast {
+            wirt::PluginAction::ShowToast {
                 message: "done".to_string(),
-                level: arclain_plugins::types::ToastLevel::Success,
+                level: wirt::ToastLevel::Success,
             },
             "demo",
             &mut intents,
@@ -4134,7 +4137,7 @@ mod tests {
         let mut intents = Vec::new();
         let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
-            arclain_plugins::types::PluginAction::CloseDialog,
+            wirt::PluginAction::CloseDialog,
             "demo",
             &mut intents,
             &mut outcome,
@@ -4148,7 +4151,7 @@ mod tests {
         let mut intents = Vec::new();
         let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
-            arclain_plugins::types::PluginAction::CopyToClipboard {
+            wirt::PluginAction::CopyToClipboard {
                 text: "clip me".to_string(),
             },
             "demo",
@@ -4168,7 +4171,7 @@ mod tests {
         let mut intents = Vec::new();
         let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
-            arclain_plugins::types::PluginAction::SetPageDisplayName {
+            wirt::PluginAction::SetPageDisplayName {
                 name: "New Title".to_string(),
             },
             "demo",
@@ -4195,7 +4198,7 @@ mod tests {
         let mut intents = Vec::new();
         let mut outcome = BoundedActionOutcome::default();
         apply_bounded_action(
-            arclain_plugins::types::PluginAction::OpenLightbox {
+            wirt::PluginAction::OpenLightbox {
                 images: vec![
                     (
                         "cover:1".to_string(),
