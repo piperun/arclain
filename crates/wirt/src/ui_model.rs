@@ -1,6 +1,6 @@
 //! Renderer-neutral plugin UI document model.
 //!
-//! `crate::types::PluginUiElement`/`PluginLayout` are the shapes the WIT
+//! [`crate::model::PluginUiElement`]/[`crate::model::PluginLayout`] are the shapes the WIT
 //! boundary lifts out of a WASM guest (via `crate::conversions`) -- they
 //! carry an `id: String` on some variants only (whichever elements the
 //! WIT schema itself gives an id), and nothing at all for containers a
@@ -20,8 +20,8 @@
 //! - An element the WIT schema already gives an id (`Button`,
 //!   `TextInput`, `Checkbox`, `RadioGroup`, `Slider`, `Dropdown`, `Tabs`,
 //!   `ListItem`, `ListContainer`, `Carousel`) keeps that id **verbatim**
-//!   -- unprefixed, unmodified -- because [`crate::runtime::PluginInstance::
-//!   send_ui_event`] dispatches to the WASM guest by that exact string,
+//!   -- unprefixed, unmodified -- because the host runtime dispatches to
+//!   the WASM guest by that exact string,
 //!   and a renderer-neutral `PluginActionRequest::node_id` must round-trip
 //!   through this module unchanged for that dispatch to keep working.
 //! - Every other element (display-only, or a container the WIT schema
@@ -59,14 +59,14 @@
 //! misattributing sibling elements to the wrong group.
 //!
 //! Tree shape is additionally bounded independently of the WIT-side
-//! guest-result quotas [`crate::runtime`] already enforces before this
+//! guest-result quotas the host runtime already enforces before this
 //! module ever sees a layout ([`MAX_UI_TREE_DEPTH`], [`MAX_UI_NODES`],
 //! [`MAX_UI_TEXT_BYTES`], [`MAX_UI_ASSETS`]) -- defense in depth, and
 //! also what lets this module's own budget tests exercise the limits
-//! directly against a hand-built [`crate::types::PluginLayout`] without
+//! directly against a hand-built [`crate::model::PluginLayout`] without
 //! needing a real WASM guest to produce one.
 
-use crate::types::{
+use crate::model::{
     ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, ToastLevel, ToolbarButton,
     WarningIcon,
 };
@@ -330,7 +330,7 @@ pub enum PluginActionDto {
 /// A bounded, typed side effect the application layer surfaces to a
 /// renderer alongside an updated [`PluginUiNodeDto`] tree. Deliberately
 /// does **not** include `RefreshPanel` or `RequestFetch` -- those two
-/// `crate::types::PluginAction` variants are host-internal signals
+/// [`crate::model::PluginAction`] variants are host-internal signals
 /// (respectively: "re-fetch and re-normalize this session's layout" and
 /// "run a background metadata fetch") that the application layer
 /// resolves entirely on its own; a renderer never needs to react to them
@@ -366,7 +366,7 @@ pub enum PluginToastLevelDto {
 }
 
 /// Which UI slot a [`PluginUiNodeDto`] tree was rendered for. Mirrors
-/// `crate::types::PluginExtensionPoint`, re-expressed as a
+/// [`crate::model::PluginExtensionPoint`], re-expressed as a
 /// `serde`-friendly, `Copy`-free DTO for the application-facade
 /// boundary.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -439,7 +439,7 @@ fn convert_key_value(pair: &KeyValuePair) -> PluginKeyValueDto {
     }
 }
 
-/// Maps a `crate::types::ToastLevel` (the shape `PluginAction::ShowToast`
+/// Maps a [`crate::model::ToastLevel`] (the shape `PluginAction::ShowToast`
 /// carries) onto its DTO equivalent. `pub`: called from `arclain_app`,
 /// which converts a bounded `PluginAction::ShowToast` into a
 /// [`PluginHostIntentDto::ShowToast`].

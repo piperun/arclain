@@ -1,8 +1,8 @@
-use arclain_plugins::action_policy::{
+use wirt::action_policy::{
     bound_plugin_actions, bound_plugin_actions_with_status, MAX_LIGHTBOX_IMAGES,
     MAX_REQUEST_FETCH_ACTIONS, MAX_TOAST_ACTIONS, MAX_TOAST_MESSAGE_BYTES,
 };
-use arclain_plugins::types::{PluginAction, ToastLevel};
+use wirt::{PluginAction, ToastLevel};
 
 #[test]
 fn guest_action_batch_has_semantic_quotas_and_last_wins_actions() {

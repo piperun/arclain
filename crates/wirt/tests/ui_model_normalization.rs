@@ -1,4 +1,4 @@
-//! Integration coverage for `arclain_plugins::ui_model::normalize_layout`.
+//! Integration coverage for `wirt::ui_model::normalize_layout`.
 //!
 //! Exercises every current `PluginUiElement` variant -- the host-side
 //! shape `crate::conversions::convert_ui_element` produces from the raw
@@ -12,19 +12,17 @@
 //! that is what actually proves the surface, rather than a Cargo feature
 //! flag this crate has never had.
 
-use arclain_plugins::types::{
-    ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, ToolbarButton, WarningIcon,
-};
-use arclain_plugins::ui_model::{
+use wirt::ui_model::{
     normalize_layout, PluginButtonActionDto, PluginUiNodeKind, PluginUiNormalizeError,
     PluginWarningIconDto, MAX_UI_ASSETS, MAX_UI_NODES, MAX_UI_TEXT_BYTES, MAX_UI_TREE_DEPTH,
 };
+use wirt::{ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, ToolbarButton, WarningIcon};
 
 fn single(elements: Vec<PluginUiElement>) -> PluginLayout {
     PluginLayout::Single { elements }
 }
 
-fn root_children(layout: &PluginLayout) -> Vec<arclain_plugins::ui_model::PluginUiNodeDto> {
+fn root_children(layout: &PluginLayout) -> Vec<wirt::ui_model::PluginUiNodeDto> {
     let root = normalize_layout(layout).expect("layout must normalize");
     match root.kind {
         PluginUiNodeKind::Single { children } => children,
@@ -618,25 +616,17 @@ fn tree_depth_node_text_and_asset_budgets_are_enforced_end_to_end() {
 }
 
 // ============================================================================
-// Compile-guard: this crate's public API carries no UI-toolkit or
-// signal type. There is no "egui feature" flag in this crate's
-// Cargo.toml to gate out (it has never depended on egui at all); the
-// meaningful assertion is that arclain_signals::Signal cannot appear in
-// ui_model's public surface, and that this whole test file -- an
-// external, `arclain_plugins`-only consumer -- compiles and links
-// without pulling in egui or eframe. `arclain_signals` remains a
-// dev-only dependency of this crate for now (three test doubles for
-// `ActiveTabBridge` use it as a convenient interior-mutable cell), but
-// carries no public-API weight: nothing exported from `ui_model`
-// mentions it.
+// Compile-guard: Wirt's public UI model carries only plain data and no
+// UI-toolkit or signal type. This external Wirt-only test proves the
+// renderer-neutral surface compiles without product UI dependencies.
 // ============================================================================
 
 #[test]
 fn ui_model_public_types_are_plain_data_with_no_toolkit_or_signal_dependency() {
     fn assert_plain_data<T: Clone + std::fmt::Debug + PartialEq>() {}
-    assert_plain_data::<arclain_plugins::ui_model::PluginUiNodeDto>();
-    assert_plain_data::<arclain_plugins::ui_model::PluginUiNodeKind>();
-    assert_plain_data::<arclain_plugins::ui_model::PluginHostIntentDto>();
-    assert_plain_data::<arclain_plugins::ui_model::PluginExtensionPointDto>();
-    assert_plain_data::<arclain_plugins::ui_model::PluginActionDto>();
+    assert_plain_data::<wirt::ui_model::PluginUiNodeDto>();
+    assert_plain_data::<wirt::ui_model::PluginUiNodeKind>();
+    assert_plain_data::<wirt::ui_model::PluginHostIntentDto>();
+    assert_plain_data::<wirt::ui_model::PluginExtensionPointDto>();
+    assert_plain_data::<wirt::ui_model::PluginActionDto>();
 }

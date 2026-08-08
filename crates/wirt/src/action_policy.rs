@@ -1,6 +1,6 @@
 //! Host-side policy for action batches returned by untrusted plugins.
 
-use crate::types::PluginAction;
+use crate::model::PluginAction;
 
 pub const MAX_TOAST_ACTIONS: usize = 4;
 pub const MAX_REQUEST_FETCH_ACTIONS: usize = 2;

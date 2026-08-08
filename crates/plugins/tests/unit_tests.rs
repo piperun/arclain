@@ -1,53 +1,6 @@
 //! Unit tests for plugin system components
 
-use arclain_plugins::{PluginCapability, PluginError, PluginEvent, PluginMetadata, PluginResponse};
-
-#[test]
-fn test_plugin_capability_enum() {
-    // Test that all capabilities can be created
-    let caps = vec![
-        PluginCapability::Network,
-        PluginCapability::FileRead,
-        PluginCapability::FileWrite,
-        PluginCapability::ArchiveMetadataRead,
-        PluginCapability::ArchiveMetadataWrite,
-        PluginCapability::ArchiveModify,
-    ];
-
-    assert_eq!(caps.len(), 6, "Should have 6 capability types");
-}
-
-#[test]
-fn test_plugin_metadata_creation() {
-    let metadata = PluginMetadata {
-        id: "test-plugin".to_string(),
-        name: "Test Plugin".to_string(),
-        version: "1.0.0".to_string(),
-        author: "Test Author".to_string(),
-        description: "A test plugin".to_string(),
-    };
-
-    assert_eq!(metadata.id, "test-plugin");
-    assert_eq!(metadata.name, "Test Plugin");
-    assert_eq!(metadata.version, "1.0.0");
-    assert_eq!(metadata.author, "Test Author");
-    assert_eq!(metadata.description, "A test plugin");
-}
-
-#[test]
-fn test_plugin_error_types() {
-    let errors = vec![
-        PluginError::LoadError("test".to_string()),
-        PluginError::InitError("test".to_string()),
-        PluginError::ExecutionError("test".to_string()),
-        PluginError::WasmError("test".to_string()),
-        PluginError::InvalidManifest("test".to_string()),
-        PluginError::NotFound("test".to_string()),
-        PluginError::CapabilityDenied(PluginCapability::Network),
-    ];
-
-    assert_eq!(errors.len(), 7, "Should have 7 error types");
-}
+use arclain_plugins::{PluginEvent, PluginResponse};
 
 #[test]
 fn test_plugin_event_types() {

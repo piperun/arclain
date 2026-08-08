@@ -41,7 +41,6 @@
 //! }).unwrap();
 //! ```
 
-pub mod action_policy;
 pub mod active_tab;
 mod conversions;
 pub mod host_functions;
@@ -49,7 +48,7 @@ pub mod loader;
 pub mod manager;
 pub mod runtime;
 pub mod types;
-pub mod ui_model;
+pub use wirt::{action_policy, ui_model};
 
 // Re-export main types
 pub use active_tab::ActiveTabBridge;

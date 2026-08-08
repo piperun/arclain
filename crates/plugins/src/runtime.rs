@@ -2,12 +2,13 @@
 //!
 //! This module provides the WASM runtime with full host function support.
 
-use crate::conversions::{
-    convert_plugin_action, convert_plugin_layout, convert_plugin_rule_definition,
-    convert_top_tab_config,
-};
+use crate::conversions::convert_plugin_rule_definition;
 use crate::host_functions::HostFunctions;
 use crate::types::{PluginCapability, PluginError, PluginExtensionPoint, PluginMetadata, Result};
+use wirt::conversions::{
+    convert_plugin_action, convert_plugin_layout,
+    convert_plugin_rule_definition as convert_wirt_rule, convert_top_tab_config,
+};
 use wirt::PluginWorld;
 
 use serde::Serialize;
@@ -682,6 +683,7 @@ impl PluginInstance {
                 plugin.call_get_default_rules(store).map(|rules| {
                     rules
                         .into_iter()
+                        .map(convert_wirt_rule)
                         .map(convert_plugin_rule_definition)
                         .collect()
                 })

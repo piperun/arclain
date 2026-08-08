@@ -8766,6 +8766,10 @@ dependencies = [
 name = "wirt"
 version = "2.3.2"
 dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml 0.9.12+spec-1.1.0",
  "wasmtime",
 ]
 
