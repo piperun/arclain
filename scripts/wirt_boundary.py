@@ -83,15 +83,24 @@ def dependency_violations(workspace_root: Path) -> list[str]:
     violations = [
         f"crates/wirt/Cargo.toml: forbidden dependency {name}" for name in names
     ]
-    wasmtime_dependencies = [
-        table["wasmtime"] for table in dependency_tables(document) if "wasmtime" in table
+    dependency_identities = [
+        (name, dependency_package(name, dependency, inherited))
+        for table in dependency_tables(document)
+        for name, dependency in table.items()
     ]
     if any(
-        dependency_package("wasmtime", dependency, inherited) != "wasmtime"
-        for dependency in wasmtime_dependencies
+        name == "wasmtime" and package != "wasmtime"
+        for name, package in dependency_identities
     ):
         violations.append(
             "crates/wirt/Cargo.toml: wasmtime dependency must resolve to package wasmtime"
+        )
+    if any(
+        name != "wasmtime" and package == "wasmtime"
+        for name, package in dependency_identities
+    ):
+        violations.append(
+            "crates/wirt/Cargo.toml: package wasmtime must use dependency key wasmtime"
         )
     return violations
 
@@ -484,6 +493,7 @@ def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | 
             if bracket < len(tokens) and tokens[bracket].value == "!":
                 bracket += 1
             if bracket >= len(tokens) or tokens[bracket].value != "[":
+                index += 1
                 continue
             end = closing_token(tokens, bracket, "[", "]")
             if end is None:
@@ -509,6 +519,7 @@ def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | 
             end = closing_token(tokens, index + 2, opening, closing)
             if end is None:
                 issues.append((token.offset, token.line, None))
+                index += 1
                 continue
             arguments = tokens[index + 3 : end]
             if arguments and arguments[-1].value == ",":
@@ -555,12 +566,23 @@ def parse_use_tree(
         return bindings, index + 1, index < len(tokens)
 
     token = tokens[index]
+    if token.value == "*":
+        if not prefix:
+            return [], index, False
+        return [(prefix + ("*",), "*")], index + 1, True
     if token.kind != "identifier":
         return [], index, False
     if token.value == "self":
         if not prefix:
             return [], index, False
-        return [(prefix, prefix[-1])], index + 1, True
+        local_name = prefix[-1]
+        index += 1
+        if index < len(tokens) and tokens[index].value == "as":
+            if index + 1 >= len(tokens) or tokens[index + 1].kind != "identifier":
+                return [], index, False
+            local_name = tokens[index + 1].value or ""
+            index += 2
+        return [(prefix, local_name)], index, True
 
     path = prefix + (token.value or "",)
     index += 1
@@ -700,14 +722,16 @@ def bindgen_declaration_issues(tokens: list[RustToken]) -> list[tuple[int, int, 
         else:
             bindings, cursor, valid = parse_use_tree(statement, 0)
             if not valid or cursor != len(statement):
-                relevant = bool({"wasmtime", "component", "bindgen"} & set(identifiers))
+                relevant = (
+                    bool({"wasmtime", "component", "bindgen"} & set(identifiers))
+                    or any(candidate.value == "*" for candidate in statement)
+                )
             else:
                 for path, local_name in bindings:
                     is_wasmtime_root = path == ("wasmtime",)
-                    is_component_or_bindgen = path == ("wasmtime", "component") or (
-                        len(path) >= 3
-                        and path[:3] == ("wasmtime", "component", "bindgen")
-                    )
+                    is_component_or_bindgen = path and path[-1] in {
+                        "component", "bindgen"
+                    }
                     if (
                         (local_name == "wasmtime" and not is_wasmtime_root)
                         or (is_wasmtime_root and local_name != "wasmtime")

@@ -21,25 +21,52 @@ class TestWirtBoundary(unittest.TestCase):
     def source_violations(self, source: str) -> list[str]:
         return self.source_tree_violations({"src/lib.rs": source})
 
+    def write_source_tree(self, root: Path, sources: dict[str, str]) -> None:
+        crate = root / "crates" / "wirt"
+        crate.mkdir(parents=True)
+        (crate / "Cargo.toml").write_text(
+            '[package]\nname = "wirt"\nversion = "0.1.0"\n',
+            encoding="utf-8",
+        )
+        canonical = root / "wirt-sdk" / "wit"
+        canonical.mkdir(parents=True)
+        (canonical / "plugin.wit").write_text(
+            "package wirt:plugin@0.1.0;\n", encoding="utf-8"
+        )
+        for relative, source in sources.items():
+            path = crate / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(source, encoding="utf-8")
+
     def source_tree_violations(self, sources: dict[str, str]) -> list[str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            crate = root / "crates" / "wirt"
-            crate.mkdir(parents=True)
-            (crate / "Cargo.toml").write_text(
-                '[package]\nname = "wirt"\nversion = "0.1.0"\n',
-                encoding="utf-8",
-            )
-            canonical = root / "wirt-sdk" / "wit"
-            canonical.mkdir(parents=True)
-            (canonical / "plugin.wit").write_text(
-                "package wirt:plugin@0.1.0;\n", encoding="utf-8"
-            )
-            for relative, source in sources.items():
-                path = crate / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(source, encoding="utf-8")
+            self.write_source_tree(root, sources)
             return wirt_boundary.source_violations(root)
+
+    def source_violations_subprocess(self, source: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_source_tree(root, {"src/lib.rs": source})
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import sys; from pathlib import Path; "
+                        "sys.path.insert(0, sys.argv[1]); import wirt_boundary; "
+                        "print('\\n'.join(wirt_boundary.source_violations(Path(sys.argv[2]))))"
+                    ),
+                    str(REPO_ROOT / "scripts"),
+                    str(root),
+                ],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout.splitlines() if result.stdout.strip() else []
 
     def test_app_manifest_declares_neutral_model_and_product_adapter_edges(self):
         with (REPO_ROOT / "crates" / "app" / "Cargo.toml").open("rb") as handle:
@@ -213,6 +240,60 @@ class TestWirtBoundary(unittest.TestCase):
                 [
                     "crates/wirt/Cargo.toml: wasmtime dependency must resolve "
                     "to package wasmtime"
+                ],
+            )
+
+    def test_wasmtime_package_cannot_use_an_alias_dependency_key(self):
+        tables = (
+            "[dependencies]",
+            "[target.'cfg(windows)'.dependencies]",
+            "[target.'cfg(windows)'.build-dependencies]",
+            "[target.'cfg(windows)'.dev-dependencies]",
+            "[build-dependencies]",
+            "[dev-dependencies]",
+        )
+        for table in tables:
+            with self.subTest(table=table), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                crate = root / "crates" / "wirt"
+                (crate / "src").mkdir(parents=True)
+                (crate / "Cargo.toml").write_text(
+                    '[package]\nname = "wirt"\nversion = "0.1.0"\n'
+                    f"{table}\n"
+                    'wt = { package = "wasmtime", version = "1" }\n',
+                    encoding="utf-8",
+                )
+
+                self.assertEqual(
+                    wirt_boundary.dependency_violations(root),
+                    [
+                        "crates/wirt/Cargo.toml: package wasmtime must use "
+                        "dependency key wasmtime"
+                    ],
+                )
+
+    def test_workspace_wasmtime_package_alias_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                "[workspace]\nmembers = [\"crates/wirt\"]\n"
+                "[workspace.dependencies]\n"
+                'wt = { package = "wasmtime", version = "1" }\n',
+                encoding="utf-8",
+            )
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n'
+                '[dependencies]\nwt.workspace = true\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.dependency_violations(root),
+                [
+                    "crates/wirt/Cargo.toml: package wasmtime must use "
+                    "dependency key wasmtime"
                 ],
             )
 
@@ -457,6 +538,28 @@ class TestWirtBoundary(unittest.TestCase):
             ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
         )
 
+    def test_noncanonical_bindgen_macro_import_is_rejected(self):
+        source = (
+            "use wt::component::bindgen as safe_macro;\n"
+            "safe_macro!({\n"
+            '    path: "../../wirt-sdk/wit/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
+        )
+
+    def test_noncanonical_component_module_alias_is_rejected(self):
+        source = "use wt::component as safe_component;\n"
+
+        self.assertEqual(
+            self.source_violations(source),
+            ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
+        )
+
     def test_imported_component_alias_is_rejected(self):
         source = (
             "use wasmtime::component as wasmtime_component;\n"
@@ -591,6 +694,66 @@ class TestWirtBoundary(unittest.TestCase):
         }
 
         self.assertEqual(self.source_tree_violations(sources), [])
+
+    def test_grouped_foreign_globs_fail_closed(self):
+        sources = (
+            "use shim::{*};\n",
+            "use ::external::{*};\n",
+            "use shim::{nested::{*}};\n",
+            "use shim::{self as shim_alias, *};\n",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                self.assertEqual(
+                    self.source_violations(source),
+                    [
+                        "crates/wirt/src/lib.rs:1: unsupported or ambiguous "
+                        "Wasmtime component use tree"
+                    ],
+                )
+
+    def test_grouped_internal_globs_are_allowed(self):
+        sources = {
+            "src/lib.rs": "use super::{self, *};\n",
+            "src/quota.rs": "use super::{quota::{self, *}};\n",
+            "src/internal.rs": "use crate::{internal::{self, *}};\n",
+        }
+
+        self.assertEqual(self.source_tree_violations(sources), [])
+
+    def test_grouped_foreign_glob_in_included_source_fails_closed(self):
+        sources = {
+            "src/lib.rs": 'include!("bindings.inc");\n',
+            "src/bindings.inc": "use shim::{*};\n",
+        }
+
+        self.assertEqual(
+            self.source_tree_violations(sources),
+            [
+                "crates/wirt/src/bindings.inc:1: unsupported or ambiguous "
+                "Wasmtime component use tree"
+            ],
+        )
+
+    def test_malformed_compiled_path_tokens_finish_within_timeout(self):
+        cases = {
+            "non_attribute_hash": "# not_an_attribute\n",
+            "unterminated_include": "include!(\n",
+            "unterminated_path_attribute": "#[path =\n",
+        }
+        for name, source in cases.items():
+            with self.subTest(name=name):
+                violations = self.source_violations_subprocess(source)
+                if name == "non_attribute_hash":
+                    self.assertEqual(violations, [])
+                else:
+                    self.assertEqual(
+                        violations,
+                        [
+                            "crates/wirt/src/lib.rs:1: include! path is not a "
+                            "string literal"
+                        ],
+                    )
 
     def test_component_glob_import_fails_closed(self):
         source = (
