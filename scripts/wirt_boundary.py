@@ -549,6 +549,12 @@ def parse_use_tree(
 ) -> tuple[list[tuple[tuple[str, ...], str]], int, bool]:
     if not prefix and has_double_colon(tokens, index):
         index += 2
+        if (
+            index < len(tokens)
+            and tokens[index].kind == "identifier"
+            and tokens[index].value in {"self", "super", "crate"}
+        ):
+            return [], index, False
     if index >= len(tokens):
         return [], index, False
     if tokens[index].value == "{":
