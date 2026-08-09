@@ -545,23 +545,23 @@ def has_double_colon(tokens: list[RustToken], index: int) -> bool:
 
 
 def parse_use_tree(
-    tokens: list[RustToken], index: int, prefix: tuple[str, ...] = ()
+    tokens: list[RustToken],
+    index: int,
+    prefix: tuple[str, ...] = (),
+    absolute_root: bool = False,
 ) -> tuple[list[tuple[tuple[str, ...], str]], int, bool]:
     if not prefix and has_double_colon(tokens, index):
         index += 2
-        if (
-            index < len(tokens)
-            and tokens[index].kind == "identifier"
-            and tokens[index].value in {"self", "super", "crate"}
-        ):
-            return [], index, False
+        absolute_root = True
     if index >= len(tokens):
         return [], index, False
     if tokens[index].value == "{":
         bindings: list[tuple[tuple[str, ...], str]] = []
         index += 1
         while index < len(tokens) and tokens[index].value != "}":
-            nested, index, valid = parse_use_tree(tokens, index, prefix)
+            nested, index, valid = parse_use_tree(
+                tokens, index, prefix, absolute_root
+            )
             if not valid:
                 return [], index, False
             bindings.extend(nested)
@@ -572,6 +572,13 @@ def parse_use_tree(
         return bindings, index + 1, index < len(tokens)
 
     token = tokens[index]
+    if (
+        absolute_root
+        and not prefix
+        and token.kind == "identifier"
+        and token.value in {"self", "super", "crate"}
+    ):
+        return [], index, False
     if token.value == "*":
         if not prefix or prefix == ("self",):
             return [], index, False
@@ -732,11 +739,18 @@ def bindgen_declaration_issues(tokens: list[RustToken]) -> list[tuple[int, int, 
                 source != "wasmtime" and alias == "wasmtime"
             )
         else:
-            bindings, cursor, valid = parse_use_tree(statement, 0)
+            absolute_root = has_double_colon(statement, 0)
+            bindings, cursor, valid = parse_use_tree(
+                statement, 0, absolute_root=absolute_root
+            )
             if not valid or cursor != len(statement):
                 relevant = (
                     bool({"wasmtime", "component", "bindgen"} & set(identifiers))
                     or any(candidate.value == "*" for candidate in statement)
+                    or (
+                        absolute_root
+                        and bool({"self", "super", "crate"} & set(identifiers))
+                    )
                 )
             else:
                 for path, local_name in bindings:

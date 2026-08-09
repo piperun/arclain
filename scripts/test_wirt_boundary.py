@@ -739,6 +739,28 @@ class TestWirtBoundary(unittest.TestCase):
                     ],
                 )
 
+    def test_grouped_absolute_internal_roots_are_rejected(self):
+        imports = (
+            "use ::{self::nested::*};\n",
+            "use ::{super::nested::*};\n",
+            "use ::{crate::nested::*};\n",
+            "use ::{self::{nested::*}};\n",
+            "use ::{self};\n",
+            "use ::{crate};\n",
+        )
+        for import_source in imports:
+            with self.subTest(import_source=import_source):
+                self.assertEqual(
+                    self.source_violations(import_source),
+                    [
+                        "crates/wirt/src/lib.rs:1: unsupported or ambiguous "
+                        "Wasmtime component use tree"
+                    ],
+                )
+
+    def test_grouped_absolute_wasmtime_root_is_allowed(self):
+        self.assertEqual(self.source_violations("use ::{wasmtime};\n"), [])
+
     def test_grouped_foreign_globs_fail_closed(self):
         sources = (
             "use shim::{*};\n",
