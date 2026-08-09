@@ -73,65 +73,56 @@ fn repository_root() -> PathBuf {
 }
 
 fn new_project(destination: &Path) -> Result<()> {
-    prepare_empty_destination(destination)?;
-    let repository = repository_root();
-    copy_tree(
-        &repository.join("wirt-sdk/template"),
-        destination,
-        CopyMode::Template,
-    )?;
-    let destination_root = open_dir_nofollow(destination, "could not open project destination")?;
-    destination_root
+    let destination_dir = prepare_empty_destination(destination)?;
+    let repository = open_dir_nofollow(&repository_root(), "could not open repository root")?;
+    let sdk_source = repository
+        .open_dir_nofollow("wirt-sdk")
+        .with_context(|| "wirt-sdk source is missing or a link/reparse point")?;
+    let template_source = sdk_source
+        .open_dir_nofollow("template")
+        .with_context(|| "starter source is missing or a link/reparse point")?;
+    copy_directory(&template_source, &destination_dir, true, CopyMode::Template)?;
+    destination_dir
         .create_dir("wirt-sdk")
         .with_context(|| "could not create vendored SDK")?;
-    copy_tree(
-        &repository.join("wirt-sdk"),
-        &destination.join("wirt-sdk"),
-        CopyMode::Sdk,
-    )?;
+    let sdk_destination = destination_dir
+        .open_dir_nofollow("wirt-sdk")
+        .with_context(|| "vendored SDK destination became a link/reparse point")?;
+    copy_directory(&sdk_source, &sdk_destination, true, CopyMode::Sdk)?;
     println!("Created Wirt plugin project at {}", destination.display());
     Ok(())
 }
 
-fn prepare_empty_destination(destination: &Path) -> Result<()> {
+fn prepare_empty_destination(destination: &Path) -> Result<Dir> {
     match fs::symlink_metadata(destination) {
         Ok(metadata) => {
             reject_link_or_reparse(&metadata, "destination is a link or reparse point")?;
             if !metadata.is_dir() {
                 bail!("destination exists and is not a directory");
             }
-            if fs::read_dir(destination)
-                .with_context(|| "could not inspect destination")?
-                .next()
-                .is_some()
-            {
-                bail!("destination is not empty");
-            }
-            Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir_all(destination).with_context(|| "could not create destination")?;
-            let metadata = fs::symlink_metadata(destination)?;
-            reject_link_or_reparse(&metadata, "destination became a link or reparse point")?;
-            Ok(())
         }
-        Err(error) => Err(error).with_context(|| "could not inspect destination"),
+        Err(error) => return Err(error).with_context(|| "could not inspect destination"),
     }
+    let destination = open_dir_nofollow(destination, "destination became a link or reparse point")?;
+    if destination
+        .entries()
+        .with_context(|| "could not inspect destination")?
+        .next()
+        .transpose()?
+        .is_some()
+    {
+        bail!("destination is not empty");
+    }
+    Ok(destination)
 }
 
 #[derive(Clone, Copy)]
 enum CopyMode {
     Template,
     Sdk,
-}
-
-fn copy_tree(source: &Path, destination: &Path, mode: CopyMode) -> Result<()> {
-    let source = open_dir_nofollow(source, "copy source is missing or a link/reparse point")?;
-    let destination = open_dir_nofollow(
-        destination,
-        "copy destination is missing or a link/reparse point",
-    )?;
-    copy_directory(&source, &destination, true, mode)
 }
 
 fn copy_directory(source: &Dir, destination: &Dir, at_root: bool, mode: CopyMode) -> Result<()> {
@@ -196,6 +187,10 @@ fn copy_file(source: &Dir, destination: &Dir, name: &OsStr) -> Result<()> {
 }
 
 fn open_dir_nofollow(path: &Path, context: &str) -> Result<Dir> {
+    if path == Path::new(".") || path.file_name().is_none() {
+        return Dir::open_ambient_dir(path, ambient_authority())
+            .with_context(|| context.to_owned());
+    }
     let name = path
         .file_name()
         .ok_or_else(|| anyhow!("directory path has no final component"))?;
@@ -461,7 +456,7 @@ fn atomic_create(destination: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_file, open_dir_nofollow};
+    use super::{copy_file, open_dir_nofollow, prepare_empty_destination};
     use std::ffi::OsStr;
     use std::fs;
 
@@ -488,5 +483,30 @@ mod tests {
         let error = copy_file(&source, &destination, OsStr::new("plugin.toml")).unwrap_err();
         assert!(error.to_string().contains("link or reparse point"));
         assert!(!temp.path().join("destination/plugin.toml").exists());
+    }
+
+    #[test]
+    fn prepared_destination_handle_cannot_be_redirected_to_a_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let selected = temp.path().join("selected");
+        fs::create_dir(&selected).unwrap();
+        let selected_handle = prepare_empty_destination(&selected).unwrap();
+        let moved = temp.path().join("original");
+
+        #[cfg(unix)]
+        {
+            fs::rename(&selected, &moved).unwrap();
+            fs::create_dir(&selected).unwrap();
+            fs::write(selected.join("sentinel.txt"), b"replacement").unwrap();
+            selected_handle.create("marker.txt").unwrap();
+            assert!(moved.join("marker.txt").is_file());
+            assert!(!selected.join("marker.txt").exists());
+        }
+        #[cfg(windows)]
+        {
+            assert!(fs::rename(&selected, &moved).is_err());
+            selected_handle.create("marker.txt").unwrap();
+            assert!(selected.join("marker.txt").is_file());
+        }
     }
 }

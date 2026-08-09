@@ -120,6 +120,23 @@ fn new_refuses_nonempty_destinations_without_touching_them() {
 }
 
 #[test]
+fn new_accepts_the_current_empty_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("current-directory");
+    fs::create_dir(&project).unwrap();
+
+    assert_success(
+        command()
+            .current_dir(&project)
+            .args(["new", "."])
+            .output()
+            .unwrap(),
+    );
+    assert!(project.join("Cargo.toml").is_file());
+    assert!(project.join("wirt-sdk/wit/plugin.wit").is_file());
+}
+
+#[test]
 fn help_and_argument_errors_pin_the_small_command_surface() {
     let help = assert_success(run(&["--help"]));
     let help = String::from_utf8(help.stdout).unwrap();
