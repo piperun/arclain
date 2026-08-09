@@ -1,5 +1,6 @@
 use crate::{PluginError, Result, MAX_PLUGIN_WASM_BYTES, WIRT_ABI_VERSION};
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use wasmparser::component_types::{
     ComponentAnyTypeId, ComponentDefinedType, ComponentDefinedTypeId, ComponentEntityType,
@@ -89,6 +90,39 @@ fn claim_token_bytes(total: &mut usize, bytes: usize) -> Result<()> {
     Ok(())
 }
 
+fn compare_names(left: &str, right: &str) -> Ordering {
+    #[cfg(test)]
+    sort_watch::record(left, right);
+    left.cmp(right)
+}
+
+#[cfg(test)]
+mod sort_watch {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static WATCH: RefCell<Option<(String, usize)>> = const { RefCell::new(None) };
+    }
+
+    pub fn start(prefix: &str) {
+        WATCH.with(|watch| *watch.borrow_mut() = Some((prefix.to_owned(), 0)));
+    }
+
+    pub fn record(left: &str, right: &str) {
+        WATCH.with(|watch| {
+            if let Some((prefix, comparisons)) = &mut *watch.borrow_mut() {
+                if left.starts_with(prefix.as_str()) && right.starts_with(prefix.as_str()) {
+                    *comparisons += 1;
+                }
+            }
+        });
+    }
+
+    pub fn finish() -> usize {
+        WATCH.with(|watch| watch.borrow_mut().take().unwrap().1)
+    }
+}
+
 fn top_level_names(component: &[u8]) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
     let mut imports = BTreeSet::new();
     let mut exports = BTreeSet::new();
@@ -128,6 +162,7 @@ fn top_level_names(component: &[u8]) -> Result<(BTreeSet<String>, BTreeSet<Strin
 enum Work<'a> {
     Tag(&'static str),
     Name(&'a str),
+    ClaimedName(&'a str),
     Number(u64),
     Entity(ComponentEntityType, usize),
     Any(ComponentAnyTypeId, usize),
@@ -181,6 +216,14 @@ impl<'a> TypeHasher<'a> {
         Ok(())
     }
 
+    fn claim_names<'b>(&mut self, names: impl IntoIterator<Item = &'b str>) -> Result<()> {
+        let bytes = names
+            .into_iter()
+            .try_fold(0_usize, |bytes, name| bytes.checked_add(name.len()))
+            .ok_or_else(|| contract_error("type-complexity"))?;
+        claim_token_bytes(&mut self.token_bytes, bytes)
+    }
+
     fn number(&mut self, number: u64) {
         self.tag("number");
         self.update(&number.to_le_bytes());
@@ -226,7 +269,11 @@ impl<'a> TypeHasher<'a> {
         let max_depth = items
             .iter()
             .filter_map(|item| match item {
-                Work::Tag(_) | Work::Name(_) | Work::Number(_) | Work::FinishAny(_) => None,
+                Work::Tag(_)
+                | Work::Name(_)
+                | Work::ClaimedName(_)
+                | Work::Number(_)
+                | Work::FinishAny(_) => None,
                 Work::Entity(_, depth)
                 | Work::Any(_, depth)
                 | Work::Func(_, depth)
@@ -277,6 +324,7 @@ impl<'a> TypeHasher<'a> {
             match work {
                 Work::Tag(tag) => self.tag(tag),
                 Work::Name(name) => self.name(name)?,
+                Work::ClaimedName(name) => self.update(name.as_bytes()),
                 Work::Number(number) => self.number(number),
                 Work::Entity(entity, depth) => self.entity(entity, depth)?,
                 Work::Any(ty, depth) => self.any(ty, depth)?,
@@ -421,12 +469,13 @@ impl<'a> TypeHasher<'a> {
             .and_then(|count| count.checked_add(1))
             .ok_or_else(|| contract_error("type-complexity"))?;
         self.claim(count, depth + 1)?;
+        self.claim_names(instance.exports.keys().map(String::as_str))?;
         let mut exports = instance.exports.iter().collect::<Vec<_>>();
-        exports.sort_by(|a, b| a.0.cmp(b.0));
+        exports.sort_by(|a, b| compare_names(a.0.as_str(), b.0.as_str()));
         let mut items = Vec::with_capacity(count);
         items.push(Work::Number(exports.len() as u64));
         for (name, item) in exports {
-            items.push(Work::Name(name.as_str()));
+            items.push(Work::ClaimedName(name.as_str()));
             items.push(Work::Entity(item.ty, depth + 1));
         }
         self.push_claimed(items);
@@ -442,19 +491,25 @@ impl<'a> TypeHasher<'a> {
             .and_then(|count| count.checked_mul(3))
             .ok_or_else(|| contract_error("type-complexity"))?;
         self.claim(count, depth + 1)?;
+        self.claim_names(
+            ty.imports
+                .keys()
+                .chain(ty.exports.keys())
+                .map(String::as_str),
+        )?;
         let mut imports = ty.imports.iter().collect::<Vec<_>>();
-        imports.sort_by(|a, b| a.0.cmp(b.0));
+        imports.sort_by(|a, b| compare_names(a.0.as_str(), b.0.as_str()));
         let mut exports = ty.exports.iter().collect::<Vec<_>>();
-        exports.sort_by(|a, b| a.0.cmp(b.0));
+        exports.sort_by(|a, b| compare_names(a.0.as_str(), b.0.as_str()));
         let mut items = Vec::with_capacity(count);
         for (name, item) in imports {
             items.push(Work::Tag("import"));
-            items.push(Work::Name(name.as_str()));
+            items.push(Work::ClaimedName(name.as_str()));
             items.push(Work::Entity(item.ty, depth + 1));
         }
         for (name, item) in exports {
             items.push(Work::Tag("export"));
-            items.push(Work::Name(name.as_str()));
+            items.push(Work::ClaimedName(name.as_str()));
             items.push(Work::Entity(item.ty, depth + 1));
         }
         self.push_claimed(items);
@@ -723,4 +778,94 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
         imports,
         exports,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{inspect_component_contract, sort_watch};
+    use wasm_encoder::reencode::ReencodeComponent;
+
+    const UI_DEMO_COMPONENT: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ));
+    const WATCHED_PREFIX: &str = "many-common-prefix-segments-for-sort-review";
+
+    struct ManyCommonPrefixNames;
+
+    impl wasm_encoder::reencode::Reencode for ManyCommonPrefixNames {
+        type Error = std::convert::Infallible;
+    }
+
+    impl ReencodeComponent for ManyCommonPrefixNames {
+        fn component_instance_type(
+            &mut self,
+            declarations: Box<[wasmparser::InstanceTypeDeclaration<'_>]>,
+        ) -> Result<wasm_encoder::InstanceType, wasm_encoder::reencode::Error<Self::Error>>
+        {
+            use wasm_encoder::{ComponentTypeRef, InstanceType, PrimitiveValType, TypeBounds};
+            use wasmparser::InstanceTypeDeclaration;
+
+            let selected = declarations.iter().any(|declaration| {
+                matches!(
+                    declaration,
+                    InstanceTypeDeclaration::Export { name, .. } if name.name == "log"
+                )
+            });
+            let mut instance = InstanceType::new();
+            for declaration in declarations {
+                self.parse_component_instance_type_declaration(&mut instance, declaration)?;
+            }
+            if selected {
+                for index in 0..2_000 {
+                    let ty = instance.type_count();
+                    instance
+                        .ty()
+                        .defined_type()
+                        .primitive(PrimitiveValType::U32);
+                    instance.export(
+                        &format!("{WATCHED_PREFIX}-{index:04}"),
+                        ComponentTypeRef::Type(TypeBounds::Eq(ty)),
+                    );
+                }
+            }
+            Ok(instance)
+        }
+    }
+
+    fn component_with_many_common_prefix_names() -> Vec<u8> {
+        let mut mutation = ManyCommonPrefixNames;
+        let mut component = wasm_encoder::Component::new();
+        mutation
+            .parse_component(
+                &mut component,
+                wasmparser::Parser::new(0),
+                UI_DEMO_COMPONENT,
+            )
+            .unwrap();
+        component.finish()
+    }
+
+    #[test]
+    fn oversized_nested_name_set_is_rejected_before_sort_comparisons() {
+        let component = component_with_many_common_prefix_names();
+        wasmparser::Validator::new()
+            .validate_all(&component)
+            .unwrap();
+
+        sort_watch::start(WATCHED_PREFIX);
+        let error = inspect_component_contract(&component)
+            .unwrap_err()
+            .to_string();
+        let comparisons = sort_watch::finish();
+
+        assert!(
+            error.contains("component-preflight: type-complexity"),
+            "unexpected classification: {error}"
+        );
+        assert_eq!(
+            comparisons, 0,
+            "oversized nested names reached sorting before their byte budget"
+        );
+    }
 }
