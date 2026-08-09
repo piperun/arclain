@@ -27,6 +27,7 @@ fn component_with_empty_interface_import(name: &str) -> Vec<u8> {
 #[derive(Default)]
 struct ExportMutation {
     rename: Option<(&'static str, &'static str)>,
+    swap: Option<(&'static str, &'static str)>,
     duplicate: Option<(&'static str, &'static str)>,
     replace_index: Option<(&'static str, u32)>,
 }
@@ -48,6 +49,11 @@ impl wasm_encoder::reencode::ReencodeComponent for ExportMutation {
                 .rename
                 .filter(|(from, _)| *from == original)
                 .map_or(original, |(_, to)| to);
+            let name = match self.swap {
+                Some((first, second)) if original == first => second,
+                Some((first, second)) if original == second => first,
+                _ => name,
+            };
             let index = self
                 .replace_index
                 .filter(|(target, _)| *target == original)
@@ -91,6 +97,209 @@ fn mutate_exports(mutation: ExportMutation) -> Vec<u8> {
             UI_DEMO_COMPONENT,
         )
         .unwrap();
+    component.finish()
+}
+
+struct InstanceMutation {
+    marker: &'static str,
+    fresh_resource_export: Option<&'static str>,
+}
+
+impl wasm_encoder::reencode::Reencode for InstanceMutation {
+    type Error = std::convert::Infallible;
+}
+
+impl wasm_encoder::reencode::ReencodeComponent for InstanceMutation {
+    fn component_instance_type(
+        &mut self,
+        declarations: Box<[wasmparser::InstanceTypeDeclaration<'_>]>,
+    ) -> Result<wasm_encoder::InstanceType, wasm_encoder::reencode::Error<Self::Error>> {
+        use wasm_encoder::{ComponentTypeRef, InstanceType, PrimitiveValType, TypeBounds};
+        use wasmparser::InstanceTypeDeclaration;
+
+        let selected = declarations.iter().any(|declaration| {
+            matches!(
+                declaration,
+                InstanceTypeDeclaration::Export { name, .. } if name.name == self.marker
+            )
+        });
+        let mut instance = InstanceType::new();
+        for declaration in declarations {
+            if selected {
+                if let (Some(target), InstanceTypeDeclaration::Export { name, .. }) =
+                    (self.fresh_resource_export, &declaration)
+                {
+                    if name.name == target {
+                        instance.export(name.name, ComponentTypeRef::Type(TypeBounds::SubResource));
+                        continue;
+                    }
+                }
+            }
+            self.parse_component_instance_type_declaration(&mut instance, declaration)?;
+        }
+        if selected && self.fresh_resource_export.is_none() {
+            let index = instance.type_count();
+            instance
+                .ty()
+                .defined_type()
+                .primitive(PrimitiveValType::U32);
+            instance.export(
+                "review-extra-type",
+                ComponentTypeRef::Type(TypeBounds::Eq(index)),
+            );
+        }
+        Ok(instance)
+    }
+}
+
+fn mutate_instance_type(mutation: InstanceMutation) -> Vec<u8> {
+    use wasm_encoder::reencode::ReencodeComponent;
+
+    let mut mutation = mutation;
+    let mut component = wasm_encoder::Component::new();
+    mutation
+        .parse_component(
+            &mut component,
+            wasmparser::Parser::new(0),
+            UI_DEMO_COMPONENT,
+        )
+        .unwrap();
+    component.finish()
+}
+
+struct PublicTypeNameSwap {
+    first: &'static str,
+    second: &'static str,
+}
+
+impl wasm_encoder::reencode::Reencode for PublicTypeNameSwap {
+    type Error = std::convert::Infallible;
+}
+
+impl wasm_encoder::reencode::ReencodeComponent for PublicTypeNameSwap {
+    fn parse_component_import_section(
+        &mut self,
+        imports: &mut wasm_encoder::ComponentImportSection,
+        section: wasmparser::ComponentImportSectionReader<'_>,
+    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
+        for import in section {
+            let import = import?;
+            let name = match import.name.name {
+                name if name == self.first => self.second,
+                name if name == self.second => self.first,
+                name => name,
+            };
+            imports.import(name, self.component_type_ref(import.ty)?);
+        }
+        Ok(())
+    }
+}
+
+fn swap_public_type_names(first: &'static str, second: &'static str) -> Vec<u8> {
+    use wasm_encoder::reencode::ReencodeComponent;
+
+    let mut mutation = PublicTypeNameSwap { first, second };
+    let mut component = wasm_encoder::Component::new();
+    mutation
+        .parse_component(
+            &mut component,
+            wasmparser::Parser::new(0),
+            UI_DEMO_COMPONENT,
+        )
+        .unwrap();
+    component.finish()
+}
+
+fn assert_contract_type_rejection(label: &str, component: &[u8]) {
+    wasmparser::Validator::new()
+        .validate_all(component)
+        .unwrap_or_else(|error| panic!("{label} fixture was not validator-valid: {error}"));
+    let error = inspect_component_contract(component)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("component-preflight: contract-type-mismatch"),
+        "unexpected classification for {label}: {error}"
+    );
+}
+
+fn deeply_nested_contract(depth: u32) -> Vec<u8> {
+    use wasm_encoder::{
+        Component, ComponentExportKind, ComponentExportSection, ComponentImportSection,
+        ComponentTypeRef, ComponentTypeSection, ComponentValType, InstanceType, PrimitiveValType,
+        TypeBounds,
+    };
+
+    const INTERFACES: [&str; 18] = [
+        "wirt:plugin/host@0.1.0",
+        "wirt:plugin/meta@0.1.0",
+        "wirt:plugin/rules@0.1.0",
+        "wirt:plugin/ui@0.1.0",
+        "wasi:io/poll@0.2.9",
+        "wasi:clocks/monotonic-clock@0.2.9",
+        "wasi:io/error@0.2.9",
+        "wasi:io/streams@0.2.9",
+        "wasi:cli/stdout@0.2.9",
+        "wasi:cli/stderr@0.2.9",
+        "wasi:cli/stdin@0.2.9",
+        "wasi:cli/environment@0.2.9",
+        "wasi:cli/exit@0.2.9",
+        "wasi:cli/terminal-input@0.2.9",
+        "wasi:cli/terminal-output@0.2.9",
+        "wasi:cli/terminal-stdin@0.2.9",
+        "wasi:cli/terminal-stdout@0.2.9",
+        "wasi:cli/terminal-stderr@0.2.9",
+    ];
+    const PUBLIC_TYPES: [&str; 6] = [
+        "plugin-action",
+        "plugin-layout",
+        "plugin-metadata",
+        "plugin-rule-definition",
+        "top-tab-config",
+        "ui-element",
+    ];
+    const EXPORTS: [&str; 6] = [
+        "init",
+        "get-default-rules",
+        "get-ui-layout",
+        "on-ui-event",
+        "get-top-tabs",
+        "get-metadata",
+    ];
+
+    let mut component = Component::new();
+    let mut types = ComponentTypeSection::new();
+    types.instance(&InstanceType::new());
+    types.defined_type().primitive(PrimitiveValType::U32);
+    let mut nested_index = 1;
+    for _ in 0..depth {
+        types
+            .defined_type()
+            .option(ComponentValType::Type(nested_index));
+        nested_index += 1;
+    }
+    component.section(&types);
+
+    let mut imports = ComponentImportSection::new();
+    for name in INTERFACES {
+        imports.import(name, ComponentTypeRef::Instance(0));
+    }
+    let first_imported_type = nested_index + 1;
+    for name in PUBLIC_TYPES {
+        imports.import(name, ComponentTypeRef::Type(TypeBounds::Eq(nested_index)));
+    }
+    component.section(&imports);
+
+    let mut exports = ComponentExportSection::new();
+    for (offset, name) in EXPORTS.into_iter().enumerate() {
+        exports.export(
+            name,
+            ComponentExportKind::Type,
+            first_imported_type + offset as u32,
+            None,
+        );
+    }
+    component.section(&exports);
     component.finish()
 }
 
@@ -292,32 +501,103 @@ fn structural_preflight_rejects_wrong_export_parameter_and_result_types() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("component-preflight: export type mismatch for \"get-ui-layout\""),
+        error.contains("component-preflight: contract-type-mismatch"),
         "unexpected classification: {error}"
     );
 }
 
 #[test]
 fn structural_preflight_rejects_wrong_wirt_interface_type() {
-    use wasm_encoder::{
-        Component, ComponentImportSection, ComponentTypeRef, ComponentTypeSection, InstanceType,
-    };
+    let component = mutate_instance_type(InstanceMutation {
+        marker: "log",
+        fresh_resource_export: None,
+    });
+    assert_contract_type_rejection("wirt host", &component);
+}
 
-    let mut component = Component::new();
-    let mut types = ComponentTypeSection::new();
-    types.instance(&InstanceType::new());
-    component.section(&types);
-    let mut imports = ComponentImportSection::new();
-    for name in [
-        "wirt:plugin/host@0.1.0",
-        "wirt:plugin/meta@0.1.0",
-        "wirt:plugin/rules@0.1.0",
-        "wirt:plugin/ui@0.1.0",
+#[test]
+fn structural_preflight_rejects_wrong_type_for_every_allowed_interface() {
+    for (name, marker) in [
+        ("wirt:plugin/rules@0.1.0", "plugin-rule-definition"),
+        ("wirt:plugin/ui@0.1.0", "ui-element"),
+        ("wirt:plugin/meta@0.1.0", "plugin-metadata"),
+        ("wirt:plugin/host@0.1.0", "log"),
+        ("wasi:io/poll@0.2.9", "poll"),
+        ("wasi:clocks/monotonic-clock@0.2.9", "subscribe-duration"),
+        ("wasi:io/error@0.2.9", "error"),
+        ("wasi:io/streams@0.2.9", "stream-error"),
+        ("wasi:cli/stdout@0.2.9", "get-stdout"),
+        ("wasi:cli/stderr@0.2.9", "get-stderr"),
+        ("wasi:cli/stdin@0.2.9", "get-stdin"),
+        ("wasi:cli/environment@0.2.9", "get-environment"),
+        ("wasi:cli/exit@0.2.9", "exit"),
+        ("wasi:cli/terminal-input@0.2.9", "terminal-input"),
+        ("wasi:cli/terminal-output@0.2.9", "terminal-output"),
+        ("wasi:cli/terminal-stdin@0.2.9", "get-terminal-stdin"),
+        ("wasi:cli/terminal-stdout@0.2.9", "get-terminal-stdout"),
+        ("wasi:cli/terminal-stderr@0.2.9", "get-terminal-stderr"),
     ] {
-        imports.import(name, ComponentTypeRef::Instance(0));
+        let component = mutate_instance_type(InstanceMutation {
+            marker,
+            fresh_resource_export: None,
+        });
+        assert_contract_type_rejection(name, &component);
     }
-    component.section(&imports);
-    let component = component.finish();
+}
+
+#[test]
+fn structural_preflight_rejects_every_public_type_and_export_mutation() {
+    let public_types = [
+        "plugin-action",
+        "plugin-layout",
+        "plugin-metadata",
+        "plugin-rule-definition",
+        "top-tab-config",
+        "ui-element",
+    ];
+    for (index, name) in public_types.iter().enumerate() {
+        let replacement = public_types[(index + 1) % public_types.len()];
+        let component = swap_public_type_names(name, replacement);
+        assert_contract_type_rejection(name, &component);
+    }
+
+    let exports = [
+        "init",
+        "get-default-rules",
+        "get-ui-layout",
+        "on-ui-event",
+        "get-top-tabs",
+        "get-metadata",
+    ];
+    for (index, name) in exports.iter().enumerate() {
+        let replacement = exports[(index + 1) % exports.len()];
+        let component = mutate_exports(ExportMutation {
+            swap: Some((name, replacement)),
+            ..ExportMutation::default()
+        });
+        assert_contract_type_rejection(name, &component);
+    }
+}
+
+#[test]
+fn structural_preflight_rejects_shape_identical_fresh_cross_interface_resources() {
+    for (label, marker, resource) in [
+        ("streams-to-stdout", "get-stdout", "output-stream"),
+        ("streams-to-stderr", "get-stderr", "output-stream"),
+        ("poll-to-streams", "stream-error", "pollable"),
+        ("error-to-streams", "stream-error", "error"),
+    ] {
+        let component = mutate_instance_type(InstanceMutation {
+            marker,
+            fresh_resource_export: Some(resource),
+        });
+        assert_contract_type_rejection(label, &component);
+    }
+}
+
+#[test]
+fn structural_preflight_bounds_deeply_nested_valid_type_graphs_iteratively() {
+    let component = deeply_nested_contract(80);
     wasmparser::Validator::new()
         .validate_all(&component)
         .unwrap();
@@ -325,7 +605,7 @@ fn structural_preflight_rejects_wrong_wirt_interface_type() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("component-preflight: import type mismatch"),
+        error.contains("component-preflight: type-complexity"),
         "unexpected classification: {error}"
     );
 }

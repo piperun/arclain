@@ -2,7 +2,8 @@ use crate::{PluginError, Result, MAX_PLUGIN_WASM_BYTES, WIRT_ABI_VERSION};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use wasmparser::component_types::{
-    ComponentAnyTypeId, ComponentDefinedType, ComponentEntityType, ComponentValType, ResourceId,
+    ComponentAnyTypeId, ComponentDefinedType, ComponentDefinedTypeId, ComponentEntityType,
+    ComponentFuncTypeId, ComponentInstanceTypeId, ComponentTypeId, ComponentValType,
 };
 use wasmparser::types::Types;
 use wasmparser::{Encoding, Parser, Payload, Validator};
@@ -40,138 +41,19 @@ const EXPORTS: [&str; 6] = [
     "get-metadata",
 ];
 
-// Filled from the checked-in canonical WIT-generated fixture. These hashes are
-// over wasmparser's validated structural type graph, not component bytes.
-const IMPORT_TYPE_HASHES: [(&str, &str); 18] = [
-    (
-        "wirt:plugin/host@0.1.0",
-        "54e07862b243e8ce1e189e6a7ad6216a9d1f4cd5e122ab43980e19e3098e8bb6",
-    ),
-    (
-        "wirt:plugin/meta@0.1.0",
-        "93f9d4a9954319181494d40caf46e6cb1484e1ed7a4b4988592de23f4e518cbd",
-    ),
-    (
-        "wirt:plugin/rules@0.1.0",
-        "631cb759865da17c06c15a96eab9a3f2b9b6efecd5733a2265f56288332d6a34",
-    ),
-    (
-        "wirt:plugin/ui@0.1.0",
-        "dada9eec1053c0fe5a43c249d6b551bf8049950a88d102736f80b298767b3651",
-    ),
-    (
-        "wasi:io/poll@0.2.9",
-        "70352c2e839da4051dd94af143f43a645767d55b29a261cd7a5a386d3495368b",
-    ),
-    (
-        "wasi:clocks/monotonic-clock@0.2.9",
-        "d66b200924daac76e726c86576d3fb9538028d32eb9771e8e4a9a07d138bb524",
-    ),
-    (
-        "wasi:io/error@0.2.9",
-        "255ce99c75ac5da82735823124103ac563c5e2cd5f41672e38e514bfe323c05c",
-    ),
-    (
-        "wasi:io/streams@0.2.9",
-        "758ae848426220768c35acec578e743a660eafc680006194e817d5427971b6cc",
-    ),
-    (
-        "wasi:cli/stdout@0.2.9",
-        "164690e29127d1dc4101693c91bdebfa73ee61aa5c0ed22af71a7023482346dc",
-    ),
-    (
-        "wasi:cli/stderr@0.2.9",
-        "3bc0220828a2e9aff5e69ecb04e0478dfb4f30e96060aa918e064ee56e65ac47",
-    ),
-    (
-        "wasi:cli/stdin@0.2.9",
-        "21ca147eafcb246ab40836fa27d25c71d8822b400fcaa154c08862365870c694",
-    ),
-    (
-        "wasi:cli/environment@0.2.9",
-        "c493396da31ff300615dbe593692c28c7108eb722289b18733c5508bb689a8f9",
-    ),
-    (
-        "wasi:cli/exit@0.2.9",
-        "bae03c797a04e1430d000f14af0ca2f96fd22c6f561a2ce4951d53a52492e863",
-    ),
-    (
-        "wasi:cli/terminal-input@0.2.9",
-        "0badd57a959756b2fe63927cf61cf8cb4e266ddd90c0532a9001122eac32816f",
-    ),
-    (
-        "wasi:cli/terminal-output@0.2.9",
-        "9a9edc9779e874e4ba90601d7cb28415548c177e3c7e5d2aff9b14c9397c4b12",
-    ),
-    (
-        "wasi:cli/terminal-stdin@0.2.9",
-        "5ac5d95b81f1ab0a2543c7eb1bfff1ae497d75de1a67217fba7c416602470597",
-    ),
-    (
-        "wasi:cli/terminal-stdout@0.2.9",
-        "2ab587ad2c11f68ac13e5b754a680ea767c74b9908b2a2be2f7ee03fbf9592b2",
-    ),
-    (
-        "wasi:cli/terminal-stderr@0.2.9",
-        "3023a5730718dbca064e5a1829a02df45fdaad3535fe064644089db05b8c967c",
-    ),
-];
-
-const TYPE_IMPORT_HASHES: [(&str, &str); 6] = [
-    (
-        "plugin-action",
-        "d0c1f99ca61e9dd9d3cd62d0dd547cd752d8f78b7a0a8cced4ca38f36b1ecb75",
-    ),
-    (
-        "plugin-layout",
-        "6f0d03bb9af25f6141c42dfdf9a3843d72a58cd21ccaafd8e49f6f409af33086",
-    ),
-    (
-        "plugin-metadata",
-        "691129c5a056597d5858478fbe27c79626d6aa2d16b24f398c3b8a9b6a7b8b0f",
-    ),
-    (
-        "plugin-rule-definition",
-        "e7c9361962ea20f0a8c3f437b05d6da4e17f8dd9c4bcd77dd448dccb58652ee9",
-    ),
-    (
-        "top-tab-config",
-        "3b370f9acdbb966002ba4cde8029de105122614e699b8c079940dcc47a0b1cc3",
-    ),
-    (
-        "ui-element",
-        "2f2656576cabffcbcda38b45900aa76d4ae835d1a93e71da7911ade6551bdd53",
-    ),
-];
-
-const EXPORT_TYPE_HASHES: [(&str, &str); 6] = [
-    (
-        "init",
-        "98653c91da8130472eadfd8f1f43d6c1122b92cea35dd99eb97b4fc7e266984e",
-    ),
-    (
-        "get-default-rules",
-        "79ce52ce35c7b1d21a3c9beda60fc2b5ee1edbfda32f33b69d80710bab7e87c4",
-    ),
-    (
-        "get-ui-layout",
-        "ede667710e76ddc912372221ba1fffbcf4ee15aa81ee3a5b77b1d172760d92d1",
-    ),
-    (
-        "on-ui-event",
-        "4cb7b11d9b1a5124f8db97ebc3e4985103062360edf47da891e18f016c0f99cd",
-    ),
-    (
-        "get-top-tabs",
-        "5dbdd83eef659e765dc10c1c975396dbadc603a34ad50ee14987cabdbdaf20bf",
-    ),
-    (
-        "get-metadata",
-        "7eaf0705b801e5733a21163dae5c0d2c6e01628c3981d4ebf3f81947424a3188",
-    ),
+const PUBLIC_TYPE_IMPORTS: [&str; 6] = [
+    "plugin-action",
+    "plugin-layout",
+    "plugin-metadata",
+    "plugin-rule-definition",
+    "top-tab-config",
+    "ui-element",
 ];
 
 const MAX_TYPE_GRAPH_NODES: usize = 100_000;
+const MAX_TYPE_GRAPH_DEPTH: usize = 64;
+const EXPECTED_CONTRACT_HASH: &str =
+    "542c780fa520e9764f6cbf76db5dc39327cdc878faef455a8daaf7ee5cff495a";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComponentContract {
@@ -239,18 +121,36 @@ fn top_level_names(component: &[u8]) -> Result<(BTreeSet<String>, BTreeSet<Strin
     Ok((imports, exports))
 }
 
-struct TypeHasher {
-    digest: Sha256,
-    resources: BTreeMap<ResourceId, u32>,
-    nodes: usize,
+enum Work {
+    Token(String),
+    Entity(ComponentEntityType, usize),
+    Any(ComponentAnyTypeId, usize),
+    Func(ComponentFuncTypeId, usize),
+    Instance(ComponentInstanceTypeId, usize),
+    Component(ComponentTypeId, usize),
+    Val(ComponentValType, usize),
+    OptionalVal(Option<ComponentValType>, usize),
+    Defined(ComponentDefinedTypeId, usize),
 }
 
-impl TypeHasher {
-    fn new() -> Self {
+struct TypeHasher<'a> {
+    types: &'a Types,
+    digest: Sha256,
+    identities: BTreeMap<ComponentAnyTypeId, u32>,
+    expanded: BTreeSet<ComponentAnyTypeId>,
+    work: Vec<Work>,
+    scheduled: usize,
+}
+
+impl<'a> TypeHasher<'a> {
+    fn new(types: &'a Types) -> Self {
         Self {
+            types,
             digest: Sha256::new(),
-            resources: BTreeMap::new(),
-            nodes: 0,
+            identities: BTreeMap::new(),
+            expanded: BTreeSet::new(),
+            work: Vec::new(),
+            scheduled: 0,
         }
     }
 
@@ -259,80 +159,107 @@ impl TypeHasher {
         self.digest.update(token.as_bytes());
     }
 
-    fn node(&mut self, token: &str) -> Result<()> {
-        self.nodes += 1;
-        if self.nodes > MAX_TYPE_GRAPH_NODES {
-            return Err(contract_error(
-                "component type graph exceeds the node limit",
-            ));
+    fn claim(&mut self, count: usize, depth: usize) -> Result<()> {
+        if depth > MAX_TYPE_GRAPH_DEPTH {
+            return Err(contract_error("type-complexity"));
         }
-        self.token(token);
+        self.scheduled = self
+            .scheduled
+            .checked_add(count)
+            .filter(|scheduled| *scheduled <= MAX_TYPE_GRAPH_NODES)
+            .ok_or_else(|| contract_error("type-complexity"))?;
         Ok(())
     }
 
-    fn resource(&mut self, resource: ResourceId) {
-        let next = self.resources.len() as u32;
-        let ordinal = *self.resources.entry(resource).or_insert(next);
-        self.token(&format!("resource-{ordinal}"));
+    fn schedule(&mut self, items: Vec<Work>) -> Result<()> {
+        let max_depth = items
+            .iter()
+            .filter_map(|item| match item {
+                Work::Token(_) => None,
+                Work::Entity(_, depth)
+                | Work::Any(_, depth)
+                | Work::Func(_, depth)
+                | Work::Instance(_, depth)
+                | Work::Component(_, depth)
+                | Work::Val(_, depth)
+                | Work::OptionalVal(_, depth)
+                | Work::Defined(_, depth) => Some(*depth),
+            })
+            .max()
+            .unwrap_or(0);
+        self.claim(items.len(), max_depth)?;
+        self.push_claimed(items);
+        Ok(())
     }
 
-    fn entity(&mut self, types: &Types, entity: ComponentEntityType) -> Result<()> {
-        self.node("entity")?;
+    fn push_claimed(&mut self, items: Vec<Work>) {
+        self.work.extend(items.into_iter().rev());
+    }
+
+    fn canonical_any(
+        &mut self,
+        mut ty: ComponentAnyTypeId,
+        depth: usize,
+    ) -> Result<ComponentAnyTypeId> {
+        while let Some(peeled) = self.types.peel_alias(ty) {
+            self.claim(1, depth)?;
+            ty = peeled;
+        }
+        Ok(ty)
+    }
+
+    fn root(&mut self, category: &str, name: &str, entity: ComponentEntityType) -> Result<()> {
+        self.token("root");
+        self.token(category);
+        self.token(name);
+        self.schedule(vec![Work::Entity(entity, 0)])?;
+        self.drain()
+    }
+
+    fn drain(&mut self) -> Result<()> {
+        while let Some(work) = self.work.pop() {
+            match work {
+                Work::Token(token) => self.token(&token),
+                Work::Entity(entity, depth) => self.entity(entity, depth)?,
+                Work::Any(ty, depth) => self.any(ty, depth)?,
+                Work::Func(id, depth) => self.func(id, depth)?,
+                Work::Instance(id, depth) => self.instance(id, depth)?,
+                Work::Component(id, depth) => self.component(id, depth)?,
+                Work::Val(ty, depth) => self.val(ty, depth)?,
+                Work::OptionalVal(ty, depth) => self.optional_val(ty, depth)?,
+                Work::Defined(id, depth) => self.defined(id, depth)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn entity(&mut self, entity: ComponentEntityType, depth: usize) -> Result<()> {
         match entity {
-            ComponentEntityType::Func(id) => {
-                self.token("func");
-                let ty = &types[id];
-                self.token(if ty.async_ { "async" } else { "sync" });
-                self.token(&ty.params.len().to_string());
-                for (name, ty) in ty.params.iter() {
-                    self.token(name);
-                    self.val(types, *ty)?;
-                }
-                match ty.result {
-                    Some(ty) => {
-                        self.token("result");
-                        self.val(types, ty)?;
-                    }
-                    None => self.token("no-result"),
-                }
-            }
+            ComponentEntityType::Func(id) => self.schedule(vec![
+                Work::Token("func".into()),
+                Work::Any(ComponentAnyTypeId::Func(id), depth + 1),
+            ])?,
             ComponentEntityType::Value(ty) => {
-                self.token("value");
-                self.val(types, ty)?;
+                self.schedule(vec![Work::Token("value".into()), Work::Val(ty, depth + 1)])?
             }
-            ComponentEntityType::Type { referenced, .. } => {
-                self.token("type");
-                self.any(types, referenced)?;
-            }
-            ComponentEntityType::Instance(id) => {
-                self.token("instance");
-                let instance = &types[id];
-                let mut exports = instance.exports.iter().collect::<Vec<_>>();
-                exports.sort_by(|a, b| a.0.cmp(b.0));
-                self.token(&exports.len().to_string());
-                for (name, item) in exports {
-                    self.token(name);
-                    self.entity(types, item.ty)?;
-                }
-            }
-            ComponentEntityType::Component(id) => {
-                self.token("component");
-                let ty = &types[id];
-                let mut imports = ty.imports.iter().collect::<Vec<_>>();
-                imports.sort_by(|a, b| a.0.cmp(b.0));
-                for (name, item) in imports {
-                    self.token("import");
-                    self.token(name);
-                    self.entity(types, item.ty)?;
-                }
-                let mut exports = ty.exports.iter().collect::<Vec<_>>();
-                exports.sort_by(|a, b| a.0.cmp(b.0));
-                for (name, item) in exports {
-                    self.token("export");
-                    self.token(name);
-                    self.entity(types, item.ty)?;
-                }
-            }
+            ComponentEntityType::Type {
+                referenced,
+                created,
+            } => self.schedule(vec![
+                Work::Token("type".into()),
+                Work::Token("referenced".into()),
+                Work::Any(referenced, depth + 1),
+                Work::Token("created".into()),
+                Work::Any(created, depth + 1),
+            ])?,
+            ComponentEntityType::Instance(id) => self.schedule(vec![
+                Work::Token("instance".into()),
+                Work::Any(ComponentAnyTypeId::Instance(id), depth + 1),
+            ])?,
+            ComponentEntityType::Component(id) => self.schedule(vec![
+                Work::Token("component".into()),
+                Work::Any(ComponentAnyTypeId::Component(id), depth + 1),
+            ])?,
             ComponentEntityType::Module(_) => {
                 return Err(contract_error(
                     "core module is not allowed in the public ABI",
@@ -342,37 +269,120 @@ impl TypeHasher {
         Ok(())
     }
 
-    fn any(&mut self, types: &Types, ty: ComponentAnyTypeId) -> Result<()> {
-        self.node("any")?;
+    fn any(&mut self, ty: ComponentAnyTypeId, depth: usize) -> Result<()> {
+        let ty = self.canonical_any(ty, depth)?;
+        let next = self.identities.len() as u32;
+        let ordinal = *self.identities.entry(ty).or_insert(next);
+        self.token("identity");
+        self.token(&ordinal.to_string());
+        if !self.expanded.insert(ty) {
+            return Ok(());
+        }
         match ty {
-            ComponentAnyTypeId::Resource(id) => self.resource(id.resource()),
-            ComponentAnyTypeId::Defined(id) => self.defined(types, &types[id])?,
-            ComponentAnyTypeId::Func(id) => self.entity(types, ComponentEntityType::Func(id))?,
+            ComponentAnyTypeId::Resource(_) => self.token("resource"),
+            ComponentAnyTypeId::Defined(id) => self.schedule(vec![Work::Defined(id, depth + 1)])?,
+            ComponentAnyTypeId::Func(id) => self.schedule(vec![Work::Func(id, depth + 1)])?,
             ComponentAnyTypeId::Instance(id) => {
-                self.entity(types, ComponentEntityType::Instance(id))?
+                self.schedule(vec![Work::Instance(id, depth + 1)])?
             }
             ComponentAnyTypeId::Component(id) => {
-                self.entity(types, ComponentEntityType::Component(id))?
+                self.schedule(vec![Work::Component(id, depth + 1)])?
             }
         }
         Ok(())
     }
 
-    fn val(&mut self, types: &Types, ty: ComponentValType) -> Result<()> {
-        self.node("val")?;
+    fn func(&mut self, id: ComponentFuncTypeId, depth: usize) -> Result<()> {
+        let ty = &self.types[id];
+        let count = ty
+            .params
+            .len()
+            .checked_mul(2)
+            .and_then(|count| count.checked_add(if ty.result.is_some() { 4 } else { 3 }))
+            .ok_or_else(|| contract_error("type-complexity"))?;
+        self.claim(count, depth + 1)?;
+        let mut items = Vec::with_capacity(count);
+        items.extend([
+            Work::Token(if ty.async_ { "async" } else { "sync" }.into()),
+            Work::Token(ty.params.len().to_string()),
+        ]);
+        for (name, ty) in ty.params.iter() {
+            items.push(Work::Token(name.to_string()));
+            items.push(Work::Val(*ty, depth + 1));
+        }
+        match ty.result {
+            Some(ty) => {
+                items.push(Work::Token("result".into()));
+                items.push(Work::Val(ty, depth + 1));
+            }
+            None => items.push(Work::Token("no-result".into())),
+        }
+        self.push_claimed(items);
+        Ok(())
+    }
+
+    fn instance(&mut self, id: ComponentInstanceTypeId, depth: usize) -> Result<()> {
+        let instance = &self.types[id];
+        let count = instance
+            .exports
+            .len()
+            .checked_mul(2)
+            .and_then(|count| count.checked_add(1))
+            .ok_or_else(|| contract_error("type-complexity"))?;
+        self.claim(count, depth + 1)?;
+        let mut exports = instance.exports.iter().collect::<Vec<_>>();
+        exports.sort_by(|a, b| a.0.cmp(b.0));
+        let mut items = Vec::with_capacity(count);
+        items.push(Work::Token(exports.len().to_string()));
+        for (name, item) in exports {
+            items.push(Work::Token(name.clone()));
+            items.push(Work::Entity(item.ty, depth + 1));
+        }
+        self.push_claimed(items);
+        Ok(())
+    }
+
+    fn component(&mut self, id: ComponentTypeId, depth: usize) -> Result<()> {
+        let ty = &self.types[id];
+        let count = ty
+            .imports
+            .len()
+            .checked_add(ty.exports.len())
+            .and_then(|count| count.checked_mul(3))
+            .ok_or_else(|| contract_error("type-complexity"))?;
+        self.claim(count, depth + 1)?;
+        let mut imports = ty.imports.iter().collect::<Vec<_>>();
+        imports.sort_by(|a, b| a.0.cmp(b.0));
+        let mut exports = ty.exports.iter().collect::<Vec<_>>();
+        exports.sort_by(|a, b| a.0.cmp(b.0));
+        let mut items = Vec::with_capacity(count);
+        for (name, item) in imports {
+            items.push(Work::Token("import".into()));
+            items.push(Work::Token(name.clone()));
+            items.push(Work::Entity(item.ty, depth + 1));
+        }
+        for (name, item) in exports {
+            items.push(Work::Token("export".into()));
+            items.push(Work::Token(name.clone()));
+            items.push(Work::Entity(item.ty, depth + 1));
+        }
+        self.push_claimed(items);
+        Ok(())
+    }
+
+    fn val(&mut self, ty: ComponentValType, depth: usize) -> Result<()> {
         match ty {
             ComponentValType::Primitive(ty) => self.token(&ty.to_string()),
-            ComponentValType::Type(id) => self.defined(types, &types[id])?,
+            ComponentValType::Type(id) => {
+                self.schedule(vec![Work::Any(ComponentAnyTypeId::Defined(id), depth + 1)])?
+            }
         }
         Ok(())
     }
 
-    fn optional_val(&mut self, types: &Types, ty: Option<ComponentValType>) -> Result<()> {
+    fn optional_val(&mut self, ty: Option<ComponentValType>, depth: usize) -> Result<()> {
         match ty {
-            Some(ty) => {
-                self.token("some");
-                self.val(types, ty)
-            }
+            Some(ty) => self.schedule(vec![Work::Token("some".into()), Work::Val(ty, depth + 1)]),
             None => {
                 self.token("none");
                 Ok(())
@@ -380,84 +390,128 @@ impl TypeHasher {
         }
     }
 
-    fn defined(&mut self, types: &Types, ty: &ComponentDefinedType) -> Result<()> {
-        self.node("defined")?;
-        match ty {
+    fn defined(&mut self, id: ComponentDefinedTypeId, depth: usize) -> Result<()> {
+        match &self.types[id] {
             ComponentDefinedType::Primitive(ty) => {
                 self.token("primitive");
                 self.token(&ty.to_string());
             }
             ComponentDefinedType::Record(record) => {
-                self.token("record");
+                let count = record
+                    .fields
+                    .len()
+                    .checked_mul(2)
+                    .and_then(|count| count.checked_add(1))
+                    .ok_or_else(|| contract_error("type-complexity"))?;
+                self.claim(count, depth + 1)?;
+                let mut items = Vec::with_capacity(count);
+                items.push(Work::Token("record".into()));
                 for (name, ty) in &record.fields {
-                    self.token(name);
-                    self.val(types, *ty)?;
+                    items.push(Work::Token(name.to_string()));
+                    items.push(Work::Val(*ty, depth + 1));
                 }
+                self.push_claimed(items);
             }
             ComponentDefinedType::Variant(variant) => {
-                self.token("variant");
+                let count = variant
+                    .cases
+                    .len()
+                    .checked_mul(2)
+                    .and_then(|count| count.checked_add(1))
+                    .ok_or_else(|| contract_error("type-complexity"))?;
+                self.claim(count, depth + 1)?;
+                let mut items = Vec::with_capacity(count);
+                items.push(Work::Token("variant".into()));
                 for (name, case) in &variant.cases {
-                    self.token(name);
-                    self.optional_val(types, case.ty)?;
+                    items.push(Work::Token(name.to_string()));
+                    items.push(Work::OptionalVal(case.ty, depth + 1));
                 }
+                self.push_claimed(items);
             }
             ComponentDefinedType::List(ty) => {
-                self.token("list");
-                self.val(types, *ty)?;
+                self.schedule(vec![Work::Token("list".into()), Work::Val(*ty, depth + 1)])?
             }
-            ComponentDefinedType::Map(key, value) => {
-                self.token("map");
-                self.val(types, *key)?;
-                self.val(types, *value)?;
-            }
-            ComponentDefinedType::FixedLengthList(ty, len) => {
-                self.token("fixed-list");
-                self.token(&len.to_string());
-                self.val(types, *ty)?;
-            }
+            ComponentDefinedType::Map(key, value) => self.schedule(vec![
+                Work::Token("map".into()),
+                Work::Val(*key, depth + 1),
+                Work::Val(*value, depth + 1),
+            ])?,
+            ComponentDefinedType::FixedLengthList(ty, len) => self.schedule(vec![
+                Work::Token("fixed-list".into()),
+                Work::Token(len.to_string()),
+                Work::Val(*ty, depth + 1),
+            ])?,
             ComponentDefinedType::Tuple(tuple) => {
-                self.token("tuple");
+                let count = tuple
+                    .types
+                    .len()
+                    .checked_add(1)
+                    .ok_or_else(|| contract_error("type-complexity"))?;
+                self.claim(count, depth + 1)?;
+                let mut items = Vec::with_capacity(count);
+                items.push(Work::Token("tuple".into()));
                 for ty in &tuple.types {
-                    self.val(types, *ty)?;
+                    items.push(Work::Val(*ty, depth + 1));
                 }
+                self.push_claimed(items);
             }
             ComponentDefinedType::Flags(flags) => {
+                self.claim(
+                    flags
+                        .len()
+                        .checked_add(1)
+                        .ok_or_else(|| contract_error("type-complexity"))?,
+                    depth,
+                )?;
                 self.token("flags");
                 for name in flags {
                     self.token(name);
                 }
             }
             ComponentDefinedType::Enum(cases) => {
+                self.claim(
+                    cases
+                        .len()
+                        .checked_add(1)
+                        .ok_or_else(|| contract_error("type-complexity"))?,
+                    depth,
+                )?;
                 self.token("enum");
                 for name in cases {
                     self.token(name);
                 }
             }
-            ComponentDefinedType::Option(ty) => {
-                self.token("option");
-                self.val(types, *ty)?;
-            }
-            ComponentDefinedType::Result { ok, err } => {
-                self.token("result");
-                self.optional_val(types, *ok)?;
-                self.optional_val(types, *err)?;
-            }
+            ComponentDefinedType::Option(ty) => self.schedule(vec![
+                Work::Token("option".into()),
+                Work::Val(*ty, depth + 1),
+            ])?,
+            ComponentDefinedType::Result { ok, err } => self.schedule(vec![
+                Work::Token("result".into()),
+                Work::OptionalVal(*ok, depth + 1),
+                Work::OptionalVal(*err, depth + 1),
+            ])?,
             ComponentDefinedType::Own(id) => {
                 self.token("own");
-                self.resource(id.resource());
+                self.schedule(vec![Work::Any(
+                    ComponentAnyTypeId::Resource(*id),
+                    depth + 1,
+                )])?;
             }
             ComponentDefinedType::Borrow(id) => {
                 self.token("borrow");
-                self.resource(id.resource());
+                self.schedule(vec![Work::Any(
+                    ComponentAnyTypeId::Resource(*id),
+                    depth + 1,
+                )])?;
             }
-            ComponentDefinedType::Future(ty) => {
-                self.token("future");
-                self.optional_val(types, *ty)?;
-            }
-            ComponentDefinedType::Stream(ty) => {
-                self.token("stream");
-                self.optional_val(types, *ty)?;
-            }
+            ComponentDefinedType::Future(ty) => self.schedule(vec![
+                Work::Token("future".into()),
+                Work::OptionalVal(*ty, depth + 1),
+            ])?,
+            ComponentDefinedType::Stream(ty) => self.schedule(vec![
+                Work::Token("stream".into()),
+                Work::OptionalVal(*ty, depth + 1),
+            ])?,
         }
         Ok(())
     }
@@ -471,18 +525,6 @@ impl TypeHasher {
     }
 }
 
-fn entity_hash(types: &Types, entity: ComponentEntityType) -> Result<String> {
-    let mut hasher = TypeHasher::new();
-    hasher.entity(types, entity)?;
-    Ok(hasher.finish())
-}
-
-fn expected_hash<'a>(name: &str, hashes: &'a [(&str, &str)]) -> Option<&'a str> {
-    hashes
-        .iter()
-        .find_map(|(expected, hash)| (*expected == name).then_some(*hash))
-}
-
 pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract> {
     if component.len() > MAX_PLUGIN_WASM_BYTES {
         return Err(contract_error("component exceeds the 64-MiB limit"));
@@ -491,19 +533,31 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
         .validate_all(component)
         .map_err(|_| contract_error("invalid component"))?;
     let (raw_imports, exports) = top_level_names(component)?;
-    let mut imports = BTreeSet::new();
-    let allowed = WIRT_IMPORTS
+    let runtime_names = WIRT_IMPORTS
         .into_iter()
         .chain(WASI_IMPORTS)
         .collect::<BTreeSet<_>>();
+    let public_type_names = PUBLIC_TYPE_IMPORTS.into_iter().collect::<BTreeSet<_>>();
+    let mut imports = BTreeSet::new();
 
     for name in &raw_imports {
         let item = types
             .component_item_for_import(name)
             .ok_or_else(|| contract_error("validated import is missing type information"))?;
-        match item.ty {
-            ComponentEntityType::Instance(_) => {
-                if !allowed.contains(name.as_str()) {
+        if runtime_names.contains(name.as_str()) {
+            match item.ty {
+                ComponentEntityType::Instance(_) => {
+                    imports.insert(name.clone());
+                }
+                _ => return Err(contract_error("contract-type-mismatch")),
+            }
+        } else if public_type_names.contains(name.as_str()) {
+            if !matches!(item.ty, ComponentEntityType::Type { .. }) {
+                return Err(contract_error("contract-type-mismatch"));
+            }
+        } else {
+            match item.ty {
+                ComponentEntityType::Instance(_) => {
                     let classification = if name.starts_with("wirt:plugin/") {
                         "unsupported Wirt interface version"
                     } else {
@@ -514,22 +568,10 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
                         bounded_name(name)
                     )));
                 }
-                imports.insert(name.clone());
-            }
-            ComponentEntityType::Type { .. } => {
-                let expected = expected_hash(name, &TYPE_IMPORT_HASHES)
-                    .ok_or_else(|| contract_error("unsupported public type import"))?;
-                if entity_hash(&types, item.ty)? != expected {
-                    return Err(contract_error(&format!(
-                        "type import mismatch for {:?}",
-                        bounded_name(name)
-                    )));
+                ComponentEntityType::Type { .. } => {
+                    return Err(contract_error("unsupported public type import"));
                 }
-            }
-            _ => {
-                return Err(contract_error(
-                    "top-level import is not an interface or type",
-                ))
+                _ => return Err(contract_error("top-level import has an unsupported kind")),
             }
         }
     }
@@ -540,20 +582,15 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
             )));
         }
     }
-
-    for name in &imports {
-        let item = types
-            .component_item_for_import(name)
-            .ok_or_else(|| contract_error("validated import is missing type information"))?;
-        let expected = expected_hash(name, &IMPORT_TYPE_HASHES)
-            .ok_or_else(|| contract_error("unsupported import"))?;
-        let actual = entity_hash(&types, item.ty)?;
-        if actual != expected {
-            return Err(contract_error(&format!(
-                "import type mismatch for {:?} ({actual})",
-                bounded_name(name)
-            )));
-        }
+    let expected_raw_imports = runtime_names
+        .iter()
+        .chain(public_type_names.iter())
+        .map(|name| (*name).to_owned())
+        .collect::<BTreeSet<_>>();
+    if raw_imports != expected_raw_imports {
+        return Err(contract_error(
+            "imports do not match the canonical Wirt world",
+        ));
     }
 
     let required_exports = EXPORTS.into_iter().collect::<BTreeSet<_>>();
@@ -562,19 +599,31 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
             "exports do not match the canonical Wirt world",
         ));
     }
-    for name in &exports {
+
+    let mut hasher = TypeHasher::new(&types);
+    for name in &public_type_names {
+        let item = types
+            .component_item_for_import(name)
+            .ok_or_else(|| contract_error("validated import is missing type information"))?;
+        hasher.root("public-type", name, item.ty)?;
+    }
+    for name in &runtime_names {
+        let item = types
+            .component_item_for_import(name)
+            .ok_or_else(|| contract_error("validated import is missing type information"))?;
+        hasher.root("interface", name, item.ty)?;
+    }
+    for name in &required_exports {
         let item = types
             .component_item_for_export(name)
             .ok_or_else(|| contract_error("validated export is missing type information"))?;
-        let expected = expected_hash(name, &EXPORT_TYPE_HASHES)
-            .ok_or_else(|| contract_error("unsupported export"))?;
-        let actual = entity_hash(&types, item.ty)?;
-        if actual != expected {
-            return Err(contract_error(&format!(
-                "export type mismatch for {:?} ({actual})",
-                bounded_name(name)
-            )));
-        }
+        hasher.root("export", name, item.ty)?;
+    }
+    let actual = hasher.finish();
+    if actual != EXPECTED_CONTRACT_HASH {
+        return Err(contract_error(&format!(
+            "contract-type-mismatch ({actual})"
+        )));
     }
 
     Ok(ComponentContract {

@@ -54,8 +54,18 @@ fn signature_offsets(bytes: &[u8], signature: [u8; 4]) -> Vec<usize> {
 fn assert_archive_preflight_rejection(label: &str, bytes: &[u8]) {
     let error = read_package_bytes(bytes).unwrap_err().to_string();
     assert!(
-        error.contains("archive-canonical:") || error.contains("archive-structure:"),
+        error.contains("archive-envelope:")
+            || error.contains("archive-canonical:")
+            || error.contains("archive-structure:"),
         "{label} escaped archive preflight: {error}"
+    );
+}
+
+fn assert_envelope_rejection(label: &str, bytes: &[u8]) {
+    let error = read_package_bytes(bytes).unwrap_err().to_string();
+    assert!(
+        error.contains("archive-envelope:"),
+        "{label} escaped raw envelope validation: {error}"
     );
 }
 
@@ -104,7 +114,7 @@ fn rejects_noncanonical_entry_sets_and_paths() {
             package_with_names("../plugin.toml", "plugin.wasm"),
         ),
     ] {
-        assert!(read_package_bytes(&bytes).is_err(), "accepted {label}");
+        assert_archive_preflight_rejection(label, &bytes);
     }
 }
 
@@ -120,7 +130,7 @@ fn rejects_noncanonical_zip_metadata_before_component_validation() {
         ),
         ("plugin.wasm", b"not a component", canonical_options()),
     ]);
-    assert!(read_package_bytes(&stored).is_err());
+    assert_archive_preflight_rejection("stored entry", &stored);
 
     let linked = archive(&[
         (
@@ -130,7 +140,7 @@ fn rejects_noncanonical_zip_metadata_before_component_validation() {
         ),
         ("plugin.wasm", b"not a component", canonical_options()),
     ]);
-    assert!(read_package_bytes(&linked).is_err());
+    assert_archive_preflight_rejection("noncanonical permissions", &linked);
 
     let zip64 = archive(&[
         (
@@ -140,13 +150,13 @@ fn rejects_noncanonical_zip_metadata_before_component_validation() {
         ),
         ("plugin.wasm", b"not a component", canonical_options()),
     ]);
-    assert!(read_package_bytes(&zip64).is_err());
+    assert_archive_preflight_rejection("forced ZIP64 entry", &zip64);
 
     for (label, mode) in [("link", 0o120777_u32), ("device", 0o020666_u32)] {
         let mut bytes = package_with_names("plugin.toml", "plugin.wasm");
         let central = signature_offsets(&bytes, [0x50, 0x4b, 0x01, 0x02])[0];
         bytes[central + 38..central + 42].copy_from_slice(&(mode << 16).to_le_bytes());
-        assert!(read_package_bytes(&bytes).is_err(), "accepted {label} mode");
+        assert_archive_preflight_rejection(label, &bytes);
     }
 }
 
@@ -168,7 +178,7 @@ fn rejects_encryption_and_unknown_size_descriptor_flags() {
                 offset = header + 4;
             }
         }
-        assert!(read_package_bytes(&bytes).is_err(), "accepted {label}");
+        assert_archive_preflight_rejection(label, &bytes);
     }
 }
 
@@ -224,6 +234,49 @@ fn rejects_every_noncanonical_zip_header_field_before_component_preflight() {
 }
 
 #[test]
+fn rejects_dishonest_eocd_envelopes_before_ziparchive_allocation() {
+    let base = package_bytes(manifest_toml().as_bytes(), UI_DEMO_COMPONENT).unwrap();
+    let eocd = signature_offsets(&base, [0x50, 0x4b, 0x05, 0x06])[0];
+    let mut cases = Vec::new();
+
+    for (label, at, value) in [
+        ("multidisk archive", eocd + 4, 1_u16),
+        ("central directory on another disk", eocd + 6, 1),
+        ("entries-on-disk mismatch", eocd + 8, 1),
+        ("entry-count amplification", eocd + 10, 3),
+        ("ZIP64 entry-count sentinel", eocd + 10, u16::MAX),
+    ] {
+        let mut bytes = base.clone();
+        bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
+        cases.push((label, bytes));
+    }
+
+    for (label, at, value) in [
+        ("ZIP64 central-size sentinel", eocd + 12, u32::MAX),
+        ("central-size overflow", eocd + 12, u32::MAX - 1),
+        ("ZIP64 central-offset sentinel", eocd + 16, u32::MAX),
+        ("central-offset out of bounds", eocd + 16, base.len() as u32),
+    ] {
+        let mut bytes = base.clone();
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        cases.push((label, bytes));
+    }
+
+    let mut commented = base.clone();
+    commented[eocd + 20..eocd + 22].copy_from_slice(&1_u16.to_le_bytes());
+    commented.push(b'x');
+    cases.push(("EOCD comment", commented));
+
+    let mut zip64_locator = base.clone();
+    zip64_locator.splice(eocd..eocd, b"PK\x06\x07".iter().copied().chain([0_u8; 16]));
+    cases.push(("ZIP64 locator", zip64_locator));
+
+    for (label, bytes) in cases {
+        assert_envelope_rejection(label, &bytes);
+    }
+}
+
+#[test]
 fn rejects_archive_and_entry_comments_and_extra_fields_before_component_preflight() {
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     writer.set_comment("hostile-comment");
@@ -265,14 +318,26 @@ fn rejects_archive_and_entry_comments_and_extra_fields_before_component_prefligh
 #[test]
 fn rejects_package_and_expanded_entry_limits() {
     let oversized_package = vec![0_u8; MAX_WIRT_PACKAGE_BYTES as usize + 1];
-    assert!(read_package_bytes(&oversized_package).is_err());
+    let error = read_package_bytes(&oversized_package)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("archive exceeds"),
+        "unexpected rejection: {error}"
+    );
 
     let manifest = vec![b' '; MAX_PLUGIN_MANIFEST_BYTES + 1];
     let oversized_manifest = archive(&[
         ("plugin.toml", &manifest, canonical_options()),
         ("plugin.wasm", b"not a component", canonical_options()),
     ]);
-    assert!(read_package_bytes(&oversized_manifest).is_err());
+    let error = read_package_bytes(&oversized_manifest)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("archive-bounds: plugin.toml"),
+        "unexpected rejection: {error}"
+    );
 
     let component = vec![0_u8; MAX_PLUGIN_WASM_BYTES + 1];
     let oversized_component = archive(&[
@@ -283,7 +348,13 @@ fn rejects_package_and_expanded_entry_limits() {
         ),
         ("plugin.wasm", &component, canonical_options()),
     ]);
-    assert!(read_package_bytes(&oversized_component).is_err());
+    let error = read_package_bytes(&oversized_component)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("archive-bounds: plugin.wasm"),
+        "unexpected rejection: {error}"
+    );
 }
 
 #[test]
@@ -294,8 +365,9 @@ fn rejects_dishonest_central_directory_sizes_before_component_validation() {
     bytes[central + 24..central + 28].copy_from_slice(&(declared - 1).to_le_bytes());
 
     let error = read_package_bytes(&bytes).unwrap_err();
+    let error = error.to_string();
     assert!(
-        error.to_string().contains("archive-"),
+        error.contains("archive-structure:") || error.contains("archive-bounds:"),
         "unexpected rejection: {error}"
     );
 }

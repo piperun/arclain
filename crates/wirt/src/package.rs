@@ -14,6 +14,8 @@ pub const MAX_PLUGIN_MANIFEST_BYTES: usize = 64 * 1024;
 pub const MAX_PLUGIN_WASM_BYTES: usize = 64 * 1024 * 1024;
 const MAX_EXPANSION_RATIO: u64 = 1_000;
 const MIN_RATIO_CHECK_BYTES: u64 = 1024 * 1024;
+const EOCD_BYTES: usize = 22;
+const ZIP64_LOCATOR_BYTES: usize = 20;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -115,6 +117,7 @@ pub fn read_package_bytes(bytes: &[u8]) -> Result<ValidatedPackage> {
     if bytes.len() as u64 > MAX_WIRT_PACKAGE_BYTES {
         return Err(package_error("archive exceeds the 65-MiB limit"));
     }
+    validate_archive_envelope(bytes)?;
     let mut archive = ZipArchive::new(Cursor::new(bytes))
         .map_err(|_| package_error("archive-structure: invalid ZIP archive"))?;
     if archive.len() != 2 {
@@ -142,6 +145,63 @@ pub fn read_package_bytes(bytes: &[u8]) -> Result<ValidatedPackage> {
         component,
         fingerprint: PackageFingerprint::sha256(bytes),
     })
+}
+
+fn validate_archive_envelope(bytes: &[u8]) -> Result<()> {
+    const EOCD_SIGNATURE: &[u8; 4] = b"PK\x05\x06";
+    const CENTRAL_SIGNATURE: &[u8; 4] = b"PK\x01\x02";
+    const ZIP64_LOCATOR_SIGNATURE: &[u8; 4] = b"PK\x06\x07";
+
+    let search_start = bytes.len().saturating_sub(EOCD_BYTES + u16::MAX as usize);
+    let eocd = bytes
+        .get(search_start..)
+        .unwrap_or_default()
+        .windows(EOCD_SIGNATURE.len())
+        .rposition(|window| window == EOCD_SIGNATURE)
+        .map(|relative| search_start + relative)
+        .ok_or_else(|| package_error("archive-envelope: missing-eocd"))?;
+    let record = bytes
+        .get(eocd..eocd.saturating_add(EOCD_BYTES))
+        .ok_or_else(|| package_error("archive-envelope: truncated-eocd"))?;
+
+    let disk = u16::from_le_bytes([record[4], record[5]]);
+    let central_disk = u16::from_le_bytes([record[6], record[7]]);
+    let entries_on_disk = u16::from_le_bytes([record[8], record[9]]);
+    let entries = u16::from_le_bytes([record[10], record[11]]);
+    let central_size = u32::from_le_bytes(record[12..16].try_into().unwrap());
+    let central_offset = u32::from_le_bytes(record[16..20].try_into().unwrap());
+    let comment_size = u16::from_le_bytes([record[20], record[21]]) as usize;
+
+    if eocd >= ZIP64_LOCATOR_BYTES
+        && bytes.get(eocd - ZIP64_LOCATOR_BYTES..eocd - ZIP64_LOCATOR_BYTES + 4)
+            == Some(ZIP64_LOCATOR_SIGNATURE)
+    {
+        return Err(package_error("archive-envelope: zip64"));
+    }
+    if disk != 0 || central_disk != 0 {
+        return Err(package_error("archive-envelope: multidisk"));
+    }
+    if entries == u16::MAX || central_size == u32::MAX || central_offset == u32::MAX {
+        return Err(package_error("archive-envelope: zip64"));
+    }
+    if entries != 2 || entries_on_disk != entries {
+        return Err(package_error("archive-envelope: entry-count"));
+    }
+    if comment_size != 0 || eocd.checked_add(EOCD_BYTES) != Some(bytes.len()) {
+        return Err(package_error("archive-envelope: comments-or-trailing-data"));
+    }
+
+    let central_offset = central_offset as usize;
+    let central_size = central_size as usize;
+    let central_end = central_offset
+        .checked_add(central_size)
+        .ok_or_else(|| package_error("archive-envelope: central-directory-bounds"))?;
+    if central_end != eocd
+        || bytes.get(central_offset..central_offset.saturating_add(4)) != Some(CENTRAL_SIGNATURE)
+    {
+        return Err(package_error("archive-envelope: central-directory-bounds"));
+    }
+    Ok(())
 }
 
 fn parse_manifest(bytes: &[u8]) -> Result<PluginManifest> {
@@ -205,4 +265,20 @@ fn read_entry(
         )));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deterministic_writer_has_a_small_inline_fixed_output_golden() {
+        const MANIFEST: &[u8] = b"[wirt]\nabi = \"0.1.0\"\n";
+        const COMPONENT: &[u8] = b"\0asm\x0d\0\x01\0";
+        let package = write_package_bytes(MANIFEST, COMPONENT).unwrap();
+        assert_eq!(
+            PackageFingerprint::sha256(&package).as_str(),
+            "a8ec70f197747e3fa594fdd5c29cfcf12e7ab34f44bbf7c78ad722b496301ee3"
+        );
+    }
 }
