@@ -21,7 +21,7 @@ exclude = [
     "plugins/facade-test-fixture",
     "plugins/gstreamer-preview",
     "plugins/ui-demo",
-    "plugin-sdk",
+    "wirt-sdk",
     "crates/dioxus-spike",
     "crates/freya-spike",
     "crates/iced-spike",

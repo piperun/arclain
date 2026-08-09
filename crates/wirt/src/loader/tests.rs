@@ -2,9 +2,18 @@ use super::*;
 use tempfile::TempDir;
 
 fn valid_manifest(id: &str) -> PluginManifest {
+    let mut manifest = valid_manifest_with_abi(crate::WIRT_ABI_VERSION);
+    manifest.plugin.id = id.to_string();
+    manifest
+}
+
+fn valid_manifest_with_abi(abi: &str) -> PluginManifest {
     PluginManifest {
+        wirt: crate::WirtConfig {
+            abi: abi.to_string(),
+        },
         plugin: crate::PluginInfoConfig {
-            id: id.to_string(),
+            id: "test-plugin".to_string(),
             name: "Test Plugin".to_string(),
             version: "1.0.0".to_string(),
             author: "Test Author".to_string(),
@@ -13,6 +22,19 @@ fn valid_manifest(id: &str) -> PluginManifest {
         capabilities: crate::CapabilitiesConfig::default(),
         rate_limits: Default::default(),
     }
+}
+
+fn manifest_toml_without_wirt_table() -> &'static str {
+    r#"
+[plugin]
+id = "test-plugin"
+name = "Test Plugin"
+version = "1.0.0"
+author = "Test Author"
+description = "A test plugin"
+
+[capabilities]
+"#
 }
 
 fn write_plugin_pair(directory: &std::path::Path, file_id: &str, manifest_id: &str) {
@@ -68,11 +90,31 @@ fn test_plugin_loader_creation() {
 }
 
 #[test]
+fn manifest_requires_the_current_wirt_abi() {
+    let temp_dir = TempDir::new().unwrap();
+    let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
+
+    let manifest = valid_manifest_with_abi("0.1.0");
+    loader.validate_manifest(&manifest).unwrap();
+
+    let missing = manifest_toml_without_wirt_table();
+    assert!(toml::from_str::<PluginManifest>(missing).is_err());
+
+    let error = loader
+        .validate_manifest(&valid_manifest_with_abi("0.2.0"))
+        .unwrap_err();
+    assert!(error.to_string().contains("unsupported Wirt ABI"));
+}
+
+#[test]
 fn test_manifest_validation() {
     let temp_dir = TempDir::new().unwrap();
     let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
 
     let manifest = PluginManifest {
+        wirt: crate::WirtConfig {
+            abi: crate::WIRT_ABI_VERSION.to_string(),
+        },
         plugin: crate::PluginInfoConfig {
             id: "test-plugin".to_string(),
             name: "Test Plugin".to_string(),
@@ -101,6 +143,9 @@ fn test_invalid_manifest() {
     let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
 
     let manifest = PluginManifest {
+        wirt: crate::WirtConfig {
+            abi: crate::WIRT_ABI_VERSION.to_string(),
+        },
         plugin: crate::PluginInfoConfig {
             id: "".to_string(), // Empty ID
             name: "Test Plugin".to_string(),

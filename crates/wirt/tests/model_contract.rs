@@ -4,7 +4,7 @@ use wirt::{
     rules::{MoveFileRule, MoveRule, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger},
     ui_model::{PluginUiNodeDto, PluginUiNodeKind},
     CapabilitiesConfig, PluginAction, PluginInfoConfig, PluginLayout, PluginManifest,
-    PluginUiElement, RateLimits, ToastLevel,
+    PluginUiElement, RateLimits, ToastLevel, WirtConfig,
 };
 
 fn assert_json_round_trip<T>(value: T)
@@ -19,6 +19,9 @@ where
 #[test]
 fn neutral_model_preserves_all_fields_across_json_round_trips() {
     assert_json_round_trip(PluginManifest {
+        wirt: WirtConfig {
+            abi: "0.1.0".to_string(),
+        },
         plugin: PluginInfoConfig {
             id: "sample_plugin".to_string(),
             name: "Sample Plugin".to_string(),

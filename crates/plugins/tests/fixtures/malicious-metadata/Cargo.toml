@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-archust-plugin-sdk = { path = "../../../../../plugin-sdk" }
+wirt-sdk = { path = "../../../../../wirt-sdk" }
 
 [workspace]
 

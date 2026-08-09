@@ -27,6 +27,9 @@ pub(super) fn manifest_from_metadata(
     metadata: PluginMetadata,
 ) -> PluginManifest {
     PluginManifest {
+        wirt: crate::types::WirtConfig {
+            abi: wirt::WIRT_ABI_VERSION.to_string(),
+        },
         plugin: PluginInfoConfig {
             id: plugin_id.as_str().to_string(),
             name: metadata.name,

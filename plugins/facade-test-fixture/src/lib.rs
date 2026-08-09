@@ -58,7 +58,7 @@
 //!   whereas anything on a UI path would make the line count depend on
 //!   how many other tests rendered first.
 
-use archust_plugin_sdk::{info, log_network_activity};
+use wirt_sdk::{info, log_network_activity};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The single network-log line [`Component::init`] writes. Named here so
@@ -106,9 +106,9 @@ const FIXTURE_CHILD_PAGE: &str = "Page:fixture-child";
 
 struct Component;
 
-impl archust_plugin_sdk::Guest for Component {
-    fn get_metadata() -> archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
-        archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
+impl wirt_sdk::Guest for Component {
+    fn get_metadata() -> wirt_sdk::wirt::plugin::meta::PluginMetadata {
+        wirt_sdk::wirt::plugin::meta::PluginMetadata {
             id: "facade-test-fixture".to_string(),
             name: "Facade Test Fixture".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -126,21 +126,21 @@ impl archust_plugin_sdk::Guest for Component {
         // defaults at load takes. The host seeds stored settings into the
         // instance before calling `init`, so this reads back whatever the
         // last load persisted.
-        let loads = archust_plugin_sdk::wirt::plugin::host::get_setting(LOAD_COUNT_SETTING_KEY)
+        let loads = wirt_sdk::wirt::plugin::host::get_setting(LOAD_COUNT_SETTING_KEY)
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(0)
             + 1;
-        archust_plugin_sdk::set_setting(LOAD_COUNT_SETTING_KEY, &loads.to_string());
+        wirt_sdk::set_setting(LOAD_COUNT_SETTING_KEY, &loads.to_string());
     }
 
-    fn get_default_rules() -> Vec<archust_plugin_sdk::wirt::plugin::rules::PluginRuleDefinition> {
+    fn get_default_rules() -> Vec<wirt_sdk::wirt::plugin::rules::PluginRuleDefinition> {
         vec![]
     }
 
     fn get_ui_layout(
         extension_point: String,
-    ) -> archust_plugin_sdk::wirt::plugin::ui::PluginLayout {
-        use archust_plugin_sdk::wirt::plugin::ui::*;
+    ) -> wirt_sdk::wirt::plugin::ui::PluginLayout {
+        use wirt_sdk::wirt::plugin::ui::*;
 
         match extension_point.as_str() {
             "MainPage" => {
@@ -179,7 +179,7 @@ impl archust_plugin_sdk::Guest for Component {
                 UiElement::Label(LabelConfig {
                     text: format!(
                         "remembered:{}",
-                        archust_plugin_sdk::wirt::plugin::host::get_setting(REMEMBERED_SETTING_KEY)
+                        wirt_sdk::wirt::plugin::host::get_setting(REMEMBERED_SETTING_KEY)
                             .unwrap_or_else(|| "unset".to_string()),
                     ),
                     bold: false,
@@ -188,7 +188,7 @@ impl archust_plugin_sdk::Guest for Component {
                 UiElement::Label(LabelConfig {
                     text: format!(
                         "loads:{}",
-                        archust_plugin_sdk::wirt::plugin::host::get_setting(LOAD_COUNT_SETTING_KEY)
+                        wirt_sdk::wirt::plugin::host::get_setting(LOAD_COUNT_SETTING_KEY)
                             .unwrap_or_else(|| "0".to_string()),
                     ),
                     bold: false,
@@ -270,8 +270,8 @@ impl archust_plugin_sdk::Guest for Component {
         }
     }
 
-    fn get_top_tabs() -> Vec<archust_plugin_sdk::wirt::plugin::ui::TopTabConfig> {
-        use archust_plugin_sdk::wirt::plugin::ui::{BadgeConfig, TopTabConfig};
+    fn get_top_tabs() -> Vec<wirt_sdk::wirt::plugin::ui::TopTabConfig> {
+        use wirt_sdk::wirt::plugin::ui::{BadgeConfig, TopTabConfig};
 
         // Every field distinct and constant: a count that is not the
         // priority, a `dot` that is not the default, and a colour the
@@ -294,8 +294,8 @@ impl archust_plugin_sdk::Guest for Component {
     fn on_ui_event(
         id: String,
         value: Option<String>,
-    ) -> Vec<archust_plugin_sdk::wirt::plugin::ui::PluginAction> {
-        use archust_plugin_sdk::wirt::plugin::ui::*;
+    ) -> Vec<wirt_sdk::wirt::plugin::ui::PluginAction> {
+        use wirt_sdk::wirt::plugin::ui::*;
 
         match id.as_str() {
             "__page_init" => vec![PluginAction::SetPageDisplayName(
@@ -311,7 +311,7 @@ impl archust_plugin_sdk::Guest for Component {
             // refresh makes the guest's own view of it observable in the
             // very same dispatch.
             "remember" => {
-                archust_plugin_sdk::set_setting(
+                wirt_sdk::set_setting(
                     REMEMBERED_SETTING_KEY,
                     value.as_deref().unwrap_or_default(),
                 );
@@ -323,7 +323,7 @@ impl archust_plugin_sdk::Guest for Component {
                 // next line causes -- which makes this the case that
                 // proves a host pulls settings on the failure path and not
                 // only when a dispatch succeeds.
-                archust_plugin_sdk::set_setting(REMEMBERED_SETTING_KEY, "trapped");
+                wirt_sdk::set_setting(REMEMBERED_SETTING_KEY, "trapped");
                 panic!("facade-test-fixture: intentional trap for crash-containment tests")
             }
             "multi-action" => vec![
@@ -344,4 +344,4 @@ impl archust_plugin_sdk::Guest for Component {
     }
 }
 
-archust_plugin_sdk::export!(Component with_types_in archust_plugin_sdk);
+wirt_sdk::export!(Component with_types_in wirt_sdk);

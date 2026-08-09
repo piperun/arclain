@@ -27,6 +27,18 @@ class TestWirtBoundary(unittest.TestCase):
                 '[package]\nname = "wirt"\nversion = "0.1.0"\n',
                 encoding="utf-8",
             )
+            (crate / "src" / "lib.rs").write_text(
+                '#[path = "../../../plugins/ui-demo/src/lib.rs"]\nmod product;\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.violations(root),
+                [
+                    "crates/wirt/src/lib.rs:1: compiled source path escapes "
+                    "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+                ],
+            )
             (crate / "src" / "lib.rs").write_text(source, encoding="utf-8")
             return wirt_boundary.violations(root)
 
@@ -160,16 +172,46 @@ class TestWirtBoundary(unittest.TestCase):
                 '[package]\nname = "wirt"\nversion = "0.1.0"\n',
                 encoding="utf-8",
             )
-            (crate / "src" / "lib.rs").write_text(
-                '#[path = "../../../plugins/ui-demo/src/lib.rs"]\nmod product;\n',
+
+    def test_component_bindgen_path_must_use_the_canonical_wirt_sdk_wit(self):
+        source = (
+            "wasmtime::component::bindgen!({\n"
+            '    path: "../../../plugins/ui-demo/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: component bindgen path must resolve to "
+                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
+            ],
+        )
+
+    def test_second_wirt_plugin_wit_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            canonical = root / "wirt-sdk" / "wit"
+            legacy = root / "crates" / "wirt" / "wit"
+            canonical.mkdir(parents=True)
+            legacy.mkdir(parents=True)
+            (root / "crates" / "wirt" / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n',
                 encoding="utf-8",
+            )
+            (canonical / "plugin.wit").write_text(
+                "package wirt:plugin@0.1.0;\n", encoding="utf-8"
+            )
+            (legacy / "plugin.wit").write_text(
+                "package wirt:plugin@0.1.0;\n", encoding="utf-8"
             )
 
             self.assertEqual(
                 wirt_boundary.violations(root),
                 [
-                    "crates/wirt/src/lib.rs:1: compiled source path escapes "
-                    "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+                    "crates/wirt/wit/plugin.wit: duplicate Wirt plugin WIT; "
+                    "only wirt-sdk/wit/plugin.wit is allowed"
                 ],
             )
 

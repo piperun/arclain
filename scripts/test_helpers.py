@@ -73,7 +73,7 @@ class TestOwnedFormatting(unittest.TestCase):
         "wirt",
     ]
     MANIFEST_COMMANDS = [
-        ["cargo", "fmt", "--manifest-path", "plugin-sdk/Cargo.toml"],
+        ["cargo", "fmt", "--manifest-path", "wirt-sdk/Cargo.toml"],
         [
             "cargo",
             "fmt",
@@ -886,9 +886,9 @@ class TestPluginFetchRouting(unittest.TestCase):
 
 class TestWirtAbi(unittest.TestCase):
     def test_one_versioned_wit_source_and_no_arclain_namespace(self):
-        canonical = REPO_ROOT / "crates" / "wirt" / "wit" / "plugin.wit"
+        canonical = REPO_ROOT / "wirt-sdk" / "wit" / "plugin.wit"
         legacy = REPO_ROOT / "wit" / "arclain.wit"
-        sdk = (REPO_ROOT / "plugin-sdk" / "src" / "lib.rs").read_text(
+        sdk = (REPO_ROOT / "wirt-sdk" / "src" / "lib.rs").read_text(
             encoding="utf-8",
         )
         self.assertTrue(canonical.is_file())
@@ -899,7 +899,7 @@ class TestWirtAbi(unittest.TestCase):
         )
         self.assertRegex(
             sdk,
-            r'path\s*:\s*"\.\./crates/wirt/wit/plugin\.wit"',
+            r'path\s*:\s*"wit/plugin\.wit"',
         )
 
         roots = (
@@ -911,7 +911,7 @@ class TestWirtAbi(unittest.TestCase):
             / "fixtures"
             / "malicious-metadata"
             / "src",
-            REPO_ROOT / "plugin-sdk" / "src",
+            REPO_ROOT / "wirt-sdk" / "src",
             REPO_ROOT / "plugins" / "dlsite-metadata" / "src",
             REPO_ROOT / "plugins" / "facade-test-fixture" / "src",
             REPO_ROOT / "plugins" / "gstreamer-preview" / "src",

@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-archust-plugin-sdk = { path = "../../plugin-sdk" }
+wirt-sdk = { path = "../../wirt-sdk" }
 serde = { version = "1", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1", features = ["alloc"], default-features = false }
 

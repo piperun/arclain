@@ -7,7 +7,7 @@ pub use wirt::{
     metadata_value_within_limit, BadgeConfig, ButtonAction, CapabilitiesConfig, KeyValuePair,
     PluginAction, PluginCapability, PluginError, PluginExtensionPoint, PluginId, PluginIdentityKey,
     PluginInfo, PluginInfoConfig, PluginLayout, PluginManifest, PluginMetadata, PluginUiElement,
-    RateLimits, Result, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
+    RateLimits, Result, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon, WirtConfig,
     MAX_PLUGIN_GUEST_DATA_BYTES, MAX_PLUGIN_METADATA_BYTES, REQUEST_FETCH_CAPABILITIES,
 };
 

@@ -17,12 +17,12 @@ use crate::{
     detect_dlsite_code, format_description, generate_metadata_json, get_cached_dlsite_metadata,
     STATE,
 };
-use archust_plugin_sdk::info;
+use wirt_sdk::info;
 
 pub(crate) fn dispatch(
     extension_point: &str,
-) -> archust_plugin_sdk::wirt::plugin::ui::PluginLayout {
-    use archust_plugin_sdk::wirt::plugin::ui::{
+) -> wirt_sdk::wirt::plugin::ui::PluginLayout {
+    use wirt_sdk::wirt::plugin::ui::{
         ButtonAction, ButtonConfig, CarouselConfig, CheckboxConfig, DropdownConfig, ImageConfig,
         KeyValueListConfig, KeyValuePair, LabelConfig, ListContainerConfig, ListItemConfig,
         LoadingConfig, MetadataGridConfig, PluginLayout, SectionHeaderConfig, SettingsGroupHeader,
@@ -32,7 +32,7 @@ pub(crate) fn dispatch(
 
     match extension_point {
         "PluginButton" => {
-            use archust_plugin_sdk::current_archive_info;
+            use wirt_sdk::current_archive_info;
 
             // Fetch button - only if archive is open. Show a Loading
             // spinner instead while a fetch is already in flight so the
@@ -174,7 +174,7 @@ pub(crate) fn dispatch(
             PluginLayout::Single(elements)
         }
         "Panel" => {
-            use archust_plugin_sdk::current_archive_info;
+            use wirt_sdk::current_archive_info;
 
             // Check if archive is open
             let archive_info = current_archive_info();
@@ -652,7 +652,7 @@ pub(crate) fn dispatch(
 
             // Cache viewer dialog
             } else if dialog_id == "dlsite_cache" {
-                use archust_plugin_sdk::list_cached_metadata;
+                use wirt_sdk::list_cached_metadata;
                 let mut elements = vec![];
 
                 // Check if we have a selected entry to show details for
@@ -840,7 +840,7 @@ pub(crate) fn dispatch(
         }
 
         "Page:dlsite_browser" => {
-            use archust_plugin_sdk::list_cached_entries;
+            use wirt_sdk::list_cached_entries;
 
             let (browser_tab, search_query, selected_entry, browser_loading) = STATE.with(|s| {
                 let state = s.borrow();
@@ -891,7 +891,7 @@ pub(crate) fn dispatch(
                 }));
 
                 // Show current archive filename with copy button
-                if let Some(archive_info) = archust_plugin_sdk::current_archive_info() {
+                if let Some(archive_info) = wirt_sdk::current_archive_info() {
                     sidebar_elements.push(UiElement::Space(8.0));
                     sidebar_elements.push(UiElement::Label(LabelConfig {
                         text: "Current Archive:".to_string(),
@@ -994,7 +994,7 @@ pub(crate) fn dispatch(
 
                     if need_refresh {
                         let summaries =
-                            archust_plugin_sdk::get_metadata_summaries(filtered_ids.clone());
+                            wirt_sdk::get_metadata_summaries(filtered_ids.clone());
                         let data: Vec<(String, Option<String>, bool)> = summaries
                             .into_iter()
                             .map(|s| (s.id, s.title, s.geo_blocked))
@@ -1178,7 +1178,7 @@ pub(crate) fn dispatch(
 
                         // Show cover if we have a URL or cached bytes
                         let show_cover = cover_url.is_some()
-                            || archust_plugin_sdk::wirt::plugin::host::has_data(&cover_key);
+                            || wirt_sdk::wirt::plugin::host::has_data(&cover_key);
 
                         if show_cover {
                             if let Some(ref url) = cover_url {
@@ -1214,7 +1214,7 @@ pub(crate) fn dispatch(
                                     selected_id,
                                     i,
                                 );
-                                if archust_plugin_sdk::wirt::plugin::host::has_data(&key) {
+                                if wirt_sdk::wirt::plugin::host::has_data(&key) {
                                     images.push((key, None));
                                 } else {
                                     break;

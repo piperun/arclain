@@ -21,15 +21,15 @@ use crate::{
     get_cached_dlsite_metadata, get_total_image_count, perform_scan_cached_only,
     raw_metadata_cache_keys, sanitize_filename, search_dlsite, STATE,
 };
-use archust_plugin_sdk::info;
+use wirt_sdk::info;
 
 const MAX_RETURNED_TOAST_BYTES: usize = 1024;
 
 fn toast(
     message: impl Into<String>,
-    level: archust_plugin_sdk::wirt::plugin::ui::ToastLevel,
-) -> archust_plugin_sdk::wirt::plugin::ui::PluginAction {
-    use archust_plugin_sdk::wirt::plugin::ui::{PluginAction, ToastConfig};
+    level: wirt_sdk::wirt::plugin::ui::ToastLevel,
+) -> wirt_sdk::wirt::plugin::ui::PluginAction {
+    use wirt_sdk::wirt::plugin::ui::{PluginAction, ToastConfig};
     let mut message = message.into();
     if message.len() > MAX_RETURNED_TOAST_BYTES {
         let mut end = MAX_RETURNED_TOAST_BYTES;
@@ -45,8 +45,8 @@ fn toast(
 pub(crate) fn dispatch(
     id: String,
     value: Option<String>,
-) -> Vec<archust_plugin_sdk::wirt::plugin::ui::PluginAction> {
-    use archust_plugin_sdk::wirt::plugin::ui::{OpenLightboxConfig, PluginAction};
+) -> Vec<wirt_sdk::wirt::plugin::ui::PluginAction> {
+    use wirt_sdk::wirt::plugin::ui::{OpenLightboxConfig, PluginAction};
 
     // Handle page initialization - set display name for breadcrumb
     if id == "__page_init" {
@@ -208,7 +208,7 @@ pub(crate) fn dispatch(
 
             // Rename archive if option is checked
             if should_rename {
-                if let Some(archive_info) = archust_plugin_sdk::current_archive_info() {
+                if let Some(archive_info) = wirt_sdk::current_archive_info() {
                     // Get title from metadata
                     let title = json["work_name"]
                         .as_str()
@@ -229,7 +229,7 @@ pub(crate) fn dispatch(
                         "[DLSite Plugin] Renaming archive to: {}",
                         new_name
                     ));
-                    match archust_plugin_sdk::rename_archive(&new_name) {
+                    match wirt_sdk::rename_archive(&new_name) {
                         Ok(new_path) => {
                             info(&format!(
                                 "[DLSite Plugin] Archive renamed successfully to: {}",
@@ -250,7 +250,7 @@ pub(crate) fn dispatch(
         }
 
         // Dialog will be closed when user selects a result
-        return vec![archust_plugin_sdk::wirt::plugin::ui::PluginAction::CloseDialog];
+        return vec![wirt_sdk::wirt::plugin::ui::PluginAction::CloseDialog];
     }
 
     // Carousel Gallery Navigation
@@ -334,7 +334,7 @@ pub(crate) fn dispatch(
                             gameta_lib::providers::dlsite::cache_keys::cover_key(product_id);
                         let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
                         let cover_is_cached =
-                            archust_plugin_sdk::wirt::plugin::host::has_data(&cover_key);
+                            wirt_sdk::wirt::plugin::host::has_data(&cover_key);
 
                         let show_cover = if is_cached_tab {
                             cover_is_cached
@@ -358,7 +358,7 @@ pub(crate) fn dispatch(
                                             product_id, i,
                                         );
                                     let is_cached =
-                                        archust_plugin_sdk::wirt::plugin::host::has_data(&key);
+                                        wirt_sdk::wirt::plugin::host::has_data(&key);
 
                                     let should_include =
                                         if is_cached_tab { is_cached } else { true };
@@ -399,7 +399,7 @@ pub(crate) fn dispatch(
                 STATE.with(|state| {
                     state.borrow_mut().auto_fetch_enabled = enabled;
                 });
-                archust_plugin_sdk::wirt::plugin::host::set_setting("auto_fetch_enabled", &val);
+                wirt_sdk::wirt::plugin::host::set_setting("auto_fetch_enabled", &val);
                 info(&format!(
                     "[DLSite Plugin] Auto-fetch setting changed to: {}",
                     enabled
@@ -412,7 +412,7 @@ pub(crate) fn dispatch(
                 STATE.with(|state| {
                     state.borrow_mut().enable_cache = enabled;
                 });
-                archust_plugin_sdk::wirt::plugin::host::set_setting("enable_cache", &val);
+                wirt_sdk::wirt::plugin::host::set_setting("enable_cache", &val);
                 info(&format!(
                     "[DLSite Plugin] Cache setting changed to: {}",
                     enabled
@@ -450,7 +450,7 @@ pub(crate) fn dispatch(
                 STATE.with(|state| {
                     state.borrow_mut().cache_videos = enabled;
                 });
-                archust_plugin_sdk::wirt::plugin::host::set_setting("cache_videos", &val);
+                wirt_sdk::wirt::plugin::host::set_setting("cache_videos", &val);
                 info(&format!(
                     "[DLSite Plugin] Cache videos setting changed to: {}",
                     enabled
@@ -462,7 +462,7 @@ pub(crate) fn dispatch(
                 STATE.with(|state| {
                     state.borrow_mut().video_quality = val.clone();
                 });
-                archust_plugin_sdk::wirt::plugin::host::set_setting("video_quality", &val);
+                wirt_sdk::wirt::plugin::host::set_setting("video_quality", &val);
                 info(&format!(
                     "[DLSite Plugin] Video quality setting changed to: {}",
                     val
@@ -488,9 +488,9 @@ pub(crate) fn dispatch(
             }
         }
         "do_clear_all_cache" => {
-            use archust_plugin_sdk::wirt::plugin::ui::ToastLevel;
+            use wirt_sdk::wirt::plugin::ui::ToastLevel;
             info("[DLSite Plugin] Clearing plugin-owned DLSite cached files...");
-            let cleared = archust_plugin_sdk::invalidate_cache("dlsite:*");
+            let cleared = wirt_sdk::invalidate_cache("dlsite:*");
             return vec![if cleared {
                 toast(
                     "DLSite cached files were removed; saved product metadata remains.",
@@ -504,9 +504,9 @@ pub(crate) fn dispatch(
             }];
         }
         "prune_cache" => {
-            use archust_plugin_sdk::wirt::plugin::host::get_data;
-            use archust_plugin_sdk::wirt::plugin::ui::ToastLevel;
-            use archust_plugin_sdk::{invalidate_cache, list_cached_metadata};
+            use wirt_sdk::wirt::plugin::host::get_data;
+            use wirt_sdk::wirt::plugin::ui::ToastLevel;
+            use wirt_sdk::{invalidate_cache, list_cached_metadata};
 
             const PRUNE_PAGE_SIZE: u32 = 128;
             const MAX_PRUNE_METADATA_ENTRIES: u32 = 1024;
@@ -606,7 +606,7 @@ pub(crate) fn dispatch(
             }
         }
         "show_details" => {
-            use archust_plugin_sdk::wirt::plugin::ui::ToastLevel;
+            use wirt_sdk::wirt::plugin::ui::ToastLevel;
             let message = STATE.with(|state| {
                 if let Some((id, json, scraped)) = &state.borrow().found_metadata {
                     let title = json["title"].as_str().unwrap_or("Unknown");
@@ -716,7 +716,7 @@ pub(crate) fn dispatch(
             });
 
             if let Some(json) = meta_json {
-                use archust_plugin_sdk::wirt::plugin::ui::ToastLevel;
+                use wirt_sdk::wirt::plugin::ui::ToastLevel;
                 emit_dlsite_metadata(&json);
 
                 return vec![toast(
@@ -724,7 +724,7 @@ pub(crate) fn dispatch(
                     ToastLevel::Success,
                 )];
             } else {
-                use archust_plugin_sdk::wirt::plugin::ui::ToastLevel;
+                use wirt_sdk::wirt::plugin::ui::ToastLevel;
                 return vec![toast("Could not find cached details", ToastLevel::Error)];
             }
         }
@@ -794,7 +794,7 @@ pub(crate) fn dispatch(
                                 STATE.with(|s| s.borrow_mut().browser_loading = false);
                                 return vec![toast(
                                     format!("Could not find product: {trimmed}"),
-                                    archust_plugin_sdk::wirt::plugin::ui::ToastLevel::Error,
+                                    wirt_sdk::wirt::plugin::ui::ToastLevel::Error,
                                 )];
                             }
                         }
@@ -826,8 +826,8 @@ pub(crate) fn dispatch(
             }
         }
         "copy_archive_filename" => {
-            use archust_plugin_sdk::wirt::plugin::ui::ToastLevel;
-            if let Some(archive_info) = archust_plugin_sdk::current_archive_info() {
+            use wirt_sdk::wirt::plugin::ui::ToastLevel;
+            if let Some(archive_info) = wirt_sdk::current_archive_info() {
                 // Copy the filename without extension to clipboard
                 let filename = &archive_info.filename;
                 // Remove extension for easier searching
@@ -895,7 +895,7 @@ pub(crate) fn dispatch(
                 emit_dlsite_metadata(&metadata_json);
                 return vec![toast(
                     format!("Applied metadata for {code}"),
-                    archust_plugin_sdk::wirt::plugin::ui::ToastLevel::Success,
+                    wirt_sdk::wirt::plugin::ui::ToastLevel::Success,
                 )];
             }
         }
@@ -947,8 +947,8 @@ pub(crate) fn dispatch(
             let backup_data = get_cached_dlsite_metadata(&entry_id);
 
             // Invalidate cache to force network fetch
-            archust_plugin_sdk::invalidate_cache(&json_key);
-            archust_plugin_sdk::invalidate_cache(&html_key);
+            wirt_sdk::invalidate_cache(&json_key);
+            wirt_sdk::invalidate_cache(&html_key);
             info(&format!(
                 "[DLSite Plugin] Invalidated cache for: {}, {}",
                 json_key, html_key
@@ -980,7 +980,7 @@ pub(crate) fn dispatch(
                     ));
                     toast(
                         format!("Refetched {entry_id}"),
-                        archust_plugin_sdk::wirt::plugin::ui::ToastLevel::Success,
+                        wirt_sdk::wirt::plugin::ui::ToastLevel::Success,
                     )
                 }
                 None => {
@@ -1005,12 +1005,12 @@ pub(crate) fn dispatch(
                         });
                         toast(
                             format!("Refetch failed for {entry_id}; restored previous data."),
-                            archust_plugin_sdk::wirt::plugin::ui::ToastLevel::Warning,
+                            wirt_sdk::wirt::plugin::ui::ToastLevel::Warning,
                         )
                     } else {
                         toast(
                             format!("Failed to refetch {entry_id}; no backup was available."),
-                            archust_plugin_sdk::wirt::plugin::ui::ToastLevel::Error,
+                            wirt_sdk::wirt::plugin::ui::ToastLevel::Error,
                         )
                     }
                 }
@@ -1033,7 +1033,7 @@ mod tests {
 
     #[test]
     fn returned_toast_messages_are_utf8_safely_bounded() {
-        use archust_plugin_sdk::wirt::plugin::ui::{PluginAction, ToastLevel};
+        use wirt_sdk::wirt::plugin::ui::{PluginAction, ToastLevel};
 
         let PluginAction::ShowToast(config) =
             toast("é".repeat(MAX_RETURNED_TOAST_BYTES), ToastLevel::Info)

@@ -1,3 +1,6 @@
+[wirt]
+abi = "0.1.0"
+
 [plugin]
 id = "facade-test-fixture"
 name = "Facade Test Fixture"

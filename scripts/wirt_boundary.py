@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import tomllib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -447,6 +448,66 @@ def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | 
     return issues
 
 
+def component_bindgen_issues(
+    tokens: list[RustToken], source_path: Path, canonical_wit: Path
+) -> list[tuple[int, int, str]]:
+    issues: list[tuple[int, int, str]] = []
+    macro_prefix = (
+        "wasmtime",
+        ":",
+        ":",
+        "component",
+        ":",
+        ":",
+        "bindgen",
+        "!",
+        "(",
+    )
+    for index in range(len(tokens) - len(macro_prefix)):
+        if tuple(token.value for token in tokens[index : index + len(macro_prefix)]) != macro_prefix:
+            continue
+        opening = index + len(macro_prefix) - 1
+        end = closing_token(tokens, opening, "(", ")")
+        if end is None:
+            issues.append((tokens[index].offset, tokens[index].line, "unterminated component bindgen macro"))
+            continue
+
+        arguments = tokens[opening + 1 : end]
+        path_literal = None
+        for argument_index in range(len(arguments) - 2):
+            if (
+                arguments[argument_index].kind == "identifier"
+                and arguments[argument_index].value == "path"
+                and arguments[argument_index + 1].value == ":"
+            ):
+                candidate = arguments[argument_index + 2]
+                if candidate.kind == "string":
+                    path_literal = candidate.value
+                break
+
+        if path_literal is None:
+            issues.append(
+                (
+                    tokens[index].offset,
+                    tokens[index].line,
+                    "component bindgen path is not a string literal",
+                )
+            )
+            continue
+
+        resolved = (source_path.parent.parent / path_literal).resolve()
+        if resolved != canonical_wit:
+            issues.append(
+                (
+                    tokens[index].offset,
+                    tokens[index].line,
+                    "component bindgen path must resolve to wirt-sdk/wit/plugin.wit: "
+                    f"{path_literal}",
+                )
+            )
+    return issues
+
+
 def path_is_within(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -455,10 +516,50 @@ def path_is_within(path: Path, root: Path) -> bool:
     return True
 
 
+def wirt_wit_violations(workspace_root: Path) -> list[str]:
+    wit_files = sorted(workspace_root.rglob("plugin.wit"))
+    if not wit_files:
+        return []
+
+    canonical = workspace_root / "wirt-sdk" / "wit" / "plugin.wit"
+    violations: list[str] = []
+    if canonical not in wit_files:
+        violations.append("wirt-sdk/wit/plugin.wit: missing canonical Wirt plugin WIT")
+    elif not re.search(
+        r"^package\s+wirt:plugin@0\.1\.0;",
+        canonical.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    ):
+        violations.append(
+            "wirt-sdk/wit/plugin.wit: must declare package wirt:plugin@0.1.0"
+        )
+
+    for path in wit_files:
+        if path == canonical:
+            continue
+        relative = path.relative_to(workspace_root).as_posix()
+        if re.search(
+            r"^package\s+wirt:plugin(?:@[^;]+)?;",
+            path.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        ):
+            violations.append(
+                f"{relative}: duplicate Wirt plugin WIT; only "
+                "wirt-sdk/wit/plugin.wit is allowed"
+            )
+        else:
+            violations.append(
+                f"{relative}: unexpected plugin WIT; only "
+                "wirt-sdk/wit/plugin.wit is allowed"
+            )
+    return violations
+
+
 def source_violations(workspace_root: Path) -> list[str]:
     source_root = workspace_root / "crates" / "wirt" / "src"
     crate_root = workspace_root / "crates" / "wirt"
     resolved_crate_root = crate_root.resolve()
+    canonical_wit = (workspace_root / "wirt-sdk" / "wit" / "plugin.wit").resolve()
     violations: list[str] = []
     for path in sorted(source_root.rglob("*.rs")) if source_root.exists() else []:
         tokens = rust_tokens(path.read_text(encoding="utf-8"))
@@ -469,6 +570,7 @@ def source_violations(workspace_root: Path) -> list[str]:
             if token.kind == "error"
         ]
         issues.extend(import_issues(tokens))
+        issues.extend(component_bindgen_issues(tokens, path, canonical_wit))
         for offset, line, literal in compiled_path_issues(tokens):
             if literal is None:
                 issues.append((offset, line, "include! path is not a string literal"))
@@ -488,7 +590,11 @@ def source_violations(workspace_root: Path) -> list[str]:
 
 
 def violations(workspace_root: Path) -> list[str]:
-    return dependency_violations(workspace_root) + source_violations(workspace_root)
+    return (
+        dependency_violations(workspace_root)
+        + wirt_wit_violations(workspace_root)
+        + source_violations(workspace_root)
+    )
 
 
 def main() -> int:

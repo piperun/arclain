@@ -1,3 +1,6 @@
+[wirt]
+abi = "0.1.0"
+
 [plugin]
 id = "dlsite-metadata"
 name = "DLSite Metadata"

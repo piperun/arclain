@@ -102,7 +102,13 @@ pub const REQUEST_FETCH_CAPABILITIES: [PluginCapability; 2] = [
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WirtConfig {
+    pub abi: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginManifest {
+    pub wirt: WirtConfig,
     pub plugin: PluginInfoConfig,
     pub capabilities: CapabilitiesConfig,
     #[serde(default)]

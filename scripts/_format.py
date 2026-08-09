@@ -26,7 +26,7 @@ ROOT_PACKAGES = (
     "wirt",
 )
 STANDALONE_MANIFESTS = (
-    "plugin-sdk/Cargo.toml",
+    "wirt-sdk/Cargo.toml",
     "plugins/dlsite-metadata/Cargo.toml",
     "plugins/facade-test-fixture/Cargo.toml",
     "plugins/gstreamer-preview/Cargo.toml",

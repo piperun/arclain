@@ -1,7 +1,7 @@
 //! Plugin discovery and loading
 
 use crate::runtime::{LoadedComponent, WasmRuntime};
-use crate::{PluginError, PluginId, PluginInfo, PluginManifest, Result};
+use crate::{PluginError, PluginId, PluginInfo, PluginManifest, Result, WIRT_ABI_VERSION};
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, File, OpenOptions};
 use std::collections::HashSet;
@@ -557,6 +557,13 @@ impl PluginLoader {
 
     /// Validate a plugin manifest
     pub fn validate_manifest(&self, manifest: &PluginManifest) -> Result<()> {
+        if manifest.wirt.abi != WIRT_ABI_VERSION {
+            return Err(PluginError::InvalidManifest(format!(
+                "unsupported Wirt ABI {:?}; expected {WIRT_ABI_VERSION}",
+                manifest.wirt.abi
+            )));
+        }
+
         PluginId::parse(manifest.plugin.id.clone())?;
 
         validate_bounded_text("name", &manifest.plugin.name, MAX_PLUGIN_NAME_BYTES, true)?;

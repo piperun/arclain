@@ -3,7 +3,7 @@
 // Generate WIT bindings in a submodule to avoid macro name conflicts
 pub mod bindings {
     wit_bindgen::generate!({
-        path: "../crates/wirt/wit/plugin.wit",
+        path: "wit/plugin.wit",
         world: "plugin-world",
         pub_export_macro: true,
     });

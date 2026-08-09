@@ -9,7 +9,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "archust-plugin-sdk"
+name = "wirt-sdk"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -313,7 +313,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 name = "malicious-metadata"
 version = "0.1.0"
 dependencies = [
- "archust-plugin-sdk",
+ "wirt-sdk",
 ]
 
 [[package]]

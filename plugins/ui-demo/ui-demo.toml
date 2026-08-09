@@ -1,3 +1,6 @@
+[wirt]
+abi = "0.1.0"
+
 [plugin]
 id = "ui-demo"
 name = "UI Demo Plugin"

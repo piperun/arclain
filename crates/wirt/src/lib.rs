@@ -5,7 +5,7 @@
 
 pub mod bindings {
     wasmtime::component::bindgen!({
-        path: "wit/plugin.wit",
+        path: "../../wirt-sdk/wit/plugin.wit",
         world: "plugin-world",
     });
 }
@@ -31,7 +31,8 @@ pub use limits::{
 pub use loader::{DiscoveredPlugin, PluginLoader, TrustedPluginRoot};
 pub use manifest::{
     CapabilitiesConfig, PluginCapability, PluginId, PluginIdentityKey, PluginInfo,
-    PluginInfoConfig, PluginManifest, PluginMetadata, RateLimits, REQUEST_FETCH_CAPABILITIES,
+    PluginInfoConfig, PluginManifest, PluginMetadata, RateLimits, WirtConfig,
+    REQUEST_FETCH_CAPABILITIES,
 };
 pub use model::{
     BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginExtensionPoint, PluginLayout,
@@ -41,3 +42,5 @@ pub use rules::{
     MoveFileRule, MoveRule, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger,
 };
 pub use runtime::{LoadedComponent, PluginInstance, WasmRuntime, WirtStoreState};
+
+pub const WIRT_ABI_VERSION: &str = "0.1.0";

@@ -1,4 +1,4 @@
-use archust_plugin_sdk::info;
+use wirt_sdk::info;
 use std::cell::RefCell;
 
 pub(crate) const CACHED_METADATA_PAGE_SIZE: u32 = 100;
@@ -81,7 +81,7 @@ thread_local! {
 }
 
 pub(crate) fn emit_dlsite_metadata(metadata_json: &str) -> bool {
-    archust_plugin_sdk::emit_metadata_for_source("dlsite", metadata_json)
+    wirt_sdk::emit_metadata_for_source("dlsite", metadata_json)
 }
 
 pub(crate) fn raw_metadata_cache_keys(product_id: &str) -> [String; 2] {
@@ -149,7 +149,7 @@ pub(crate) fn get_total_image_count(state: &PluginState) -> usize {
     if let Some((product_id, _json, scraped)) = &state.browser_detail_cache {
         let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
         let has_cover = cover_url.is_some()
-            || archust_plugin_sdk::wirt::plugin::host::has_data(
+            || wirt_sdk::wirt::plugin::host::has_data(
                 &gameta_lib::providers::dlsite::cache_keys::cover_key(product_id),
             );
         // Count non-empty, non-duplicate screenshot URLs
@@ -169,14 +169,14 @@ pub(crate) fn get_total_image_count(state: &PluginState) -> usize {
     }
 }
 
-impl archust_plugin_sdk::Guest for Component {
-    fn get_metadata() -> archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
+impl wirt_sdk::Guest for Component {
+    fn get_metadata() -> wirt_sdk::wirt::plugin::meta::PluginMetadata {
         // Pre-2026-05-07 the host's `runtime::get_metadata` returned a
         // hardcoded "Unknown Plugin" placeholder because the WIT had
         // no such export. install_plugin therefore couldn't derive a
         // stable id from a bare .wasm. Now it asks the plugin
         // directly. Values mirror dlsite-metadata.toml.
-        archust_plugin_sdk::wirt::plugin::meta::PluginMetadata {
+        wirt_sdk::wirt::plugin::meta::PluginMetadata {
             id: "dlsite-metadata".to_string(),
             name: "DLSite Metadata".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -192,19 +192,19 @@ impl archust_plugin_sdk::Guest for Component {
         info("DLSite Metadata plugin initialized");
 
         // Read plugin settings
-        let auto_fetch = archust_plugin_sdk::wirt::plugin::host::get_setting("auto_fetch_enabled")
+        let auto_fetch = wirt_sdk::wirt::plugin::host::get_setting("auto_fetch_enabled")
             .unwrap_or_else(|| "true".to_string())
             == "true";
-        let enable_cache = archust_plugin_sdk::wirt::plugin::host::get_setting("enable_cache")
+        let enable_cache = wirt_sdk::wirt::plugin::host::get_setting("enable_cache")
             .unwrap_or_else(|| "true".to_string())
             == "true";
-        let cache_images = archust_plugin_sdk::wirt::plugin::host::get_setting("cache_images")
+        let cache_images = wirt_sdk::wirt::plugin::host::get_setting("cache_images")
             .unwrap_or_else(|| "true".to_string())
             == "true";
-        let cache_videos = archust_plugin_sdk::wirt::plugin::host::get_setting("cache_videos")
+        let cache_videos = wirt_sdk::wirt::plugin::host::get_setting("cache_videos")
             .unwrap_or_else(|| "false".to_string())
             == "true";
-        let video_quality = archust_plugin_sdk::wirt::plugin::host::get_setting("video_quality")
+        let video_quality = wirt_sdk::wirt::plugin::host::get_setting("video_quality")
             .unwrap_or_else(|| "best".to_string());
 
         STATE.with(|state| {
@@ -219,8 +219,8 @@ impl archust_plugin_sdk::Guest for Component {
         // NOTE: Auto-load happens when archive is opened, not at init time
     }
 
-    fn get_default_rules() -> Vec<archust_plugin_sdk::wirt::plugin::rules::PluginRuleDefinition> {
-        use archust_plugin_sdk::wirt::plugin::rules::*;
+    fn get_default_rules() -> Vec<wirt_sdk::wirt::plugin::rules::PluginRuleDefinition> {
+        use wirt_sdk::wirt::plugin::rules::*;
 
         vec![PluginRuleDefinition {
             name: "DLSite Archive".to_string(),
@@ -248,14 +248,14 @@ impl archust_plugin_sdk::Guest for Component {
 
     fn get_ui_layout(
         extension_point: String,
-    ) -> archust_plugin_sdk::wirt::plugin::ui::PluginLayout {
+    ) -> wirt_sdk::wirt::plugin::ui::PluginLayout {
         views::dispatch(&extension_point)
     }
 
-    fn get_top_tabs() -> Vec<archust_plugin_sdk::wirt::plugin::ui::TopTabConfig> {
-        use archust_plugin_sdk::wirt::plugin::ui::{BadgeConfig, TopTabConfig};
+    fn get_top_tabs() -> Vec<wirt_sdk::wirt::plugin::ui::TopTabConfig> {
+        use wirt_sdk::wirt::plugin::ui::{BadgeConfig, TopTabConfig};
 
-        let cache_count = archust_plugin_sdk::cached_metadata_count("dlsite")
+        let cache_count = wirt_sdk::cached_metadata_count("dlsite")
             .ok()
             .map(|count| count.min(u64::from(u32::MAX)) as u32);
 
@@ -275,7 +275,7 @@ impl archust_plugin_sdk::Guest for Component {
     fn on_ui_event(
         id: String,
         value: Option<String>,
-    ) -> Vec<archust_plugin_sdk::wirt::plugin::ui::PluginAction> {
+    ) -> Vec<wirt_sdk::wirt::plugin::ui::PluginAction> {
         events::dispatch(id, value)
     }
 }
@@ -284,7 +284,7 @@ impl archust_plugin_sdk::Guest for Component {
 /// Only checks the filename — never re-lists archive contents (which spawns
 /// a 7z subprocess and takes 5+ seconds).
 pub(crate) fn detect_code_from_archive() -> Option<String> {
-    let info_data = archust_plugin_sdk::current_archive_info()?;
+    let info_data = wirt_sdk::current_archive_info()?;
     detect_dlsite_code(&info_data.filename)
 }
 
@@ -292,7 +292,7 @@ pub(crate) fn detect_code_from_archive() -> Option<String> {
 /// Used during archive_opened to avoid blocking the UI.
 pub(crate) fn perform_scan_cached_only(
 ) -> Result<Option<(String, serde_json::Value, Option<ScrapedData>)>, String> {
-    use archust_plugin_sdk::{current_archive_info, info, list_archive_files_page};
+    use wirt_sdk::{current_archive_info, info, list_archive_files_page};
 
     let info_data = current_archive_info().ok_or("No archive open")?;
     info(&format!(
@@ -369,7 +369,7 @@ pub(crate) fn detect_dlsite_code(text: &str) -> Option<String> {
 pub(crate) fn get_cached_dlsite_metadata(
     product_id: &str,
 ) -> Option<(serde_json::Value, Option<ScrapedData>)> {
-    use archust_plugin_sdk::get_product_metadata;
+    use wirt_sdk::get_product_metadata;
 
     // Get ProductMetadata from host (handles all parsing on host side)
     let meta_json_str = get_product_metadata(product_id, "dlsite")?;
@@ -436,7 +436,7 @@ pub(crate) fn get_cached_dlsite_metadata(
 pub(crate) fn fetch_dlsite_metadata(
     product_id: &str,
 ) -> Option<(serde_json::Value, Option<ScrapedData>)> {
-    use archust_plugin_sdk::{fetch_string_blocking, log_network_activity};
+    use wirt_sdk::{fetch_string_blocking, log_network_activity};
     use gameta_lib::providers::dlsite::{
         parse_api_json, parse_html, plan_fetch, DlsiteFetchOptions, FetchStep,
     };
@@ -481,7 +481,7 @@ pub(crate) fn fetch_dlsite_metadata(
                                 log_network_activity(
                                     "Failed to parse JSON structure. Invalidating cache.",
                                 );
-                                archust_plugin_sdk::invalidate_cache(&cache_key);
+                                wirt_sdk::invalidate_cache(&cache_key);
                             }
                         } else {
                             // Parse failed (empty or invalid API response)
@@ -489,7 +489,7 @@ pub(crate) fn fetch_dlsite_metadata(
                             log_network_activity(
                                 "Failed to parse API response. Invalidating cache.",
                             );
-                            archust_plugin_sdk::invalidate_cache(&cache_key);
+                            wirt_sdk::invalidate_cache(&cache_key);
                         }
                     }
                     Err(e) => {
@@ -529,15 +529,15 @@ pub(crate) fn fetch_dlsite_metadata(
                                 .unwrap_or(0);
                             let filename =
                                 format!("dlsite_blocked_{}_{}.html", product_id, timestamp);
-                            match archust_plugin_sdk::create_file(&filename, body.as_bytes()) {
+                            match wirt_sdk::create_file(&filename, body.as_bytes()) {
                                 Ok(path) => {
-                                    archust_plugin_sdk::warn(&format!(
+                                    wirt_sdk::warn(&format!(
                                         "[DLSite Plugin] BLOCKED CONTENT - Dumped to: {}",
                                         path
                                     ));
                                 }
                                 Err(e) => {
-                                    archust_plugin_sdk::error(&format!(
+                                    wirt_sdk::error(&format!(
                                         "[DLSite Plugin] Failed to dump blocked content: {}",
                                         e
                                     ));
@@ -549,7 +549,7 @@ pub(crate) fn fetch_dlsite_metadata(
                     } else {
                         // HTML parsing failed (likely no metadata found)
                         log_network_activity("Failed to scrape HTML metadata. Invalidating cache.");
-                        archust_plugin_sdk::invalidate_cache(&cache_key);
+                        wirt_sdk::invalidate_cache(&cache_key);
                     }
                 }
             }
@@ -569,7 +569,7 @@ pub(crate) fn fetch_dlsite_metadata(
 /// Download cover + screenshot images with status bar progress.
 /// Call this AFTER emitting metadata so the UI isn't blocked waiting for images.
 pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData) {
-    use archust_plugin_sdk::{log_network_activity, ResourceType};
+    use wirt_sdk::{log_network_activity, ResourceType};
 
     let cache_images = STATE.with(|s| s.borrow().cache_images);
     if !cache_images || scraped.geo_blocked {
@@ -602,7 +602,7 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
         log_network_activity(&format!("Fetching cover image: {}", cover_url));
 
         if let Err(e) =
-            archust_plugin_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image)
+            wirt_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image)
         {
             log_network_activity(&format!("Failed to fetch cover image: {}", e));
         }
@@ -620,7 +620,7 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
         ));
         log_network_activity(&format!("Fetching screenshot {}: {}", idx, url));
 
-        if let Err(e) = archust_plugin_sdk::fetch_blocking(&key, url, ResourceType::Image) {
+        if let Err(e) = wirt_sdk::fetch_blocking(&key, url, ResourceType::Image) {
             log_network_activity(&format!("Failed to fetch screenshot {}: {}", idx, e));
         }
         done += 1;
@@ -638,7 +638,7 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
 /// like "720" / "480"). Files land in the host's temp dir as
 /// `dlsite_<product_id>_video_<idx>_<resolution>p.mp4`.
 pub(crate) fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData) {
-    use archust_plugin_sdk::{
+    use wirt_sdk::{
         fetch_string_blocking, fetch_to_cache, log_network_activity, ResourceType,
     };
     use gameta_lib::parsers::chobit::{parse_chobit_embed, ChobitVideoInfo, VideoSource};
@@ -838,7 +838,7 @@ pub(crate) fn generate_metadata_json(
 
 /// Search DLSite for a query and return list of (code, title, maker, thumbnail_url)
 pub(crate) fn search_dlsite(query: &str) -> Vec<(String, String, String, Option<String>)> {
-    use archust_plugin_sdk::{fetch_string_blocking, log_network_activity};
+    use wirt_sdk::{fetch_string_blocking, log_network_activity};
     use gameta_lib::providers::dlsite::parse_search_response;
 
     log_network_activity(&format!("Searching DLSite: {}", query));
@@ -900,7 +900,7 @@ pub(crate) fn search_dlsite(query: &str) -> Vec<(String, String, String, Option<
         };
 
         // Debug: save HTML for inspection
-        if let Ok(path) = archust_plugin_sdk::create_file(
+        if let Ok(path) = wirt_sdk::create_file(
             &format!("dlsite_search_{}_debug.html", section),
             html.as_bytes(),
         ) {
@@ -938,7 +938,7 @@ pub(crate) fn search_dlsite(query: &str) -> Vec<(String, String, String, Option<
     Vec::new()
 }
 
-archust_plugin_sdk::export!(Component with_types_in archust_plugin_sdk);
+wirt_sdk::export!(Component with_types_in wirt_sdk);
 
 #[cfg(test)]
 mod tests {
