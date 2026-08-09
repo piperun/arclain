@@ -462,232 +462,6 @@ def has_double_colon(tokens: list[RustToken], index: int) -> bool:
     )
 
 
-def parse_use_tree(
-    tokens: list[RustToken], index: int, prefix: tuple[str, ...] = ()
-) -> tuple[list[tuple[tuple[str, ...], str]], int, bool]:
-    """Parse one Rust `use` tree into imported paths and local names."""
-    if not prefix and has_double_colon(tokens, index):
-        index += 2
-    if index >= len(tokens):
-        return [], index, False
-    if tokens[index].value == "{":
-        bindings: list[tuple[tuple[str, ...], str]] = []
-        index += 1
-        while index < len(tokens) and tokens[index].value != "}":
-            nested, index, valid = parse_use_tree(tokens, index, prefix)
-            if not valid:
-                return [], index, False
-            bindings.extend(nested)
-            if index < len(tokens) and tokens[index].value == ",":
-                index += 1
-            elif index >= len(tokens) or tokens[index].value != "}":
-                return [], index, False
-        return bindings, index + 1, index < len(tokens)
-
-    token = tokens[index]
-    if token.kind != "identifier":
-        return [], index, False
-    if token.value == "self":
-        if not prefix:
-            return [], index, False
-        return [(prefix, prefix[-1])], index + 1, True
-
-    path = prefix + (token.value or "",)
-    index += 1
-    while has_double_colon(tokens, index):
-        index += 2
-        if index >= len(tokens):
-            return [], index, False
-        if tokens[index].value == "{":
-            return parse_use_tree(tokens, index, path)
-        if tokens[index].value == "*":
-            return [(path + ("*",), "*")], index + 1, True
-        if tokens[index].kind != "identifier":
-            return [], index, False
-        if tokens[index].value == "self":
-            return [(path, path[-1])], index + 1, True
-        path += (tokens[index].value or "",)
-        index += 1
-
-    alias = path[-1]
-    if index < len(tokens) and tokens[index].kind == "identifier" and tokens[index].value == "as":
-        if index + 1 >= len(tokens) or tokens[index + 1].kind != "identifier":
-            return [], index, False
-        alias = tokens[index + 1].value or ""
-        index += 2
-    return [(path, alias)], index, True
-
-
-def resolved_import_path(
-    path: tuple[str, ...], aliases: dict[str, tuple[str, ...]]
-) -> tuple[str, ...]:
-    return aliases.get(path[0], (path[0],)) + path[1:]
-
-
-def is_public_use(tokens: list[RustToken], use_index: int) -> bool:
-    index = use_index - 1
-    if index >= 0 and tokens[index].value == "pub":
-        return True
-    if index < 0 or tokens[index].value != ")":
-        return False
-    depth = 1
-    index -= 1
-    while index >= 0 and depth:
-        if tokens[index].value == ")":
-            depth += 1
-        elif tokens[index].value == "(":
-            depth -= 1
-        index -= 1
-    return depth == 0 and index >= 0 and tokens[index].value == "pub"
-
-
-def relevant_wasmtime_binding(path: tuple[str, ...]) -> bool:
-    return path == ("wasmtime",) or (
-        len(path) >= 2
-        and path[0] == "wasmtime"
-        and path[1] in {"component", "*"}
-    )
-
-
-def wasmtime_bindgen_imports(
-    tokens: list[RustToken],
-) -> tuple[dict[str, tuple[str, ...]], list[tuple[int, int, str]]]:
-    """Resolve concrete Wasmtime imports and reject relevant ambiguous trees."""
-    imports: list[tuple[RustToken, list[tuple[tuple[str, ...], str]], bool]] = []
-    issues: list[tuple[int, int, str]] = []
-
-    for index, token in enumerate(tokens):
-        start = index + 1
-        if token.kind == "identifier" and token.value == "use":
-            public = is_public_use(tokens, index)
-        elif (
-            token.kind == "identifier"
-            and token.value == "extern"
-            and index + 1 < len(tokens)
-            and tokens[index + 1].kind == "identifier"
-            and tokens[index + 1].value == "crate"
-        ):
-            start = index + 2
-            public = False
-        else:
-            continue
-        end = next(
-            (
-                candidate
-                for candidate in range(start, len(tokens))
-                if tokens[candidate].value == ";"
-            ),
-            len(tokens),
-        )
-        statement = tokens[start:end]
-        bindings, cursor, valid = parse_use_tree(statement, 0)
-        if not valid or cursor != len(statement):
-            identifiers = {
-                candidate.value
-                for candidate in statement
-                if candidate.kind == "identifier"
-            }
-            if {"wasmtime", "component", "bindgen"} & identifiers:
-                issues.append(
-                    (
-                        token.offset,
-                        token.line,
-                        "unsupported or ambiguous Wasmtime component use tree",
-                    )
-                )
-            continue
-        imports.append((token, bindings, public))
-
-    aliases: dict[str, tuple[str, ...]] = {"wasmtime": ("wasmtime",)}
-    alias_counts: dict[str, int] = {}
-    for _, bindings, _ in imports:
-        for _, alias in bindings:
-            if alias != "*":
-                alias_counts[alias] = alias_counts.get(alias, 0) + 1
-    ambiguous_aliases = {
-        alias
-        for alias, count in alias_counts.items()
-        if count > 1 and alias != "wasmtime"
-    }
-
-    for _ in range(len(imports)):
-        changed = False
-        for _, bindings, _ in imports:
-            for path, alias in bindings:
-                if alias == "*" or alias in ambiguous_aliases:
-                    continue
-                resolved = resolved_import_path(path, aliases)
-                if resolved[0] != "wasmtime" or aliases.get(alias) == resolved:
-                    continue
-                aliases[alias] = resolved
-                changed = True
-        if not changed:
-            break
-
-    blocked_aliases: set[str] = set()
-    for token, bindings, public in imports:
-        for path, alias in bindings:
-            resolved = resolved_import_path(path, aliases)
-            if alias == "*" and resolved[0] == "wasmtime":
-                issues.append(
-                    (
-                        token.offset,
-                        token.line,
-                        "unsupported or ambiguous Wasmtime component use tree",
-                    )
-                )
-            elif (
-                alias in ambiguous_aliases
-                and resolved[0] == "wasmtime"
-                and not public
-            ):
-                issues.append(
-                    (
-                        token.offset,
-                        token.line,
-                        "unsupported or ambiguous Wasmtime component use tree",
-                    )
-                )
-            if public and relevant_wasmtime_binding(resolved):
-                issues.append(
-                    (
-                        token.offset,
-                        token.line,
-                        "public Wasmtime bindgen re-export is not allowed",
-                    )
-                )
-                if alias != "*":
-                    blocked_aliases.add(alias)
-
-    tracked_bindgen_aliases = {
-        alias
-        for alias, path in aliases.items()
-        if path == ("wasmtime", "component", "bindgen")
-    }
-    reserved_aliases = {"wasmtime", "component", "bindgen"} | tracked_bindgen_aliases
-    for token, bindings, _ in imports:
-        for path, alias in bindings:
-            if alias == "*" or alias not in reserved_aliases:
-                continue
-            resolved = resolved_import_path(path, aliases)
-            if resolved[0] == "wasmtime":
-                continue
-            issues.append(
-                (
-                    token.offset,
-                    token.line,
-                    "reserved Wasmtime bindgen alias has non-Wasmtime provenance: "
-                    f"{alias}",
-                )
-            )
-            blocked_aliases.add(alias)
-
-    for alias in blocked_aliases:
-        aliases[alias] = ("__blocked_wasmtime_alias__", alias)
-
-    return aliases, issues
-
-
 def macro_path_before(
     tokens: list[RustToken], bang: int
 ) -> tuple[tuple[str, ...], int] | None:
@@ -742,15 +516,13 @@ def bindgen_fields(
 def bindgen_path_input(
     arguments: list[RustToken], opening: str
 ) -> tuple[str | None, str | None]:
-    if opening == "{":
-        fields_tokens = arguments
-    elif arguments and arguments[0].value == "{":
+    if arguments and arguments[0].value == "{":
         end = closing_token(arguments, 0, "{", "}")
         if end is None or end != len(arguments) - 1:
             return None, "malformed component bindgen argument map"
         fields_tokens = arguments[1:end]
     else:
-        return None, "component bindgen must use exactly one literal path input"
+        return None, "component bindgen must use an inner braced argument map"
 
     fields = bindgen_fields(fields_tokens)
     if fields is None:
@@ -771,13 +543,74 @@ def bindgen_path_input(
     return value[0].value, None
 
 
+def bindgen_declaration_issues(tokens: list[RustToken]) -> list[tuple[int, int, str]]:
+    issues: list[tuple[int, int, str]] = []
+    for index, token in enumerate(tokens):
+        is_use = token.kind == "identifier" and token.value == "use"
+        is_extern = (
+            token.kind == "identifier"
+            and token.value == "extern"
+            and index + 1 < len(tokens)
+            and tokens[index + 1].value == "crate"
+        )
+        if not is_use and not is_extern:
+            continue
+        start = index + 2 if is_extern else index + 1
+        end = next(
+            (candidate for candidate in range(start, len(tokens)) if tokens[candidate].value == ";"),
+            len(tokens),
+        )
+        statement = tokens[start:end]
+        identifiers = [candidate.value or "" for candidate in statement if candidate.kind == "identifier"]
+        values = [candidate.value or "" for candidate in statement]
+        aliases_reserved_name = any(
+            values[position] == "as"
+            and position + 1 < len(values)
+            and values[position + 1] in {"wasmtime", "component", "bindgen"}
+            for position in range(len(values))
+        )
+        references_bindgen = "bindgen" in identifiers
+        component_alias = any(
+            value == "component"
+            and (
+                position + 1 == len(values)
+                or values[position + 1] in {"as", "}"}
+            )
+            for position, value in enumerate(values)
+        )
+        aliases_wasmtime_root = (
+            "wasmtime" in identifiers
+            and "as" in identifiers
+            and not references_bindgen
+        )
+        has_wasmtime_glob = "wasmtime" in identifiers and "*" in values
+        relevant = (
+            (is_extern and "wasmtime" in identifiers)
+            or references_bindgen
+            or component_alias
+            or aliases_wasmtime_root
+            or aliases_reserved_name
+            or has_wasmtime_glob
+        )
+        if relevant:
+            issues.append(
+                (
+                    token.offset,
+                    token.line,
+                    "unsupported or ambiguous Wasmtime component use tree",
+                )
+            )
+    return issues
+
+
 def component_bindgen_issues(
     tokens: list[RustToken], crate_root: Path, canonical_wit: Path
 ) -> list[tuple[int, int, str]]:
     issues: list[tuple[int, int, str]] = []
-    aliases, alias_issues = wasmtime_bindgen_imports(tokens)
-    issues.extend(alias_issues)
+    declaration_issues = bindgen_declaration_issues(tokens)
+    issues.extend(declaration_issues)
     delimiters = {"(": ")", "[": "]", "{": "}"}
+    direct_path = ("wasmtime", ":", ":", "component", ":", ":", "bindgen")
 
     for bang, token in enumerate(tokens):
         if token.value != "!":
@@ -787,11 +620,10 @@ def component_bindgen_issues(
         if macro is None:
             continue
         path, invocation_start = macro
-        resolved = resolved_import_path(path, aliases)
-        if resolved != ("wasmtime", "component", "bindgen"):
+        if tuple(candidate.value for candidate in tokens[invocation_start:bang]) != direct_path:
             is_component_bindgen = path[-2:] == ("component", "bindgen")
             is_bare_bindgen = path == ("bindgen",)
-            if is_component_bindgen or is_bare_bindgen:
+            if (is_component_bindgen or is_bare_bindgen) and not declaration_issues:
                 display = "::".join(path)
                 issues.append(
                     (
@@ -801,6 +633,9 @@ def component_bindgen_issues(
                         f"{display}",
                     )
                 )
+            continue
+
+        if declaration_issues:
             continue
 
         opening_index = bang + 1
@@ -1002,9 +837,21 @@ def source_violations(workspace_root: Path) -> list[str]:
     resolved_crate_root = crate_root.resolve()
     canonical_wit = (workspace_root / "wirt-sdk" / "wit" / "plugin.wit").resolve()
     violations: list[str] = []
-    for path in sorted(source_root.rglob("*.rs")) if source_root.exists() else []:
-        tokens = rust_tokens(path.read_text(encoding="utf-8"))
+    roots = sorted(source_root.rglob("*.rs")) if source_root.exists() else []
+    pending = list(roots)
+    seen: set[Path] = set()
+    while pending:
+        path = pending.pop(0).resolve()
+        if path in seen:
+            continue
+        seen.add(path)
         relative = path.relative_to(workspace_root).as_posix()
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            violations.append(f"{relative}:1: compiled source target is unreadable")
+            continue
+        tokens = rust_tokens(source)
         issues = [
             (token.offset, token.line, f"lexical error: {token.value}")
             for token in tokens
@@ -1025,6 +872,11 @@ def source_violations(workspace_root: Path) -> list[str]:
                         f"compiled source path escapes crates/wirt: {literal}",
                     )
                 )
+                continue
+            if not resolved.is_file():
+                issues.append((offset, line, "compiled source target is missing or unreadable"))
+                continue
+            pending.append(resolved)
         for _, line, message in sorted(issues):
             violations.append(f"{relative}:{line}: {message}")
     return violations

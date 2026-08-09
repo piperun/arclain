@@ -371,7 +371,7 @@ class TestWirtBoundary(unittest.TestCase):
                 ["wirt-sdk/wit/plugin.wit: missing canonical Wirt plugin WIT"],
             )
 
-    def test_imported_bindgen_alias_path_is_validated(self):
+    def test_imported_bindgen_alias_is_rejected(self):
         source = (
             "use wasmtime::component::bindgen as component_bindgen;\n"
             "component_bindgen!({\n"
@@ -382,13 +382,10 @@ class TestWirtBoundary(unittest.TestCase):
 
         self.assertEqual(
             self.source_violations(source),
-            [
-                "crates/wirt/src/lib.rs:2: component bindgen path must resolve to "
-                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
-            ],
+            ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
         )
 
-    def test_imported_component_alias_bracketed_bindgen_path_is_validated(self):
+    def test_imported_component_alias_is_rejected(self):
         source = (
             "use wasmtime::component as wasmtime_component;\n"
             "wasmtime_component::bindgen![{\n"
@@ -399,13 +396,10 @@ class TestWirtBoundary(unittest.TestCase):
 
         self.assertEqual(
             self.source_violations(source),
-            [
-                "crates/wirt/src/lib.rs:2: component bindgen path must resolve to "
-                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
-            ],
+            ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
         )
 
-    def test_grouped_component_alias_uses_the_canonical_wit(self):
+    def test_grouped_component_alias_is_rejected(self):
         source = (
             "use wasmtime::{component as component_alias};\n"
             "component_alias::bindgen! {\n"
@@ -414,7 +408,10 @@ class TestWirtBoundary(unittest.TestCase):
             "}\n"
         )
 
-        self.assertEqual(self.source_violations(source), [])
+        self.assertEqual(
+            self.source_violations(source),
+            ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
+        )
 
     def test_grouped_component_import_path_is_validated(self):
         source = (
@@ -427,10 +424,7 @@ class TestWirtBoundary(unittest.TestCase):
 
         self.assertEqual(
             self.source_violations(source),
-            [
-                "crates/wirt/src/lib.rs:2: component bindgen path must resolve to "
-                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
-            ],
+            ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
         )
 
     def test_grouped_bindgen_import_path_is_validated(self):
@@ -444,10 +438,7 @@ class TestWirtBoundary(unittest.TestCase):
 
         self.assertEqual(
             self.source_violations(source),
-            [
-                "crates/wirt/src/lib.rs:2: component bindgen path must resolve to "
-                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
-            ],
+            ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
         )
 
     def test_nested_grouped_bindgen_alias_path_is_validated(self):
@@ -461,10 +452,7 @@ class TestWirtBoundary(unittest.TestCase):
 
         self.assertEqual(
             self.source_violations(source),
-            [
-                "crates/wirt/src/lib.rs:2: component bindgen path must resolve to "
-                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
-            ],
+            ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
         )
 
     def test_wasmtime_root_alias_path_is_validated(self):
@@ -478,10 +466,7 @@ class TestWirtBoundary(unittest.TestCase):
 
         self.assertEqual(
             self.source_violations(source),
-            [
-                "crates/wirt/src/lib.rs:2: component bindgen path must resolve to "
-                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
-            ],
+            ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
         )
 
     def test_absolute_wasmtime_root_alias_path_is_validated(self):
@@ -495,10 +480,7 @@ class TestWirtBoundary(unittest.TestCase):
 
         self.assertEqual(
             self.source_violations(source),
-            [
-                "crates/wirt/src/lib.rs:2: component bindgen path must resolve to "
-                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
-            ],
+            ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
         )
 
     def test_wasmtime_glob_import_fails_closed(self):
@@ -515,8 +497,6 @@ class TestWirtBoundary(unittest.TestCase):
             [
                 "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime "
                 "component use tree",
-                "crates/wirt/src/lib.rs:2: unsupported or ambiguous component "
-                "bindgen macro path: bindgen",
             ],
         )
 
@@ -534,8 +514,6 @@ class TestWirtBoundary(unittest.TestCase):
             [
                 "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime "
                 "component use tree",
-                "crates/wirt/src/lib.rs:2: unsupported or ambiguous component "
-                "bindgen macro path: bindgen",
             ],
         )
 
@@ -553,8 +531,6 @@ class TestWirtBoundary(unittest.TestCase):
             [
                 "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime "
                 "component use tree",
-                "crates/wirt/src/lib.rs:2: unsupported or ambiguous component "
-                "bindgen macro path: bindgen",
             ],
         )
 
@@ -569,10 +545,7 @@ class TestWirtBoundary(unittest.TestCase):
 
         self.assertEqual(
             self.source_violations(source),
-            [
-                "crates/wirt/src/lib.rs:2: component bindgen path must resolve to "
-                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
-            ],
+            ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
         )
 
     def test_unresolved_component_bindgen_is_rejected(self):
@@ -620,12 +593,10 @@ class TestWirtBoundary(unittest.TestCase):
         self.assertEqual(
             self.source_violations(source),
             [
-                "crates/wirt/src/lib.rs:1: public Wasmtime bindgen re-export is "
-                "not allowed",
-                "crates/wirt/src/lib.rs:2: reserved Wasmtime bindgen alias has "
-                "non-Wasmtime provenance: component",
-                "crates/wirt/src/lib.rs:3: unsupported or ambiguous component "
-                "bindgen macro path: component::bindgen",
+                "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime "
+                "component use tree",
+                "crates/wirt/src/lib.rs:2: unsupported or ambiguous Wasmtime "
+                "component use tree",
             ],
         )
 
@@ -721,8 +692,8 @@ class TestWirtBoundary(unittest.TestCase):
         self.assertEqual(
             self.source_violations(source),
             [
-                "crates/wirt/src/lib.rs:1: component bindgen must use exactly one "
-                "literal path input"
+                "crates/wirt/src/lib.rs:1: component bindgen must use an inner braced "
+                "argument map"
             ],
         )
 
@@ -767,8 +738,7 @@ class TestWirtBoundary(unittest.TestCase):
         self.assertEqual(
             self.source_tree_violations({"src/shim.rs": source}),
             [
-                "crates/wirt/src/shim.rs:1: public Wasmtime bindgen re-export is "
-                "not allowed"
+                "crates/wirt/src/shim.rs:1: unsupported or ambiguous Wasmtime component use tree"
             ],
         )
 
@@ -778,8 +748,7 @@ class TestWirtBoundary(unittest.TestCase):
         self.assertEqual(
             self.source_violations(source),
             [
-                "crates/wirt/src/lib.rs:1: public Wasmtime bindgen re-export is "
-                "not allowed"
+                "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"
             ],
         )
 
@@ -789,8 +758,7 @@ class TestWirtBoundary(unittest.TestCase):
         self.assertEqual(
             self.source_violations(source),
             [
-                "crates/wirt/src/lib.rs:1: public Wasmtime bindgen re-export is "
-                "not allowed"
+                "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"
             ],
         )
 
@@ -800,10 +768,7 @@ class TestWirtBoundary(unittest.TestCase):
         self.assertEqual(
             self.source_violations(source),
             [
-                "crates/wirt/src/lib.rs:1: public Wasmtime bindgen re-export is "
-                "not allowed",
-                "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime "
-                "component use tree",
+                "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree",
             ],
         )
 
@@ -822,8 +787,7 @@ class TestWirtBoundary(unittest.TestCase):
         self.assertEqual(
             self.source_tree_violations(sources),
             [
-                "crates/wirt/src/shim.rs:1: public Wasmtime bindgen re-export is "
-                "not allowed"
+                "crates/wirt/src/shim.rs:1: unsupported or ambiguous Wasmtime component use tree"
             ],
         )
 
@@ -839,10 +803,7 @@ class TestWirtBoundary(unittest.TestCase):
         self.assertEqual(
             self.source_violations(source),
             [
-                "crates/wirt/src/lib.rs:1: reserved Wasmtime bindgen alias has "
-                "non-Wasmtime provenance: wasmtime",
-                "crates/wirt/src/lib.rs:2: unsupported or ambiguous component "
-                "bindgen macro path: wasmtime::component::bindgen",
+                "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree",
             ],
         )
 
@@ -858,10 +819,7 @@ class TestWirtBoundary(unittest.TestCase):
         self.assertEqual(
             self.source_violations(source),
             [
-                "crates/wirt/src/lib.rs:1: reserved Wasmtime bindgen alias has "
-                "non-Wasmtime provenance: wasmtime",
-                "crates/wirt/src/lib.rs:2: unsupported or ambiguous component "
-                "bindgen macro path: wasmtime::component::bindgen",
+                "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree",
             ],
         )
 
@@ -895,10 +853,80 @@ class TestWirtBoundary(unittest.TestCase):
             [
                 "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime "
                 "component use tree",
-                "crates/wirt/src/lib.rs:2: unsupported or ambiguous component "
-                "bindgen macro path: wt::component::bindgen",
             ],
         )
+
+    def test_all_outer_delimiters_accept_an_inner_bindgen_map(self):
+        sources = {
+            "src/lib.rs": (
+                "wasmtime::component::bindgen!({ path: \"../../wirt-sdk/wit/plugin.wit\" });\n"
+            ),
+            "src/one.rs": (
+                "wasmtime::component::bindgen![{ path: \"../../wirt-sdk/wit/plugin.wit\" }];\n"
+            ),
+            "src/two.rs": (
+                "wasmtime::component::bindgen!{{ path: \"../../wirt-sdk/wit/plugin.wit\" }}\n"
+            ),
+        }
+
+        self.assertEqual(self.source_tree_violations(sources), [])
+
+    def test_outer_brace_is_not_a_bindgen_argument_map(self):
+        source = 'wasmtime::component::bindgen!{ path: "../../wirt-sdk/wit/plugin.wit" }\n'
+
+        self.assertEqual(
+            self.source_violations(source),
+            ["crates/wirt/src/lib.rs:1: component bindgen must use an inner braced argument map"],
+        )
+
+    def test_included_non_rs_source_is_scanned_for_bindgen(self):
+        sources = {
+            "src/lib.rs": 'include!("bindings.inc");\n',
+            "src/bindings.inc": (
+                "wasmtime::component::bindgen!({\n"
+                '  path: "../../../plugins/ui-demo/plugin.wit",\n'
+                "});\n"
+            ),
+        }
+
+        self.assertEqual(
+            self.source_tree_violations(sources),
+            [
+                "crates/wirt/src/bindings.inc:1: component bindgen path must resolve to "
+                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
+            ],
+        )
+
+    def test_each_bindgen_in_included_non_rs_source_is_checked(self):
+        sources = {
+            "src/lib.rs": 'include!("bindings.inc");\n',
+            "src/bindings.inc": (
+                "wasmtime::component::bindgen!({\n"
+                '    path: "../../../plugins/ui-demo/plugin.wit",\n'
+                "});\n\n"
+                "wasmtime::component::bindgen!({\n"
+                '    path: "../../../plugins/ui-demo/plugin.wit",\n'
+                "});\n"
+            ),
+        }
+
+        self.assertEqual(
+            self.source_tree_violations(sources),
+            [
+                "crates/wirt/src/bindings.inc:1: component bindgen path must resolve to "
+                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit",
+                "crates/wirt/src/bindings.inc:5: component bindgen path must resolve to "
+                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit",
+            ],
+        )
+
+    def test_included_non_rs_source_without_bindgen_is_allowed(self):
+        sources = {
+            "src/lib.rs": 'include!("bindings.inc");\n',
+            "src/bindings.inc": "const INCLUDED: u8 = 1;\n",
+        }
+
+        self.assertEqual(self.source_tree_violations(sources), [])
 
     def test_literal_include_escaping_wirt_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
