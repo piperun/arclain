@@ -14,6 +14,7 @@ members = [
     "crates/app",
     "crates/cli",
     "crates/wirt",
+    "crates/wirt-cli",
 ]
 default-members = ["crates/ui"]
 exclude = [

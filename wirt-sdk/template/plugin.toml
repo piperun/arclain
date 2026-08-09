@@ -1,0 +1,11 @@
+[wirt]
+abi = "0.1.0"
+
+[plugin]
+id = "wirt-starter"
+name = "Wirt Starter"
+version = "0.1.0"
+author = "Your Name"
+description = "A minimal Wirt plugin"
+
+[capabilities]

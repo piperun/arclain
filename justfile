@@ -82,6 +82,10 @@ plugins:
 clean-plugins:
     {{python}} scripts/_plugins.py clean
 
+# Run the repository-owned Wirt developer command.
+wirt *args:
+    cargo run -p wirt-cli -- {{args}}
+
 # ─── app/dev helpers ──────────────────────────────────────────────────────
 # Extra args forward verbatim: `just ui --features dev-foo`.
 

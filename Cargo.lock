@@ -8760,6 +8760,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wirt-cli"
+version = "2.3.2"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tempfile",
+ "wirt",
+]
+
+[[package]]
 name = "wit-bindgen"
 version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
