@@ -107,6 +107,10 @@ Provides media file previews and thumbnail generation for video and audio files.
 
 ## Creating a New Plugin
 
+Wirt is the product-neutral plugin API, SDK, and ABI. It defines the host /
+plugin boundary; Wirt is not a plugin itself. Depend on `wirt-sdk` to generate
+guest bindings for that ABI.
+
 1. **Create Plugin Directory**
    ```bash
    mkdir plugins/my-plugin
@@ -129,7 +133,7 @@ Provides media file previews and thumbnail generation for video and audio files.
    crate-type = ["cdylib"]
 
    [dependencies]
-   archust-plugin-sdk = { path = "../../plugin-sdk" }
+   wirt-sdk = { path = "../../wirt-sdk" }
    serde = { version = "1", features = ["derive", "alloc"], default-features = false }
    serde_json = { version = "1", features = ["alloc"], default-features = false }
 
@@ -168,7 +172,7 @@ Provides media file previews and thumbnail generation for video and audio files.
 
    extern crate alloc;
    use alloc::string::String;
-   use archust_plugin_sdk::*;
+   use wirt_sdk::*;
    use serde_json::json;
 
    plugin_metadata!(
@@ -418,7 +422,7 @@ See the existing plugins for complete examples:
 
 ## Resources
 
-- [Plugin SDK Documentation](../../plugin-sdk/README.md)
+- [Wirt SDK source](../wirt-sdk/src/lib.rs)
 - [Wasmtime Documentation](https://docs.wasmtime.dev/)
 - [Rust WASM Book](https://rustwasm.github.io/docs/book/)
 

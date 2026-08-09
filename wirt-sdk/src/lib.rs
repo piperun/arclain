@@ -1,4 +1,7 @@
-//! Archust Plugin SDK - WASI Component Model bindings for Wirt plugins
+//! Wirt SDK: product-neutral plugin API, SDK, and ABI bindings.
+//!
+//! Wirt is the interface between a host product and its plugins; Wirt itself
+//! is not a plugin.
 
 // Generate WIT bindings in a submodule to avoid macro name conflicts
 pub mod bindings {

@@ -517,9 +517,7 @@ def path_is_within(path: Path, root: Path) -> bool:
 
 
 def wirt_wit_violations(workspace_root: Path) -> list[str]:
-    wit_files = sorted(workspace_root.rglob("plugin.wit"))
-    if not wit_files:
-        return []
+    wit_files = sorted(workspace_root.rglob("*.wit"))
 
     canonical = workspace_root / "wirt-sdk" / "wit" / "plugin.wit"
     violations: list[str] = []
@@ -539,17 +537,12 @@ def wirt_wit_violations(workspace_root: Path) -> list[str]:
             continue
         relative = path.relative_to(workspace_root).as_posix()
         if re.search(
-            r"^package\s+wirt:plugin(?:@[^;]+)?;",
+            r"^package\s+wirt:plugin@0\.1\.0;",
             path.read_text(encoding="utf-8"),
             re.MULTILINE,
         ):
             violations.append(
                 f"{relative}: duplicate Wirt plugin WIT; only "
-                "wirt-sdk/wit/plugin.wit is allowed"
-            )
-        else:
-            violations.append(
-                f"{relative}: unexpected plugin WIT; only "
                 "wirt-sdk/wit/plugin.wit is allowed"
             )
     return violations

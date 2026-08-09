@@ -80,7 +80,8 @@ manager.reload_plugin("plugin-id")?;
 
 ## Plugin Development
 
-See the `plugin-sdk` crate for tools to develop plugins.
+Wirt is the product-neutral plugin API, SDK, and ABI; it is not a plugin.
+Use the `wirt-sdk` crate to develop plugins against that boundary.
 
 ### Plugin Structure
 

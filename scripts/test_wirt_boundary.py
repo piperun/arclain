@@ -27,20 +27,8 @@ class TestWirtBoundary(unittest.TestCase):
                 '[package]\nname = "wirt"\nversion = "0.1.0"\n',
                 encoding="utf-8",
             )
-            (crate / "src" / "lib.rs").write_text(
-                '#[path = "../../../plugins/ui-demo/src/lib.rs"]\nmod product;\n',
-                encoding="utf-8",
-            )
-
-            self.assertEqual(
-                wirt_boundary.violations(root),
-                [
-                    "crates/wirt/src/lib.rs:1: compiled source path escapes "
-                    "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
-                ],
-            )
             (crate / "src" / "lib.rs").write_text(source, encoding="utf-8")
-            return wirt_boundary.violations(root)
+            return wirt_boundary.source_violations(root)
 
     def test_app_manifest_declares_neutral_model_and_product_adapter_edges(self):
         with (REPO_ROOT / "crates" / "app" / "Cargo.toml").open("rb") as handle:
@@ -96,7 +84,7 @@ class TestWirtBoundary(unittest.TestCase):
             )
 
             self.assertEqual(
-                wirt_boundary.violations(root),
+                wirt_boundary.dependency_violations(root),
                 ["crates/wirt/Cargo.toml: forbidden dependency arclain_core"],
             )
 
@@ -116,7 +104,7 @@ class TestWirtBoundary(unittest.TestCase):
             )
 
             self.assertEqual(
-                wirt_boundary.violations(root),
+                wirt_boundary.dependency_violations(root),
                 ["crates/wirt/Cargo.toml: forbidden dependency arclain_core"],
             )
 
@@ -141,7 +129,7 @@ class TestWirtBoundary(unittest.TestCase):
             )
 
             self.assertEqual(
-                wirt_boundary.violations(root),
+                wirt_boundary.dependency_violations(root),
                 ["crates/wirt/Cargo.toml: forbidden dependency arclain_core"],
             )
 
@@ -159,7 +147,7 @@ class TestWirtBoundary(unittest.TestCase):
             )
 
             self.assertEqual(
-                wirt_boundary.violations(root),
+                wirt_boundary.source_violations(root),
                 ["crates/wirt/src/lib.rs:1: forbidden import gameta_lib"],
             )
 
@@ -171,6 +159,18 @@ class TestWirtBoundary(unittest.TestCase):
             (crate / "Cargo.toml").write_text(
                 '[package]\nname = "wirt"\nversion = "0.1.0"\n',
                 encoding="utf-8",
+            )
+            (crate / "src" / "lib.rs").write_text(
+                '#[path = "../../../plugins/ui-demo/src/lib.rs"]\nmod product;\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.source_violations(root),
+                [
+                    "crates/wirt/src/lib.rs:1: compiled source path escapes "
+                    "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+                ],
             )
 
     def test_component_bindgen_path_must_use_the_canonical_wirt_sdk_wit(self):
@@ -208,11 +208,38 @@ class TestWirtBoundary(unittest.TestCase):
             )
 
             self.assertEqual(
-                wirt_boundary.violations(root),
+                wirt_boundary.wirt_wit_violations(root),
                 [
                     "crates/wirt/wit/plugin.wit: duplicate Wirt plugin WIT; "
                     "only wirt-sdk/wit/plugin.wit is allowed"
                 ],
+            )
+
+    def test_alternate_wirt_plugin_wit_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            canonical = root / "wirt-sdk" / "wit"
+            canonical.mkdir(parents=True)
+            (canonical / "plugin.wit").write_text(
+                "package wirt:plugin@0.1.0;\n", encoding="utf-8"
+            )
+            (root / "alternate.wit").write_text(
+                "package wirt:plugin@0.1.0;\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                wirt_boundary.wirt_wit_violations(root),
+                [
+                    "alternate.wit: duplicate Wirt plugin WIT; only "
+                    "wirt-sdk/wit/plugin.wit is allowed"
+                ],
+            )
+
+    def test_missing_canonical_wirt_plugin_wit_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                wirt_boundary.wirt_wit_violations(Path(directory)),
+                ["wirt-sdk/wit/plugin.wit: missing canonical Wirt plugin WIT"],
             )
 
     def test_literal_include_escaping_wirt_is_rejected(self):
@@ -230,7 +257,7 @@ class TestWirtBoundary(unittest.TestCase):
             )
 
             self.assertEqual(
-                wirt_boundary.violations(root),
+                wirt_boundary.source_violations(root),
                 [
                     "crates/wirt/src/lib.rs:1: compiled source path escapes "
                     "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
@@ -253,7 +280,7 @@ class TestWirtBoundary(unittest.TestCase):
             )
 
             self.assertEqual(
-                wirt_boundary.violations(root),
+                wirt_boundary.source_violations(root),
                 [
                     "crates/wirt/src/lib.rs:1: compiled source path escapes "
                     "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
@@ -275,7 +302,7 @@ class TestWirtBoundary(unittest.TestCase):
             )
 
             self.assertEqual(
-                wirt_boundary.violations(root),
+                wirt_boundary.source_violations(root),
                 ["crates/wirt/src/lib.rs:1: include! path is not a string literal"],
             )
 
@@ -297,7 +324,7 @@ class TestWirtBoundary(unittest.TestCase):
                 "pub struct StubHost;\n", encoding="utf-8"
             )
 
-            self.assertEqual(wirt_boundary.violations(root), [])
+            self.assertEqual(wirt_boundary.source_violations(root), [])
 
     def test_comments_and_string_literals_with_code_spellings_are_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -319,7 +346,7 @@ class TestWirtBoundary(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            self.assertEqual(wirt_boundary.violations(root), [])
+            self.assertEqual(wirt_boundary.source_violations(root), [])
 
     def test_opaque_literal_matrix_does_not_hide_a_following_include(self):
         literals = (
