@@ -222,6 +222,7 @@ fn manifest_requires_canonical_bounded_unique_hostnames() {
         "café.example",
     ] {
         let mut manifest = valid_manifest("domain-policy");
+        manifest.capabilities.network = true;
         manifest.capabilities.network_domains = vec![invalid.to_string()];
         assert!(
             loader.validate_manifest(&manifest).is_err(),
@@ -230,17 +231,20 @@ fn manifest_requires_canonical_bounded_unique_hostnames() {
     }
 
     let mut duplicate = valid_manifest("domain-policy");
+    duplicate.capabilities.network = true;
     duplicate.capabilities.network_domains =
         vec!["api.example.com".to_string(), "api.example.com".to_string()];
     assert!(loader.validate_manifest(&duplicate).is_err());
 
     let mut too_many = valid_manifest("domain-policy");
+    too_many.capabilities.network = true;
     too_many.capabilities.network_domains = (0..=64)
         .map(|index| format!("host-{index}.example.com"))
         .collect();
     assert!(loader.validate_manifest(&too_many).is_err());
 
     let mut valid = valid_manifest("domain-policy");
+    valid.capabilities.network = true;
     valid.capabilities.network_domains = vec![
         "api.example.com".to_string(),
         "xn--bcher-kva.example".to_string(),

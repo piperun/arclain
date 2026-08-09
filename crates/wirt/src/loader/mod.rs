@@ -2,6 +2,7 @@
 
 use crate::runtime::{LoadedComponent, WasmRuntime};
 use crate::{PluginError, PluginId, PluginInfo, PluginManifest, Result, WIRT_ABI_VERSION};
+use crate::{MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_WASM_BYTES};
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, File, OpenOptions};
 use std::collections::HashSet;
@@ -11,8 +12,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-pub(crate) const MAX_PLUGIN_MANIFEST_BYTES: usize = 64 * 1024;
-pub(crate) const MAX_PLUGIN_WASM_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PLUGIN_NAME_BYTES: usize = 128;
 const MAX_PLUGIN_VERSION_BYTES: usize = 64;
 const MAX_PLUGIN_AUTHOR_BYTES: usize = 256;
@@ -330,6 +329,73 @@ fn is_canonical_hostname(domain: &str) -> bool {
     })
 }
 
+pub(crate) fn validate_manifest(manifest: &PluginManifest) -> Result<()> {
+    if manifest.wirt.abi != WIRT_ABI_VERSION {
+        return Err(PluginError::InvalidManifest(format!(
+            "unsupported Wirt ABI {:?}; expected {WIRT_ABI_VERSION}",
+            manifest.wirt.abi
+        )));
+    }
+
+    PluginId::parse(manifest.plugin.id.clone())?;
+    validate_bounded_text("name", &manifest.plugin.name, MAX_PLUGIN_NAME_BYTES, true)?;
+    validate_bounded_text(
+        "version",
+        &manifest.plugin.version,
+        MAX_PLUGIN_VERSION_BYTES,
+        true,
+    )?;
+    validate_bounded_text(
+        "author",
+        &manifest.plugin.author,
+        MAX_PLUGIN_AUTHOR_BYTES,
+        false,
+    )?;
+    validate_bounded_text(
+        "description",
+        &manifest.plugin.description,
+        MAX_PLUGIN_DESCRIPTION_BYTES,
+        false,
+    )?;
+
+    let domains = &manifest.capabilities.network_domains;
+    if manifest.capabilities.network && domains.is_empty() {
+        return Err(PluginError::InvalidManifest(
+            "Network capability requires at least one exact domain".to_string(),
+        ));
+    }
+    if !manifest.capabilities.network && !domains.is_empty() {
+        return Err(PluginError::InvalidManifest(
+            "Network domains require the network capability".to_string(),
+        ));
+    }
+    if domains.len() > MAX_PLUGIN_NETWORK_DOMAINS {
+        return Err(PluginError::InvalidManifest(format!(
+            "Plugin declares more than {MAX_PLUGIN_NETWORK_DOMAINS} network domains"
+        )));
+    }
+    let mut unique_domains = HashSet::with_capacity(domains.len());
+    for domain in domains {
+        if !is_canonical_hostname(domain) {
+            return Err(PluginError::InvalidManifest(format!(
+                "Network domain is not a canonical ASCII hostname: {domain:?}"
+            )));
+        }
+        if !unique_domains.insert(domain.as_str()) {
+            return Err(PluginError::InvalidManifest(format!(
+                "Duplicate network domain: {domain}"
+            )));
+        }
+    }
+
+    if manifest.rate_limits.http_requests_per_minute > MAX_PLUGIN_HTTP_REQUESTS_PER_MINUTE {
+        return Err(PluginError::InvalidManifest(format!(
+            "HTTP request rate exceeds {MAX_PLUGIN_HTTP_REQUESTS_PER_MINUTE} per minute"
+        )));
+    }
+    Ok(())
+}
+
 /// Discovers and loads plugins from a directory
 pub struct PluginLoader {
     plugins_dir: PathBuf,
@@ -557,62 +623,7 @@ impl PluginLoader {
 
     /// Validate a plugin manifest
     pub fn validate_manifest(&self, manifest: &PluginManifest) -> Result<()> {
-        if manifest.wirt.abi != WIRT_ABI_VERSION {
-            return Err(PluginError::InvalidManifest(format!(
-                "unsupported Wirt ABI {:?}; expected {WIRT_ABI_VERSION}",
-                manifest.wirt.abi
-            )));
-        }
-
-        PluginId::parse(manifest.plugin.id.clone())?;
-
-        validate_bounded_text("name", &manifest.plugin.name, MAX_PLUGIN_NAME_BYTES, true)?;
-        validate_bounded_text(
-            "version",
-            &manifest.plugin.version,
-            MAX_PLUGIN_VERSION_BYTES,
-            true,
-        )?;
-        validate_bounded_text(
-            "author",
-            &manifest.plugin.author,
-            MAX_PLUGIN_AUTHOR_BYTES,
-            false,
-        )?;
-        validate_bounded_text(
-            "description",
-            &manifest.plugin.description,
-            MAX_PLUGIN_DESCRIPTION_BYTES,
-            false,
-        )?;
-
-        let domains = &manifest.capabilities.network_domains;
-        if domains.len() > MAX_PLUGIN_NETWORK_DOMAINS {
-            return Err(PluginError::InvalidManifest(format!(
-                "Plugin declares more than {MAX_PLUGIN_NETWORK_DOMAINS} network domains"
-            )));
-        }
-        let mut unique_domains = HashSet::with_capacity(domains.len());
-        for domain in domains {
-            if !is_canonical_hostname(domain) {
-                return Err(PluginError::InvalidManifest(format!(
-                    "Network domain is not a canonical ASCII hostname: {domain:?}"
-                )));
-            }
-            if !unique_domains.insert(domain.as_str()) {
-                return Err(PluginError::InvalidManifest(format!(
-                    "Duplicate network domain: {domain}"
-                )));
-            }
-        }
-
-        if manifest.rate_limits.http_requests_per_minute > MAX_PLUGIN_HTTP_REQUESTS_PER_MINUTE {
-            return Err(PluginError::InvalidManifest(format!(
-                "HTTP request rate exceeds {MAX_PLUGIN_HTTP_REQUESTS_PER_MINUTE} per minute"
-            )));
-        }
-
-        Ok(())
+        validate_manifest(manifest)
     }
 
     fn validate_manifest_id_matches_filename(

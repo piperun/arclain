@@ -11,17 +11,20 @@ pub mod bindings {
 }
 
 pub mod action_policy;
+mod component_contract;
 pub mod conversions;
 mod error;
 pub mod limits;
 pub mod loader;
 mod manifest;
 pub mod model;
+mod package;
 pub mod rules;
 pub mod runtime;
 pub mod ui_model;
 
 pub use bindings::{wirt, PluginWorld};
+pub use component_contract::{inspect_component_contract, ComponentContract};
 pub use error::{PluginError, Result};
 pub use limits::{
     metadata_value_within_limit, PluginStoreLimiter, StoreQuotaExceeded, StoreQuotaKind,
@@ -37,6 +40,10 @@ pub use manifest::{
 pub use model::{
     BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginExtensionPoint, PluginLayout,
     PluginUiElement, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
+};
+pub use package::{
+    package_bytes, read_package, read_package_bytes, PackageFingerprint, ValidatedPackage,
+    MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_WASM_BYTES, MAX_WIRT_PACKAGE_BYTES,
 };
 pub use rules::{
     MoveFileRule, MoveRule, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger,
