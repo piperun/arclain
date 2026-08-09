@@ -332,8 +332,7 @@ fn is_canonical_hostname(domain: &str) -> bool {
 pub(crate) fn validate_manifest(manifest: &PluginManifest) -> Result<()> {
     if manifest.wirt.abi != WIRT_ABI_VERSION {
         return Err(PluginError::InvalidManifest(format!(
-            "unsupported Wirt ABI {:?}; expected {WIRT_ABI_VERSION}",
-            manifest.wirt.abi
+            "unsupported Wirt ABI; expected {WIRT_ABI_VERSION}"
         )));
     }
 
@@ -377,14 +376,14 @@ pub(crate) fn validate_manifest(manifest: &PluginManifest) -> Result<()> {
     let mut unique_domains = HashSet::with_capacity(domains.len());
     for domain in domains {
         if !is_canonical_hostname(domain) {
-            return Err(PluginError::InvalidManifest(format!(
-                "Network domain is not a canonical ASCII hostname: {domain:?}"
-            )));
+            return Err(PluginError::InvalidManifest(
+                "Network domain is not a canonical ASCII hostname".to_string(),
+            ));
         }
         if !unique_domains.insert(domain.as_str()) {
-            return Err(PluginError::InvalidManifest(format!(
-                "Duplicate network domain: {domain}"
-            )));
+            return Err(PluginError::InvalidManifest(
+                "Duplicate network domain".to_string(),
+            ));
         }
     }
 
@@ -537,7 +536,9 @@ impl PluginLoader {
         let manifest_content = std::str::from_utf8(&manifest_bytes).map_err(|error| {
             PluginError::InvalidManifest(format!("Plugin manifest is not UTF-8: {error}"))
         })?;
-        let manifest: PluginManifest = toml::from_str(&manifest_content)?;
+        let manifest: PluginManifest = toml::from_str(&manifest_content).map_err(|_| {
+            PluginError::InvalidManifest("Plugin manifest TOML is invalid".to_string())
+        })?;
 
         // Validate manifest
         self.validate_manifest(&manifest)?;
@@ -574,7 +575,9 @@ impl PluginLoader {
         let manifest_content = std::str::from_utf8(&manifest_bytes).map_err(|error| {
             PluginError::InvalidManifest(format!("Plugin manifest is not UTF-8: {error}"))
         })?;
-        let manifest: PluginManifest = toml::from_str(&manifest_content)?;
+        let manifest: PluginManifest = toml::from_str(&manifest_content).map_err(|_| {
+            PluginError::InvalidManifest("Plugin manifest TOML is invalid".to_string())
+        })?;
 
         // Validate manifest
         self.validate_manifest(&manifest)?;

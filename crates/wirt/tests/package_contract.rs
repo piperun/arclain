@@ -9,11 +9,100 @@ use wirt::{
 };
 use zip::{CompressionMethod, ZipArchive};
 
+fn component_with_empty_interface_import(name: &str) -> Vec<u8> {
+    use wasm_encoder::{
+        Component, ComponentImportSection, ComponentTypeRef, ComponentTypeSection, InstanceType,
+    };
+
+    let mut component = Component::new();
+    let mut types = ComponentTypeSection::new();
+    types.instance(&InstanceType::new());
+    component.section(&types);
+    let mut imports = ComponentImportSection::new();
+    imports.import(name, ComponentTypeRef::Instance(0));
+    component.section(&imports);
+    component.finish()
+}
+
+#[derive(Default)]
+struct ExportMutation {
+    rename: Option<(&'static str, &'static str)>,
+    duplicate: Option<(&'static str, &'static str)>,
+    replace_index: Option<(&'static str, u32)>,
+}
+
+impl wasm_encoder::reencode::Reencode for ExportMutation {
+    type Error = std::convert::Infallible;
+}
+
+impl wasm_encoder::reencode::ReencodeComponent for ExportMutation {
+    fn parse_component_export_section(
+        &mut self,
+        exports: &mut wasm_encoder::ComponentExportSection,
+        section: wasmparser::ComponentExportSectionReader<'_>,
+    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
+        for export in section {
+            let export = export?;
+            let original = export.name.name;
+            let name = self
+                .rename
+                .filter(|(from, _)| *from == original)
+                .map_or(original, |(_, to)| to);
+            let index = self
+                .replace_index
+                .filter(|(target, _)| *target == original)
+                .map_or(export.index, |(_, replacement)| replacement);
+            exports.export(
+                name,
+                export.kind.into(),
+                self.component_external_index(export.kind, index),
+                export
+                    .ty
+                    .map(|ty| self.component_type_ref(ty))
+                    .transpose()?,
+            );
+            if let Some((target, extra)) = self.duplicate.filter(|(target, _)| *target == original)
+            {
+                let _ = target;
+                exports.export(
+                    extra,
+                    export.kind.into(),
+                    self.component_external_index(export.kind, export.index),
+                    export
+                        .ty
+                        .map(|ty| self.component_type_ref(ty))
+                        .transpose()?,
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn mutate_exports(mutation: ExportMutation) -> Vec<u8> {
+    use wasm_encoder::reencode::ReencodeComponent;
+
+    let mut mutation = mutation;
+    let mut component = wasm_encoder::Component::new();
+    mutation
+        .parse_component(
+            &mut component,
+            wasmparser::Parser::new(0),
+            UI_DEMO_COMPONENT,
+        )
+        .unwrap();
+    component.finish()
+}
+
 #[test]
 fn package_bytes_are_deterministic_and_round_trip_exact_inputs() {
     let first = package_bytes(manifest_toml().as_bytes(), UI_DEMO_COMPONENT).unwrap();
     let second = package_bytes(manifest_toml().as_bytes(), UI_DEMO_COMPONENT).unwrap();
     assert_eq!(first, second);
+    assert_eq!(
+        PackageFingerprint::sha256(&first).as_str(),
+        "d06666940093ae934b664d1447ae7f1d03f2a2a21533857348a031d5a9b17dc7"
+    );
 
     let package = read_package_bytes(&first).unwrap();
     assert_eq!(package.manifest.wirt.abi, WIRT_ABI_VERSION);
@@ -103,4 +192,140 @@ fn payload_strings_cannot_spoof_component_imports() {
 
     let error = inspect_component_contract(&bytes).unwrap_err();
     assert!(error.to_string().contains("required Wirt import"));
+}
+
+#[test]
+fn structural_preflight_rejects_nonallowlisted_interface_names() {
+    for name in [
+        "attacker:coin/miner@1.0.0",
+        "wasi:sockets/tcp@0.2.9",
+        "wasi:filesystem/types@0.2.9",
+        "wasi:random/random@0.2.9",
+    ] {
+        let error = inspect_component_contract(&component_with_empty_interface_import(name))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("component-preflight: unsupported import"),
+            "unexpected classification for {name:?}: {error}"
+        );
+    }
+}
+
+#[test]
+fn structural_preflight_rejects_wrong_wirt_interface_version() {
+    let error = inspect_component_contract(&component_with_empty_interface_import(
+        "wirt:plugin/host@0.2.0",
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("component-preflight: unsupported Wirt interface version"),
+        "unexpected classification: {error}"
+    );
+}
+
+#[test]
+fn structural_preflight_bounds_hostile_component_names() {
+    let name = format!("attacker:coin/{}@1.0.0", "miner".repeat(1_000));
+    let error = inspect_component_contract(&component_with_empty_interface_import(&name))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.len() <= 240,
+        "component error was unbounded: {} bytes",
+        error.len()
+    );
+    assert!(
+        !error.contains(&name),
+        "component error reflected the full hostile name"
+    );
+}
+
+#[test]
+fn structural_preflight_bounds_direct_component_inspection() {
+    let component = vec![0_u8; wirt::MAX_PLUGIN_WASM_BYTES + 1];
+    let error = inspect_component_contract(&component)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("component-preflight: component exceeds"));
+}
+
+#[test]
+fn structural_preflight_rejects_missing_and_additional_exports() {
+    for component in [
+        mutate_exports(ExportMutation {
+            rename: Some(("init", "evil")),
+            ..ExportMutation::default()
+        }),
+        mutate_exports(ExportMutation {
+            duplicate: Some(("init", "evil")),
+            ..ExportMutation::default()
+        }),
+    ] {
+        wasmparser::Validator::new()
+            .validate_all(&component)
+            .unwrap();
+        let error = inspect_component_contract(&component)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("component-preflight: exports do not match"),
+            "unexpected classification: {error}"
+        );
+    }
+}
+
+#[test]
+fn structural_preflight_rejects_wrong_export_parameter_and_result_types() {
+    let component = mutate_exports(ExportMutation {
+        // Re-export the no-parameter list-returning function under the
+        // string-parameter/layout-result name. The component remains valid,
+        // but both the canonical parameters and result are wrong.
+        replace_index: Some(("get-ui-layout", 19)),
+        ..ExportMutation::default()
+    });
+    wasmparser::Validator::new()
+        .validate_all(&component)
+        .unwrap();
+    let error = inspect_component_contract(&component)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("component-preflight: export type mismatch for \"get-ui-layout\""),
+        "unexpected classification: {error}"
+    );
+}
+
+#[test]
+fn structural_preflight_rejects_wrong_wirt_interface_type() {
+    use wasm_encoder::{
+        Component, ComponentImportSection, ComponentTypeRef, ComponentTypeSection, InstanceType,
+    };
+
+    let mut component = Component::new();
+    let mut types = ComponentTypeSection::new();
+    types.instance(&InstanceType::new());
+    component.section(&types);
+    let mut imports = ComponentImportSection::new();
+    for name in [
+        "wirt:plugin/host@0.1.0",
+        "wirt:plugin/meta@0.1.0",
+        "wirt:plugin/rules@0.1.0",
+        "wirt:plugin/ui@0.1.0",
+    ] {
+        imports.import(name, ComponentTypeRef::Instance(0));
+    }
+    component.section(&imports);
+    let component = component.finish();
+    wasmparser::Validator::new()
+        .validate_all(&component)
+        .unwrap();
+    let error = inspect_component_contract(&component)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("component-preflight: import type mismatch"),
+        "unexpected classification: {error}"
+    );
 }

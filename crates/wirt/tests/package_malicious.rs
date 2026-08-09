@@ -3,7 +3,8 @@ mod support;
 use std::io::{Cursor, Write};
 use support::{manifest_toml, UI_DEMO_COMPONENT};
 use wirt::{
-    read_package_bytes, MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_WASM_BYTES, MAX_WIRT_PACKAGE_BYTES,
+    package_bytes, read_package_bytes, MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_WASM_BYTES,
+    MAX_WIRT_PACKAGE_BYTES,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -48,6 +49,14 @@ fn signature_offsets(bytes: &[u8], signature: [u8; 4]) -> Vec<usize> {
         .enumerate()
         .filter_map(|(offset, window)| (window == signature).then_some(offset))
         .collect()
+}
+
+fn assert_archive_preflight_rejection(label: &str, bytes: &[u8]) {
+    let error = read_package_bytes(bytes).unwrap_err().to_string();
+    assert!(
+        error.contains("archive-canonical:") || error.contains("archive-structure:"),
+        "{label} escaped archive preflight: {error}"
+    );
 }
 
 #[test]
@@ -164,6 +173,96 @@ fn rejects_encryption_and_unknown_size_descriptor_flags() {
 }
 
 #[test]
+fn rejects_every_noncanonical_zip_header_field_before_component_preflight() {
+    let base = package_bytes(manifest_toml().as_bytes(), UI_DEMO_COMPONENT).unwrap();
+    let locals = signature_offsets(&base, [0x50, 0x4b, 0x03, 0x04]);
+    let centrals = signature_offsets(&base, [0x50, 0x4b, 0x01, 0x02]);
+    let eocd = signature_offsets(&base, [0x50, 0x4b, 0x05, 0x06])[0];
+
+    let mut cases = Vec::new();
+    let mut alternate_flags = base.clone();
+    for offset in locals
+        .iter()
+        .map(|offset| offset + 6)
+        .chain(centrals.iter().map(|offset| offset + 8))
+    {
+        let flags = u16::from_le_bytes(alternate_flags[offset..offset + 2].try_into().unwrap());
+        alternate_flags[offset..offset + 2].copy_from_slice(&(flags ^ 0x0004).to_le_bytes());
+    }
+    cases.push(("alternate flags", alternate_flags));
+
+    for (label, offset, width) in [
+        ("local version needed", locals[0] + 4, 2_usize),
+        ("central version made by", centrals[0] + 4, 2),
+        ("central version needed", centrals[0] + 6, 2),
+        ("central internal attributes", centrals[0] + 36, 2),
+        ("central low external attributes", centrals[0] + 38, 2),
+        ("EOCD disk number", eocd + 4, 2),
+        ("EOCD central-directory disk", eocd + 6, 2),
+        ("EOCD central-directory size", eocd + 12, 4),
+        ("EOCD central-directory offset", eocd + 16, 4),
+    ] {
+        let mut bytes = base.clone();
+        bytes[offset] ^= 1;
+        debug_assert!(matches!(width, 2 | 4));
+        cases.push((label, bytes));
+    }
+
+    let mut pointer_differential = base.clone();
+    let first_local = u32::from_le_bytes(
+        pointer_differential[centrals[0] + 42..centrals[0] + 46]
+            .try_into()
+            .unwrap(),
+    );
+    pointer_differential[centrals[1] + 42..centrals[1] + 46]
+        .copy_from_slice(&first_local.to_le_bytes());
+    cases.push(("central/local pointer differential", pointer_differential));
+
+    for (label, bytes) in cases {
+        assert_archive_preflight_rejection(label, &bytes);
+    }
+}
+
+#[test]
+fn rejects_archive_and_entry_comments_and_extra_fields_before_component_preflight() {
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    writer.set_comment("hostile-comment");
+    for (name, contents) in [
+        ("plugin.toml", manifest_toml().as_bytes()),
+        ("plugin.wasm", UI_DEMO_COMPONENT),
+    ] {
+        writer.start_file(name, canonical_options()).unwrap();
+        writer.write_all(contents).unwrap();
+    }
+    let commented = writer.finish().unwrap().into_inner();
+    assert_archive_preflight_rejection("archive comment", &commented);
+
+    let base = package_bytes(manifest_toml().as_bytes(), UI_DEMO_COMPONENT).unwrap();
+    let central = signature_offsets(&base, [0x50, 0x4b, 0x01, 0x02])[0];
+    let eocd = signature_offsets(&base, [0x50, 0x4b, 0x05, 0x06])[0];
+    let name_len =
+        u16::from_le_bytes(base[central + 28..central + 30].try_into().unwrap()) as usize;
+
+    for (label, len_at) in [
+        ("central extra field", central + 30),
+        ("entry comment", central + 32),
+    ] {
+        let mut bytes = base.clone();
+        bytes[len_at..len_at + 2].copy_from_slice(&2_u16.to_le_bytes());
+        bytes.splice(central + 46 + name_len..central + 46 + name_len, [0_u8, 0]);
+        let shifted_eocd = eocd + 2;
+        let directory_size = u32::from_le_bytes(
+            bytes[shifted_eocd + 12..shifted_eocd + 16]
+                .try_into()
+                .unwrap(),
+        );
+        bytes[shifted_eocd + 12..shifted_eocd + 16]
+            .copy_from_slice(&(directory_size + 2).to_le_bytes());
+        assert_archive_preflight_rejection(label, &bytes);
+    }
+}
+
+#[test]
 fn rejects_package_and_expanded_entry_limits() {
     let oversized_package = vec![0_u8; MAX_WIRT_PACKAGE_BYTES as usize + 1];
     assert!(read_package_bytes(&oversized_package).is_err());
@@ -195,7 +294,10 @@ fn rejects_dishonest_central_directory_sizes_before_component_validation() {
     bytes[central + 24..central + 28].copy_from_slice(&(declared - 1).to_le_bytes());
 
     let error = read_package_bytes(&bytes).unwrap_err();
-    assert!(error.to_string().contains("central directory"));
+    assert!(
+        error.to_string().contains("archive-"),
+        "unexpected rejection: {error}"
+    );
 }
 
 #[test]
@@ -231,5 +333,39 @@ fn manifest_network_authority_requires_exact_domains() {
             ("plugin.wasm", UI_DEMO_COMPONENT, canonical_options()),
         ]);
         assert!(read_package_bytes(&bytes).is_err());
+    }
+}
+
+#[test]
+fn hostile_manifest_values_and_parser_diagnostics_are_bounded() {
+    let marker = "HOSTILE-MANIFEST-VALUE".repeat(400);
+    let invalid_abi = manifest_toml().replace("abi = \"0.1.0\"", &format!("abi = \"{marker}\""));
+    let invalid_domain = manifest_toml()
+        .replace("network = false", "network = true")
+        .replace(
+            "network_domains = []",
+            &format!("network_domains = [\"{marker}\"]"),
+        );
+    let malformed = format!("[wirt]\nabi = \"0.1.0\"\n{marker}");
+
+    for (label, manifest) in [
+        ("ABI", invalid_abi),
+        ("domain", invalid_domain),
+        ("TOML", malformed),
+    ] {
+        let bytes = archive(&[
+            ("plugin.toml", manifest.as_bytes(), canonical_options()),
+            ("plugin.wasm", UI_DEMO_COMPONENT, canonical_options()),
+        ]);
+        let error = read_package_bytes(&bytes).unwrap_err().to_string();
+        assert!(
+            error.len() <= 240,
+            "{label} error was unbounded: {} bytes",
+            error.len()
+        );
+        assert!(
+            !error.contains(&marker),
+            "{label} error reflected hostile input"
+        );
     }
 }
