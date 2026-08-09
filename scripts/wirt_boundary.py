@@ -470,18 +470,15 @@ def attribute_path_literals(attribute: list[RustToken]) -> list[str | None]:
         return [None]
     literals: list[str | None] = []
     for item in items[1:]:
-        if not item or item[0].value != "path":
-            continue
-        if len(item) == 3 and item[1].value == "=" and item[2].kind == "string":
-            literals.append(item[2].value)
-        else:
-            literals.append(None)
+        literals.extend(attribute_path_literals(item))
     return literals
 
 
 def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | None]]:
     issues: list[tuple[int, int, str | None]] = []
-    for index, token in enumerate(tokens):
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
         if token.value == "#":
             bracket = index + 1
             if bracket < len(tokens) and tokens[bracket].value == "!":
@@ -492,10 +489,13 @@ def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | 
             if end is None:
                 if bracket + 1 < len(tokens) and tokens[bracket + 1].value in {"path", "cfg_attr"}:
                     issues.append((token.offset, token.line, None))
+                index += 1
                 continue
             attribute = tokens[bracket + 1 : end]
             for literal in attribute_path_literals(attribute):
                 issues.append((token.offset, token.line, literal))
+            index = end + 1
+            continue
 
         if (
             token.kind == "identifier"
@@ -521,6 +521,7 @@ def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | 
                     literal.value if literal is not None and literal.kind == "string" else None,
                 )
             )
+        index += 1
     return issues
 
 
@@ -711,7 +712,11 @@ def bindgen_declaration_issues(tokens: list[RustToken]) -> list[tuple[int, int, 
                         (local_name == "wasmtime" and not is_wasmtime_root)
                         or (is_wasmtime_root and local_name != "wasmtime")
                         or is_component_or_bindgen
-                        or (path and path[-1] == "*" and path[0] == "wasmtime")
+                        or (
+                            path
+                            and path[-1] == "*"
+                            and path[0] not in {"self", "super", "crate"}
+                        )
                         or local_name in {"component", "bindgen"}
                     ):
                         relevant = True

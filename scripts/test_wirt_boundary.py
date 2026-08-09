@@ -572,6 +572,26 @@ class TestWirtBoundary(unittest.TestCase):
             ],
         )
 
+    def test_foreign_glob_import_fails_closed(self):
+        source = "use shim::*;\n"
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime "
+                "component use tree"
+            ],
+        )
+
+    def test_internal_glob_imports_are_allowed(self):
+        sources = {
+            "src/lib.rs": "use super::*;\n",
+            "src/quota.rs": "use super::quota::*;\n",
+            "src/internal.rs": "use crate::internal::*;\n",
+        }
+
+        self.assertEqual(self.source_tree_violations(sources), [])
+
     def test_component_glob_import_fails_closed(self):
         source = (
             "use wasmtime::component::*;\n"
@@ -1114,6 +1134,25 @@ class TestWirtBoundary(unittest.TestCase):
             ],
         )
 
+    def test_glob_in_included_source_blocks_exact_bindgen_elsewhere(self):
+        sources = {
+            "src/lib.rs": 'include!("bindings.inc");\n',
+            "src/bindings.inc": "use shim::*;\n",
+            "src/generated.inc": (
+                "wasmtime::component::bindgen!({\n"
+                '    path: "../../wirt-sdk/wit/plugin.wit",\n'
+                "});\n"
+            ),
+        }
+
+        self.assertEqual(
+            self.source_tree_violations(sources),
+            [
+                "crates/wirt/src/bindings.inc:1: unsupported or ambiguous "
+                "Wasmtime component use tree"
+            ],
+        )
+
     def test_included_non_rs_source_without_bindgen_is_allowed(self):
         sources = {
             "src/lib.rs": 'include!("bindings.inc");\n',
@@ -1174,6 +1213,36 @@ class TestWirtBoundary(unittest.TestCase):
 
     def test_cfg_attr_top_level_dynamic_path_fails_closed(self):
         source = '#[cfg_attr(test, path = concat!("stub", ".rs"))]\nmod generated;\n'
+
+        self.assertEqual(
+            self.source_violations(source),
+            ["crates/wirt/src/lib.rs:1: include! path is not a string literal"],
+        )
+
+    def test_nested_cfg_attr_path_is_checked_as_potentially_active(self):
+        source = (
+            '#[cfg_attr(test, cfg_attr(feature = "x", '
+            'path = "../../../plugins/ui-demo/src/lib.rs"))]\n'
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: compiled source path escapes "
+                "crates/wirt/src: ../../../plugins/ui-demo/src/lib.rs"
+            ],
+        )
+
+    def test_nested_path_under_unrelated_attribute_metadata_is_ignored(self):
+        source = '#[some_attr(#[path = "../../../plugins/ui-demo/src/lib.rs"])]\n'
+
+        self.assertEqual(self.source_violations(source), [])
+
+    def test_nested_cfg_attr_dynamic_path_fails_closed(self):
+        source = (
+            '#[cfg_attr(test, cfg_attr(feature = "x", '
+            'path = concat!("generated", ".rs")))]\n'
+        )
 
         self.assertEqual(
             self.source_violations(source),
