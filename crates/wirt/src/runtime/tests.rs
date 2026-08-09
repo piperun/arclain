@@ -9,7 +9,7 @@ use wasmtime::component::Linker;
 use wasmtime::Store;
 
 use crate as wirt_crate;
-#[path = "../../tests/support/stub_host.rs"]
+#[path = "stub_host.rs"]
 mod stub_host;
 use stub_host::StubHost;
 

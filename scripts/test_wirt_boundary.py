@@ -144,6 +144,25 @@ class TestWirtBoundary(unittest.TestCase):
                 ["crates/wirt/Cargo.toml: forbidden dependency arclain_core"],
             )
 
+    def test_renamed_wasmtime_dependency_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n'
+                '[dependencies]\nwasmtime = { package = "wasmtime-fork", version = "1" }\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.dependency_violations(root),
+                [
+                    "crates/wirt/Cargo.toml: wasmtime dependency must resolve "
+                    "to package wasmtime"
+                ],
+            )
+
     def test_product_source_import_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -180,7 +199,7 @@ class TestWirtBoundary(unittest.TestCase):
                 wirt_boundary.source_violations(root),
                 [
                     "crates/wirt/src/lib.rs:1: compiled source path escapes "
-                    "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+                    "crates/wirt/src: ../../../plugins/ui-demo/src/lib.rs"
                 ],
             )
 
@@ -548,6 +567,29 @@ class TestWirtBoundary(unittest.TestCase):
             ["crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime component use tree"],
         )
 
+    def test_ordinary_wasmtime_type_imports_and_plain_extern_are_allowed(self):
+        source = (
+            "use wasmtime::component::Component as WasmComponent;\n"
+            "use wasmtime::Engine as WasmEngine;\n"
+            "extern crate wasmtime;\n"
+        )
+
+        self.assertEqual(self.source_violations(source), [])
+
+    def test_local_wasmtime_module_shadow_is_rejected(self):
+        source = (
+            "mod wasmtime {}\n"
+            "wasmtime::component::bindgen!({\n"
+            '    path: "../../wirt-sdk/wit/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            ["crates/wirt/src/lib.rs:1: local wasmtime module declaration is not allowed"],
+        )
+
     def test_unresolved_component_bindgen_is_rejected(self):
         source = (
             "component::bindgen!({\n"
@@ -879,6 +921,71 @@ class TestWirtBoundary(unittest.TestCase):
             ["crates/wirt/src/lib.rs:1: component bindgen must use an inner braced argument map"],
         )
 
+    def test_all_regular_source_root_files_are_scanned_for_bindgen(self):
+        sources = {
+            "src/lib.rs": "pub struct Neutral;\n",
+            "src/dormant.inc": (
+                "wasmtime::component::bindgen!({\n"
+                '  path: "../../../plugins/ui-demo/plugin.wit",\n'
+                "});\n"
+            ),
+        }
+
+        self.assertEqual(
+            self.source_tree_violations(sources),
+            [
+                "crates/wirt/src/dormant.inc:1: component bindgen path must resolve to "
+                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
+            ],
+        )
+
+    def test_bracket_and_brace_includes_do_not_hide_non_rs_bindgen(self):
+        sources = {
+            "src/lib.rs": (
+                'include!["bracket.inc"];\n'
+                'include!{ "brace.inc" };\n'
+            ),
+            "src/bracket.inc": (
+                "wasmtime::component::bindgen!({\n"
+                '  path: "../../../plugins/ui-demo/plugin.wit",\n'
+                "});\n"
+            ),
+            "src/brace.inc": (
+                "wasmtime::component::bindgen!({\n"
+                '  path: "../../../plugins/ui-demo/plugin.wit",\n'
+                "});\n"
+            ),
+        }
+
+        self.assertEqual(
+            self.source_tree_violations(sources),
+            [
+                "crates/wirt/src/brace.inc:1: component bindgen path must resolve to "
+                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit",
+                "crates/wirt/src/bracket.inc:1: component bindgen path must resolve to "
+                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit",
+            ],
+        )
+
+    def test_inline_module_decoy_does_not_hide_actual_source_root_target(self):
+        sources = {
+            "src/lib.rs": 'mod generated { include!["bindings.inc"]; }\n',
+            "src/generated/bindings.inc": "const DECOY: u8 = 1;\n",
+            "src/bindings.inc": (
+                "wasmtime::component::bindgen!({\n"
+                '  path: "../../../plugins/ui-demo/plugin.wit",\n'
+                "});\n"
+            ),
+        }
+
+        self.assertEqual(
+            self.source_tree_violations(sources),
+            [
+                "crates/wirt/src/bindings.inc:1: component bindgen path must resolve to "
+                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
+            ],
+        )
+
     def test_included_non_rs_source_is_scanned_for_bindgen(self):
         sources = {
             "src/lib.rs": 'include!("bindings.inc");\n',
@@ -946,7 +1053,7 @@ class TestWirtBoundary(unittest.TestCase):
                 wirt_boundary.source_violations(root),
                 [
                     "crates/wirt/src/lib.rs:1: compiled source path escapes "
-                    "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+                    "crates/wirt/src: ../../../plugins/ui-demo/src/lib.rs"
                 ],
             )
 
@@ -969,7 +1076,7 @@ class TestWirtBoundary(unittest.TestCase):
                 wirt_boundary.source_violations(root),
                 [
                     "crates/wirt/src/lib.rs:1: compiled source path escapes "
-                    "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+                    "crates/wirt/src: ../../../plugins/ui-demo/src/lib.rs"
                 ],
             )
 
@@ -992,7 +1099,7 @@ class TestWirtBoundary(unittest.TestCase):
                 ["crates/wirt/src/lib.rs:1: include! path is not a string literal"],
             )
 
-    def test_path_attribute_resolving_inside_wirt_is_allowed(self):
+    def test_path_attribute_escaping_wirt_source_root_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             crate = root / "crates" / "wirt"
@@ -1010,7 +1117,13 @@ class TestWirtBoundary(unittest.TestCase):
                 "pub struct StubHost;\n", encoding="utf-8"
             )
 
-            self.assertEqual(wirt_boundary.source_violations(root), [])
+            self.assertEqual(
+                wirt_boundary.source_violations(root),
+                [
+                    "crates/wirt/src/runtime/tests.rs:1: compiled source path escapes "
+                    "crates/wirt/src: ../../tests/support/stub_host.rs"
+                ],
+            )
 
     def test_comments_and_string_literals_with_code_spellings_are_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1051,7 +1164,7 @@ class TestWirtBoundary(unittest.TestCase):
         )
         expected = [
             "crates/wirt/src/lib.rs:2: compiled source path escapes "
-            "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+            "crates/wirt/src: ../../../plugins/ui-demo/src/lib.rs"
         ]
 
         for name, literal in literals:
@@ -1104,7 +1217,7 @@ class TestWirtBoundary(unittest.TestCase):
             self.source_violations(source),
             [
                 "crates/wirt/src/lib.rs:2: compiled source path escapes "
-                "crates/wirt: ../../../plugins/ui-demo/src/lib.rs"
+                "crates/wirt/src: ../../../plugins/ui-demo/src/lib.rs"
             ],
         )
 

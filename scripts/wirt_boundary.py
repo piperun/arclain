@@ -80,7 +80,15 @@ def dependency_violations(workspace_root: Path) -> list[str]:
             if forbidden(package):
                 names.append(package)
     names.sort()
-    return [f"crates/wirt/Cargo.toml: forbidden dependency {name}" for name in names]
+    violations = [
+        f"crates/wirt/Cargo.toml: forbidden dependency {name}" for name in names
+    ]
+    wasmtime = document.get("dependencies", {}).get("wasmtime")
+    if wasmtime is not None and dependency_package("wasmtime", wasmtime, inherited) != "wasmtime":
+        violations.append(
+            "crates/wirt/Cargo.toml: wasmtime dependency must resolve to package wasmtime"
+        )
+    return violations
 
 
 def scan_escaped_literal(
@@ -434,9 +442,11 @@ def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | 
             and token.value == "include"
             and index + 2 < len(tokens)
             and tokens[index + 1].value == "!"
-            and tokens[index + 2].value == "("
+            and tokens[index + 2].value in {"(", "[", "{"}
         ):
-            end = closing_token(tokens, index + 2, "(", ")")
+            opening = tokens[index + 2].value or ""
+            closing = {"(": ")", "[": "]", "{": "}"}[opening]
+            end = closing_token(tokens, index + 2, opening, closing)
             if end is None:
                 issues.append((token.offset, token.line, None))
                 continue
@@ -578,14 +588,15 @@ def bindgen_declaration_issues(tokens: list[RustToken]) -> list[tuple[int, int, 
             )
             for position, value in enumerate(values)
         )
-        aliases_wasmtime_root = (
-            "wasmtime" in identifiers
-            and "as" in identifiers
-            and not references_bindgen
+        aliases_wasmtime_root = any(
+            value == "wasmtime"
+            and position + 1 < len(values)
+            and values[position + 1] == "as"
+            for position, value in enumerate(values)
         )
         has_wasmtime_glob = "wasmtime" in identifiers and "*" in values
         relevant = (
-            (is_extern and "wasmtime" in identifiers)
+            (is_extern and "as" in identifiers)
             or references_bindgen
             or component_alias
             or aliases_wasmtime_root
@@ -603,12 +614,34 @@ def bindgen_declaration_issues(tokens: list[RustToken]) -> list[tuple[int, int, 
     return issues
 
 
+def local_wasmtime_declaration_issues(
+    tokens: list[RustToken],
+) -> list[tuple[int, int, str]]:
+    issues: list[tuple[int, int, str]] = []
+    for index, token in enumerate(tokens[:-1]):
+        if (
+            token.kind == "identifier"
+            and token.value == "mod"
+            and tokens[index + 1].kind == "identifier"
+            and tokens[index + 1].value == "wasmtime"
+        ):
+            issues.append(
+                (
+                    token.offset,
+                    token.line,
+                    "local wasmtime module declaration is not allowed",
+                )
+            )
+    return issues
+
+
 def component_bindgen_issues(
     tokens: list[RustToken], crate_root: Path, canonical_wit: Path
 ) -> list[tuple[int, int, str]]:
     issues: list[tuple[int, int, str]] = []
     declaration_issues = bindgen_declaration_issues(tokens)
     issues.extend(declaration_issues)
+    issues.extend(local_wasmtime_declaration_issues(tokens))
     delimiters = {"(": ")", "[": "]", "{": "}"}
     direct_path = ("wasmtime", ":", ":", "component", ":", ":", "bindgen")
 
@@ -834,10 +867,20 @@ def wirt_wit_violations(workspace_root: Path) -> list[str]:
 def source_violations(workspace_root: Path) -> list[str]:
     source_root = workspace_root / "crates" / "wirt" / "src"
     crate_root = workspace_root / "crates" / "wirt"
-    resolved_crate_root = crate_root.resolve()
+    resolved_source_root = source_root.resolve()
     canonical_wit = (workspace_root / "wirt-sdk" / "wit" / "plugin.wit").resolve()
     violations: list[str] = []
-    roots = sorted(source_root.rglob("*.rs")) if source_root.exists() else []
+    roots: list[Path] = []
+    if source_root.exists():
+        for candidate in sorted(source_root.rglob("*")):
+            if not candidate.is_file():
+                continue
+            resolved = candidate.resolve()
+            relative = candidate.relative_to(workspace_root).as_posix()
+            if not path_is_within(resolved, resolved_source_root):
+                violations.append(f"{relative}:1: source root file escapes crates/wirt/src")
+                continue
+            roots.append(resolved)
     pending = list(roots)
     seen: set[Path] = set()
     while pending:
@@ -848,8 +891,10 @@ def source_violations(workspace_root: Path) -> list[str]:
         relative = path.relative_to(workspace_root).as_posix()
         try:
             source = path.read_text(encoding="utf-8")
-        except OSError:
-            violations.append(f"{relative}:1: compiled source target is unreadable")
+        except (OSError, UnicodeDecodeError):
+            violations.append(
+                f"{relative}:1: compiled source target is unreadable or not UTF-8"
+            )
             continue
         tokens = rust_tokens(source)
         issues = [
@@ -864,12 +909,12 @@ def source_violations(workspace_root: Path) -> list[str]:
                 issues.append((offset, line, "include! path is not a string literal"))
                 continue
             resolved = (path.parent / literal).resolve()
-            if not path_is_within(resolved, resolved_crate_root):
+            if not path_is_within(resolved, resolved_source_root):
                 issues.append(
                     (
                         offset,
                         line,
-                        f"compiled source path escapes crates/wirt: {literal}",
+                        f"compiled source path escapes crates/wirt/src: {literal}",
                     )
                 )
                 continue
