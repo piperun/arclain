@@ -83,8 +83,13 @@ def dependency_violations(workspace_root: Path) -> list[str]:
     violations = [
         f"crates/wirt/Cargo.toml: forbidden dependency {name}" for name in names
     ]
-    wasmtime = document.get("dependencies", {}).get("wasmtime")
-    if wasmtime is not None and dependency_package("wasmtime", wasmtime, inherited) != "wasmtime":
+    wasmtime_dependencies = [
+        table["wasmtime"] for table in dependency_tables(document) if "wasmtime" in table
+    ]
+    if any(
+        dependency_package("wasmtime", dependency, inherited) != "wasmtime"
+        for dependency in wasmtime_dependencies
+    ):
         violations.append(
             "crates/wirt/Cargo.toml: wasmtime dependency must resolve to package wasmtime"
         )
@@ -356,6 +361,21 @@ def rust_tokens(source: str) -> list[RustToken]:
                 tokens, "string", decoded, error, token_line, token_offset
             )
             continue
+        if (
+            source.startswith("r#", cursor)
+            and cursor + 2 < len(source)
+            and (source[cursor + 2].isalpha() or source[cursor + 2] == "_")
+        ):
+            cursor += 2
+            identifier_start = cursor
+            while cursor < len(source) and (
+                source[cursor].isalnum() or source[cursor] == "_"
+            ):
+                cursor += 1
+            tokens.append(
+                RustToken("identifier", source[identifier_start:cursor], token_line, token_offset)
+            )
+            continue
         if value.isalpha() or value == "_":
             cursor += 1
             while cursor < len(source) and (
@@ -413,6 +433,52 @@ def import_issues(tokens: list[RustToken]) -> list[tuple[int, int, str]]:
     return issues
 
 
+def top_level_items(tokens: list[RustToken]) -> list[list[RustToken]] | None:
+    items: list[list[RustToken]] = [[]]
+    closings = {"(": ")", "[": "]", "{": "}"}
+    stack: list[str] = []
+    for token in tokens:
+        if token.value in closings:
+            stack.append(closings[token.value])
+        elif stack and token.value == stack[-1]:
+            stack.pop()
+        elif token.value in {")", "]", "}"}:
+            return None
+        if token.value == "," and not stack:
+            items.append([])
+        else:
+            items[-1].append(token)
+    return None if stack else items
+
+
+def attribute_path_literals(attribute: list[RustToken]) -> list[str | None]:
+    if not attribute:
+        return []
+    if attribute[0].value == "path":
+        if len(attribute) == 3 and attribute[1].value == "=" and attribute[2].kind == "string":
+            return [attribute[2].value]
+        return [None]
+    if attribute[0].value != "cfg_attr":
+        return []
+    if len(attribute) < 3 or attribute[1].value != "(":
+        return [None]
+    end = closing_token(attribute, 1, "(", ")")
+    if end is None or end != len(attribute) - 1:
+        return [None]
+    items = top_level_items(attribute[2:end])
+    if items is None or not items:
+        return [None]
+    literals: list[str | None] = []
+    for item in items[1:]:
+        if not item or item[0].value != "path":
+            continue
+        if len(item) == 3 and item[1].value == "=" and item[2].kind == "string":
+            literals.append(item[2].value)
+        else:
+            literals.append(None)
+    return literals
+
+
 def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | None]]:
     issues: list[tuple[int, int, str | None]] = []
     for index, token in enumerate(tokens):
@@ -423,19 +489,13 @@ def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | 
             if bracket >= len(tokens) or tokens[bracket].value != "[":
                 continue
             end = closing_token(tokens, bracket, "[", "]")
-            if end is None or bracket + 1 >= end:
+            if end is None:
+                if bracket + 1 < len(tokens) and tokens[bracket + 1].value in {"path", "cfg_attr"}:
+                    issues.append((token.offset, token.line, None))
                 continue
             attribute = tokens[bracket + 1 : end]
-            attribute_name = attribute[0].value
-            if attribute_name not in {"path", "cfg_attr"}:
-                continue
-            for path_index, path_token in enumerate(attribute[:-2]):
-                if path_token.value != "path" or attribute[path_index + 1].value != "=":
-                    continue
-                literal = attribute[path_index + 2]
-                if literal.kind == "string":
-                    issues.append((token.offset, path_token.line, literal.value))
-                break
+            for literal in attribute_path_literals(attribute):
+                issues.append((token.offset, token.line, literal))
 
         if (
             token.kind == "identifier"
@@ -470,6 +530,61 @@ def has_double_colon(tokens: list[RustToken], index: int) -> bool:
         and tokens[index].value == ":"
         and tokens[index + 1].value == ":"
     )
+
+
+def parse_use_tree(
+    tokens: list[RustToken], index: int, prefix: tuple[str, ...] = ()
+) -> tuple[list[tuple[tuple[str, ...], str]], int, bool]:
+    if not prefix and has_double_colon(tokens, index):
+        index += 2
+    if index >= len(tokens):
+        return [], index, False
+    if tokens[index].value == "{":
+        bindings: list[tuple[tuple[str, ...], str]] = []
+        index += 1
+        while index < len(tokens) and tokens[index].value != "}":
+            nested, index, valid = parse_use_tree(tokens, index, prefix)
+            if not valid:
+                return [], index, False
+            bindings.extend(nested)
+            if index < len(tokens) and tokens[index].value == ",":
+                index += 1
+            elif index >= len(tokens) or tokens[index].value != "}":
+                return [], index, False
+        return bindings, index + 1, index < len(tokens)
+
+    token = tokens[index]
+    if token.kind != "identifier":
+        return [], index, False
+    if token.value == "self":
+        if not prefix:
+            return [], index, False
+        return [(prefix, prefix[-1])], index + 1, True
+
+    path = prefix + (token.value or "",)
+    index += 1
+    while has_double_colon(tokens, index):
+        index += 2
+        if index >= len(tokens):
+            return [], index, False
+        if tokens[index].value == "{":
+            return parse_use_tree(tokens, index, path)
+        if tokens[index].value == "*":
+            return [(path + ("*",), "*")], index + 1, True
+        if tokens[index].kind != "identifier":
+            return [], index, False
+        if tokens[index].value == "self":
+            return [(path, path[-1])], index + 1, True
+        path += (tokens[index].value or "",)
+        index += 1
+
+    local_name = path[-1]
+    if index < len(tokens) and tokens[index].value == "as":
+        if index + 1 >= len(tokens) or tokens[index + 1].kind != "identifier":
+            return [], index, False
+        local_name = tokens[index + 1].value or ""
+        index += 2
+    return [(path, local_name)], index, True
 
 
 def macro_path_before(
@@ -571,38 +686,36 @@ def bindgen_declaration_issues(tokens: list[RustToken]) -> list[tuple[int, int, 
             len(tokens),
         )
         statement = tokens[start:end]
-        identifiers = [candidate.value or "" for candidate in statement if candidate.kind == "identifier"]
-        values = [candidate.value or "" for candidate in statement]
-        aliases_reserved_name = any(
-            values[position] == "as"
-            and position + 1 < len(values)
-            and values[position + 1] in {"wasmtime", "component", "bindgen"}
-            for position in range(len(values))
-        )
-        references_bindgen = "bindgen" in identifiers
-        component_alias = any(
-            value == "component"
-            and (
-                position + 1 == len(values)
-                or values[position + 1] in {"as", "}"}
+        identifiers = [
+            candidate.value or "" for candidate in statement if candidate.kind == "identifier"
+        ]
+        relevant = False
+        if is_extern:
+            source = identifiers[0] if identifiers else ""
+            alias = identifiers[2] if len(identifiers) >= 3 and identifiers[1] == "as" else None
+            relevant = (source == "wasmtime" and alias is not None) or (
+                source != "wasmtime" and alias == "wasmtime"
             )
-            for position, value in enumerate(values)
-        )
-        aliases_wasmtime_root = any(
-            value == "wasmtime"
-            and position + 1 < len(values)
-            and values[position + 1] == "as"
-            for position, value in enumerate(values)
-        )
-        has_wasmtime_glob = "wasmtime" in identifiers and "*" in values
-        relevant = (
-            (is_extern and "as" in identifiers)
-            or references_bindgen
-            or component_alias
-            or aliases_wasmtime_root
-            or aliases_reserved_name
-            or has_wasmtime_glob
-        )
+        else:
+            bindings, cursor, valid = parse_use_tree(statement, 0)
+            if not valid or cursor != len(statement):
+                relevant = bool({"wasmtime", "component", "bindgen"} & set(identifiers))
+            else:
+                for path, local_name in bindings:
+                    is_wasmtime_root = path == ("wasmtime",)
+                    is_component_or_bindgen = path == ("wasmtime", "component") or (
+                        len(path) >= 3
+                        and path[:3] == ("wasmtime", "component", "bindgen")
+                    )
+                    if (
+                        (local_name == "wasmtime" and not is_wasmtime_root)
+                        or (is_wasmtime_root and local_name != "wasmtime")
+                        or is_component_or_bindgen
+                        or (path and path[-1] == "*" and path[0] == "wasmtime")
+                        or local_name in {"component", "bindgen"}
+                    ):
+                        relevant = True
+                        break
         if relevant:
             issues.append(
                 (

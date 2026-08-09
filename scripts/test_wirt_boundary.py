@@ -163,6 +163,59 @@ class TestWirtBoundary(unittest.TestCase):
                 ],
             )
 
+    def test_wasmtime_dependency_identity_is_checked_in_target_build_and_dev_tables(self):
+        tables = (
+            "[target.'cfg(windows)'.dependencies]",
+            "[target.'cfg(windows)'.build-dependencies]",
+            "[target.'cfg(windows)'.dev-dependencies]",
+            "[build-dependencies]",
+            "[dev-dependencies]",
+        )
+        for table in tables:
+            with self.subTest(table=table), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                crate = root / "crates" / "wirt"
+                (crate / "src").mkdir(parents=True)
+                (crate / "Cargo.toml").write_text(
+                    '[package]\nname = "wirt"\nversion = "0.1.0"\n'
+                    f"{table}\n"
+                    'wasmtime = { package = "wasmtime-fork", version = "1" }\n',
+                    encoding="utf-8",
+                )
+
+                self.assertEqual(
+                    wirt_boundary.dependency_violations(root),
+                    [
+                        "crates/wirt/Cargo.toml: wasmtime dependency must resolve "
+                        "to package wasmtime"
+                    ],
+                )
+
+    def test_workspace_wasmtime_dependency_identity_is_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                "[workspace]\nmembers = [\"crates/wirt\"]\n"
+                "[workspace.dependencies]\n"
+                'wasmtime = { package = "wasmtime-fork", version = "1" }\n',
+                encoding="utf-8",
+            )
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n'
+                '[dependencies]\nwasmtime.workspace = true\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.dependency_violations(root),
+                [
+                    "crates/wirt/Cargo.toml: wasmtime dependency must resolve "
+                    "to package wasmtime"
+                ],
+            )
+
     def test_product_source_import_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -589,6 +642,40 @@ class TestWirtBoundary(unittest.TestCase):
             self.source_violations(source),
             ["crates/wirt/src/lib.rs:1: local wasmtime module declaration is not allowed"],
         )
+
+    def test_raw_wasmtime_module_shadow_is_rejected(self):
+        source = "mod r#wasmtime {}\n"
+
+        self.assertEqual(
+            self.source_violations(source),
+            ["crates/wirt/src/lib.rs:1: local wasmtime module declaration is not allowed"],
+        )
+
+    def test_imports_binding_wasmtime_from_another_module_are_rejected(self):
+        sources = (
+            "use shim::wasmtime;\n",
+            "use shim::{wasmtime};\n",
+            "use shim as r#wasmtime;\n",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                self.assertEqual(
+                    self.source_violations(source),
+                    [
+                        "crates/wirt/src/lib.rs:1: unsupported or ambiguous "
+                        "Wasmtime component use tree"
+                    ],
+                )
+
+    def test_extern_alias_is_rejected_only_when_wasmtime_binding_is_relevant(self):
+        source = "extern crate serde as serde1;\n"
+
+        self.assertEqual(self.source_violations(source), [])
+
+    def test_direct_wasmtime_root_imports_are_allowed(self):
+        source = "use ::wasmtime;\nuse wasmtime::{self};\n"
+
+        self.assertEqual(self.source_violations(source), [])
 
     def test_unresolved_component_bindgen_is_rejected(self):
         source = (
@@ -1079,6 +1166,34 @@ class TestWirtBoundary(unittest.TestCase):
                     "crates/wirt/src: ../../../plugins/ui-demo/src/lib.rs"
                 ],
             )
+
+    def test_cfg_attr_nested_path_metadata_is_ignored(self):
+        source = '#[cfg_attr(test, some_attr(path = "../../tests/support/stub_host.rs"))]\n'
+
+        self.assertEqual(self.source_violations(source), [])
+
+    def test_cfg_attr_top_level_dynamic_path_fails_closed(self):
+        source = '#[cfg_attr(test, path = concat!("stub", ".rs"))]\nmod generated;\n'
+
+        self.assertEqual(
+            self.source_violations(source),
+            ["crates/wirt/src/lib.rs:1: include! path is not a string literal"],
+        )
+
+    def test_path_attribute_dynamic_and_malformed_values_fail_closed(self):
+        source = (
+            '#[path = concat!("stub", ".rs")]\n'
+            "#[path]\n"
+            "mod generated;\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: include! path is not a string literal",
+                "crates/wirt/src/lib.rs:2: include! path is not a string literal",
+            ],
+        )
 
     def test_dynamic_include_is_rejected_when_confinement_cannot_be_proven(self):
         with tempfile.TemporaryDirectory() as directory:
