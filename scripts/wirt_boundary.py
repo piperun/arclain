@@ -567,25 +567,29 @@ def parse_use_tree(
 
     token = tokens[index]
     if token.value == "*":
-        if not prefix:
+        if not prefix or prefix == ("self",):
             return [], index, False
         return [(prefix + ("*",), "*")], index + 1, True
     if token.kind != "identifier":
         return [], index, False
     if token.value == "self":
         if not prefix:
-            return [], index, False
-        local_name = prefix[-1]
-        index += 1
-        if index < len(tokens) and tokens[index].value == "as":
-            if index + 1 >= len(tokens) or tokens[index + 1].kind != "identifier":
+            path = ("self",)
+            index += 1
+            if not has_double_colon(tokens, index):
                 return [], index, False
-            local_name = tokens[index + 1].value or ""
-            index += 2
-        return [(prefix, local_name)], index, True
-
-    path = prefix + (token.value or "",)
-    index += 1
+        else:
+            local_name = prefix[-1]
+            index += 1
+            if index < len(tokens) and tokens[index].value == "as":
+                if index + 1 >= len(tokens) or tokens[index + 1].kind != "identifier":
+                    return [], index, False
+                local_name = tokens[index + 1].value or ""
+                index += 2
+            return [(prefix, local_name)], index, True
+    else:
+        path = prefix + (token.value or "",)
+        index += 1
     while has_double_colon(tokens, index):
         index += 2
         if index >= len(tokens):
@@ -593,6 +597,8 @@ def parse_use_tree(
         if tokens[index].value == "{":
             return parse_use_tree(tokens, index, path)
         if tokens[index].value == "*":
+            if path == ("self",):
+                return [], index, False
             return [(path + ("*",), "*")], index + 1, True
         if tokens[index].kind != "identifier":
             return [], index, False

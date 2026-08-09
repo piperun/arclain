@@ -695,6 +695,33 @@ class TestWirtBoundary(unittest.TestCase):
 
         self.assertEqual(self.source_tree_violations(sources), [])
 
+    def test_root_self_child_globs_are_allowed(self):
+        imports = (
+            "use self::nested::*;\n",
+            "use self::{nested::*};\n",
+            "use {self::nested::*};\n",
+        )
+        for import_source in imports:
+            with self.subTest(import_source=import_source):
+                self.assertEqual(
+                    self.source_tree_violations(
+                        {
+                            "src/lib.rs": "mod internal;\n",
+                            "src/internal.rs": "mod nested {}\n" + import_source,
+                        }
+                    ),
+                    [],
+                )
+
+    def test_root_self_glob_remains_rejected(self):
+        self.assertEqual(
+            self.source_violations("use self::*;\n"),
+            [
+                "crates/wirt/src/lib.rs:1: unsupported or ambiguous "
+                "Wasmtime component use tree"
+            ],
+        )
+
     def test_grouped_foreign_globs_fail_closed(self):
         sources = (
             "use shim::{*};\n",
