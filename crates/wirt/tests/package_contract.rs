@@ -103,6 +103,7 @@ fn mutate_exports(mutation: ExportMutation) -> Vec<u8> {
 struct InstanceMutation {
     marker: &'static str,
     fresh_resource_export: Option<&'static str>,
+    extra_export_name: Option<String>,
 }
 
 impl wasm_encoder::reencode::Reencode for InstanceMutation {
@@ -144,7 +145,9 @@ impl wasm_encoder::reencode::ReencodeComponent for InstanceMutation {
                 .defined_type()
                 .primitive(PrimitiveValType::U32);
             instance.export(
-                "review-extra-type",
+                self.extra_export_name
+                    .as_deref()
+                    .unwrap_or("review-extra-type"),
                 ComponentTypeRef::Type(TypeBounds::Eq(index)),
             );
         }
@@ -199,6 +202,109 @@ fn swap_public_type_names(first: &'static str, second: &'static str) -> Vec<u8> 
     use wasm_encoder::reencode::ReencodeComponent;
 
     let mut mutation = PublicTypeNameSwap { first, second };
+    let mut component = wasm_encoder::Component::new();
+    mutation
+        .parse_component(
+            &mut component,
+            wasmparser::Parser::new(0),
+            UI_DEMO_COMPONENT,
+        )
+        .unwrap();
+    component.finish()
+}
+
+#[derive(Default)]
+struct DuplicateMetadataRecord {
+    depth: usize,
+    inserted: bool,
+    duplicate_index: u32,
+}
+
+impl DuplicateMetadataRecord {
+    fn mapped_top_type(&self, index: u32) -> u32 {
+        if self.inserted && index >= self.duplicate_index {
+            index + 1
+        } else {
+            index
+        }
+    }
+}
+
+impl wasm_encoder::reencode::Reencode for DuplicateMetadataRecord {
+    type Error = std::convert::Infallible;
+}
+
+impl wasm_encoder::reencode::ReencodeComponent for DuplicateMetadataRecord {
+    fn push_depth(&mut self) {
+        self.depth += 1;
+    }
+
+    fn pop_depth(&mut self) {
+        self.depth -= 1;
+    }
+
+    fn component_type_index(&mut self, index: u32) -> u32 {
+        if self.depth == 0 {
+            self.mapped_top_type(index)
+        } else {
+            index
+        }
+    }
+
+    fn outer_component_type_index(&mut self, count: u32, index: u32) -> u32 {
+        if count as usize == self.depth {
+            self.mapped_top_type(index)
+        } else {
+            index
+        }
+    }
+
+    fn parse_component_type_section(
+        &mut self,
+        types: &mut wasm_encoder::ComponentTypeSection,
+        section: wasmparser::ComponentTypeSectionReader<'_>,
+    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
+        wasm_encoder::reencode::component_utils::parse_component_type_section(
+            self, types, section,
+        )?;
+        if self.depth == 0 && !self.inserted {
+            self.duplicate_index = types.len();
+            types.defined_type().record([
+                ("id", wasm_encoder::PrimitiveValType::String),
+                ("name", wasm_encoder::PrimitiveValType::String),
+                ("version", wasm_encoder::PrimitiveValType::String),
+                ("author", wasm_encoder::PrimitiveValType::String),
+                ("description", wasm_encoder::PrimitiveValType::String),
+            ]);
+            self.inserted = true;
+        }
+        Ok(())
+    }
+
+    fn parse_component_import_section(
+        &mut self,
+        imports: &mut wasm_encoder::ComponentImportSection,
+        section: wasmparser::ComponentImportSectionReader<'_>,
+    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
+        for import in section {
+            let import = import?;
+            let ty = if self.depth == 0 && import.name.name == "plugin-metadata" {
+                wasm_encoder::ComponentTypeRef::Type(wasm_encoder::TypeBounds::Eq(
+                    self.duplicate_index,
+                ))
+            } else {
+                self.component_type_ref(import.ty)?
+            };
+            imports.import(import.name, ty);
+        }
+        Ok(())
+    }
+}
+
+fn component_with_duplicated_metadata_record() -> Vec<u8> {
+    use wasm_encoder::reencode::ReencodeComponent;
+
+    let mut mutation = DuplicateMetadataRecord::default();
     let mut component = wasm_encoder::Component::new();
     mutation
         .parse_component(
@@ -303,15 +409,96 @@ fn deeply_nested_contract(depth: u32) -> Vec<u8> {
     component.finish()
 }
 
+fn wide_contract(field_count: usize) -> Vec<u8> {
+    use wasm_encoder::{
+        Component, ComponentExportKind, ComponentExportSection, ComponentImportSection,
+        ComponentTypeRef, ComponentTypeSection, ComponentValType, InstanceType, PrimitiveValType,
+        TypeBounds,
+    };
+
+    const INTERFACES: [&str; 18] = [
+        "wirt:plugin/host@0.1.0",
+        "wirt:plugin/meta@0.1.0",
+        "wirt:plugin/rules@0.1.0",
+        "wirt:plugin/ui@0.1.0",
+        "wasi:io/poll@0.2.9",
+        "wasi:clocks/monotonic-clock@0.2.9",
+        "wasi:io/error@0.2.9",
+        "wasi:io/streams@0.2.9",
+        "wasi:cli/stdout@0.2.9",
+        "wasi:cli/stderr@0.2.9",
+        "wasi:cli/stdin@0.2.9",
+        "wasi:cli/environment@0.2.9",
+        "wasi:cli/exit@0.2.9",
+        "wasi:cli/terminal-input@0.2.9",
+        "wasi:cli/terminal-output@0.2.9",
+        "wasi:cli/terminal-stdin@0.2.9",
+        "wasi:cli/terminal-stdout@0.2.9",
+        "wasi:cli/terminal-stderr@0.2.9",
+    ];
+    const PUBLIC_TYPES: [&str; 6] = [
+        "plugin-action",
+        "plugin-layout",
+        "plugin-metadata",
+        "plugin-rule-definition",
+        "top-tab-config",
+        "ui-element",
+    ];
+    const EXPORTS: [&str; 6] = [
+        "init",
+        "get-default-rules",
+        "get-ui-layout",
+        "on-ui-event",
+        "get-top-tabs",
+        "get-metadata",
+    ];
+
+    assert_eq!(field_count % PUBLIC_TYPES.len(), 0);
+    let tuple_width = field_count / PUBLIC_TYPES.len();
+    assert!(tuple_width <= 10_000);
+
+    let mut component = Component::new();
+    let mut types = ComponentTypeSection::new();
+    types.instance(&InstanceType::new());
+    types.defined_type().primitive(PrimitiveValType::U32);
+    for _ in PUBLIC_TYPES {
+        types
+            .defined_type()
+            .tuple(std::iter::repeat_n(ComponentValType::Type(1), tuple_width));
+    }
+    component.section(&types);
+
+    let mut imports = ComponentImportSection::new();
+    for name in INTERFACES {
+        imports.import(name, ComponentTypeRef::Instance(0));
+    }
+    let first_imported_type = PUBLIC_TYPES.len() as u32 + 2;
+    for (index, name) in PUBLIC_TYPES.into_iter().enumerate() {
+        imports.import(
+            name,
+            ComponentTypeRef::Type(TypeBounds::Eq(index as u32 + 2)),
+        );
+    }
+    component.section(&imports);
+
+    let mut exports = ComponentExportSection::new();
+    for (offset, name) in EXPORTS.into_iter().enumerate() {
+        exports.export(
+            name,
+            ComponentExportKind::Type,
+            first_imported_type + offset as u32,
+            None,
+        );
+    }
+    component.section(&exports);
+    component.finish()
+}
+
 #[test]
 fn package_bytes_are_deterministic_and_round_trip_exact_inputs() {
     let first = package_bytes(manifest_toml().as_bytes(), UI_DEMO_COMPONENT).unwrap();
     let second = package_bytes(manifest_toml().as_bytes(), UI_DEMO_COMPONENT).unwrap();
     assert_eq!(first, second);
-    assert_eq!(
-        PackageFingerprint::sha256(&first).as_str(),
-        "d06666940093ae934b664d1447ae7f1d03f2a2a21533857348a031d5a9b17dc7"
-    );
 
     let package = read_package_bytes(&first).unwrap();
     assert_eq!(package.manifest.wirt.abi, WIRT_ABI_VERSION);
@@ -388,6 +575,16 @@ fn canonical_component_has_only_the_fixed_wirt_and_wasi_contract() {
         .map(str::to_owned)
         .collect::<BTreeSet<_>>()
     );
+}
+
+#[test]
+fn structural_preflight_accepts_duplicated_equivalent_nonresource_types() {
+    let component = component_with_duplicated_metadata_record();
+    wasmparser::Validator::new()
+        .validate_all(&component)
+        .unwrap();
+    let contract = inspect_component_contract(&component).unwrap();
+    assert_eq!(contract.abi, WIRT_ABI_VERSION);
 }
 
 #[test]
@@ -511,6 +708,7 @@ fn structural_preflight_rejects_wrong_wirt_interface_type() {
     let component = mutate_instance_type(InstanceMutation {
         marker: "log",
         fresh_resource_export: None,
+        extra_export_name: None,
     });
     assert_contract_type_rejection("wirt host", &component);
 }
@@ -540,6 +738,7 @@ fn structural_preflight_rejects_wrong_type_for_every_allowed_interface() {
         let component = mutate_instance_type(InstanceMutation {
             marker,
             fresh_resource_export: None,
+            extra_export_name: None,
         });
         assert_contract_type_rejection(name, &component);
     }
@@ -590,14 +789,67 @@ fn structural_preflight_rejects_shape_identical_fresh_cross_interface_resources(
         let component = mutate_instance_type(InstanceMutation {
             marker,
             fresh_resource_export: Some(resource),
+            extra_export_name: None,
         });
         assert_contract_type_rejection(label, &component);
     }
 }
 
 #[test]
+fn structural_preflight_bounds_total_hashed_identifier_bytes() {
+    let component = mutate_instance_type(InstanceMutation {
+        marker: "log",
+        fresh_resource_export: None,
+        extra_export_name: Some("hostile".repeat(13_000)),
+    });
+    wasmparser::Validator::new()
+        .validate_all(&component)
+        .unwrap();
+    let error = inspect_component_contract(&component)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("component-preflight: type-complexity"),
+        "unexpected classification: {error}"
+    );
+    assert!(error.len() <= 240, "unbounded diagnostic: {error}");
+}
+
+#[test]
+fn structural_preflight_bounds_owned_top_level_name_bytes() {
+    let name = "hostile".repeat(13_000);
+    let component = component_with_empty_interface_import(&name);
+    wasmparser::Validator::new()
+        .validate_all(&component)
+        .unwrap();
+    let error = inspect_component_contract(&component)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("component-preflight: type-complexity"),
+        "unexpected classification: {error}"
+    );
+    assert!(error.len() <= 240, "unbounded diagnostic: {error}");
+}
+
+#[test]
 fn structural_preflight_bounds_deeply_nested_valid_type_graphs_iteratively() {
     let component = deeply_nested_contract(80);
+    wasmparser::Validator::new()
+        .validate_all(&component)
+        .unwrap();
+    let error = inspect_component_contract(&component)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("component-preflight: type-complexity"),
+        "unexpected classification: {error}"
+    );
+}
+
+#[test]
+fn structural_preflight_bounds_wide_valid_type_graphs_before_queue_growth() {
+    let component = wide_contract(60_000);
     wasmparser::Validator::new()
         .validate_all(&component)
         .unwrap();

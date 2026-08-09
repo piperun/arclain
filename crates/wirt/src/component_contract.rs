@@ -6,7 +6,7 @@ use wasmparser::component_types::{
     ComponentFuncTypeId, ComponentInstanceTypeId, ComponentTypeId, ComponentValType,
 };
 use wasmparser::types::Types;
-use wasmparser::{Encoding, Parser, Payload, Validator};
+use wasmparser::{Encoding, Parser, Payload, PrimitiveValType, Validator};
 
 const WIRT_IMPORTS: [&str; 4] = [
     "wirt:plugin/host@0.1.0",
@@ -52,8 +52,9 @@ const PUBLIC_TYPE_IMPORTS: [&str; 6] = [
 
 const MAX_TYPE_GRAPH_NODES: usize = 100_000;
 const MAX_TYPE_GRAPH_DEPTH: usize = 64;
+const MAX_TYPE_GRAPH_TOKEN_BYTES: usize = 64 * 1024;
 const EXPECTED_CONTRACT_HASH: &str =
-    "542c780fa520e9764f6cbf76db5dc39327cdc878faef455a8daaf7ee5cff495a";
+    "982072700e275062606b7a7d62798f6ff52be85b35959067f40e45833f25550d";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComponentContract {
@@ -80,9 +81,18 @@ fn bounded_name(name: &str) -> String {
     format!("{}…", &name[..end])
 }
 
+fn claim_token_bytes(total: &mut usize, bytes: usize) -> Result<()> {
+    *total = total
+        .checked_add(bytes)
+        .filter(|bytes| *bytes <= MAX_TYPE_GRAPH_TOKEN_BYTES)
+        .ok_or_else(|| contract_error("type-complexity"))?;
+    Ok(())
+}
+
 fn top_level_names(component: &[u8]) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
     let mut imports = BTreeSet::new();
     let mut exports = BTreeSet::new();
+    let mut owned_name_bytes = 0;
     let mut depth = 0_usize;
     for payload in Parser::new(0).parse_all(component) {
         match payload.map_err(|_| contract_error("invalid component"))? {
@@ -95,24 +105,18 @@ fn top_level_names(component: &[u8]) -> Result<(BTreeSet<String>, BTreeSet<Strin
             Payload::End(_) => depth = depth.saturating_sub(1),
             Payload::ComponentImportSection(section) if depth == 1 => {
                 for import in section {
-                    imports.insert(
-                        import
-                            .map_err(|_| contract_error("invalid component import section"))?
-                            .name
-                            .name
-                            .to_owned(),
-                    );
+                    let import =
+                        import.map_err(|_| contract_error("invalid component import section"))?;
+                    claim_token_bytes(&mut owned_name_bytes, import.name.name.len())?;
+                    imports.insert(import.name.name.to_owned());
                 }
             }
             Payload::ComponentExportSection(section) if depth == 1 => {
                 for export in section {
-                    exports.insert(
-                        export
-                            .map_err(|_| contract_error("invalid component export section"))?
-                            .name
-                            .name
-                            .to_owned(),
-                    );
+                    let export =
+                        export.map_err(|_| contract_error("invalid component export section"))?;
+                    claim_token_bytes(&mut owned_name_bytes, export.name.name.len())?;
+                    exports.insert(export.name.name.to_owned());
                 }
             }
             _ => {}
@@ -121,10 +125,13 @@ fn top_level_names(component: &[u8]) -> Result<(BTreeSet<String>, BTreeSet<Strin
     Ok((imports, exports))
 }
 
-enum Work {
-    Token(String),
+enum Work<'a> {
+    Tag(&'static str),
+    Name(&'a str),
+    Number(u64),
     Entity(ComponentEntityType, usize),
     Any(ComponentAnyTypeId, usize),
+    FinishAny(ComponentAnyTypeId),
     Func(ComponentFuncTypeId, usize),
     Instance(ComponentInstanceTypeId, usize),
     Component(ComponentTypeId, usize),
@@ -135,28 +142,72 @@ enum Work {
 
 struct TypeHasher<'a> {
     types: &'a Types,
-    digest: Sha256,
-    identities: BTreeMap<ComponentAnyTypeId, u32>,
-    expanded: BTreeSet<ComponentAnyTypeId>,
-    work: Vec<Work>,
+    frames: Vec<Sha256>,
+    resources: BTreeMap<ComponentAnyTypeId, u32>,
+    structural: BTreeMap<ComponentAnyTypeId, [u8; 32]>,
+    active: BTreeMap<ComponentAnyTypeId, usize>,
+    work: Vec<Work<'a>>,
     scheduled: usize,
+    token_bytes: usize,
 }
 
 impl<'a> TypeHasher<'a> {
     fn new(types: &'a Types) -> Self {
         Self {
             types,
-            digest: Sha256::new(),
-            identities: BTreeMap::new(),
-            expanded: BTreeSet::new(),
+            frames: vec![Sha256::new()],
+            resources: BTreeMap::new(),
+            structural: BTreeMap::new(),
+            active: BTreeMap::new(),
             work: Vec::new(),
             scheduled: 0,
+            token_bytes: 0,
         }
     }
 
-    fn token(&mut self, token: &str) {
-        self.digest.update((token.len() as u64).to_le_bytes());
-        self.digest.update(token.as_bytes());
+    fn update(&mut self, bytes: &[u8]) {
+        let digest = self.frames.last_mut().expect("the world frame is present");
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(bytes);
+    }
+
+    fn tag(&mut self, tag: &'static str) {
+        self.update(tag.as_bytes());
+    }
+
+    fn name(&mut self, name: &str) -> Result<()> {
+        claim_token_bytes(&mut self.token_bytes, name.len())?;
+        self.update(name.as_bytes());
+        Ok(())
+    }
+
+    fn number(&mut self, number: u64) {
+        self.tag("number");
+        self.update(&number.to_le_bytes());
+    }
+
+    fn primitive(&mut self, ty: PrimitiveValType) {
+        self.tag(match ty {
+            PrimitiveValType::Bool => "bool",
+            PrimitiveValType::S8 => "s8",
+            PrimitiveValType::U8 => "u8",
+            PrimitiveValType::S16 => "s16",
+            PrimitiveValType::U16 => "u16",
+            PrimitiveValType::S32 => "s32",
+            PrimitiveValType::U32 => "u32",
+            PrimitiveValType::S64 => "s64",
+            PrimitiveValType::U64 => "u64",
+            PrimitiveValType::F32 => "f32",
+            PrimitiveValType::F64 => "f64",
+            PrimitiveValType::Char => "char",
+            PrimitiveValType::String => "string",
+            PrimitiveValType::ErrorContext => "error-context",
+        });
+    }
+
+    fn structural_digest(&mut self, digest: &[u8; 32]) {
+        self.tag("structural-digest");
+        self.update(digest);
     }
 
     fn claim(&mut self, count: usize, depth: usize) -> Result<()> {
@@ -171,11 +222,11 @@ impl<'a> TypeHasher<'a> {
         Ok(())
     }
 
-    fn schedule(&mut self, items: Vec<Work>) -> Result<()> {
+    fn schedule(&mut self, items: Vec<Work<'a>>) -> Result<()> {
         let max_depth = items
             .iter()
             .filter_map(|item| match item {
-                Work::Token(_) => None,
+                Work::Tag(_) | Work::Name(_) | Work::Number(_) | Work::FinishAny(_) => None,
                 Work::Entity(_, depth)
                 | Work::Any(_, depth)
                 | Work::Func(_, depth)
@@ -192,7 +243,7 @@ impl<'a> TypeHasher<'a> {
         Ok(())
     }
 
-    fn push_claimed(&mut self, items: Vec<Work>) {
+    fn push_claimed(&mut self, items: Vec<Work<'a>>) {
         self.work.extend(items.into_iter().rev());
     }
 
@@ -208,10 +259,15 @@ impl<'a> TypeHasher<'a> {
         Ok(ty)
     }
 
-    fn root(&mut self, category: &str, name: &str, entity: ComponentEntityType) -> Result<()> {
-        self.token("root");
-        self.token(category);
-        self.token(name);
+    fn root(
+        &mut self,
+        category: &'static str,
+        name: &'a str,
+        entity: ComponentEntityType,
+    ) -> Result<()> {
+        self.tag("root");
+        self.tag(category);
+        self.name(name)?;
         self.schedule(vec![Work::Entity(entity, 0)])?;
         self.drain()
     }
@@ -219,9 +275,12 @@ impl<'a> TypeHasher<'a> {
     fn drain(&mut self) -> Result<()> {
         while let Some(work) = self.work.pop() {
             match work {
-                Work::Token(token) => self.token(&token),
+                Work::Tag(tag) => self.tag(tag),
+                Work::Name(name) => self.name(name)?,
+                Work::Number(number) => self.number(number),
                 Work::Entity(entity, depth) => self.entity(entity, depth)?,
                 Work::Any(ty, depth) => self.any(ty, depth)?,
+                Work::FinishAny(ty) => self.finish_any(ty)?,
                 Work::Func(id, depth) => self.func(id, depth)?,
                 Work::Instance(id, depth) => self.instance(id, depth)?,
                 Work::Component(id, depth) => self.component(id, depth)?,
@@ -236,28 +295,28 @@ impl<'a> TypeHasher<'a> {
     fn entity(&mut self, entity: ComponentEntityType, depth: usize) -> Result<()> {
         match entity {
             ComponentEntityType::Func(id) => self.schedule(vec![
-                Work::Token("func".into()),
+                Work::Tag("func"),
                 Work::Any(ComponentAnyTypeId::Func(id), depth + 1),
             ])?,
             ComponentEntityType::Value(ty) => {
-                self.schedule(vec![Work::Token("value".into()), Work::Val(ty, depth + 1)])?
+                self.schedule(vec![Work::Tag("value"), Work::Val(ty, depth + 1)])?
             }
             ComponentEntityType::Type {
                 referenced,
                 created,
             } => self.schedule(vec![
-                Work::Token("type".into()),
-                Work::Token("referenced".into()),
+                Work::Tag("type"),
+                Work::Tag("referenced"),
                 Work::Any(referenced, depth + 1),
-                Work::Token("created".into()),
+                Work::Tag("created"),
                 Work::Any(created, depth + 1),
             ])?,
             ComponentEntityType::Instance(id) => self.schedule(vec![
-                Work::Token("instance".into()),
+                Work::Tag("instance"),
                 Work::Any(ComponentAnyTypeId::Instance(id), depth + 1),
             ])?,
             ComponentEntityType::Component(id) => self.schedule(vec![
-                Work::Token("component".into()),
+                Work::Tag("component"),
                 Work::Any(ComponentAnyTypeId::Component(id), depth + 1),
             ])?,
             ComponentEntityType::Module(_) => {
@@ -271,29 +330,61 @@ impl<'a> TypeHasher<'a> {
 
     fn any(&mut self, ty: ComponentAnyTypeId, depth: usize) -> Result<()> {
         let ty = self.canonical_any(ty, depth)?;
-        let next = self.identities.len() as u32;
-        let ordinal = *self.identities.entry(ty).or_insert(next);
-        self.token("identity");
-        self.token(&ordinal.to_string());
-        if !self.expanded.insert(ty) {
+        if matches!(ty, ComponentAnyTypeId::Resource(_)) {
+            let next = self.resources.len() as u32;
+            let ordinal = *self.resources.entry(ty).or_insert(next);
+            self.tag("resource");
+            self.number(ordinal.into());
             return Ok(());
         }
-        match ty {
-            ComponentAnyTypeId::Resource(_) => self.token("resource"),
-            ComponentAnyTypeId::Defined(id) => self.schedule(vec![Work::Defined(id, depth + 1)])?,
-            ComponentAnyTypeId::Func(id) => self.schedule(vec![Work::Func(id, depth + 1)])?,
+        if let Some(digest) = self.structural.get(&ty).copied() {
+            self.structural_digest(&digest);
+            return Ok(());
+        }
+        if let Some(frame) = self.active.get(&ty).copied() {
+            self.tag("active-cycle");
+            self.number((self.frames.len() - frame) as u64);
+            return Ok(());
+        }
+
+        self.active.insert(ty, self.frames.len());
+        self.frames.push(Sha256::new());
+        let mut items = match ty {
+            ComponentAnyTypeId::Resource(_) => unreachable!(),
+            ComponentAnyTypeId::Defined(id) => {
+                vec![Work::Tag("defined"), Work::Defined(id, depth + 1)]
+            }
+            ComponentAnyTypeId::Func(id) => {
+                vec![Work::Tag("func"), Work::Func(id, depth + 1)]
+            }
             ComponentAnyTypeId::Instance(id) => {
-                self.schedule(vec![Work::Instance(id, depth + 1)])?
+                vec![Work::Tag("instance"), Work::Instance(id, depth + 1)]
             }
             ComponentAnyTypeId::Component(id) => {
-                self.schedule(vec![Work::Component(id, depth + 1)])?
+                vec![Work::Tag("component"), Work::Component(id, depth + 1)]
             }
-        }
+        };
+        items.push(Work::FinishAny(ty));
+        self.schedule(items)?;
+        Ok(())
+    }
+
+    fn finish_any(&mut self, ty: ComponentAnyTypeId) -> Result<()> {
+        let digest = self
+            .frames
+            .pop()
+            .filter(|_| !self.frames.is_empty())
+            .ok_or_else(|| contract_error("type-complexity"))?
+            .finalize()
+            .into();
+        self.active.remove(&ty);
+        self.structural.insert(ty, digest);
+        self.structural_digest(&digest);
         Ok(())
     }
 
     fn func(&mut self, id: ComponentFuncTypeId, depth: usize) -> Result<()> {
-        let ty = &self.types[id];
+        let ty: &'a _ = &self.types[id];
         let count = ty
             .params
             .len()
@@ -303,26 +394,26 @@ impl<'a> TypeHasher<'a> {
         self.claim(count, depth + 1)?;
         let mut items = Vec::with_capacity(count);
         items.extend([
-            Work::Token(if ty.async_ { "async" } else { "sync" }.into()),
-            Work::Token(ty.params.len().to_string()),
+            Work::Tag(if ty.async_ { "async" } else { "sync" }),
+            Work::Number(ty.params.len() as u64),
         ]);
         for (name, ty) in ty.params.iter() {
-            items.push(Work::Token(name.to_string()));
+            items.push(Work::Name(name.as_str()));
             items.push(Work::Val(*ty, depth + 1));
         }
         match ty.result {
             Some(ty) => {
-                items.push(Work::Token("result".into()));
+                items.push(Work::Tag("result"));
                 items.push(Work::Val(ty, depth + 1));
             }
-            None => items.push(Work::Token("no-result".into())),
+            None => items.push(Work::Tag("no-result")),
         }
         self.push_claimed(items);
         Ok(())
     }
 
     fn instance(&mut self, id: ComponentInstanceTypeId, depth: usize) -> Result<()> {
-        let instance = &self.types[id];
+        let instance: &'a _ = &self.types[id];
         let count = instance
             .exports
             .len()
@@ -333,9 +424,9 @@ impl<'a> TypeHasher<'a> {
         let mut exports = instance.exports.iter().collect::<Vec<_>>();
         exports.sort_by(|a, b| a.0.cmp(b.0));
         let mut items = Vec::with_capacity(count);
-        items.push(Work::Token(exports.len().to_string()));
+        items.push(Work::Number(exports.len() as u64));
         for (name, item) in exports {
-            items.push(Work::Token(name.clone()));
+            items.push(Work::Name(name.as_str()));
             items.push(Work::Entity(item.ty, depth + 1));
         }
         self.push_claimed(items);
@@ -343,7 +434,7 @@ impl<'a> TypeHasher<'a> {
     }
 
     fn component(&mut self, id: ComponentTypeId, depth: usize) -> Result<()> {
-        let ty = &self.types[id];
+        let ty: &'a _ = &self.types[id];
         let count = ty
             .imports
             .len()
@@ -357,13 +448,13 @@ impl<'a> TypeHasher<'a> {
         exports.sort_by(|a, b| a.0.cmp(b.0));
         let mut items = Vec::with_capacity(count);
         for (name, item) in imports {
-            items.push(Work::Token("import".into()));
-            items.push(Work::Token(name.clone()));
+            items.push(Work::Tag("import"));
+            items.push(Work::Name(name.as_str()));
             items.push(Work::Entity(item.ty, depth + 1));
         }
         for (name, item) in exports {
-            items.push(Work::Token("export".into()));
-            items.push(Work::Token(name.clone()));
+            items.push(Work::Tag("export"));
+            items.push(Work::Name(name.as_str()));
             items.push(Work::Entity(item.ty, depth + 1));
         }
         self.push_claimed(items);
@@ -372,7 +463,7 @@ impl<'a> TypeHasher<'a> {
 
     fn val(&mut self, ty: ComponentValType, depth: usize) -> Result<()> {
         match ty {
-            ComponentValType::Primitive(ty) => self.token(&ty.to_string()),
+            ComponentValType::Primitive(ty) => self.primitive(ty),
             ComponentValType::Type(id) => {
                 self.schedule(vec![Work::Any(ComponentAnyTypeId::Defined(id), depth + 1)])?
             }
@@ -382,19 +473,20 @@ impl<'a> TypeHasher<'a> {
 
     fn optional_val(&mut self, ty: Option<ComponentValType>, depth: usize) -> Result<()> {
         match ty {
-            Some(ty) => self.schedule(vec![Work::Token("some".into()), Work::Val(ty, depth + 1)]),
+            Some(ty) => self.schedule(vec![Work::Tag("some"), Work::Val(ty, depth + 1)]),
             None => {
-                self.token("none");
+                self.tag("none");
                 Ok(())
             }
         }
     }
 
     fn defined(&mut self, id: ComponentDefinedTypeId, depth: usize) -> Result<()> {
-        match &self.types[id] {
+        let defined: &'a ComponentDefinedType = &self.types[id];
+        match defined {
             ComponentDefinedType::Primitive(ty) => {
-                self.token("primitive");
-                self.token(&ty.to_string());
+                self.tag("primitive");
+                self.primitive(*ty);
             }
             ComponentDefinedType::Record(record) => {
                 let count = record
@@ -405,9 +497,9 @@ impl<'a> TypeHasher<'a> {
                     .ok_or_else(|| contract_error("type-complexity"))?;
                 self.claim(count, depth + 1)?;
                 let mut items = Vec::with_capacity(count);
-                items.push(Work::Token("record".into()));
+                items.push(Work::Tag("record"));
                 for (name, ty) in &record.fields {
-                    items.push(Work::Token(name.to_string()));
+                    items.push(Work::Name(name.as_str()));
                     items.push(Work::Val(*ty, depth + 1));
                 }
                 self.push_claimed(items);
@@ -421,24 +513,24 @@ impl<'a> TypeHasher<'a> {
                     .ok_or_else(|| contract_error("type-complexity"))?;
                 self.claim(count, depth + 1)?;
                 let mut items = Vec::with_capacity(count);
-                items.push(Work::Token("variant".into()));
+                items.push(Work::Tag("variant"));
                 for (name, case) in &variant.cases {
-                    items.push(Work::Token(name.to_string()));
+                    items.push(Work::Name(name.as_str()));
                     items.push(Work::OptionalVal(case.ty, depth + 1));
                 }
                 self.push_claimed(items);
             }
             ComponentDefinedType::List(ty) => {
-                self.schedule(vec![Work::Token("list".into()), Work::Val(*ty, depth + 1)])?
+                self.schedule(vec![Work::Tag("list"), Work::Val(*ty, depth + 1)])?
             }
             ComponentDefinedType::Map(key, value) => self.schedule(vec![
-                Work::Token("map".into()),
+                Work::Tag("map"),
                 Work::Val(*key, depth + 1),
                 Work::Val(*value, depth + 1),
             ])?,
             ComponentDefinedType::FixedLengthList(ty, len) => self.schedule(vec![
-                Work::Token("fixed-list".into()),
-                Work::Token(len.to_string()),
+                Work::Tag("fixed-list"),
+                Work::Number((*len).into()),
                 Work::Val(*ty, depth + 1),
             ])?,
             ComponentDefinedType::Tuple(tuple) => {
@@ -449,7 +541,7 @@ impl<'a> TypeHasher<'a> {
                     .ok_or_else(|| contract_error("type-complexity"))?;
                 self.claim(count, depth + 1)?;
                 let mut items = Vec::with_capacity(count);
-                items.push(Work::Token("tuple".into()));
+                items.push(Work::Tag("tuple"));
                 for ty in &tuple.types {
                     items.push(Work::Val(*ty, depth + 1));
                 }
@@ -463,9 +555,9 @@ impl<'a> TypeHasher<'a> {
                         .ok_or_else(|| contract_error("type-complexity"))?,
                     depth,
                 )?;
-                self.token("flags");
+                self.tag("flags");
                 for name in flags {
-                    self.token(name);
+                    self.name(name)?;
                 }
             }
             ComponentDefinedType::Enum(cases) => {
@@ -476,48 +568,48 @@ impl<'a> TypeHasher<'a> {
                         .ok_or_else(|| contract_error("type-complexity"))?,
                     depth,
                 )?;
-                self.token("enum");
+                self.tag("enum");
                 for name in cases {
-                    self.token(name);
+                    self.name(name)?;
                 }
             }
-            ComponentDefinedType::Option(ty) => self.schedule(vec![
-                Work::Token("option".into()),
-                Work::Val(*ty, depth + 1),
-            ])?,
+            ComponentDefinedType::Option(ty) => {
+                self.schedule(vec![Work::Tag("option"), Work::Val(*ty, depth + 1)])?
+            }
             ComponentDefinedType::Result { ok, err } => self.schedule(vec![
-                Work::Token("result".into()),
+                Work::Tag("result"),
                 Work::OptionalVal(*ok, depth + 1),
                 Work::OptionalVal(*err, depth + 1),
             ])?,
             ComponentDefinedType::Own(id) => {
-                self.token("own");
+                self.tag("own");
                 self.schedule(vec![Work::Any(
                     ComponentAnyTypeId::Resource(*id),
                     depth + 1,
                 )])?;
             }
             ComponentDefinedType::Borrow(id) => {
-                self.token("borrow");
+                self.tag("borrow");
                 self.schedule(vec![Work::Any(
                     ComponentAnyTypeId::Resource(*id),
                     depth + 1,
                 )])?;
             }
-            ComponentDefinedType::Future(ty) => self.schedule(vec![
-                Work::Token("future".into()),
-                Work::OptionalVal(*ty, depth + 1),
-            ])?,
-            ComponentDefinedType::Stream(ty) => self.schedule(vec![
-                Work::Token("stream".into()),
-                Work::OptionalVal(*ty, depth + 1),
-            ])?,
+            ComponentDefinedType::Future(ty) => {
+                self.schedule(vec![Work::Tag("future"), Work::OptionalVal(*ty, depth + 1)])?
+            }
+            ComponentDefinedType::Stream(ty) => {
+                self.schedule(vec![Work::Tag("stream"), Work::OptionalVal(*ty, depth + 1)])?
+            }
         }
         Ok(())
     }
 
-    fn finish(self) -> String {
-        self.digest
+    fn finish(mut self) -> String {
+        debug_assert_eq!(self.frames.len(), 1);
+        self.frames
+            .pop()
+            .expect("the world frame is present")
             .finalize()
             .iter()
             .map(|byte| format!("{byte:02x}"))
