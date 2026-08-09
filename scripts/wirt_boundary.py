@@ -524,17 +524,42 @@ def resolved_import_path(
     return aliases.get(path[0], (path[0],)) + path[1:]
 
 
+def is_public_use(tokens: list[RustToken], use_index: int) -> bool:
+    index = use_index - 1
+    if index >= 0 and tokens[index].value == "pub":
+        return True
+    if index < 0 or tokens[index].value != ")":
+        return False
+    depth = 1
+    index -= 1
+    while index >= 0 and depth:
+        if tokens[index].value == ")":
+            depth += 1
+        elif tokens[index].value == "(":
+            depth -= 1
+        index -= 1
+    return depth == 0 and index >= 0 and tokens[index].value == "pub"
+
+
+def relevant_wasmtime_binding(path: tuple[str, ...]) -> bool:
+    return path == ("wasmtime",) or (
+        len(path) >= 2
+        and path[0] == "wasmtime"
+        and path[1] in {"component", "*"}
+    )
+
+
 def wasmtime_bindgen_imports(
     tokens: list[RustToken],
 ) -> tuple[dict[str, tuple[str, ...]], list[tuple[int, int, str]]]:
     """Resolve concrete Wasmtime imports and reject relevant ambiguous trees."""
-    imports: list[tuple[RustToken, list[tuple[tuple[str, ...], str]]]] = []
+    imports: list[tuple[RustToken, list[tuple[tuple[str, ...], str]], bool]] = []
     issues: list[tuple[int, int, str]] = []
 
     for index, token in enumerate(tokens):
         start = index + 1
         if token.kind == "identifier" and token.value == "use":
-            pass
+            public = is_public_use(tokens, index)
         elif (
             token.kind == "identifier"
             and token.value == "extern"
@@ -543,6 +568,7 @@ def wasmtime_bindgen_imports(
             and tokens[index + 1].value == "crate"
         ):
             start = index + 2
+            public = False
         else:
             continue
         end = next(
@@ -561,7 +587,7 @@ def wasmtime_bindgen_imports(
                 for candidate in statement
                 if candidate.kind == "identifier"
             }
-            if "wasmtime" in identifiers:
+            if {"wasmtime", "component", "bindgen"} & identifiers:
                 issues.append(
                     (
                         token.offset,
@@ -570,11 +596,11 @@ def wasmtime_bindgen_imports(
                     )
                 )
             continue
-        imports.append((token, bindings))
+        imports.append((token, bindings, public))
 
     aliases: dict[str, tuple[str, ...]] = {"wasmtime": ("wasmtime",)}
     alias_counts: dict[str, int] = {}
-    for _, bindings in imports:
+    for _, bindings, _ in imports:
         for _, alias in bindings:
             if alias != "*":
                 alias_counts[alias] = alias_counts.get(alias, 0) + 1
@@ -586,7 +612,7 @@ def wasmtime_bindgen_imports(
 
     for _ in range(len(imports)):
         changed = False
-        for _, bindings in imports:
+        for _, bindings, _ in imports:
             for path, alias in bindings:
                 if alias == "*" or alias in ambiguous_aliases:
                     continue
@@ -598,7 +624,8 @@ def wasmtime_bindgen_imports(
         if not changed:
             break
 
-    for token, bindings in imports:
+    blocked_aliases: set[str] = set()
+    for token, bindings, public in imports:
         for path, alias in bindings:
             resolved = resolved_import_path(path, aliases)
             if alias == "*" and resolved[0] == "wasmtime":
@@ -609,7 +636,11 @@ def wasmtime_bindgen_imports(
                         "unsupported or ambiguous Wasmtime component use tree",
                     )
                 )
-            elif alias in ambiguous_aliases and resolved[0] == "wasmtime":
+            elif (
+                alias in ambiguous_aliases
+                and resolved[0] == "wasmtime"
+                and not public
+            ):
                 issues.append(
                     (
                         token.offset,
@@ -617,6 +648,42 @@ def wasmtime_bindgen_imports(
                         "unsupported or ambiguous Wasmtime component use tree",
                     )
                 )
+            if public and relevant_wasmtime_binding(resolved):
+                issues.append(
+                    (
+                        token.offset,
+                        token.line,
+                        "public Wasmtime bindgen re-export is not allowed",
+                    )
+                )
+                if alias != "*":
+                    blocked_aliases.add(alias)
+
+    tracked_bindgen_aliases = {
+        alias
+        for alias, path in aliases.items()
+        if path == ("wasmtime", "component", "bindgen")
+    }
+    reserved_aliases = {"wasmtime", "component", "bindgen"} | tracked_bindgen_aliases
+    for token, bindings, _ in imports:
+        for path, alias in bindings:
+            if alias == "*" or alias not in reserved_aliases:
+                continue
+            resolved = resolved_import_path(path, aliases)
+            if resolved[0] == "wasmtime":
+                continue
+            issues.append(
+                (
+                    token.offset,
+                    token.line,
+                    "reserved Wasmtime bindgen alias has non-Wasmtime provenance: "
+                    f"{alias}",
+                )
+            )
+            blocked_aliases.add(alias)
+
+    for alias in blocked_aliases:
+        aliases[alias] = ("__blocked_wasmtime_alias__", alias)
 
     return aliases, issues
 
@@ -634,8 +701,78 @@ def macro_path_before(
     return tuple(token.value or "" for token in tokens[start:bang:3]), start
 
 
+def bindgen_fields(
+    tokens: list[RustToken],
+) -> list[tuple[str, list[RustToken]]] | None:
+    fields: list[tuple[str, list[RustToken]]] = []
+    index = 0
+    delimiters = {"(": ")", "[": "]", "{": "}"}
+    while index < len(tokens):
+        if tokens[index].kind != "identifier" or index + 1 >= len(tokens):
+            return None
+        name = tokens[index].value or ""
+        if tokens[index + 1].value != ":":
+            return None
+        value_start = index + 2
+        index = value_start
+        stack: list[str] = []
+        while index < len(tokens):
+            value = tokens[index].value or ""
+            if value in delimiters:
+                stack.append(delimiters[value])
+            elif stack and value == stack[-1]:
+                stack.pop()
+            elif value in {")", "]", "}"
+            } or (value == "," and not stack):
+                break
+            index += 1
+        if stack or index == value_start:
+            return None
+        fields.append((name, tokens[value_start:index]))
+        if index == len(tokens):
+            break
+        if tokens[index].value != ",":
+            return None
+        index += 1
+        if index == len(tokens):
+            break
+    return fields
+
+
+def bindgen_path_input(
+    arguments: list[RustToken], opening: str
+) -> tuple[str | None, str | None]:
+    if opening == "{":
+        fields_tokens = arguments
+    elif arguments and arguments[0].value == "{":
+        end = closing_token(arguments, 0, "{", "}")
+        if end is None or end != len(arguments) - 1:
+            return None, "malformed component bindgen argument map"
+        fields_tokens = arguments[1:end]
+    else:
+        return None, "component bindgen must use exactly one literal path input"
+
+    fields = bindgen_fields(fields_tokens)
+    if fields is None:
+        return None, "malformed component bindgen argument map"
+    names: set[str] = set()
+    for name, _ in fields:
+        if name in names:
+            return None, f"component bindgen has duplicate input field: {name}"
+        names.add(name)
+    source_fields = [
+        field for field in fields if field[0] in {"path", "inline", "interfaces"}
+    ]
+    if len(source_fields) != 1 or source_fields[0][0] != "path":
+        return None, "component bindgen must use exactly one literal path input"
+    value = source_fields[0][1]
+    if len(value) != 1 or value[0].kind != "string":
+        return None, "component bindgen must use exactly one literal path input"
+    return value[0].value, None
+
+
 def component_bindgen_issues(
-    tokens: list[RustToken], source_path: Path, canonical_wit: Path
+    tokens: list[RustToken], crate_root: Path, canonical_wit: Path
 ) -> list[tuple[int, int, str]]:
     issues: list[tuple[int, int, str]] = []
     aliases, alias_issues = wasmtime_bindgen_imports(tokens)
@@ -689,29 +826,18 @@ def component_bindgen_issues(
             continue
 
         arguments = tokens[opening_index + 1 : end]
-        path_literal = None
-        for argument_index in range(len(arguments) - 2):
-            if (
-                arguments[argument_index].kind == "identifier"
-                and arguments[argument_index].value == "path"
-                and arguments[argument_index + 1].value == ":"
-            ):
-                candidate = arguments[argument_index + 2]
-                if candidate.kind == "string":
-                    path_literal = candidate.value
-                break
-
-        if path_literal is None:
+        path_literal, argument_error = bindgen_path_input(arguments, opening)
+        if argument_error is not None:
             issues.append(
                 (
                     tokens[invocation_start].offset,
                     tokens[invocation_start].line,
-                    "component bindgen path is not a string literal",
+                    argument_error,
                 )
             )
             continue
 
-        resolved = (source_path.parent.parent / path_literal).resolve()
+        resolved = (crate_root / path_literal).resolve()
         if resolved != canonical_wit:
             issues.append(
                 (
@@ -885,7 +1011,7 @@ def source_violations(workspace_root: Path) -> list[str]:
             if token.kind == "error"
         ]
         issues.extend(import_issues(tokens))
-        issues.extend(component_bindgen_issues(tokens, path, canonical_wit))
+        issues.extend(component_bindgen_issues(tokens, crate_root, canonical_wit))
         for offset, line, literal in compiled_path_issues(tokens):
             if literal is None:
                 issues.append((offset, line, "include! path is not a string literal"))

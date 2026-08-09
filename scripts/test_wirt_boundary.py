@@ -19,15 +19,26 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 class TestWirtBoundary(unittest.TestCase):
     def source_violations(self, source: str) -> list[str]:
+        return self.source_tree_violations({"src/lib.rs": source})
+
+    def source_tree_violations(self, sources: dict[str, str]) -> list[str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             crate = root / "crates" / "wirt"
-            (crate / "src").mkdir(parents=True)
+            crate.mkdir(parents=True)
             (crate / "Cargo.toml").write_text(
                 '[package]\nname = "wirt"\nversion = "0.1.0"\n',
                 encoding="utf-8",
             )
-            (crate / "src" / "lib.rs").write_text(source, encoding="utf-8")
+            canonical = root / "wirt-sdk" / "wit"
+            canonical.mkdir(parents=True)
+            (canonical / "plugin.wit").write_text(
+                "package wirt:plugin@0.1.0;\n", encoding="utf-8"
+            )
+            for relative, source in sources.items():
+                path = crate / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(source, encoding="utf-8")
             return wirt_boundary.source_violations(root)
 
     def test_app_manifest_declares_neutral_model_and_product_adapter_edges(self):
@@ -609,10 +620,283 @@ class TestWirtBoundary(unittest.TestCase):
         self.assertEqual(
             self.source_violations(source),
             [
-                "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime "
-                "component use tree",
+                "crates/wirt/src/lib.rs:1: public Wasmtime bindgen re-export is "
+                "not allowed",
+                "crates/wirt/src/lib.rs:2: reserved Wasmtime bindgen alias has "
+                "non-Wasmtime provenance: component",
                 "crates/wirt/src/lib.rs:3: unsupported or ambiguous component "
                 "bindgen macro path: component::bindgen",
+            ],
+        )
+
+    def test_second_bindgen_path_is_rejected(self):
+        source = (
+            "wasmtime::component::bindgen!({\n"
+            '    path: "../../wirt-sdk/wit/plugin.wit",\n'
+            '    path: "../../../plugins/ui-demo/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: component bindgen has duplicate input "
+                "field: path"
+            ],
+        )
+
+    def test_duplicate_bindgen_field_is_rejected(self):
+        source = (
+            "wasmtime::component::bindgen!({\n"
+            '    path: "../../wirt-sdk/wit/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            '    world: "another-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: component bindgen has duplicate input "
+                "field: world"
+            ],
+        )
+
+    def test_inline_bindgen_source_is_rejected_alongside_canonical_path(self):
+        source = (
+            "wasmtime::component::bindgen!({\n"
+            '    path: "../../wirt-sdk/wit/plugin.wit",\n'
+            '    inline: "package evil:plugin;",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: component bindgen must use exactly one "
+                "literal path input"
+            ],
+        )
+
+    def test_bindgen_path_list_is_rejected(self):
+        source = (
+            "wasmtime::component::bindgen!({\n"
+            '    path: ["../../wirt-sdk/wit/plugin.wit"],\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: component bindgen must use exactly one "
+                "literal path input"
+            ],
+        )
+
+    def test_interfaces_bindgen_source_is_rejected(self):
+        source = (
+            "wasmtime::component::bindgen!({\n"
+            '    interfaces: "interface evil {}",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: component bindgen must use exactly one "
+                "literal path input"
+            ],
+        )
+
+    def test_bindgen_source_shorthand_is_rejected(self):
+        source = (
+            "wasmtime::component::bindgen!(\n"
+            '    "plugin-world" in "../../../plugins/ui-demo/plugin.wit"\n'
+            ");\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: component bindgen must use exactly one "
+                "literal path input"
+            ],
+        )
+
+    def test_dynamic_bindgen_path_is_rejected(self):
+        source = (
+            "wasmtime::component::bindgen!({\n"
+            "    path: include_str!(\"../../../plugins/ui-demo/plugin.wit\"),\n"
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: component bindgen must use exactly one "
+                "literal path input"
+            ],
+        )
+
+    def test_nested_wirt_source_resolves_bindgen_path_from_crate_root(self):
+        source = (
+            "wasmtime::component::bindgen!({\n"
+            '    path: "../../wirt-sdk/wit/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_tree_violations({"src/nested/lib.rs": source}),
+            [],
+        )
+
+    def test_public_bindgen_reexport_is_rejected_at_its_definition(self):
+        source = (
+            "pub use wasmtime::component::bindgen as wb;\n"
+            "wb!({\n"
+            '    path: "../../../plugins/ui-demo/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_tree_violations({"src/shim.rs": source}),
+            [
+                "crates/wirt/src/shim.rs:1: public Wasmtime bindgen re-export is "
+                "not allowed"
+            ],
+        )
+
+    def test_public_component_reexport_is_rejected_at_its_definition(self):
+        source = "pub use wasmtime::component;\n"
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: public Wasmtime bindgen re-export is "
+                "not allowed"
+            ],
+        )
+
+    def test_public_wasmtime_root_reexport_is_rejected_at_its_definition(self):
+        source = "pub use wasmtime as wt;\n"
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: public Wasmtime bindgen re-export is "
+                "not allowed"
+            ],
+        )
+
+    def test_public_wasmtime_component_glob_reexport_is_rejected(self):
+        source = "pub use wasmtime::component::*;\n"
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: public Wasmtime bindgen re-export is "
+                "not allowed",
+                "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime "
+                "component use tree",
+            ],
+        )
+
+    def test_cross_file_public_bindgen_alias_is_rejected(self):
+        sources = {
+            "src/lib.rs": (
+                "use crate::shim::wb;\n"
+                "wb!({\n"
+                '    path: "../../../plugins/ui-demo/plugin.wit",\n'
+                '    world: "plugin-world",\n'
+                "});\n"
+            ),
+            "src/shim.rs": "pub use wasmtime::component::bindgen as wb;\n",
+        }
+
+        self.assertEqual(
+            self.source_tree_violations(sources),
+            [
+                "crates/wirt/src/shim.rs:1: public Wasmtime bindgen re-export is "
+                "not allowed"
+            ],
+        )
+
+    def test_non_wasmtime_reserved_alias_is_rejected(self):
+        source = (
+            "use crate::shim as wasmtime;\n"
+            "wasmtime::component::bindgen!({\n"
+            '    path: "../../../plugins/ui-demo/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: reserved Wasmtime bindgen alias has "
+                "non-Wasmtime provenance: wasmtime",
+                "crates/wirt/src/lib.rs:2: unsupported or ambiguous component "
+                "bindgen macro path: wasmtime::component::bindgen",
+            ],
+        )
+
+    def test_non_wasmtime_extern_reserved_alias_is_rejected(self):
+        source = (
+            "extern crate shim as wasmtime;\n"
+            "wasmtime::component::bindgen!({\n"
+            '    path: "../../../plugins/ui-demo/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: reserved Wasmtime bindgen alias has "
+                "non-Wasmtime provenance: wasmtime",
+                "crates/wirt/src/lib.rs:2: unsupported or ambiguous component "
+                "bindgen macro path: wasmtime::component::bindgen",
+            ],
+        )
+
+    def test_malformed_bindgen_argument_map_is_rejected(self):
+        source = (
+            "wasmtime::component::bindgen!({\n"
+            '    path: "../../wirt-sdk/wit/plugin.wit"\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: component bindgen must use exactly one "
+                "literal path input"
+            ],
+        )
+
+    def test_unterminated_wasmtime_import_fails_closed(self):
+        source = (
+            "use wasmtime as wt\n"
+            "wt::component::bindgen!({\n"
+            '    path: "../../wirt-sdk/wit/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:1: unsupported or ambiguous Wasmtime "
+                "component use tree",
+                "crates/wirt/src/lib.rs:2: unsupported or ambiguous component "
+                "bindgen macro path: wt::component::bindgen",
             ],
         )
 
