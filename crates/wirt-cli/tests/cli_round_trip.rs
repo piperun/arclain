@@ -194,6 +194,22 @@ fn starter_round_trip_is_deterministic_and_failures_leave_no_output() {
     assert!(!absent.exists());
     fs::write(&manifest_path, valid_manifest).unwrap();
 
+    fs::create_dir(project.join("wirt-starter-x")).unwrap();
+    let escaped = temp.path().join("escaped.wirt");
+    let valid_manifest = fs::read_to_string(&manifest_path).unwrap();
+    fs::write(
+        &manifest_path,
+        valid_manifest.replace("version = \"0.1.0\"", "version = \"x/../../escaped\""),
+    )
+    .unwrap();
+    let unsafe_default = assert_failure(run_in(&project, &["package"]));
+    assert!(String::from_utf8_lossy(&unsafe_default.stderr).contains("--output"));
+    assert!(
+        !escaped.exists(),
+        "default package path escaped the project"
+    );
+    fs::write(&manifest_path, valid_manifest).unwrap();
+
     let occupied = project.join("occupied.wirt");
     fs::write(&occupied, b"keep me").unwrap();
     assert_failure(run_in(
@@ -281,9 +297,7 @@ fn new_rejects_a_reparse_destination_without_touching_its_target() {
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, &link).unwrap();
     #[cfg(windows)]
-    if std::os::windows::fs::symlink_dir(&target, &link).is_err() {
-        return;
-    }
+    std::os::windows::fs::symlink_dir(&target, &link).unwrap();
 
     let error = assert_failure(run(&["new", link.to_str().unwrap()]));
     assert!(String::from_utf8_lossy(&error.stderr).contains("link"));

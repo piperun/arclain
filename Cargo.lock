@@ -8764,6 +8764,8 @@ name = "wirt-cli"
 version = "2.3.2"
 dependencies = [
  "anyhow",
+ "cap-fs-ext",
+ "cap-std",
  "serde_json",
  "tempfile",
  "wirt",

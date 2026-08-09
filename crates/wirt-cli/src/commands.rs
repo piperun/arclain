@@ -1,4 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
+use cap_fs_ext::{ambient_authority, DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
 use serde_json::Value;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
@@ -71,32 +73,27 @@ fn repository_root() -> PathBuf {
 }
 
 fn new_project(destination: &Path) -> Result<()> {
-    let created = prepare_empty_destination(destination)?;
-    let result: Result<()> = (|| {
-        let repository = repository_root();
-        copy_tree(
-            &repository.join("wirt-sdk/template"),
-            destination,
-            CopyMode::Template,
-        )?;
-        let sdk_destination = destination.join("wirt-sdk");
-        fs::create_dir(&sdk_destination).with_context(|| "could not create vendored SDK")?;
-        copy_tree(
-            &repository.join("wirt-sdk"),
-            &sdk_destination,
-            CopyMode::Sdk,
-        )?;
-        Ok(())
-    })();
-    if result.is_err() && created {
-        remove_created_destination(destination);
-    }
-    result?;
+    prepare_empty_destination(destination)?;
+    let repository = repository_root();
+    copy_tree(
+        &repository.join("wirt-sdk/template"),
+        destination,
+        CopyMode::Template,
+    )?;
+    let destination_root = open_dir_nofollow(destination, "could not open project destination")?;
+    destination_root
+        .create_dir("wirt-sdk")
+        .with_context(|| "could not create vendored SDK")?;
+    copy_tree(
+        &repository.join("wirt-sdk"),
+        &destination.join("wirt-sdk"),
+        CopyMode::Sdk,
+    )?;
     println!("Created Wirt plugin project at {}", destination.display());
     Ok(())
 }
 
-fn prepare_empty_destination(destination: &Path) -> Result<bool> {
+fn prepare_empty_destination(destination: &Path) -> Result<()> {
     match fs::symlink_metadata(destination) {
         Ok(metadata) => {
             reject_link_or_reparse(&metadata, "destination is a link or reparse point")?;
@@ -110,23 +107,15 @@ fn prepare_empty_destination(destination: &Path) -> Result<bool> {
             {
                 bail!("destination is not empty");
             }
-            Ok(false)
+            Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir_all(destination).with_context(|| "could not create destination")?;
             let metadata = fs::symlink_metadata(destination)?;
             reject_link_or_reparse(&metadata, "destination became a link or reparse point")?;
-            Ok(true)
+            Ok(())
         }
         Err(error) => Err(error).with_context(|| "could not inspect destination"),
-    }
-}
-
-fn remove_created_destination(destination: &Path) {
-    if let Ok(metadata) = fs::symlink_metadata(destination) {
-        if metadata.is_dir() && !is_link_or_reparse(&metadata) {
-            let _ = fs::remove_dir_all(destination);
-        }
     }
 }
 
@@ -137,74 +126,37 @@ enum CopyMode {
 }
 
 fn copy_tree(source: &Path, destination: &Path, mode: CopyMode) -> Result<()> {
-    let source_metadata = fs::symlink_metadata(source).with_context(|| "copy source is missing")?;
-    reject_link_or_reparse(&source_metadata, "copy source is a link or reparse point")?;
-    if !source_metadata.is_dir() {
-        bail!("copy source is not a directory");
-    }
-    let source_root = fs::canonicalize(source).with_context(|| "could not confine copy source")?;
-    let destination_root =
-        fs::canonicalize(destination).with_context(|| "could not confine copy destination")?;
-    copy_directory(
-        &source_root,
-        &source_root,
-        &destination_root,
-        &destination_root,
-        mode,
-    )
+    let source = open_dir_nofollow(source, "copy source is missing or a link/reparse point")?;
+    let destination = open_dir_nofollow(
+        destination,
+        "copy destination is missing or a link/reparse point",
+    )?;
+    copy_directory(&source, &destination, true, mode)
 }
 
-fn copy_directory(
-    source_root: &Path,
-    source: &Path,
-    destination_root: &Path,
-    destination: &Path,
-    mode: CopyMode,
-) -> Result<()> {
-    ensure_within(source, source_root, "copy source escaped its root")?;
-    ensure_within(
-        &fs::canonicalize(destination)?,
-        destination_root,
-        "copy destination escaped its root",
-    )?;
-    let mut entries = fs::read_dir(source)?.collect::<std::io::Result<Vec<_>>>()?;
+fn copy_directory(source: &Dir, destination: &Dir, at_root: bool, mode: CopyMode) -> Result<()> {
+    let mut entries = source.entries()?.collect::<std::io::Result<Vec<_>>>()?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let name = entry.file_name();
-        if should_skip(&name, source == source_root, mode) {
+        if should_skip(&name, at_root, mode) {
             continue;
         }
-        let source_path = entry.path();
-        let metadata = fs::symlink_metadata(&source_path)?;
-        reject_link_or_reparse(&metadata, "copy source contains a link or reparse point")?;
-        let canonical_source = fs::canonicalize(&source_path)?;
-        ensure_within(
-            &canonical_source,
-            source_root,
-            "copy source escaped its root",
-        )?;
-        let destination_path = destination.join(&name);
-        if metadata.is_dir() {
-            fs::create_dir(&destination_path)?;
-            let destination_metadata = fs::symlink_metadata(&destination_path)?;
-            reject_link_or_reparse(
-                &destination_metadata,
-                "copy destination contains a link or reparse point",
-            )?;
-            copy_directory(
-                source_root,
-                &canonical_source,
-                destination_root,
-                &destination_path,
-                mode,
-            )?;
-        } else if metadata.is_file() {
-            ensure_within(
-                &fs::canonicalize(destination)?,
-                destination_root,
-                "copy destination escaped its root",
-            )?;
-            copy_file(&canonical_source, &destination_path)?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            bail!("copy source contains a link or reparse point");
+        }
+        if file_type.is_dir() {
+            let source_child = source
+                .open_dir_nofollow(&name)
+                .with_context(|| "copy source directory became a link or reparse point")?;
+            destination.create_dir(&name)?;
+            let destination_child = destination
+                .open_dir_nofollow(&name)
+                .with_context(|| "copy destination directory became a link or reparse point")?;
+            copy_directory(&source_child, &destination_child, false, mode)?;
+        } else if file_type.is_file() {
+            copy_file(source, destination, &name)?;
         } else {
             bail!("copy source contains a non-regular entry");
         }
@@ -224,22 +176,38 @@ fn should_skip(name: &OsStr, at_root: bool, mode: CopyMode) -> bool {
     }
 }
 
-fn copy_file(source: &Path, destination: &Path) -> Result<()> {
-    let mut input = File::open(source)?;
-    let mut output = OpenOptions::new()
+fn copy_file(source: &Dir, destination: &Dir, name: &OsStr) -> Result<()> {
+    let mut read_options = CapOpenOptions::new();
+    read_options.read(true).follow(FollowSymlinks::No);
+    let mut input = source
+        .open_with(name, &read_options)
+        .with_context(|| "copy source file became a link or reparse point")?;
+    let mut write_options = CapOpenOptions::new();
+    write_options
         .write(true)
         .create_new(true)
-        .open(destination)?;
+        .follow(FollowSymlinks::No);
+    let mut output = destination
+        .open_with(name, &write_options)
+        .with_context(|| "copy destination file already exists or is a link/reparse point")?;
     std::io::copy(&mut input, &mut output)?;
     output.sync_all()?;
     Ok(())
 }
 
-fn ensure_within(path: &Path, root: &Path, message: &str) -> Result<()> {
-    if !path.starts_with(root) {
-        bail!("{message}");
-    }
-    Ok(())
+fn open_dir_nofollow(path: &Path, context: &str) -> Result<Dir> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("directory path has no final component"))?;
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent =
+        Dir::open_ambient_dir(parent, ambient_authority()).with_context(|| context.to_owned())?;
+    parent
+        .open_dir_nofollow(name)
+        .with_context(|| context.to_owned())
 }
 
 fn reject_link_or_reparse(metadata: &fs::Metadata, message: &str) -> Result<()> {
@@ -433,12 +401,16 @@ fn package_project(project: &Path, output: Option<&Path>) -> Result<()> {
         build_project(&project)?;
     }
     let (bytes, package) = validate_project(&project)?;
-    let destination = output.map(Path::to_path_buf).unwrap_or_else(|| {
-        project.join(format!(
-            "{}-{}.wirt",
-            package.manifest.plugin.id, package.manifest.plugin.version
-        ))
-    });
+    let destination = match output {
+        Some(output) => output.to_path_buf(),
+        None => {
+            let version = &package.manifest.plugin.version;
+            if version.contains(['/', '\\']) {
+                bail!("plugin version is unsafe for a default filename; pass `--output <path>`");
+            }
+            project.join(format!("{}-{version}.wirt", package.manifest.plugin.id))
+        }
+    };
     atomic_create(&destination, &bytes)?;
     println!("Created {}", destination.display());
     Ok(())
@@ -485,4 +457,36 @@ fn atomic_create(destination: &Path, bytes: &[u8]) -> Result<()> {
     }
     fs::remove_file(&temporary).with_context(|| "could not remove output temp link")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{copy_file, open_dir_nofollow};
+    use std::ffi::OsStr;
+    use std::fs;
+
+    #[test]
+    fn handle_relative_copy_rejects_a_source_replaced_with_a_link() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        let outside = temp.path().join("outside.txt");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(source.join("plugin.toml"), b"checked bytes").unwrap();
+        fs::write(&outside, b"outside bytes").unwrap();
+
+        let source = open_dir_nofollow(&source, "source").unwrap();
+        let destination = open_dir_nofollow(&destination, "destination").unwrap();
+        fs::remove_file(temp.path().join("source/plugin.toml")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, temp.path().join("source/plugin.toml")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&outside, temp.path().join("source/plugin.toml"))
+            .unwrap();
+
+        let error = copy_file(&source, &destination, OsStr::new("plugin.toml")).unwrap_err();
+        assert!(error.to_string().contains("link or reparse point"));
+        assert!(!temp.path().join("destination/plugin.toml").exists());
+    }
 }
