@@ -448,31 +448,144 @@ def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | 
     return issues
 
 
+def wasmtime_bindgen_aliases(tokens: list[RustToken]) -> tuple[set[str], set[str], set[str], set[str]]:
+    macro_aliases: set[str] = set()
+    component_aliases: set[str] = set()
+    ambiguous_macro_aliases: set[str] = set()
+    ambiguous_component_aliases: set[str] = set()
+    bindgen_path = ("wasmtime", ":", ":", "component", ":", ":", "bindgen")
+    component_path = ("wasmtime", ":", ":", "component")
+
+    for index, token in enumerate(tokens):
+        if token.kind != "identifier" or token.value != "use":
+            continue
+        end = next(
+            (candidate for candidate in range(index + 1, len(tokens)) if tokens[candidate].value == ";"),
+            len(tokens),
+        )
+        statement = tokens[index + 1 : end]
+        values = tuple(candidate.value for candidate in statement)
+        identifiers = {candidate.value for candidate in statement if candidate.kind == "identifier"}
+
+        if "wasmtime" in identifiers and "component" in identifiers:
+            for alias_index, candidate in enumerate(statement[:-1]):
+                if candidate.kind == "identifier" and candidate.value == "as":
+                    alias = statement[alias_index + 1]
+                    if alias.kind == "identifier":
+                        ambiguous_component_aliases.add(alias.value or "")
+                        if "bindgen" in identifiers:
+                            ambiguous_macro_aliases.add(alias.value or "")
+
+        if values[: len(bindgen_path)] == bindgen_path:
+            if len(values) == len(bindgen_path):
+                macro_aliases.add("bindgen")
+            elif (
+                len(values) == len(bindgen_path) + 2
+                and values[-2] == "as"
+                and statement[-1].kind == "identifier"
+            ):
+                macro_aliases.add(statement[-1].value or "")
+        elif values[: len(component_path)] == component_path:
+            if len(values) == len(component_path):
+                component_aliases.add("component")
+            elif (
+                len(values) == len(component_path) + 2
+                and values[-2] == "as"
+                and statement[-1].kind == "identifier"
+            ):
+                component_aliases.add(statement[-1].value or "")
+
+    return (
+        macro_aliases,
+        component_aliases,
+        ambiguous_macro_aliases,
+        ambiguous_component_aliases,
+    )
+
+
 def component_bindgen_issues(
     tokens: list[RustToken], source_path: Path, canonical_wit: Path
 ) -> list[tuple[int, int, str]]:
     issues: list[tuple[int, int, str]] = []
-    macro_prefix = (
-        "wasmtime",
-        ":",
-        ":",
-        "component",
-        ":",
-        ":",
-        "bindgen",
-        "!",
-        "(",
-    )
-    for index in range(len(tokens) - len(macro_prefix)):
-        if tuple(token.value for token in tokens[index : index + len(macro_prefix)]) != macro_prefix:
-            continue
-        opening = index + len(macro_prefix) - 1
-        end = closing_token(tokens, opening, "(", ")")
-        if end is None:
-            issues.append((tokens[index].offset, tokens[index].line, "unterminated component bindgen macro"))
+    (
+        macro_aliases,
+        component_aliases,
+        ambiguous_macro_aliases,
+        ambiguous_component_aliases,
+    ) = wasmtime_bindgen_aliases(tokens)
+    direct_path = ("wasmtime", ":", ":", "component", ":", ":", "bindgen")
+    delimiters = {"(": ")", "[": "]", "{": "}"}
+
+    for bang, token in enumerate(tokens):
+        if token.value != "!":
             continue
 
-        arguments = tokens[opening + 1 : end]
+        invocation_start = bang
+        macro_name = None
+        if bang >= len(direct_path) and tuple(
+            candidate.value for candidate in tokens[bang - len(direct_path) : bang]
+        ) == direct_path:
+            invocation_start = bang - len(direct_path)
+        elif (
+            bang >= 4
+            and tokens[bang - 4].kind == "identifier"
+            and tokens[bang - 3].value == ":"
+            and tokens[bang - 2].value == ":"
+            and tokens[bang - 1].value == "bindgen"
+        ):
+            macro_name = tokens[bang - 4].value or ""
+            invocation_start = bang - 4
+            if macro_name not in component_aliases:
+                if macro_name in ambiguous_component_aliases:
+                    issues.append(
+                        (
+                            tokens[invocation_start].offset,
+                            tokens[invocation_start].line,
+                            "unsupported or ambiguous component bindgen macro path: "
+                            f"{macro_name}::bindgen",
+                        )
+                    )
+                continue
+        elif bang >= 1 and tokens[bang - 1].kind == "identifier":
+            macro_name = tokens[bang - 1].value or ""
+            invocation_start = bang - 1
+            if macro_name not in macro_aliases:
+                if macro_name in ambiguous_macro_aliases:
+                    issues.append(
+                        (
+                            tokens[invocation_start].offset,
+                            tokens[invocation_start].line,
+                            "unsupported or ambiguous component bindgen macro path: "
+                            f"{macro_name}",
+                        )
+                    )
+                continue
+        else:
+            continue
+
+        opening_index = bang + 1
+        if opening_index >= len(tokens) or tokens[opening_index].value not in delimiters:
+            issues.append(
+                (
+                    tokens[invocation_start].offset,
+                    tokens[invocation_start].line,
+                    "component bindgen macro requires a delimited body",
+                )
+            )
+            continue
+        opening = tokens[opening_index].value or ""
+        end = closing_token(tokens, opening_index, opening, delimiters[opening])
+        if end is None:
+            issues.append(
+                (
+                    tokens[invocation_start].offset,
+                    tokens[invocation_start].line,
+                    "unterminated component bindgen macro",
+                )
+            )
+            continue
+
+        arguments = tokens[opening_index + 1 : end]
         path_literal = None
         for argument_index in range(len(arguments) - 2):
             if (
@@ -488,8 +601,8 @@ def component_bindgen_issues(
         if path_literal is None:
             issues.append(
                 (
-                    tokens[index].offset,
-                    tokens[index].line,
+                    tokens[invocation_start].offset,
+                    tokens[invocation_start].line,
                     "component bindgen path is not a string literal",
                 )
             )
@@ -499,8 +612,8 @@ def component_bindgen_issues(
         if resolved != canonical_wit:
             issues.append(
                 (
-                    tokens[index].offset,
-                    tokens[index].line,
+                    tokens[invocation_start].offset,
+                    tokens[invocation_start].line,
                     "component bindgen path must resolve to wirt-sdk/wit/plugin.wit: "
                     f"{path_literal}",
                 )
@@ -520,8 +633,9 @@ def wirt_wit_violations(workspace_root: Path) -> list[str]:
     wit_files = sorted(workspace_root.rglob("*.wit"))
 
     canonical = workspace_root / "wirt-sdk" / "wit" / "plugin.wit"
+    plugin_wit_files = [path for path in wit_files if path.name == "plugin.wit"]
     violations: list[str] = []
-    if canonical not in wit_files:
+    if canonical not in plugin_wit_files:
         violations.append("wirt-sdk/wit/plugin.wit: missing canonical Wirt plugin WIT")
     elif not re.search(
         r"^package\s+wirt:plugin@0\.1\.0;",
@@ -532,15 +646,24 @@ def wirt_wit_violations(workspace_root: Path) -> list[str]:
             "wirt-sdk/wit/plugin.wit: must declare package wirt:plugin@0.1.0"
         )
 
+    for path in plugin_wit_files:
+        if path == canonical:
+            continue
+        relative = path.relative_to(workspace_root).as_posix()
+        violations.append(
+            f"{relative}: unexpected plugin WIT; only "
+            "wirt-sdk/wit/plugin.wit is allowed"
+        )
+
     for path in wit_files:
         if path == canonical:
             continue
         relative = path.relative_to(workspace_root).as_posix()
         if re.search(
-            r"^package\s+wirt:plugin@0\.1\.0;",
+            r"^package\s+wirt:plugin(?:@[^;]+)?;",
             path.read_text(encoding="utf-8"),
             re.MULTILINE,
-        ):
+        ) and path.name != "plugin.wit":
             violations.append(
                 f"{relative}: duplicate Wirt plugin WIT; only "
                 "wirt-sdk/wit/plugin.wit is allowed"

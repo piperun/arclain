@@ -59,6 +59,9 @@ The compiled `.wasm` file will be in `target/wasm32-wasip2/release/`
 Each plugin requires a `.toml` manifest file with the same name as the plugin folder:
 
 ```toml
+[wirt]
+abi = "0.1.0"
+
 [plugin]
 id = "plugin-id"
 name = "Plugin Name"
@@ -147,6 +150,9 @@ guest bindings for that ABI.
 
 4. **Create Plugin Manifest** (`my-plugin.toml`)
    ```toml
+   [wirt]
+   abi = "0.1.0"
+
    [plugin]
    id = "my-plugin"
    name = "My Plugin"
@@ -225,7 +231,7 @@ guest bindings for that ABI.
    - Check the Plugins settings page to verify it loaded
    - Enable the plugin and test with archives
 
-## Plugin SDK API
+## Wirt SDK API
 
 ### Host Functions
 

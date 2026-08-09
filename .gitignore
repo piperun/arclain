@@ -30,7 +30,7 @@ logs/
 plugins/*/target/
 plugins/*/release/
 plugins/*/wasm32-*/
-plugin-sdk/*/target/
+wirt-sdk/*/target/
 
 # Real test data (contains personal files)
 _real_data/

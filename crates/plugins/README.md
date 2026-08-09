@@ -93,6 +93,9 @@ A plugin consists of two files:
 ### Example Manifest
 
 ```toml
+[wirt]
+abi = "0.1.0"
+
 [plugin]
 id = "my-plugin"
 name = "My Plugin"
