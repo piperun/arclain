@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 import tomllib
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +20,13 @@ class RustToken:
     value: str | None
     line: int
     offset: int
+
+
+@dataclass(frozen=True)
+class WitToken:
+    kind: str
+    value: str
+    line: int
 
 
 def normalized(name: str) -> str:
@@ -448,71 +454,122 @@ def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | 
     return issues
 
 
-def wasmtime_bindgen_aliases(tokens: list[RustToken]) -> tuple[set[str], set[str], set[str], set[str]]:
+def has_double_colon(tokens: list[RustToken], index: int) -> bool:
+    return (
+        index + 1 < len(tokens)
+        and tokens[index].value == ":"
+        and tokens[index + 1].value == ":"
+    )
+
+
+def parse_use_tree(
+    tokens: list[RustToken], index: int, prefix: tuple[str, ...] = ()
+) -> tuple[list[tuple[tuple[str, ...], str]], int, bool]:
+    """Parse one Rust `use` tree into imported paths and local names."""
+    if index >= len(tokens):
+        return [], index, False
+    if tokens[index].value == "{":
+        bindings: list[tuple[tuple[str, ...], str]] = []
+        index += 1
+        while index < len(tokens) and tokens[index].value != "}":
+            nested, index, valid = parse_use_tree(tokens, index, prefix)
+            if not valid:
+                return [], index, False
+            bindings.extend(nested)
+            if index < len(tokens) and tokens[index].value == ",":
+                index += 1
+            elif index >= len(tokens) or tokens[index].value != "}":
+                return [], index, False
+        return bindings, index + 1, index < len(tokens)
+
+    token = tokens[index]
+    if token.kind != "identifier":
+        return [], index, False
+    if token.value == "self":
+        if not prefix:
+            return [], index, False
+        return [(prefix, prefix[-1])], index + 1, True
+
+    path = prefix + (token.value or "",)
+    index += 1
+    while has_double_colon(tokens, index):
+        index += 2
+        if index >= len(tokens):
+            return [], index, False
+        if tokens[index].value == "{":
+            return parse_use_tree(tokens, index, path)
+        if tokens[index].value == "*":
+            return [], index + 1, True
+        if tokens[index].kind != "identifier":
+            return [], index, False
+        if tokens[index].value == "self":
+            return [(path, path[-1])], index + 1, True
+        path += (tokens[index].value or "",)
+        index += 1
+
+    alias = path[-1]
+    if index < len(tokens) and tokens[index].kind == "identifier" and tokens[index].value == "as":
+        if index + 1 >= len(tokens) or tokens[index + 1].kind != "identifier":
+            return [], index, False
+        alias = tokens[index + 1].value or ""
+        index += 2
+    return [(path, alias)], index, True
+
+
+def wasmtime_bindgen_aliases(
+    tokens: list[RustToken],
+) -> tuple[set[str], set[str], list[tuple[int, int, str]]]:
     macro_aliases: set[str] = set()
     component_aliases: set[str] = set()
-    ambiguous_macro_aliases: set[str] = set()
-    ambiguous_component_aliases: set[str] = set()
-    bindgen_path = ("wasmtime", ":", ":", "component", ":", ":", "bindgen")
-    component_path = ("wasmtime", ":", ":", "component")
+    issues: list[tuple[int, int, str]] = []
 
     for index, token in enumerate(tokens):
         if token.kind != "identifier" or token.value != "use":
             continue
         end = next(
-            (candidate for candidate in range(index + 1, len(tokens)) if tokens[candidate].value == ";"),
+            (
+                candidate
+                for candidate in range(index + 1, len(tokens))
+                if tokens[candidate].value == ";"
+            ),
             len(tokens),
         )
         statement = tokens[index + 1 : end]
-        values = tuple(candidate.value for candidate in statement)
-        identifiers = {candidate.value for candidate in statement if candidate.kind == "identifier"}
+        bindings, cursor, valid = parse_use_tree(statement, 0)
+        if not valid or cursor != len(statement):
+            identifiers = {
+                candidate.value
+                for candidate in statement
+                if candidate.kind == "identifier"
+            }
+            if {"wasmtime", "component"} <= identifiers or {
+                "wasmtime",
+                "bindgen",
+            } <= identifiers:
+                issues.append(
+                    (
+                        token.offset,
+                        token.line,
+                        "unsupported or ambiguous Wasmtime component use tree",
+                    )
+                )
+            continue
 
-        if "wasmtime" in identifiers and "component" in identifiers:
-            for alias_index, candidate in enumerate(statement[:-1]):
-                if candidate.kind == "identifier" and candidate.value == "as":
-                    alias = statement[alias_index + 1]
-                    if alias.kind == "identifier":
-                        ambiguous_component_aliases.add(alias.value or "")
-                        if "bindgen" in identifiers:
-                            ambiguous_macro_aliases.add(alias.value or "")
+        for path, alias in bindings:
+            if path == ("wasmtime", "component"):
+                component_aliases.add(alias)
+            elif path == ("wasmtime", "component", "bindgen"):
+                macro_aliases.add(alias)
 
-        if values[: len(bindgen_path)] == bindgen_path:
-            if len(values) == len(bindgen_path):
-                macro_aliases.add("bindgen")
-            elif (
-                len(values) == len(bindgen_path) + 2
-                and values[-2] == "as"
-                and statement[-1].kind == "identifier"
-            ):
-                macro_aliases.add(statement[-1].value or "")
-        elif values[: len(component_path)] == component_path:
-            if len(values) == len(component_path):
-                component_aliases.add("component")
-            elif (
-                len(values) == len(component_path) + 2
-                and values[-2] == "as"
-                and statement[-1].kind == "identifier"
-            ):
-                component_aliases.add(statement[-1].value or "")
-
-    return (
-        macro_aliases,
-        component_aliases,
-        ambiguous_macro_aliases,
-        ambiguous_component_aliases,
-    )
+    return macro_aliases, component_aliases, issues
 
 
 def component_bindgen_issues(
     tokens: list[RustToken], source_path: Path, canonical_wit: Path
 ) -> list[tuple[int, int, str]]:
     issues: list[tuple[int, int, str]] = []
-    (
-        macro_aliases,
-        component_aliases,
-        ambiguous_macro_aliases,
-        ambiguous_component_aliases,
-    ) = wasmtime_bindgen_aliases(tokens)
+    macro_aliases, component_aliases, alias_issues = wasmtime_bindgen_aliases(tokens)
+    issues.extend(alias_issues)
     direct_path = ("wasmtime", ":", ":", "component", ":", ":", "bindgen")
     delimiters = {"(": ")", "[": "]", "{": "}"}
 
@@ -536,29 +593,11 @@ def component_bindgen_issues(
             macro_name = tokens[bang - 4].value or ""
             invocation_start = bang - 4
             if macro_name not in component_aliases:
-                if macro_name in ambiguous_component_aliases:
-                    issues.append(
-                        (
-                            tokens[invocation_start].offset,
-                            tokens[invocation_start].line,
-                            "unsupported or ambiguous component bindgen macro path: "
-                            f"{macro_name}::bindgen",
-                        )
-                    )
                 continue
         elif bang >= 1 and tokens[bang - 1].kind == "identifier":
             macro_name = tokens[bang - 1].value or ""
             invocation_start = bang - 1
             if macro_name not in macro_aliases:
-                if macro_name in ambiguous_macro_aliases:
-                    issues.append(
-                        (
-                            tokens[invocation_start].offset,
-                            tokens[invocation_start].line,
-                            "unsupported or ambiguous component bindgen macro path: "
-                            f"{macro_name}",
-                        )
-                    )
                 continue
         else:
             continue
@@ -629,22 +668,118 @@ def path_is_within(path: Path, root: Path) -> bool:
     return True
 
 
+def wit_tokens(source: str) -> list[WitToken]:
+    """Tokenize enough of WIT to locate package declarations safely."""
+    tokens: list[WitToken] = []
+    cursor = 0
+    line = 1
+    while cursor < len(source):
+        value = source[cursor]
+        if value.isspace():
+            if value == "\n":
+                line += 1
+            cursor += 1
+            continue
+        if source.startswith("//", cursor):
+            newline = source.find("\n", cursor + 2)
+            cursor = len(source) if newline == -1 else newline
+            continue
+        if source.startswith("/*", cursor):
+            comment_line = line
+            depth = 1
+            cursor += 2
+            while cursor < len(source) and depth:
+                if source.startswith("/*", cursor):
+                    depth += 1
+                    cursor += 2
+                elif source.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    if source[cursor] == "\n":
+                        line += 1
+                    cursor += 1
+            if depth:
+                tokens.append(WitToken("error", "unterminated block comment", comment_line))
+            continue
+        token_line = line
+        if value.isalnum() or value in {"_", "-"}:
+            start = cursor
+            cursor += 1
+            while cursor < len(source) and (
+                source[cursor].isalnum() or source[cursor] in {"_", "-"}
+            ):
+                cursor += 1
+            tokens.append(WitToken("identifier", source[start:cursor], token_line))
+            continue
+        tokens.append(WitToken("punctuation", value, token_line))
+        cursor += 1
+    return tokens
+
+
+def wit_package_declarations(source: str) -> tuple[list[tuple[str, str, str | None]], bool]:
+    """Return WIT package declarations and whether any declaration is malformed."""
+    tokens = wit_tokens(source)
+    malformed = any(token.kind == "error" for token in tokens)
+    declarations: list[tuple[str, str, str | None]] = []
+    for index, token in enumerate(tokens):
+        if token.kind != "identifier" or token.value != "package":
+            continue
+        cursor = index + 1
+        if cursor >= len(tokens) or tokens[cursor].kind != "identifier":
+            malformed = True
+            continue
+        namespace = tokens[cursor].value
+        cursor += 1
+        if cursor >= len(tokens) or tokens[cursor].value != ":":
+            malformed = True
+            continue
+        cursor += 1
+        if cursor >= len(tokens) or tokens[cursor].kind != "identifier":
+            malformed = True
+            continue
+        name = tokens[cursor].value
+        cursor += 1
+        version = None
+        if cursor < len(tokens) and tokens[cursor].value == "@":
+            cursor += 1
+            version_start = cursor
+            while cursor < len(tokens) and tokens[cursor].value != ";":
+                cursor += 1
+            if cursor == version_start:
+                malformed = True
+                continue
+            version = "".join(token.value for token in tokens[version_start:cursor])
+        if cursor >= len(tokens) or tokens[cursor].value != ";":
+            malformed = True
+            continue
+        declarations.append((namespace, name, version))
+    if len(declarations) > 1:
+        malformed = True
+    return declarations, malformed
+
+
 def wirt_wit_violations(workspace_root: Path) -> list[str]:
     wit_files = sorted(workspace_root.rglob("*.wit"))
 
     canonical = workspace_root / "wirt-sdk" / "wit" / "plugin.wit"
     plugin_wit_files = [path for path in wit_files if path.name == "plugin.wit"]
     violations: list[str] = []
+    package_declarations = {
+        path: wit_package_declarations(path.read_text(encoding="utf-8"))
+        for path in wit_files
+    }
     if canonical not in plugin_wit_files:
         violations.append("wirt-sdk/wit/plugin.wit: missing canonical Wirt plugin WIT")
-    elif not re.search(
-        r"^package\s+wirt:plugin@0\.1\.0;",
-        canonical.read_text(encoding="utf-8"),
-        re.MULTILINE,
-    ):
+    elif package_declarations[canonical] != ([("wirt", "plugin", "0.1.0")], False):
         violations.append(
             "wirt-sdk/wit/plugin.wit: must declare package wirt:plugin@0.1.0"
         )
+
+    for path, (_, malformed) in package_declarations.items():
+        if malformed and path != canonical:
+            relative = path.relative_to(workspace_root).as_posix()
+            violations.append(f"{relative}: malformed or ambiguous WIT package declaration")
 
     for path in plugin_wit_files:
         if path == canonical:
@@ -659,11 +794,11 @@ def wirt_wit_violations(workspace_root: Path) -> list[str]:
         if path == canonical:
             continue
         relative = path.relative_to(workspace_root).as_posix()
-        if re.search(
-            r"^package\s+wirt:plugin(?:@[^;]+)?;",
-            path.read_text(encoding="utf-8"),
-            re.MULTILINE,
-        ) and path.name != "plugin.wit":
+        declarations, _ = package_declarations[path]
+        if path.name != "plugin.wit" and any(
+            namespace == "wirt" and name == "plugin"
+            for namespace, name, _ in declarations
+        ):
             violations.append(
                 f"{relative}: duplicate Wirt plugin WIT; only "
                 "wirt-sdk/wit/plugin.wit is allowed"

@@ -275,6 +275,84 @@ class TestWirtBoundary(unittest.TestCase):
                 ],
             )
 
+    def test_whitespace_prefixed_wirt_plugin_package_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            canonical = root / "wirt-sdk" / "wit"
+            canonical.mkdir(parents=True)
+            (canonical / "plugin.wit").write_text(
+                "package wirt:plugin@0.1.0;\n", encoding="utf-8"
+            )
+            (root / "alternate.wit").write_text(
+                "  package wirt:plugin@0.2.0;\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                wirt_boundary.wirt_wit_violations(root),
+                [
+                    "alternate.wit: duplicate Wirt plugin WIT; only "
+                    "wirt-sdk/wit/plugin.wit is allowed"
+                ],
+            )
+
+    def test_comment_separated_wirt_plugin_package_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            canonical = root / "wirt-sdk" / "wit"
+            canonical.mkdir(parents=True)
+            (canonical / "plugin.wit").write_text(
+                "package wirt:plugin@0.1.0;\n", encoding="utf-8"
+            )
+            (root / "alternate.wit").write_text(
+                "// another WIT source\n"
+                "package /* namespace */ wirt /* separator */ : plugin @ 0.2.0;\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.wirt_wit_violations(root),
+                [
+                    "alternate.wit: duplicate Wirt plugin WIT; only "
+                    "wirt-sdk/wit/plugin.wit is allowed"
+                ],
+            )
+
+    def test_malformed_wit_package_declaration_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            canonical = root / "wirt-sdk" / "wit"
+            canonical.mkdir(parents=True)
+            (canonical / "plugin.wit").write_text(
+                "package wirt:plugin@0.1.0;\n", encoding="utf-8"
+            )
+            (root / "alternate.wit").write_text(
+                "package wirt:plugin@;\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                wirt_boundary.wirt_wit_violations(root),
+                ["alternate.wit: malformed or ambiguous WIT package declaration"],
+            )
+
+    def test_ambiguous_wit_package_declarations_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            canonical = root / "wirt-sdk" / "wit"
+            canonical.mkdir(parents=True)
+            (canonical / "plugin.wit").write_text(
+                "package wirt:plugin@0.1.0;\n", encoding="utf-8"
+            )
+            (root / "alternate.wit").write_text(
+                "package example:one@1.0.0;\n"
+                "package example:two@1.0.0;\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.wirt_wit_violations(root),
+                ["alternate.wit: malformed or ambiguous WIT package declaration"],
+            )
+
     def test_missing_canonical_wirt_plugin_wit_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(
@@ -316,7 +394,7 @@ class TestWirtBoundary(unittest.TestCase):
             ],
         )
 
-    def test_ambiguous_component_bindgen_alias_is_rejected(self):
+    def test_grouped_component_alias_uses_the_canonical_wit(self):
         source = (
             "use wasmtime::{component as component_alias};\n"
             "component_alias::bindgen! {\n"
@@ -325,11 +403,56 @@ class TestWirtBoundary(unittest.TestCase):
             "}\n"
         )
 
+        self.assertEqual(self.source_violations(source), [])
+
+    def test_grouped_component_import_path_is_validated(self):
+        source = (
+            "use wasmtime::{component};\n"
+            "component::bindgen!({\n"
+            '    path: "../../../plugins/ui-demo/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
         self.assertEqual(
             self.source_violations(source),
             [
-                "crates/wirt/src/lib.rs:2: unsupported or ambiguous component "
-                "bindgen macro path: component_alias::bindgen"
+                "crates/wirt/src/lib.rs:2: component bindgen path must resolve to "
+                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
+            ],
+        )
+
+    def test_grouped_bindgen_import_path_is_validated(self):
+        source = (
+            "use wasmtime::component::{bindgen};\n"
+            "bindgen![{\n"
+            '    path: "../../../plugins/ui-demo/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "}];\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:2: component bindgen path must resolve to "
+                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
+            ],
+        )
+
+    def test_nested_grouped_bindgen_alias_path_is_validated(self):
+        source = (
+            "use wasmtime::{component::{bindgen as component_bindgen}};\n"
+            "component_bindgen!({\n"
+            '    path: "../../../plugins/ui-demo/plugin.wit",\n'
+            '    world: "plugin-world",\n'
+            "});\n"
+        )
+
+        self.assertEqual(
+            self.source_violations(source),
+            [
+                "crates/wirt/src/lib.rs:2: component bindgen path must resolve to "
+                "wirt-sdk/wit/plugin.wit: ../../../plugins/ui-demo/plugin.wit"
             ],
         )
 
