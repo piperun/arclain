@@ -105,6 +105,7 @@ description = "A sample plugin"
 
 [capabilities]
 network = true
+network_domains = ["example.invalid"]
 archive_metadata_read = true
 archive_metadata_write = true
 archive_modify = false

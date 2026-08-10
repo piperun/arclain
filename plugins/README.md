@@ -71,6 +71,7 @@ description = "Plugin description"
 
 [capabilities]
 network = true                  # HTTP requests
+network_domains = ["example.invalid"] # Exact allowed domains
 archive_metadata_read = true    # Read archive metadata
 archive_metadata_write = true   # Write archive metadata
 archive_modify = false          # Modify archive contents
