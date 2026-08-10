@@ -14,6 +14,8 @@ serde_json = { version = "1", features = ["alloc"], default-features = false }
 [package.metadata.workspaces]
 independent = true
 
+[workspace]
+
 [profile.release]
 opt-level = "z"
 lto = true

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the built binary + plugin .wasm files into a release folder.
+"""Package the built binary + validated .wirt files into a release folder.
 
 Usage:
     python scripts/_package.py --profile {debug|release}
@@ -32,13 +32,14 @@ import sys
 import tomllib
 from pathlib import Path
 
+import _plugins
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGINS_DIR = REPO_ROOT / "plugins"
-# "facade-test-fixture" is arclain_app's own dedicated test plugin (crash
-# containment / action ordering / refresh coalescing fixtures for
-# crates/app/tests/plugin_sessions.rs -- see plugins/facade-test-fixture/
-# src/lib.rs) -- never user-facing, and must never reach a release package.
+# These projects are repository fixtures or unfinished demonstrations, not
+# user-facing bundled packages. They are built and validated by `just plugins`
+# but must never reach a release package.
 SKIP_PLUGINS = {"facade-test-fixture", "gstreamer-preview", "ui-demo"}
 
 
@@ -157,11 +158,11 @@ def copy_bundled_plugins(
     plugins_dest: Path,
     plugins_dir: Path = PLUGINS_DIR,
 ) -> list[str]:
-    """Copy shippable plugin sidecars into a package plugins directory.
+    """Copy validated Wirt archives into a package plugins directory.
 
-    Every non-skipped plugin crate must provide both `<name>.toml` and
-    `<name>.wasm`. Missing sidecars are fatal so release packages cannot
-    silently ship without the plugin files the host was tested against.
+    Every non-skipped plugin crate must provide exactly one regular `.wirt`
+    file. Missing, ambiguous, linked, or invalid archives are fatal so a
+    release cannot silently ship a different trust boundary than was tested.
     """
     plugins_dest.mkdir(parents=True, exist_ok=True)
 
@@ -176,21 +177,25 @@ def copy_bundled_plugins(
             print(f"  Skipping unused plugin: {name}")
             continue
 
-        wasm = plugin_dir / f"{name}.wasm"
-        toml = plugin_dir / f"{name}.toml"
-        missing = [path.name for path in (toml, wasm) if not path.exists()]
-        if missing:
-            errors.append(f"{name}: missing {', '.join(missing)}")
+        candidates = sorted(plugin_dir.glob("*.wirt"))
+        packages = [
+            path for path in candidates
+            if path.is_file() and not path.is_symlink()
+        ]
+        if len(packages) != 1 or len(candidates) != 1:
+            errors.append(f"{name}: expected exactly one regular .wirt package")
+            continue
+        package = packages[0]
+        if not _plugins.validate_package(package):
+            errors.append(f"{name}: invalid {package.name}")
             continue
 
-        shutil.copy2(toml, plugins_dest)
-        shutil.copy2(wasm, plugins_dest)
+        shutil.copy2(package, plugins_dest)
         copied.append(name)
-        print(f"  Copied plugin: {name}.toml")
-        print(f"  Copied plugin: {name}.wasm")
+        print(f"  Copied plugin: {package.name}")
 
     if errors:
-        print("ERROR: bundled plugin sidecars are incomplete:", file=sys.stderr)
+        print("ERROR: bundled Wirt packages are incomplete:", file=sys.stderr)
         for error in errors:
             print(f"  {error}", file=sys.stderr)
         raise SystemExit(1)

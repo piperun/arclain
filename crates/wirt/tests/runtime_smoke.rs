@@ -13,7 +13,7 @@ const FACADE_FIXTURE_PATH: &str = concat!(
 );
 const DLSITE_FIXTURE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../plugins/dlsite-metadata/dlsite-metadata.wasm"
+    "/tests/fixtures/bundled/dlsite-metadata.wasm"
 ));
 const MALICIOUS_METADATA_FIXTURE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -28,7 +28,7 @@ fn ui_demo_exposes_its_demo_button_on_the_main_page() {
             "ui-demo".to_string(),
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../plugins/ui-demo/ui-demo.wasm"
+                "/tests/fixtures/bundled/ui-demo.wasm"
             )),
         )
         .unwrap();
@@ -51,7 +51,7 @@ fn stub_host_runs_a_real_plugin_component_end_to_end() {
             "ui-demo".to_string(),
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../plugins/ui-demo/ui-demo.wasm"
+                "/tests/fixtures/bundled/ui-demo.wasm"
             )),
         )
         .unwrap();

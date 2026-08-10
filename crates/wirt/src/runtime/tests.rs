@@ -1116,7 +1116,7 @@ fn resource_count_errors_are_redacted_during_generic_plugin_instantiation() {
     let runtime = WasmRuntime::new().unwrap();
     let base = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/tests/fixtures/bundled/ui-demo.wasm"
     ));
     const EMPTY_CORE_MODULE: &[u8] = b"\0asm\x01\0\0\0";
     // ui-demo already owns one linear memory and two tables. These modules
@@ -1158,7 +1158,7 @@ fn bundled_components_instantiate_with_the_compatibility_safe_core_instance_limi
             "ui-demo",
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../plugins/ui-demo/ui-demo.wasm"
+                "/tests/fixtures/bundled/ui-demo.wasm"
             ))
             .as_slice(),
         ),

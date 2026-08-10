@@ -51,11 +51,11 @@ fn write_ui_demo_sidecars(directory: &std::path::Path, with_fingerprint: bool) {
     std::fs::create_dir_all(directory).unwrap();
     let manifest = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.toml"
+        "/../../plugins/ui-demo/plugin.toml"
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/tests/fixtures/bundled/ui-demo.wasm"
     ));
     std::fs::write(directory.join("ui-demo.toml"), manifest).unwrap();
     std::fs::write(directory.join("ui-demo.wasm"), component).unwrap();
@@ -116,11 +116,11 @@ fn discovery_accepts_a_root_wirt_package_and_legacy_sidecars() {
     let temp_dir = TempDir::new().unwrap();
     let manifest = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.toml"
+        "/../../plugins/ui-demo/plugin.toml"
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/tests/fixtures/bundled/ui-demo.wasm"
     ));
     std::fs::write(
         temp_dir.path().join("ui-demo.WIRT"),
@@ -160,13 +160,13 @@ fn discovery_rejects_case_folded_identity_duplicates_across_artifact_kinds() {
 
     let source = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.toml"
+        "/../../plugins/ui-demo/plugin.toml"
     ));
     let mut manifest: crate::PluginManifest = toml::from_str(source).unwrap();
     manifest.plugin.id = "UI-DEMO".to_string();
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/tests/fixtures/bundled/ui-demo.wasm"
     ));
     std::fs::write(
         temp_dir.path().join("renamed.wirt"),
@@ -439,7 +439,7 @@ fn discovery_rejects_manifest_larger_than_64_kib() {
         plugin_dir.join("oversized-manifest.wasm"),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/ui-demo/ui-demo.wasm"
+            "/tests/fixtures/bundled/ui-demo.wasm"
         )),
     )
     .unwrap();

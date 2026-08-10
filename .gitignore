@@ -2,6 +2,7 @@
 /dist
 /build
 *.wasm
+*.wirt
 /target
 target/
 release/

@@ -4,7 +4,7 @@ struct Component;
 
 impl wirt_sdk::Guest for Component {
     fn get_metadata() -> wirt_sdk::wirt::plugin::meta::PluginMetadata {
-        // Mirrors ui-demo.toml.
+        // Mirrors plugin.toml.
         wirt_sdk::wirt::plugin::meta::PluginMetadata {
             id: "ui-demo".to_string(),
             name: "UI Demo Plugin".to_string(),

@@ -483,11 +483,11 @@ fn disabled_plugin_cannot_be_restored_into_the_top_tabs_cache() {
 fn ui_demo_package(path: &std::path::Path) -> wirt::PackageFingerprint {
     let manifest = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.toml"
+        "/../../plugins/ui-demo/plugin.toml"
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
     ));
     let bytes = wirt::package_bytes(manifest, component).expect("valid ui-demo package");
     let fingerprint = wirt::PackageFingerprint::sha256(&bytes);
@@ -498,7 +498,7 @@ fn ui_demo_package(path: &std::path::Path) -> wirt::PackageFingerprint {
 fn facade_fixture_package(path: &std::path::Path) -> wirt::PackageFingerprint {
     let manifest = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/facade-test-fixture/facade-test-fixture.toml"
+        "/../../plugins/facade-test-fixture/plugin.toml"
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -516,7 +516,7 @@ fn facade_fixture_package_with_manifest(
 ) -> wirt::PackageFingerprint {
     let source = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/facade-test-fixture/facade-test-fixture.toml"
+        "/../../plugins/facade-test-fixture/plugin.toml"
     ));
     let mut manifest: crate::types::PluginManifest = toml::from_str(source).unwrap();
     mutate(&mut manifest);
@@ -812,14 +812,14 @@ fn ui_demo_package_with_manifest(
 ) -> wirt::PackageFingerprint {
     let source = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.toml"
+        "/../../plugins/ui-demo/plugin.toml"
     ));
     let mut manifest: crate::types::PluginManifest = toml::from_str(source).unwrap();
     mutate(&mut manifest);
     let manifest = toml::to_string(&manifest).unwrap();
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
     ));
     let bytes = wirt::package_bytes(manifest.as_bytes(), component).unwrap();
     let fingerprint = wirt::PackageFingerprint::sha256(&bytes);
@@ -1135,7 +1135,7 @@ fn install_rejects_exported_unsafe_id_before_filesystem_use() {
     let wasm_path = temp_dir.path().join("unsafe-id.wasm");
     let mut component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
     ))
     .to_vec();
     let id_offset = component
@@ -1285,7 +1285,7 @@ fn valid_install_runs_normal_init_once_after_id_validation() {
         &wasm_path,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/ui-demo/ui-demo.wasm"
+            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
         )),
     )
     .unwrap();
@@ -1361,7 +1361,7 @@ fn install_uses_the_case_folded_identity_key_for_its_destination() {
     let wasm_path = temp_dir.path().join("uppercase-id.wasm");
     let mut component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
     ))
     .to_vec();
     let id_offset = component
@@ -1398,7 +1398,7 @@ fn case_folded_lifecycle_rejects_manifest_spelling_that_differs_from_guest() {
     let wasm_path = temp_dir.path().join("uppercase-id.wasm");
     let mut component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
     ))
     .to_vec();
     let id_offset = component
@@ -1483,7 +1483,7 @@ fn install_rejects_a_case_variant_already_present_in_the_manager_registry() {
         &lowercase_wasm,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/ui-demo/ui-demo.wasm"
+            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
         )),
     )
     .unwrap();
@@ -1522,7 +1522,7 @@ fn install_rejects_a_case_folded_on_disk_destination_collision() {
     let wasm_path = temp_dir.path().join("plugin2.wasm");
     let mut component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
     ))
     .to_vec();
     let id_offset = component
@@ -1561,7 +1561,7 @@ fn install_rejects_an_existing_on_disk_destination_without_overwriting_it() {
         &wasm_path,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/ui-demo/ui-demo.wasm"
+            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
         )),
     )
     .unwrap();
@@ -1796,11 +1796,11 @@ fn package_publish_race_rolls_back_fingerprint_sidecar_and_staging() {
     std::fs::create_dir(&plugins_dir).unwrap();
     let manifest_bytes = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.toml"
+        "/../../plugins/ui-demo/plugin.toml"
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
     ));
     let fingerprint =
         wirt::PackageFingerprint::sha256(&wirt::package_bytes(manifest_bytes, component).unwrap());
@@ -1836,11 +1836,11 @@ fn package_publish_race_rolls_back_fingerprint_sidecar_and_staging() {
 fn package_staging_construction_failure_preserves_io_kind_and_removes_every_partial_tree() {
     let manifest = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.toml"
+        "/../../plugins/ui-demo/plugin.toml"
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
     ));
     let fingerprint =
         wirt::PackageFingerprint::sha256(&wirt::package_bytes(manifest, component).unwrap());
@@ -1902,11 +1902,11 @@ fn unix_publish_rejects_a_swapped_staged_artifact_identity() {
     std::fs::create_dir(&plugins_dir).unwrap();
     let manifest = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.toml"
+        "/../../plugins/ui-demo/plugin.toml"
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
     ));
     let fingerprint =
         wirt::PackageFingerprint::sha256(&wirt::package_bytes(manifest, component).unwrap());
@@ -1948,12 +1948,12 @@ fn unix_cleanup_preserves_a_swapped_staging_root() {
     let plugin_id = crate::types::PluginId::parse("ui-demo").unwrap();
     let manifest: crate::types::PluginManifest = toml::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.toml"
+        "/../../plugins/ui-demo/plugin.toml"
     )))
     .unwrap();
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
     ));
     let loader = crate::loader::PluginLoader::new(plugins_dir).unwrap();
     let staged = super::lifecycle::StagedPluginPackage::new(
@@ -2106,7 +2106,7 @@ fn reload_and_unload_replace_only_manifest_owned_domains() {
         &wasm_path,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/ui-demo/ui-demo.wasm"
+            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
         )),
     )
     .unwrap();
@@ -2247,7 +2247,7 @@ fn top_tabs_wait_for_a_busy_enabled_plugin_instead_of_returning_partial_results(
         &wasm_path,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/ui-demo/ui-demo.wasm"
+            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
         )),
     )
     .unwrap();

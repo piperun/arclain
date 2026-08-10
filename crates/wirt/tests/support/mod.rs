@@ -3,7 +3,7 @@ pub(crate) use wirt as wirt_crate;
 #[allow(dead_code)]
 pub const UI_DEMO_COMPONENT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../plugins/ui-demo/ui-demo.wasm"
+    "/tests/fixtures/bundled/ui-demo.wasm"
 ));
 
 #[allow(dead_code)]

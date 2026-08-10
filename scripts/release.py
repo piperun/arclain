@@ -280,8 +280,8 @@ def main() -> None:
         ),
     )
 
-    sub.add_parser("plugins", help="Build WASM plugins")
-    sub.add_parser("clean-plugins", help="Remove .wasm artifacts and cargo clean each plugin")
+    sub.add_parser("plugins", help="Build validated Wirt plugin archives")
+    sub.add_parser("clean-plugins", help="Remove Wirt artifacts and clean each plugin")
 
     ui_parser = sub.add_parser("ui", help="Run `cargo ui` with RUST_LOG from logging_config.json")
     ui_parser.add_argument(

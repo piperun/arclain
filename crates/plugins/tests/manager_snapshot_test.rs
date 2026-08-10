@@ -10,11 +10,11 @@ fn installed_ui_demo() -> (TempDir, PluginManager) {
     let package_path = temp_dir.path().join("ui-demo.wirt");
     let manifest = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.toml"
+        "/../../plugins/ui-demo/plugin.toml"
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
     ));
     let package = wirt::package_bytes(manifest, component).unwrap();
     let fingerprint = wirt::PackageFingerprint::sha256(&package);
@@ -32,7 +32,7 @@ fn installed_facade_fixture() -> (TempDir, PluginManager) {
     let package_path = temp_dir.path().join("facade-test-fixture.wirt");
     let manifest = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/facade-test-fixture/facade-test-fixture.toml"
+        "/../../plugins/facade-test-fixture/plugin.toml"
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),

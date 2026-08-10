@@ -11,6 +11,8 @@ wirt-sdk = { path = "../../wirt-sdk" }
 serde = { version = "1", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1", features = ["alloc"], default-features = false }
 
+[workspace]
+
 [profile.release]
 opt-level = "z"         # Optimize for size
 lto = true              # Link-time optimization

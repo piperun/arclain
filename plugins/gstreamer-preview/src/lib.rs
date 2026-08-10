@@ -4,7 +4,7 @@ struct Component;
 
 impl wirt_sdk::Guest for Component {
     fn get_metadata() -> wirt_sdk::wirt::plugin::meta::PluginMetadata {
-        // Mirrors gstreamer-preview.toml.
+        // Mirrors plugin.toml.
         wirt_sdk::wirt::plugin::meta::PluginMetadata {
             id: "gstreamer-preview".to_string(),
             name: "GStreamer Media Preview".to_string(),

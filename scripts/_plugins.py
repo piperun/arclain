@@ -1,46 +1,87 @@
 #!/usr/bin/env python3
-"""Build or clean the WASM plugins under plugins/.
+"""Build or clean the Wirt plugins under plugins/.
 
 Usage:
-    python scripts/_plugins.py build    # build every plugin to wasm32-wasip2
-    python scripts/_plugins.py clean    # remove .wasm artifacts + cargo clean
-
-WASM crates compile to a file named with underscores (e.g.
-`gstreamer_preview.wasm`); we copy that next to the plugin's
-Cargo.toml as `<dir-name>.wasm` (e.g. `gstreamer-preview.wasm`)
-so the host loader can find it by the same name as the directory.
+    python scripts/_plugins.py build    # build and validate every .wirt archive
+    python scripts/_plugins.py clean    # remove generated archives + cargo clean
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGINS_DIR = REPO_ROOT / "plugins"
 WASM_TARGET = "wasm32-wasip2"
+WIRT_COMMAND = ["cargo", "run", "-p", "wirt-cli", "--"]
+PRESERVED_ROOT_WASM = {"facade-test-fixture.wasm"}
 
 
-def ensure_target() -> None:
-    """Install the WASM target if not already present."""
+def ensure_target() -> bool:
+    """Return whether the WASM target is installed, without changing Rust."""
     installed = subprocess.run(
         ["rustup", "target", "list", "--installed"],
         capture_output=True, text=True,
     )
-    if WASM_TARGET not in installed.stdout:
-        print(f"  Installing target {WASM_TARGET}...")
-        result = subprocess.run(["rustup", "target", "add", WASM_TARGET])
-        if result.returncode != 0:
-            sys.exit(result.returncode)
+    targets = {line.strip() for line in installed.stdout.splitlines()}
+    if installed.returncode == 0 and WASM_TARGET in targets:
+        return True
+
+    print(f"ERROR: Rust target {WASM_TARGET} is not installed.", file=sys.stderr)
+    print(f"  Run `rustup target add {WASM_TARGET}` manually.", file=sys.stderr)
+    return False
+
+
+def _run_wirt(*args: str | Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [*WIRT_COMMAND, *(str(arg) for arg in args)],
+        cwd=REPO_ROOT,
+    )
+
+
+def validate_package(package: Path) -> bool:
+    """Validate one distribution archive with the canonical Wirt command."""
+    return _run_wirt("validate", package).returncode == 0
+
+
+def _package_path(plugin_dir: Path) -> Path:
+    manifest_path = plugin_dir / "plugin.toml"
+    with manifest_path.open("rb") as handle:
+        manifest = tomllib.load(handle)
+    plugin = manifest.get("plugin", {})
+    plugin_id = plugin.get("id")
+    version = plugin.get("version")
+    if not isinstance(plugin_id, str) or not isinstance(version, str):
+        raise ValueError("plugin manifest is missing its id or version")
+    if any(separator in value for value in (plugin_id, version) for separator in "/\\"):
+        raise ValueError("plugin id or version is unsafe for an archive filename")
+    return plugin_dir / f"{plugin_id}-{version}.wirt"
+
+
+def _remove_generated_root_artifacts(plugin_dir: Path) -> None:
+    for package in plugin_dir.glob("*.wirt"):
+        package.unlink()
+    for component in plugin_dir.glob("*.wasm"):
+        if component.name not in PRESERVED_ROOT_WASM:
+            component.unlink()
+
+
+def _is_preserved_root_component(artifact: Path) -> bool:
+    return (
+        artifact.name in PRESERVED_ROOT_WASM
+        and artifact.parent == PLUGINS_DIR / "facade-test-fixture"
+    )
 
 
 def build() -> int:
-    """Build all WASM plugins. Returns 0 on full success, 1 if any failed."""
-    print("Building WASM plugins...")
+    """Build validated Wirt archives. Return 1 if any project fails."""
+    print("Building Wirt plugins...")
     print(f"  Target: {WASM_TARGET}")
-    ensure_target()
+    if not ensure_target():
+        return 1
 
     failures: list[str] = []
     for plugin_dir in sorted(PLUGINS_DIR.iterdir()):
@@ -50,25 +91,34 @@ def build() -> int:
 
         name = plugin_dir.name
         print(f"\n  Building {name}...")
+        _remove_generated_root_artifacts(plugin_dir)
+        try:
+            package = _package_path(plugin_dir)
+        except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
+            print(f"  ERROR: Invalid manifest for {name}: {error}")
+            failures.append(name)
+            continue
 
-        result = subprocess.run(
-            ["cargo", "build", "--target", WASM_TARGET, "--release",
-             "--target-dir", "."],
-            cwd=plugin_dir,
-        )
+        result = _run_wirt("build", plugin_dir)
         if result.returncode != 0:
             print(f"  ERROR: Failed to build {name}")
             failures.append(name)
             continue
 
-        wasm_src = plugin_dir / WASM_TARGET / "release" / f"{name.replace('-', '_')}.wasm"
-        wasm_dest = plugin_dir / f"{name}.wasm"
-        if wasm_src.exists():
-            shutil.copy2(wasm_src, wasm_dest)
-            print(f"  Built: {name}.wasm ({wasm_dest.stat().st_size:,} bytes)")
-        else:
-            print(f"  WARNING: WASM file not found at {wasm_src}")
+        result = _run_wirt("package", plugin_dir, "--output", package)
+        if result.returncode != 0 or not package.is_file() or package.is_symlink():
+            package.unlink(missing_ok=True)
+            print(f"  ERROR: Wirt package was not created for {name}")
             failures.append(name)
+            continue
+
+        if not validate_package(package):
+            package.unlink(missing_ok=True)
+            print(f"  ERROR: Wirt package failed validation for {name}")
+            failures.append(name)
+            continue
+
+        print(f"  Built: {package.name} ({package.stat().st_size:,} bytes)")
 
     if failures:
         print(f"\nWARNING: failed plugins: {', '.join(failures)}")
@@ -77,13 +127,15 @@ def build() -> int:
 
 
 def clean() -> int:
-    """Remove .wasm artifacts and run `cargo clean` per plugin."""
-    print("Cleaning WASM plugins...")
+    """Remove generated archives/components and run Cargo clean per project."""
+    print("Cleaning Wirt plugins...")
     removed = 0
-    for wasm in PLUGINS_DIR.rglob("*.wasm"):
-        wasm.unlink()
+    for artifact in [*PLUGINS_DIR.rglob("*.wirt"), *PLUGINS_DIR.rglob("*.wasm")]:
+        if _is_preserved_root_component(artifact):
+            continue
+        artifact.unlink()
         removed += 1
-    print(f"  Removed {removed} .wasm file(s)")
+    print(f"  Removed {removed} generated plugin artifact(s)")
 
     print("\nRunning cargo clean in each plugin...")
     failures: list[str] = []

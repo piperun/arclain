@@ -509,12 +509,14 @@ mod tests {
         let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../plugins")
             .join(plugin_id);
+        let component_fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../wirt/tests/fixtures/bundled/ui-demo.wasm");
         std::fs::copy(
-            fixture_dir.join(format!("{plugin_id}.wasm")),
+            component_fixture,
             plugin_dir.join(format!("{plugin_id}.wasm")),
         )
         .expect("copy plugin fixture");
-        let manifest = std::fs::read_to_string(fixture_dir.join(format!("{plugin_id}.toml")))
+        let manifest = std::fs::read_to_string(fixture_dir.join("plugin.toml"))
             .expect("read plugin manifest")
             .replace("network = false", &format!("network = {network}"))
             .replace(

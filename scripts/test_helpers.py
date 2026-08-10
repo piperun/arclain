@@ -307,14 +307,142 @@ class TestGametaPin(unittest.TestCase):
 
 class TestPluginVersions(unittest.TestCase):
     def test_plugin_manifest_versions_match_cargo(self):
-        for plugin in ("dlsite-metadata", "gstreamer-preview", "ui-demo"):
+        for plugin in (
+            "dlsite-metadata",
+            "facade-test-fixture",
+            "gstreamer-preview",
+            "ui-demo",
+        ):
             with self.subTest(plugin=plugin):
                 root = REPO_ROOT / "plugins" / plugin
                 with (root / "Cargo.toml").open("rb") as handle:
-                    cargo_version = tomllib.load(handle)["package"]["version"]
-                with (root / f"{plugin}.toml").open("rb") as handle:
+                    cargo = tomllib.load(handle)
+                    cargo_version = cargo["package"]["version"]
+                with (root / "plugin.toml").open("rb") as handle:
                     manifest_version = tomllib.load(handle)["plugin"]["version"]
                 self.assertEqual(manifest_version, cargo_version, plugin)
+                self.assertEqual(cargo.get("workspace"), {}, plugin)
+
+    def test_dlsite_debug_dump_does_not_require_wasi_wall_clock(self):
+        source = (
+            REPO_ROOT / "plugins" / "dlsite-metadata" / "src" / "lib.rs"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("SystemTime::now", source)
+        self.assertIn('format!("dlsite_blocked_{}.html", product_id)', source)
+
+
+class TestPluginBuild(unittest.TestCase):
+    def test_generated_wirt_archives_are_ignored_distribution_outputs(self):
+        ignore_rules = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertIn("*.wirt", ignore_rules)
+
+    def test_missing_wasm_target_is_reported_without_installing_it(self):
+        missing = subprocess.CompletedProcess(
+            ["rustup", "target", "list", "--installed"],
+            0,
+            stdout="x86_64-pc-windows-msvc\n",
+            stderr="",
+        )
+        with mock.patch.object(
+            _plugins.subprocess,
+            "run",
+            return_value=missing,
+        ) as run:
+            self.assertFalse(_plugins.ensure_target())
+
+        run.assert_called_once_with(
+            ["rustup", "target", "list", "--installed"],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_build_creates_and_validates_exact_wirt_archive_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugins_dir = root / "plugins"
+            plugin_dir = plugins_dir / "example-plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "Cargo.toml").write_text(
+                '[package]\nname = "example-plugin"\nversion = "1.2.3"\n',
+                encoding="utf-8",
+            )
+            (plugin_dir / "plugin.toml").write_text(
+                '[plugin]\nid = "example-plugin"\nversion = "1.2.3"\n',
+                encoding="utf-8",
+            )
+            stale_wasm = plugin_dir / "example-plugin.wasm"
+            stale_wasm.write_bytes(b"stale raw component")
+            expected_package = plugin_dir / "example-plugin-1.2.3.wirt"
+
+            installed = subprocess.CompletedProcess(
+                ["rustup", "target", "list", "--installed"],
+                0,
+                stdout=f"{_plugins.WASM_TARGET}\n",
+                stderr="",
+            )
+
+            def run_command(command, **_kwargs):
+                if command == ["rustup", "target", "list", "--installed"]:
+                    return installed
+                if command[:4] == ["cargo", "run", "-p", "wirt-cli"]:
+                    action = command[5]
+                    if action == "package":
+                        expected_package.write_bytes(b"deterministic wirt package")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with mock.patch.object(_plugins, "PLUGINS_DIR", plugins_dir), \
+                 mock.patch.object(_plugins, "REPO_ROOT", root), \
+                 mock.patch.object(
+                     _plugins.subprocess,
+                     "run",
+                     side_effect=run_command,
+                 ) as run:
+                status = _plugins.build()
+
+            self.assertEqual(status, 0)
+            self.assertEqual(expected_package.read_bytes(), b"deterministic wirt package")
+            self.assertFalse(stale_wasm.exists())
+            self.assertEqual(
+                [path.name for path in plugin_dir.glob("*.wirt")],
+                ["example-plugin-1.2.3.wirt"],
+            )
+            self.assertEqual(
+                [call.args[0][5] for call in run.call_args_list[1:]],
+                ["build", "package", "validate"],
+            )
+
+    def test_build_fails_when_wirt_package_is_missing_after_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugins_dir = root / "plugins"
+            plugin_dir = plugins_dir / "example-plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "Cargo.toml").write_text(
+                '[package]\nname = "example-plugin"\nversion = "1.2.3"\n',
+                encoding="utf-8",
+            )
+            (plugin_dir / "plugin.toml").write_text(
+                '[plugin]\nid = "example-plugin"\nversion = "1.2.3"\n',
+                encoding="utf-8",
+            )
+            installed = subprocess.CompletedProcess(
+                [], 0, f"{_plugins.WASM_TARGET}\n", "",
+            )
+
+            def run_command(command, **_kwargs):
+                if command == ["rustup", "target", "list", "--installed"]:
+                    return installed
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with mock.patch.object(_plugins, "PLUGINS_DIR", plugins_dir), \
+                 mock.patch.object(_plugins, "REPO_ROOT", root), \
+                 mock.patch.object(
+                     _plugins.subprocess,
+                     "run",
+                     side_effect=run_command,
+                 ):
+                self.assertEqual(_plugins.build(), 1)
 
 
 class TestPluginClean(unittest.TestCase):
@@ -327,6 +455,7 @@ class TestPluginClean(unittest.TestCase):
                 plugin_dir.mkdir(parents=True)
                 (plugin_dir / "Cargo.toml").write_text("[package]\n")
             (first_plugin / "first-plugin.wasm").write_bytes(b"wasm")
+            (first_plugin / "first-plugin-1.0.0.wirt").write_bytes(b"package")
 
             clean_results = [
                 subprocess.CompletedProcess([], 17),
@@ -342,6 +471,7 @@ class TestPluginClean(unittest.TestCase):
 
             self.assertEqual(clean_status, 1, f"clean_status={clean_status}")
             self.assertFalse((first_plugin / "first-plugin.wasm").exists())
+            self.assertFalse((first_plugin / "first-plugin-1.0.0.wirt").exists())
             self.assertEqual(run.call_count, 2)
             self.assertEqual(run.call_args_list[0].kwargs["cwd"], first_plugin)
             self.assertEqual(run.call_args_list[1].kwargs["cwd"], second_plugin)
@@ -559,18 +689,15 @@ class TestPackagePlugins(unittest.TestCase):
         plugins_root: Path,
         name: str,
         *,
-        wasm: bool = True,
-        manifest: bool = True,
+        package: bool = True,
     ) -> None:
         plugin_dir = plugins_root / name
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "Cargo.toml").write_text("[package]\nname = \"x\"\n")
-        if manifest:
-            (plugin_dir / f"{name}.toml").write_text("[plugin]\nid = \"x\"\n")
-        if wasm:
-            (plugin_dir / f"{name}.wasm").write_bytes(b"\0asm")
+        if package:
+            (plugin_dir / f"{name}-1.2.3.wirt").write_bytes(b"wirt package")
 
-    def test_copy_bundled_plugins_copies_required_sidecars(self):
+    def test_copy_bundled_plugins_copies_validated_wirt_archive_only(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             plugins_root = root / "plugins-src"
@@ -579,11 +706,20 @@ class TestPackagePlugins(unittest.TestCase):
             plugins_dest.mkdir(parents=True)
             self._write_plugin(plugins_root, "example-plugin")
 
-            copied = _package.copy_bundled_plugins(plugins_dest, plugins_root)
+            with mock.patch.object(
+                _package._plugins,
+                "validate_package",
+                return_value=True,
+            ) as validate:
+                copied = _package.copy_bundled_plugins(plugins_dest, plugins_root)
 
             self.assertEqual(copied, ["example-plugin"])
-            self.assertTrue((plugins_dest / "example-plugin.toml").is_file())
-            self.assertTrue((plugins_dest / "example-plugin.wasm").is_file())
+            package = plugins_dest / "example-plugin-1.2.3.wirt"
+            self.assertEqual(package.read_bytes(), b"wirt package")
+            self.assertEqual(list(plugins_dest.iterdir()), [package])
+            validate.assert_called_once_with(
+                plugins_root / "example-plugin" / "example-plugin-1.2.3.wirt",
+            )
 
     def test_copy_bundled_plugins_skips_unused_plugins(self):
         # Iterates the *real* `_package.SKIP_PLUGINS` set rather than a
@@ -602,8 +738,7 @@ class TestPackagePlugins(unittest.TestCase):
                     self._write_plugin(
                         plugins_root,
                         plugin_name,
-                        wasm=False,
-                        manifest=False,
+                        package=False,
                     )
 
                     copied = _package.copy_bundled_plugins(plugins_dest, plugins_root)
@@ -615,35 +750,38 @@ class TestPackagePlugins(unittest.TestCase):
         # Named regression guard (on top of the parametrized test above):
         # this must keep failing loudly if a future edit ever drops
         # "facade-test-fixture" from `SKIP_PLUGINS`, since the fixture's
-        # own "Trigger Trap" button has no business in a user-facing
-        # package, and the missing-sidecar-fatal rule in
-        # `copy_bundled_plugins` would otherwise abort every release build
-        # that has not also built this fixture's .wasm.
+        # own "Trigger Trap" button has no business in a user-facing package.
         self.assertIn("facade-test-fixture", _package.SKIP_PLUGINS)
 
-    def test_copy_bundled_plugins_fails_when_wasm_is_missing(self):
+    def test_copy_bundled_plugins_fails_when_wirt_package_is_missing(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             plugins_root = root / "plugins-src"
             plugins_dest = root / "pkg" / "plugins"
             plugins_root.mkdir()
             plugins_dest.mkdir(parents=True)
-            self._write_plugin(plugins_root, "example-plugin", wasm=False)
+            self._write_plugin(plugins_root, "example-plugin", package=False)
 
             with self.assertRaises(SystemExit):
                 _package.copy_bundled_plugins(plugins_dest, plugins_root)
 
-    def test_copy_bundled_plugins_fails_when_manifest_is_missing(self):
+    def test_copy_bundled_plugins_fails_when_wirt_package_is_invalid(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             plugins_root = root / "plugins-src"
             plugins_dest = root / "pkg" / "plugins"
             plugins_root.mkdir()
             plugins_dest.mkdir(parents=True)
-            self._write_plugin(plugins_root, "example-plugin", manifest=False)
+            self._write_plugin(plugins_root, "example-plugin")
 
-            with self.assertRaises(SystemExit):
+            with mock.patch.object(
+                _package._plugins,
+                "validate_package",
+                return_value=False,
+            ), self.assertRaises(SystemExit):
                 _package.copy_bundled_plugins(plugins_dest, plugins_root)
+
+            self.assertEqual(list(plugins_dest.iterdir()), [])
 
 
 class TestPackageFreshness(unittest.TestCase):

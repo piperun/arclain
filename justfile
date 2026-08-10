@@ -74,11 +74,11 @@ release *args:
 
 # ─── plugins ──────────────────────────────────────────────────────────────
 
-# Build WASM plugins for all crates under plugins/.
+# Build validated .wirt archives for all crates under plugins/.
 plugins:
     {{python}} scripts/_plugins.py build
 
-# Remove .wasm artifacts and cargo clean each plugin.
+# Remove generated plugin archives/components and clean each project.
 clean-plugins:
     {{python}} scripts/_plugins.py clean
 

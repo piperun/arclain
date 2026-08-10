@@ -1175,7 +1175,7 @@ mod tests {
 
     const UI_DEMO_COMPONENT: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../plugins/ui-demo/ui-demo.wasm"
+        "/tests/fixtures/bundled/ui-demo.wasm"
     ));
     const WATCHED_PREFIX: &str = "many-common-prefix-segments-for-sort-review";
 

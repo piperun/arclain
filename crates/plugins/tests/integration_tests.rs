@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tempfile::TempDir;
 
 /// Helper to create a test plugins directory with a manifest
@@ -45,15 +46,51 @@ http_requests_per_minute = 10
 }
 
 fn bundled_plugins_dir() -> PathBuf {
-    env::var_os("ARCLAIN_BUNDLED_PLUGIN_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .and_then(|path| path.parent())
-                .expect("crates/plugins should live two levels below repo root")
-                .join("plugins")
-        })
+    if let Some(directory) = env::var_os("ARCLAIN_BUNDLED_PLUGIN_DIR") {
+        return PathBuf::from(directory);
+    }
+
+    static FLAT_PACKAGES: OnceLock<TempDir> = OnceLock::new();
+    let packages = FLAT_PACKAGES.get_or_init(|| {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("crates/plugins should live two levels below repo root")
+            .to_path_buf();
+        let directory = TempDir::new().expect("create flat bundled-package fixture");
+        for plugin_id in ["dlsite-metadata", "ui-demo"] {
+            let manifest = fs::read(
+                repository_root
+                    .join("plugins")
+                    .join(plugin_id)
+                    .join("plugin.toml"),
+            )
+            .expect("read bundled plugin manifest");
+            let component = fs::read(
+                repository_root
+                    .join("crates/wirt/tests/fixtures/bundled")
+                    .join(format!("{plugin_id}.wasm")),
+            )
+            .expect("read tracked bundled component fixture");
+            let package = wirt::package_bytes(&manifest, &component)
+                .expect("construct validated bundled Wirt package");
+            fs::write(directory.path().join(format!("{plugin_id}.wirt")), package)
+                .expect("write bundled Wirt package fixture");
+        }
+        assert!(
+            fs::read_dir(directory.path()).unwrap().all(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("wirt"))
+            }),
+            "bundled fixture must contain only .wirt packages"
+        );
+        directory
+    });
+    packages.path().to_path_buf()
 }
 
 #[test]

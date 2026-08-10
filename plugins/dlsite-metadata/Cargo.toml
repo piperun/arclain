@@ -21,6 +21,8 @@ urlencoding = "2"
 [package.metadata.workspaces]
 independent = true
 
+[workspace]
+
 [profile.release]
 opt-level = "z"         # Optimize for size
 lto = true              # Link-time optimization
