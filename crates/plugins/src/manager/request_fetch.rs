@@ -45,17 +45,22 @@ pub enum RequestFetchOutcome {
 /// - `authorized` -- whether the plugin holds both
 ///   [`crate::types::REQUEST_FETCH_CAPABILITIES`]. Resolved by the caller
 ///   because each holds the instance differently.
+/// - `admit_host_effect` -- binds the complete follow-up action to the exact
+///   still-enabled plugin generation. Its guard remains live through network,
+///   metadata publication, or native fallback so lifecycle completion is a
+///   real effect barrier.
 /// - `acquire_host_service_permit` -- the per-plugin network rate limit.
 ///   Called once before each of the two possible server round-trips, not
 ///   once for both: a cached hit and a live fetch are separate
 ///   host-service uses.
 /// - `write_metadata` -- where a successful result lands.
 /// - `native_fallback` -- how to hand the key back to the plugin.
-pub fn resolve_request_fetch<Permit, Get, Fetch, Write, Fallback>(
+pub fn resolve_request_fetch<Admit, Guard, Permit, Get, Fetch, Write, Fallback>(
     plugin_id: &str,
     key: &str,
     authorized: bool,
     gameta_available: bool,
+    mut admit_host_effect: Admit,
     mut acquire_host_service_permit: Permit,
     get_from_server: Get,
     fetch_from_server: Fetch,
@@ -63,6 +68,7 @@ pub fn resolve_request_fetch<Permit, Get, Fetch, Write, Fallback>(
     native_fallback: Fallback,
 ) -> RequestFetchOutcome
 where
+    Admit: FnMut() -> Option<Guard>,
     Permit: FnMut() -> std::result::Result<(), String>,
     Get: FnOnce(&str, &str) -> std::result::Result<Option<serde_json::Value>, String>,
     Fetch: FnOnce(&str, &str) -> std::result::Result<Option<serde_json::Value>, String>,
@@ -76,6 +82,13 @@ where
         );
         return RequestFetchOutcome::Denied;
     }
+    let Some(_effect_guard) = admit_host_effect() else {
+        warn!(
+            plugin_id,
+            "Dropped RequestFetch from a stale or disabled plugin"
+        );
+        return RequestFetchOutcome::Denied;
+    };
     if !gameta_available {
         native_fallback(key);
         return RequestFetchOutcome::NativeFallback;
@@ -155,11 +168,13 @@ where
 /// Blocking: performs the HTTP round trip on the calling thread. Callers
 /// on an async runtime must run it on a blocking pool.
 pub fn resolve_interactive_request_fetch(
+    executor: &crate::InProcessWirtExecutor,
     instance_arc: &Arc<parking_lot::Mutex<crate::PluginInstance>>,
     plugin_id: &str,
     key: &str,
     pinned_archive_session_id: Option<u64>,
 ) -> RequestFetchOutcome {
+    let plugin_id_value = wirt::PluginId::parse(plugin_id.to_string()).ok();
     let (authorized, gameta_available, active_tab) = {
         let instance = instance_arc.lock();
         (
@@ -174,6 +189,11 @@ pub fn resolve_interactive_request_fetch(
         key,
         authorized,
         gameta_available,
+        || {
+            plugin_id_value.as_ref().and_then(|plugin_id| {
+                executor.admit_host_effect_for_instance(plugin_id, instance_arc)
+            })
+        },
         || {
             instance_arc
                 .lock()
@@ -199,7 +219,21 @@ pub fn resolve_interactive_request_fetch(
             // end of its native fetch, so no completion notification is
             // sent here -- exactly as the event-worker path does.
             let event = format!("do_native_fetch:{key}");
-            if let Err(error) = instance_arc.lock().send_ui_event(&event, None) {
+            let result = plugin_id_value
+                .as_ref()
+                .ok_or_else(|| crate::types::PluginError::NotFound(plugin_id.to_string()))
+                .and_then(|plugin_id| {
+                    executor.execute_for_instance(
+                        plugin_id,
+                        instance_arc,
+                        wirt::ExecutorRequest::UiEvent {
+                            id: event,
+                            value: None,
+                        },
+                    )
+                })
+                .and_then(wirt::ExecutorResponse::into_actions);
+            if let Err(error) = result {
                 warn!(plugin_id, ?error, "Plugin native fetch dispatch failed");
             }
         },
@@ -282,6 +316,7 @@ mod tests {
             "dlsite:RJ1",
             false,
             true,
+            || -> Option<()> { panic!("unauthorized request must not be admitted") },
             || panic!("no permit must be requested"),
             never_called_server,
             never_called_server,
@@ -300,6 +335,7 @@ mod tests {
             "dlsite:RJ1",
             true,
             false,
+            || Some(()),
             || panic!("no permit must be requested without a server"),
             never_called_server,
             never_called_server,
@@ -321,6 +357,7 @@ mod tests {
             "dlsite:RJ1",
             true,
             true,
+            || Some(()),
             || Err("rate limited".to_string()),
             never_called_server,
             never_called_server,
@@ -339,6 +376,7 @@ mod tests {
             "dlsite:RJ1",
             true,
             true,
+            || Some(()),
             || Ok(()),
             |source, product_id| {
                 assert_eq!((source, product_id), ("dlsite", "RJ1"));
@@ -364,6 +402,7 @@ mod tests {
             "RJ1",
             true,
             true,
+            || Some(()),
             || Ok(()),
             |source, product_id| {
                 assert_eq!((source, product_id), ("dlsite", "RJ1"));
@@ -385,6 +424,7 @@ mod tests {
             "dlsite:RJ1",
             true,
             true,
+            || Some(()),
             || {
                 permits.set(permits.get() + 1);
                 Ok(())
@@ -483,6 +523,7 @@ mod tests {
             "dlsite:RJ1",
             true,
             true,
+            || Some(()),
             || Ok(()),
             |_, _| {
                 Ok(Some(serde_json::json!({

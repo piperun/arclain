@@ -2,7 +2,7 @@
 
 use crate::runtime::PluginInstance;
 use crate::types::PluginMetadata;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -43,6 +43,67 @@ pub(crate) struct ManagedPlugin {
     /// `get_all_settings` can probe it without taking
     /// `instance.lock()` (audit P14).
     pub(crate) settings_dirty: Arc<AtomicBool>,
+    pub(crate) execution_admission: Arc<ExecutionAdmission>,
+}
+
+#[derive(Default)]
+struct ExecutionAdmissionState {
+    enabled: bool,
+    in_flight: usize,
+}
+
+pub(crate) struct ExecutionAdmission {
+    state: Mutex<ExecutionAdmissionState>,
+    idle: Condvar,
+}
+
+impl ExecutionAdmission {
+    pub(crate) fn enabled() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(ExecutionAdmissionState {
+                enabled: true,
+                in_flight: 0,
+            }),
+            idle: Condvar::new(),
+        })
+    }
+
+    pub(crate) fn admit(self: &Arc<Self>) -> Option<ExecutionPermit> {
+        let mut state = self.state.lock();
+        if !state.enabled {
+            return None;
+        }
+        state.in_flight += 1;
+        Some(ExecutionPermit {
+            admission: self.clone(),
+        })
+    }
+
+    pub(crate) fn enable(&self) {
+        self.state.lock().enabled = true;
+    }
+
+    pub(crate) fn disable_and_wait(&self) {
+        let mut state = self.state.lock();
+        state.enabled = false;
+        while state.in_flight != 0 {
+            self.idle.wait(&mut state);
+        }
+    }
+}
+
+pub(crate) struct ExecutionPermit {
+    admission: Arc<ExecutionAdmission>,
+}
+
+impl Drop for ExecutionPermit {
+    fn drop(&mut self) {
+        let mut state = self.admission.state.lock();
+        state.in_flight -= 1;
+        if state.in_flight == 0 {
+            self.admission.idle.notify_all();
+        }
+    }
 }
 
 /// Persisted settings indexed internally by a case-folded plugin identity.

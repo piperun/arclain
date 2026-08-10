@@ -1,14 +1,17 @@
 use super::epoch::EPOCH_TICKS_PER_EXPORT;
 use super::WirtStoreState;
 use crate::limits::{StoreQuotaExceeded, StoreQuotaKind};
-use crate::{PluginAction, PluginError, PluginLayout, PluginUiElement, Result, TopTabConfig};
+use crate::{
+    PluginAction, PluginError, PluginLayout, PluginUiElement, Result, TopTabConfig,
+    MAX_EXECUTOR_MESSAGE_BYTES,
+};
 use serde::Serialize;
 use wasmtime::{Engine, Store};
 
 pub(super) const FUEL_PER_EXPORT: u64 = 10_000_000;
 pub(super) const MAX_UI_ELEMENTS: usize = 10_000;
 pub(super) const MAX_ACTIONS: usize = 1_024;
-pub(super) const MAX_SERIALIZED_RESULT_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_SERIALIZED_RESULT_BYTES: usize = MAX_EXECUTOR_MESSAGE_BYTES;
 // Measured from the largest host-side representations permitted by the current
 // WIT result shapes: layout 2,568,576 bytes, top tabs 3,256,216 bytes, rules
 // 2,535,880 bytes, and actions 1,155,072 bytes. Eight MiB leaves more than 2x
@@ -28,7 +31,7 @@ const WASMTIME_47_MEMORY_COUNT_EXCEEDED: &str =
 const WASMTIME_47_TABLE_COUNT_EXCEEDED: &str = "resource limit exceeded: table count too high at 9";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum QuotaViolation {
+pub(crate) enum QuotaViolation {
     Result,
 }
 
@@ -41,7 +44,7 @@ impl QuotaViolation {
 }
 
 #[derive(Debug)]
-pub(super) enum ResultValidationError {
+pub(crate) enum ResultValidationError {
     Quota(QuotaViolation),
     Serialization(serde_json::Error),
 }
@@ -67,7 +70,7 @@ impl std::io::Write for ResultSizeWriter {
     }
 }
 
-pub(super) fn validate_serialized_result<T: Serialize + ?Sized>(
+pub(crate) fn validate_serialized_result<T: Serialize + ?Sized>(
     value: &T,
 ) -> std::result::Result<(), ResultValidationError> {
     let mut writer = ResultSizeWriter::default();
@@ -81,7 +84,7 @@ pub(super) fn validate_serialized_result<T: Serialize + ?Sized>(
     Ok(())
 }
 
-pub(super) fn validate_layout_result(
+pub(crate) fn validate_layout_result(
     layout: &PluginLayout,
 ) -> std::result::Result<(), ResultValidationError> {
     fn charge_work(
@@ -157,7 +160,7 @@ pub(super) fn validate_layout_result(
     validate_serialized_result(layout)
 }
 
-pub(super) fn validate_actions_result(
+pub(crate) fn validate_actions_result(
     actions: &[PluginAction],
 ) -> std::result::Result<(), ResultValidationError> {
     let mut work = 0usize;
@@ -177,7 +180,7 @@ pub(super) fn validate_actions_result(
     validate_serialized_result(actions)
 }
 
-pub(super) fn validate_top_tabs_result(
+pub(crate) fn validate_top_tabs_result(
     tabs: &[TopTabConfig],
 ) -> std::result::Result<(), ResultValidationError> {
     if tabs.len() > MAX_UI_ELEMENTS {

@@ -1,6 +1,5 @@
 //! Arclain compatibility adapters over Wirt's product-neutral runtime.
 
-use crate::conversions::convert_plugin_rule_definition;
 use crate::host_functions::HostFunctions;
 use crate::types::{PluginCapability, PluginExtensionPoint, PluginMetadata, Result};
 use std::collections::HashMap;
@@ -110,27 +109,24 @@ impl PluginInstance {
     }
 
     /// Initialize the plugin.
-    pub fn init(&mut self) -> Result<()> {
+    pub(crate) fn init(&mut self) -> Result<()> {
         self.inner.init()
     }
 
     /// Get plugin metadata, cached by the Wirt instance.
-    pub fn get_metadata(&mut self) -> Result<PluginMetadata> {
+    pub(crate) fn get_metadata(&mut self) -> Result<PluginMetadata> {
         self.inner.get_metadata()
     }
 
-    /// Get the organization rules supplied by this plugin.
-    pub fn get_default_rules(&mut self) -> Result<Vec<arclain_core::OrganizationRule>> {
-        self.inner.get_default_rules().map(|rules| {
-            rules
-                .into_iter()
-                .map(convert_plugin_rule_definition)
-                .collect()
-        })
+    /// Get product-neutral rule definitions for the executor boundary.
+    pub(crate) fn get_default_rule_definitions(
+        &mut self,
+    ) -> Result<Vec<wirt::PluginRuleDefinition>> {
+        self.inner.get_default_rules()
     }
 
     /// Get UI layout for a specific extension point.
-    pub fn get_ui_layout(
+    pub(crate) fn get_ui_layout(
         &mut self,
         extension_point: PluginExtensionPoint,
     ) -> Result<crate::types::PluginLayout> {
@@ -138,7 +134,7 @@ impl PluginInstance {
     }
 
     /// Send a UI event to the plugin and get actions back.
-    pub fn send_ui_event(
+    pub(crate) fn send_ui_event(
         &mut self,
         element_id: &str,
         value: Option<String>,
@@ -147,7 +143,7 @@ impl PluginInstance {
     }
 
     /// Clean up the plugin.
-    pub fn cleanup(&mut self) -> Result<()> {
+    pub(crate) fn cleanup(&mut self) -> Result<()> {
         self.inner.cleanup()
     }
 
@@ -266,7 +262,7 @@ impl PluginInstance {
     }
 
     /// Get top-level tabs registered by this plugin.
-    pub fn get_top_tabs(&mut self) -> Result<Vec<crate::types::TopTabConfig>> {
+    pub(crate) fn get_top_tabs(&mut self) -> Result<Vec<crate::types::TopTabConfig>> {
         self.inner.get_top_tabs()
     }
 }

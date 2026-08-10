@@ -158,6 +158,328 @@ fn test_list_plugins_empty() {
     assert_eq!(manager.list_plugins().len(), 0);
 }
 
+#[test]
+fn manager_routes_guest_exports_through_serializable_executor_messages() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    ui_demo_package(&plugins_dir.join("ui-demo.wirt"));
+    let mut manager = PluginManager::new(plugins_dir, HashMap::new()).unwrap();
+    manager.init().unwrap();
+
+    assert!(matches!(
+        manager
+            .execute_plugin("ui-demo", wirt::ExecutorRequest::Metadata)
+            .unwrap(),
+        wirt::ExecutorResponse::Metadata(metadata) if metadata.id == "ui-demo"
+    ));
+    assert!(matches!(
+        manager
+            .execute_plugin("ui-demo", wirt::ExecutorRequest::DefaultRules)
+            .unwrap(),
+        wirt::ExecutorResponse::Rules(_)
+    ));
+    assert!(matches!(
+        manager
+            .execute_plugin(
+                "ui-demo",
+                wirt::ExecutorRequest::UiLayout {
+                    extension_point: wirt::PluginExtensionPoint::MainPage,
+                },
+            )
+            .unwrap(),
+        wirt::ExecutorResponse::Layout(_)
+    ));
+    assert!(matches!(
+        manager
+            .execute_plugin("ui-demo", wirt::ExecutorRequest::TopTabs)
+            .unwrap(),
+        wirt::ExecutorResponse::TopTabs(_)
+    ));
+    assert!(matches!(
+        manager
+            .execute_plugin(
+                "ui-demo",
+                wirt::ExecutorRequest::UiEvent {
+                    id: "demo_btn".to_string(),
+                    value: None,
+                },
+            )
+            .unwrap(),
+        wirt::ExecutorResponse::Actions(_)
+    ));
+    assert!(manager.get_default_rules("ui-demo").unwrap().is_empty());
+}
+
+#[test]
+fn manager_rejects_oversized_executor_requests_before_registry_lookup() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
+    let error = manager
+        .execute_plugin(
+            "missing-plugin",
+            wirt::ExecutorRequest::UiEvent {
+                id: "x".repeat(wirt::MAX_EXECUTOR_MESSAGE_BYTES),
+                value: None,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Plugin execution failed: executor request limit exceeded"
+    );
+}
+
+#[test]
+fn unload_waits_for_admitted_execution_and_cleanup_remains_terminal() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    ui_demo_package(&plugins_dir.join("ui-demo.wirt"));
+    let mut manager = PluginManager::new(plugins_dir, HashMap::new()).unwrap();
+    manager.init().unwrap();
+
+    let executor = manager.wirt_executor();
+    let plugin_id = wirt::PluginId::parse("ui-demo").unwrap();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    executor.set_admitted_execution_hook(Box::new(move || {
+        entered_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    }));
+
+    let execution = {
+        let executor = executor.clone();
+        let plugin_id = plugin_id.clone();
+        std::thread::spawn(move || {
+            wirt::WirtExecutor::execute(
+                executor.as_ref(),
+                &plugin_id,
+                wirt::ExecutorRequest::Metadata,
+            )
+        })
+    };
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("execution must reach the admitted-instance boundary");
+
+    let manager = Arc::new(parking_lot::Mutex::new(manager));
+    let (unloaded_tx, unloaded_rx) = std::sync::mpsc::channel();
+    let unload = {
+        let manager = manager.clone();
+        std::thread::spawn(move || {
+            let result = manager.lock().unload_plugin("ui-demo");
+            unloaded_tx.send(result).unwrap();
+        })
+    };
+    assert!(matches!(
+        unloaded_rx.recv_timeout(std::time::Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    release_tx.send(()).unwrap();
+    assert!(matches!(
+        execution.join().unwrap().unwrap(),
+        wirt::ExecutorResponse::Metadata(_)
+    ));
+    unloaded_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("unload must finish after the admitted execution")
+        .unwrap();
+    unload.join().unwrap();
+
+    let error = wirt::WirtExecutor::execute(
+        executor.as_ref(),
+        &plugin_id,
+        wirt::ExecutorRequest::Metadata,
+    )
+    .unwrap_err();
+    assert!(matches!(error, PluginError::NotFound(_)));
+}
+
+#[test]
+fn disable_waits_for_admitted_execution_and_blocks_later_guest_entry() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    ui_demo_package(&plugins_dir.join("ui-demo.wirt"));
+    let mut manager = PluginManager::new(plugins_dir, HashMap::new()).unwrap();
+    manager.init().unwrap();
+
+    let executor = manager.wirt_executor();
+    let plugin_id = wirt::PluginId::parse("ui-demo").unwrap();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    executor.set_admitted_execution_hook(Box::new(move || {
+        entered_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    }));
+
+    let execution = {
+        let executor = executor.clone();
+        let plugin_id = plugin_id.clone();
+        std::thread::spawn(move || {
+            wirt::WirtExecutor::execute(
+                executor.as_ref(),
+                &plugin_id,
+                wirt::ExecutorRequest::Metadata,
+            )
+        })
+    };
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("execution must reach enabled admission");
+
+    let manager = Arc::new(parking_lot::Mutex::new(manager));
+    let (disabled_tx, disabled_rx) = std::sync::mpsc::channel();
+    let disable = {
+        let manager = manager.clone();
+        std::thread::spawn(move || {
+            let result = manager.lock().disable_plugin("ui-demo");
+            disabled_tx.send(result).unwrap();
+        })
+    };
+    assert!(matches!(
+        disabled_rx.recv_timeout(std::time::Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    release_tx.send(()).unwrap();
+    assert!(matches!(
+        execution.join().unwrap().unwrap(),
+        wirt::ExecutorResponse::Metadata(_)
+    ));
+    disabled_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("disable must finish after the admitted execution")
+        .unwrap();
+    disable.join().unwrap();
+
+    let error = wirt::WirtExecutor::execute(
+        executor.as_ref(),
+        &plugin_id,
+        wirt::ExecutorRequest::Metadata,
+    )
+    .unwrap_err();
+    assert!(matches!(error, PluginError::Unavailable(_)));
+}
+
+#[test]
+fn disabling_is_reentrant_while_a_caller_holds_the_public_instance_lock() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    ui_demo_package(&plugins_dir.join("ui-demo.wirt"));
+    let mut manager = PluginManager::new(plugins_dir, HashMap::new()).unwrap();
+    manager.init().unwrap();
+    let manager = Arc::new(manager);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+    let worker = {
+        let manager = manager.clone();
+        std::thread::spawn(move || {
+            let result = manager
+                .with_plugin_instance("ui-demo", |_| manager.disable_plugin("ui-demo"))
+                .expect("plugin instance must exist");
+            done_tx.send(result).unwrap();
+        })
+    };
+
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("disable must not wait on the caller-held public instance lock")
+        .unwrap();
+    worker.join().unwrap();
+    assert!(!manager.is_plugin_enabled("ui-demo"));
+}
+
+#[test]
+fn concurrent_enable_waits_for_disable_to_finish_its_admission_transition() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    ui_demo_package(&plugins_dir.join("ui-demo.wirt"));
+    let mut manager = PluginManager::new(plugins_dir, HashMap::new()).unwrap();
+    manager.init().unwrap();
+    let manager = Arc::new(manager);
+    let (disabled_map_tx, disabled_map_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    manager.set_disable_before_admission_hook(Box::new(move || {
+        disabled_map_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    }));
+
+    let disable = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.disable_plugin("ui-demo"))
+    };
+    disabled_map_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("disable must reach the split state transition");
+
+    let (enabled_tx, enabled_rx) = std::sync::mpsc::channel();
+    let enable = {
+        let manager = manager.clone();
+        std::thread::spawn(move || enabled_tx.send(manager.enable_plugin("ui-demo")).unwrap())
+    };
+    assert!(matches!(
+        enabled_rx.recv_timeout(std::time::Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    release_tx.send(()).unwrap();
+    disable.join().unwrap().unwrap();
+    enabled_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("enable must follow the completed disable transition")
+        .unwrap();
+    enable.join().unwrap();
+
+    assert!(manager.is_plugin_enabled("ui-demo"));
+    assert!(matches!(
+        manager
+            .execute_plugin("ui-demo", wirt::ExecutorRequest::Metadata)
+            .unwrap(),
+        wirt::ExecutorResponse::Metadata(_)
+    ));
+}
+
+#[test]
+fn disabled_plugin_cannot_be_restored_into_the_top_tabs_cache() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    ui_demo_package(&plugins_dir.join("ui-demo.wirt"));
+    let mut manager = PluginManager::new(plugins_dir, HashMap::new()).unwrap();
+    manager.init().unwrap();
+    let manager = Arc::new(manager);
+
+    let (read_tx, read_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    manager.set_top_tabs_before_cache_store_hook(Box::new(move || {
+        read_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    }));
+    let reader = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.get_all_top_tabs())
+    };
+    read_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("top-tab read must reach the cache publication boundary");
+
+    manager.disable_plugin("ui-demo").unwrap();
+    assert!(manager.cached_top_tabs.lock().is_none());
+    release_tx.send(()).unwrap();
+    reader.join().unwrap();
+
+    assert!(
+        manager.cached_top_tabs.lock().is_none(),
+        "a read admitted before invalidation must not republish stale tabs"
+    );
+}
+
 fn ui_demo_package(path: &std::path::Path) -> wirt::PackageFingerprint {
     let manifest = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -797,6 +1119,8 @@ fn case_folded_lifecycle_rejects_manifest_spelling_that_differs_from_guest() {
     assert!(!manager.is_plugin_enabled("ui-demo"));
     manager.enable_plugin("ui-demo").unwrap();
     assert!(manager.is_plugin_enabled("ui-demo"));
+    let _ = manager.get_all_top_tabs();
+    assert!(manager.cached_top_tabs.lock().is_some());
 
     let manifest_path = plugins_dir.join("ui-demo").join("ui-demo.toml");
     let mut manifest: crate::types::PluginManifest =
@@ -812,6 +1136,10 @@ fn case_folded_lifecycle_rejects_manifest_spelling_that_differs_from_guest() {
     assert!(manager.get_plugin_metadata("ui-demo").is_none());
     assert!(manager.get_plugin_instance("ui-demo").is_none());
     assert!(!manager.is_plugin_enabled("ui-demo"));
+    assert!(
+        manager.cached_top_tabs.lock().is_none(),
+        "a reload failure after removal must not retain the old generation's tabs"
+    );
 }
 
 #[test]

@@ -20,8 +20,17 @@ fn enabled_plugin_snapshot(
     plugins: &Arc<RwLock<HashMap<PluginIdentityKey, ManagedPlugin>>>,
     enabled_plugins: &Arc<RwLock<HashMap<PluginIdentityKey, bool>>>,
 ) -> Vec<(String, Arc<Mutex<PluginInstance>>)> {
-    let enabled = enabled_plugins.read();
+    enabled_plugin_snapshot_after_first_lock(plugins, enabled_plugins, || {})
+}
+
+fn enabled_plugin_snapshot_after_first_lock(
+    plugins: &Arc<RwLock<HashMap<PluginIdentityKey, ManagedPlugin>>>,
+    enabled_plugins: &Arc<RwLock<HashMap<PluginIdentityKey, bool>>>,
+    after_first_lock: impl FnOnce(),
+) -> Vec<(String, Arc<Mutex<PluginInstance>>)> {
     let map = plugins.read();
+    after_first_lock();
+    let enabled = enabled_plugins.read();
     map.iter()
         .filter(|(identity_key, _)| enabled.get(*identity_key).copied().unwrap_or(false))
         .map(|(_, plugin)| (plugin.metadata.id.clone(), plugin.instance.clone()))
@@ -48,20 +57,6 @@ fn trace_native_fetch_dispatch_failure(_error: &PluginError) {
     error!("Plugin native fetch dispatch failed");
 }
 
-fn with_event_context<T>(
-    instance: &mut PluginInstance,
-    event_ctx: crate::host_functions::EventContext,
-    operation: impl FnOnce(&mut PluginInstance) -> T,
-) -> T {
-    instance.set_event_context(Some(event_ctx));
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(instance)));
-    instance.set_event_context(None);
-    match result {
-        Ok(value) => value,
-        Err(payload) => std::panic::resume_unwind(payload),
-    }
-}
-
 fn dispatch_archive_opened_event<Dispatch>(
     instance: &Arc<Mutex<PluginInstance>>,
     plugin_id: &str,
@@ -70,12 +65,12 @@ fn dispatch_archive_opened_event<Dispatch>(
 ) -> Option<Result<Vec<crate::types::PluginAction>>>
 where
     Dispatch: FnOnce(
-        &mut PluginInstance,
+        crate::host_functions::EventContext,
         &str,
         Option<String>,
     ) -> Result<Vec<crate::types::PluginAction>>,
 {
-    let mut instance = instance.lock();
+    let instance = instance.lock();
     if !instance.has_capabilities(&[crate::types::PluginCapability::ArchiveMetadataRead]) {
         tracing::warn!(
             plugin_id,
@@ -83,14 +78,13 @@ where
         );
         return None;
     }
+    drop(instance);
 
-    let result = with_event_context(&mut instance, event_ctx.clone(), |instance| {
-        dispatch(
-            instance,
-            "event:archive_opened",
-            Some(event_ctx.archive_path.clone()),
-        )
-    });
+    let result = dispatch(
+        event_ctx.clone(),
+        "event:archive_opened",
+        Some(event_ctx.archive_path.clone()),
+    );
     Some(result)
 }
 
@@ -118,6 +112,7 @@ fn set_event_session_metadata(
 /// request.
 #[allow(clippy::too_many_arguments)]
 fn process_event_worker_request_fetch<Permit, Get, Fetch, Fallback>(
+    executor: &Arc<crate::InProcessWirtExecutor>,
     instance: &Arc<Mutex<PluginInstance>>,
     plugin_id: &str,
     key: &str,
@@ -135,6 +130,7 @@ where
     Fetch: FnOnce(&str, &str) -> std::result::Result<Option<serde_json::Value>, String>,
     Fallback: FnOnce(&str),
 {
+    let plugin_id_value = wirt::PluginId::parse(plugin_id.to_string()).ok();
     let authorized = instance
         .lock()
         .has_capabilities(&crate::types::REQUEST_FETCH_CAPABILITIES);
@@ -143,6 +139,11 @@ where
         key,
         authorized,
         gameta_available,
+        || {
+            plugin_id_value
+                .as_ref()
+                .and_then(|plugin_id| executor.admit_host_effect_for_instance(plugin_id, instance))
+        },
         acquire_host_service_permit,
         get_from_server,
         fetch_from_server,
@@ -158,6 +159,7 @@ impl PluginManager {
         receiver: std::sync::mpsc::Receiver<PluginEvent>,
         plugins: Arc<RwLock<HashMap<PluginIdentityKey, ManagedPlugin>>>,
         enabled_plugins: Arc<RwLock<HashMap<PluginIdentityKey, bool>>>,
+        executor: Arc<crate::InProcessWirtExecutor>,
     ) {
         info!("Plugin event worker started");
 
@@ -187,6 +189,9 @@ impl PluginManager {
             };
 
             for (plugin_id, instance_arc) in enabled_plugin_snapshot(&plugins, &enabled_plugins) {
+                let Ok(plugin_id_value) = wirt::PluginId::parse(plugin_id.clone()) else {
+                    continue;
+                };
                 // Phase 1: under lock — install the event context on
                 // this instance, dispatch the event, then clear the
                 // context. While the context is set, every
@@ -200,7 +205,19 @@ impl PluginManager {
                     &instance_arc,
                     &plugin_id,
                     &event_ctx,
-                    |instance, id, value| instance.send_ui_event(id, value),
+                    |event_context, id, value| {
+                        executor
+                            .execute_with_event_context(
+                                &plugin_id_value,
+                                &instance_arc,
+                                wirt::ExecutorRequest::UiEvent {
+                                    id: id.to_string(),
+                                    value,
+                                },
+                                event_context,
+                            )
+                            .and_then(wirt::ExecutorResponse::into_actions)
+                    },
                 ) else {
                     continue;
                 };
@@ -235,6 +252,7 @@ impl PluginManager {
                         )
                     };
                     process_event_worker_request_fetch(
+                        &executor,
                         &instance_arc,
                         &plugin_id,
                         &key,
@@ -293,11 +311,17 @@ impl PluginManager {
                             // the plugin's native HTTP fallback runs.
                             let event_name = format!("do_native_fetch:{}", key);
                             info!("[EventWorker] Dispatching native fetch");
-                            let mut instance = instance_arc.lock();
-                            let result =
-                                with_event_context(&mut instance, event_ctx.clone(), |instance| {
-                                    instance.send_ui_event(&event_name, None)
-                                });
+                            let result = executor
+                                .execute_with_event_context(
+                                    &plugin_id_value,
+                                    &instance_arc,
+                                    wirt::ExecutorRequest::UiEvent {
+                                        id: event_name,
+                                        value: None,
+                                    },
+                                    event_ctx.clone(),
+                                )
+                                .and_then(wirt::ExecutorResponse::into_actions);
                             if let Err(e) = result {
                                 trace_native_fetch_dispatch_failure(&e);
                             }
@@ -374,6 +398,58 @@ impl PluginManager {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn enabled_snapshot_uses_the_registry_then_enabled_lock_order() {
+        let plugins = Arc::new(RwLock::new(HashMap::new()));
+        let enabled = Arc::new(RwLock::new(HashMap::new()));
+        let (first_lock_tx, first_lock_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        let snapshot = {
+            let plugins = plugins.clone();
+            let enabled = enabled.clone();
+            std::thread::spawn(move || {
+                enabled_plugin_snapshot_after_first_lock(&plugins, &enabled, || {
+                    first_lock_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                })
+            })
+        };
+        first_lock_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("snapshot must acquire its first registry lock");
+
+        let (disable_tx, disable_rx) = std::sync::mpsc::channel();
+        let disable = {
+            let plugins = plugins.clone();
+            let enabled = enabled.clone();
+            std::thread::spawn(move || {
+                let _plugins = plugins.read();
+                disable_tx.send(()).unwrap();
+                enabled
+                    .try_write_for(std::time::Duration::from_millis(500))
+                    .is_some()
+            })
+        };
+        disable_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("disable-shaped path must acquire the registry lock");
+
+        let writer = {
+            let plugins = plugins.clone();
+            std::thread::spawn(move || {
+                plugins
+                    .try_write_for(std::time::Duration::from_secs(1))
+                    .is_some()
+            })
+        };
+        release_tx.send(()).unwrap();
+
+        assert!(disable.join().unwrap(), "enabled write must not cycle");
+        assert!(snapshot.join().unwrap().is_empty());
+        assert!(writer.join().unwrap(), "registry writer must complete");
+    }
 
     /// Minimal `ActiveTabBridge` test double for
     /// `process_event_worker_request_fetch`'s own tests: only
@@ -518,6 +594,7 @@ mod tests {
             let fallback_called = AtomicBool::new(false);
 
             let outcome = process_event_worker_request_fetch(
+                &manager.wirt_executor(),
                 &instance,
                 "ui-demo",
                 "dlsite:RJ000001",
@@ -552,6 +629,7 @@ mod tests {
         let fallback_called = AtomicBool::new(false);
 
         let outcome = process_event_worker_request_fetch(
+            &manager.wirt_executor(),
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
@@ -579,6 +657,115 @@ mod tests {
                 .as_deref(),
             Some("RJ000001")
         );
+    }
+
+    #[test]
+    fn disable_waits_for_an_admitted_event_worker_fetch_to_finish() {
+        let (_root, manager) = manager_with_capabilities(true, true, false);
+        let executor = manager.wirt_executor();
+        let instance = manager
+            .get_plugin_instance("ui-demo")
+            .expect("loaded plugin instance");
+        let concrete_bridge = Arc::new(TestBridge::default());
+        let bridge: Arc<dyn crate::ActiveTabBridge> = concrete_bridge.clone();
+        let fallback_called = AtomicBool::new(false);
+        let (fetch_started_tx, fetch_started_rx) = std::sync::mpsc::channel();
+        let (release_fetch_tx, release_fetch_rx) = std::sync::mpsc::channel();
+        let (disable_done_tx, disable_done_rx) = std::sync::mpsc::channel();
+
+        std::thread::scope(|scope| {
+            let fetch_executor = executor.clone();
+            let fetch_instance = instance.clone();
+            let fetch_bridge = bridge.clone();
+            let fetch_fallback = &fallback_called;
+            let fetch = scope.spawn(move || {
+                process_event_worker_request_fetch(
+                    &fetch_executor,
+                    &fetch_instance,
+                    "ui-demo",
+                    "dlsite:RJ000001",
+                    Some(&fetch_bridge),
+                    1,
+                    true,
+                    || Ok(()),
+                    |_, _| {
+                        fetch_started_tx.send(()).unwrap();
+                        release_fetch_rx.recv().unwrap();
+                        Ok(Some(serde_json::json!({"product_id": "RJ000001"})))
+                    },
+                    |_, _| Ok(None),
+                    |_| fetch_fallback.store(true, Ordering::SeqCst),
+                )
+            });
+            fetch_started_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("host action must start");
+            let disable = scope.spawn(|| {
+                manager.disable_plugin("ui-demo").unwrap();
+                disable_done_tx.send(()).unwrap();
+            });
+            assert!(
+                disable_done_rx
+                    .recv_timeout(std::time::Duration::from_millis(100))
+                    .is_err(),
+                "disable must wait for an admitted host action"
+            );
+            release_fetch_tx.send(()).unwrap();
+            assert_eq!(fetch.join().unwrap(), RequestFetchOutcome::ServerHandled);
+            disable_done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("disable must finish after the host action");
+            disable.join().unwrap();
+        });
+
+        assert!(concrete_bridge.metadata().is_some());
+        assert!(!fallback_called.load(Ordering::SeqCst));
+        assert!(!manager.is_plugin_enabled("ui-demo"));
+    }
+
+    #[test]
+    fn event_worker_drops_response_from_unloaded_or_reloaded_generation() {
+        for reload in [false, true] {
+            let (_root, mut manager) = manager_with_capabilities(true, true, false);
+            let executor = manager.wirt_executor();
+            let instance = manager
+                .get_plugin_instance("ui-demo")
+                .expect("loaded plugin instance");
+            if reload {
+                manager.reload_plugin("ui-demo").expect("reload plugin");
+            } else {
+                manager.unload_plugin("ui-demo").expect("unload plugin");
+            }
+            let concrete_bridge = Arc::new(TestBridge::default());
+            let bridge: Arc<dyn crate::ActiveTabBridge> = concrete_bridge.clone();
+            let permit_called = AtomicBool::new(false);
+            let fetch_called = AtomicBool::new(false);
+
+            let outcome = process_event_worker_request_fetch(
+                &executor,
+                &instance,
+                "ui-demo",
+                "dlsite:RJ000001",
+                Some(&bridge),
+                1,
+                true,
+                || {
+                    permit_called.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+                |_, _| {
+                    fetch_called.store(true, Ordering::SeqCst);
+                    Ok(Some(serde_json::json!({"product_id": "RJ000001"})))
+                },
+                |_, _| Ok(None),
+                |_| {},
+            );
+
+            assert_eq!(outcome, RequestFetchOutcome::Denied);
+            assert!(!permit_called.load(Ordering::SeqCst));
+            assert!(!fetch_called.load(Ordering::SeqCst));
+            assert!(concrete_bridge.metadata().is_none());
+        }
     }
 
     #[test]
@@ -611,6 +798,7 @@ mod tests {
         let fallback_called = AtomicBool::new(false);
 
         let outcome = process_event_worker_request_fetch(
+            &manager.wirt_executor(),
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
@@ -664,6 +852,7 @@ mod tests {
         let native_called = AtomicBool::new(false);
 
         let outcome = process_event_worker_request_fetch(
+            &manager.wirt_executor(),
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
@@ -704,6 +893,7 @@ mod tests {
         let native_called = AtomicBool::new(false);
 
         let outcome = process_event_worker_request_fetch(
+            &manager.wirt_executor(),
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
@@ -740,6 +930,7 @@ mod tests {
         let fallback_calls = AtomicUsize::new(0);
 
         let outcome = process_event_worker_request_fetch(
+            &manager.wirt_executor(),
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
@@ -783,6 +974,7 @@ mod tests {
         let fallback_calls = AtomicUsize::new(0);
 
         let outcome = process_event_worker_request_fetch(
+            &manager.wirt_executor(),
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
@@ -872,21 +1064,27 @@ mod tests {
         let instance = manager
             .get_plugin_instance("ui-demo")
             .expect("loaded plugin instance");
+        let executor = manager.wirt_executor();
+        executor.set_event_dispatch_hook(Box::new(|| {
+            panic!("simulated guest dispatch panic");
+        }));
         let event_ctx = crate::host_functions::EventContext {
             archive_path: "C:/library/panic.zip".to_string(),
             password: None,
             entries: Arc::new(Vec::new()),
             archive_session_id: 0,
         };
+        let plugin_id = wirt::PluginId::parse("ui-demo").unwrap();
 
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = dispatch_archive_opened_event(
+            let _ = executor.execute_with_event_context(
+                &plugin_id,
                 &instance,
-                "ui-demo",
-                &event_ctx,
-                |_, _, _| -> Result<Vec<crate::types::PluginAction>> {
-                    panic!("simulated guest dispatch panic")
+                wirt::ExecutorRequest::UiEvent {
+                    id: "event:archive_opened".to_string(),
+                    value: Some(event_ctx.archive_path.clone()),
                 },
+                event_ctx,
             );
         }));
 

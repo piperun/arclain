@@ -1135,8 +1135,16 @@ impl PluginManager {
         let package = self.loader.read_package_file(package_path)?;
         let loaded = self.loader.load_wasm(&package.component)?;
         let mut instance = loaded.instantiate_for_metadata_validation()?;
-        let metadata_result = instance.get_metadata();
-        let cleanup_result = instance.cleanup();
+        let metadata_result = crate::InProcessWirtExecutor::execute_transient(
+            &mut instance,
+            wirt::ExecutorRequest::Metadata,
+        )
+        .and_then(wirt::ExecutorResponse::into_metadata);
+        let cleanup_result = crate::InProcessWirtExecutor::execute_transient(
+            &mut instance,
+            wirt::ExecutorRequest::Cleanup,
+        )
+        .and_then(wirt::ExecutorResponse::into_empty);
         let metadata = metadata_result?;
         cleanup_result?;
         validate_guest_metadata(&package.manifest, &metadata)?;
@@ -1275,13 +1283,21 @@ impl PluginManager {
             &self.plugin_log_dir,
         )?;
 
-        let metadata = match instance.get_metadata().and_then(|metadata| {
+        let metadata = match crate::InProcessWirtExecutor::execute_transient(
+            &mut instance,
+            wirt::ExecutorRequest::Metadata,
+        )
+        .and_then(wirt::ExecutorResponse::into_metadata)
+        .and_then(|metadata| {
             validate_guest_metadata(&discovered.manifest, &metadata)?;
             Ok(metadata)
         }) {
             Ok(metadata) => metadata,
             Err(error) => {
-                let _ = instance.cleanup();
+                let _ = crate::InProcessWirtExecutor::execute_transient(
+                    &mut instance,
+                    wirt::ExecutorRequest::Cleanup,
+                );
                 return Err(error);
             }
         };
@@ -1311,11 +1327,19 @@ impl PluginManager {
         }
 
         // Initialize the plugin
-        if let Err(error) = instance.init() {
+        if let Err(error) = crate::InProcessWirtExecutor::execute_transient(
+            &mut instance,
+            wirt::ExecutorRequest::Init,
+        )
+        .and_then(wirt::ExecutorResponse::into_empty)
+        {
             if let Some(ref client) = self.async_http_client {
                 client.remove_plugin_configuration(&plugin_id);
             }
-            let _ = instance.cleanup();
+            let _ = crate::InProcessWirtExecutor::execute_transient(
+                &mut instance,
+                wirt::ExecutorRequest::Cleanup,
+            );
             return Err(error);
         }
 
@@ -1330,6 +1354,7 @@ impl PluginManager {
             manifest: discovered.manifest.clone(),
             enabled: true,
             settings_dirty,
+            execution_admission: super::types::ExecutionAdmission::enabled(),
         };
 
         Ok(managed)
@@ -1349,7 +1374,12 @@ impl PluginManager {
         if let Some(ref client) = self.async_http_client {
             client.remove_plugin_configuration(plugin_id);
         }
-        if let Err(error) = managed.instance.lock().cleanup() {
+        if let Err(error) = crate::InProcessWirtExecutor::execute_transient(
+            &mut managed.instance.lock(),
+            wirt::ExecutorRequest::Cleanup,
+        )
+        .and_then(wirt::ExecutorResponse::into_empty)
+        {
             warn!(
                 "Failed to clean up plugin '{}' after installation rollback: {}",
                 plugin_id, error
@@ -1368,11 +1398,17 @@ impl PluginManager {
         self.enabled_plugins.write().remove(&identity_key);
         self.settings_cache.lock().remove(&identity_key);
         if let Some(removed) = removed {
+            removed.execution_admission.disable_and_wait();
+            self.invalidate_top_tabs_cache();
             let registered_id = removed.metadata.id.clone();
             if let Some(ref client) = self.async_http_client {
                 client.remove_plugin_configuration(&registered_id);
             }
-            removed.instance.lock().cleanup()?;
+            crate::InProcessWirtExecutor::execute_transient(
+                &mut removed.instance.lock(),
+                wirt::ExecutorRequest::Cleanup,
+            )?
+            .into_empty()?;
         }
 
         // Discover plugins again
@@ -1405,12 +1441,17 @@ impl PluginManager {
         if let Some(plugin) = plugin {
             self.enabled_plugins.write().remove(&identity_key);
             self.settings_cache.lock().remove(&identity_key);
+            plugin.execution_admission.disable_and_wait();
+            self.invalidate_top_tabs_cache();
             let registered_id = plugin.metadata.id.clone();
             if let Some(ref client) = self.async_http_client {
                 client.remove_plugin_configuration(&registered_id);
             }
-            plugin.instance.lock().cleanup()?;
-            self.invalidate_top_tabs_cache();
+            crate::InProcessWirtExecutor::execute_transient(
+                &mut plugin.instance.lock(),
+                wirt::ExecutorRequest::Cleanup,
+            )?
+            .into_empty()?;
             info!("Plugin unloaded: {}", plugin_id);
             Ok(())
         } else {
@@ -1454,8 +1495,16 @@ impl PluginManager {
         // not inherit process I/O, and every side-effecting host import is
         // denied or suppressed until the exported ID is validated.
         let mut temp_instance = loaded.instantiate_for_metadata_validation()?;
-        let metadata_result = temp_instance.get_metadata();
-        let cleanup_result = temp_instance.cleanup();
+        let metadata_result = crate::InProcessWirtExecutor::execute_transient(
+            &mut temp_instance,
+            wirt::ExecutorRequest::Metadata,
+        )
+        .and_then(wirt::ExecutorResponse::into_metadata);
+        let cleanup_result = crate::InProcessWirtExecutor::execute_transient(
+            &mut temp_instance,
+            wirt::ExecutorRequest::Cleanup,
+        )
+        .and_then(wirt::ExecutorResponse::into_empty);
         let metadata = metadata_result?;
         cleanup_result?;
         let plugin_id = PluginId::parse(metadata.id.clone());

@@ -27,6 +27,28 @@ fn installed_ui_demo() -> (TempDir, PluginManager) {
     (temp_dir, manager)
 }
 
+fn installed_facade_fixture() -> (TempDir, PluginManager) {
+    let temp_dir = TempDir::new().unwrap();
+    let package_path = temp_dir.path().join("facade-test-fixture.wirt");
+    let manifest = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/facade-test-fixture/facade-test-fixture.toml"
+    ));
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/facade-test-fixture/facade-test-fixture.wasm"
+    ));
+    let package = wirt::package_bytes(manifest, component).unwrap();
+    let fingerprint = wirt::PackageFingerprint::sha256(&package);
+    std::fs::write(&package_path, package).unwrap();
+
+    let mut manager = PluginManager::new(temp_dir.path().join("plugins"), HashMap::new()).unwrap();
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
+    (temp_dir, manager)
+}
+
 #[test]
 fn enabled_snapshot_completes_reads_while_the_outer_manager_is_locked() {
     let (_temp_dir, manager) = installed_ui_demo();
@@ -89,4 +111,18 @@ fn enabled_snapshot_excludes_disabled_plugins() {
 
     assert!(snapshot.is_empty());
     assert!(snapshot.instance("ui-demo").is_none());
+}
+
+#[test]
+fn enabled_snapshot_never_executes_a_reloaded_plugin_generation() {
+    let (_temp_dir, mut manager) = installed_facade_fixture();
+    let snapshot = manager.enabled_plugin_snapshot();
+    assert_eq!(snapshot.get_all_top_tabs().len(), 1);
+
+    manager.reload_plugin("facade-test-fixture").unwrap();
+
+    assert!(
+        snapshot.get_all_top_tabs().is_empty(),
+        "a detached snapshot must not redirect its guest call into a replacement instance"
+    );
 }

@@ -2,7 +2,7 @@
 //!
 //! These tests verify the end-to-end functionality of the plugin system.
 
-use arclain_plugins::{PluginEvent, PluginLoader, PluginManager};
+use arclain_plugins::{PluginEvent, PluginManager};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -83,55 +83,51 @@ fn test_plugin_manager_init_empty_directory() {
 
 #[test]
 fn bundled_dlsite_plugin_loads_against_current_host() {
-    // Override lets us point this same assertion at packaged plugin dirs
-    // when diagnosing a user's local install.
-    let loader = PluginLoader::new(bundled_plugins_dir()).unwrap();
-    let discovered = loader.discover_plugins().unwrap();
-    let dlsite = discovered
-        .iter()
-        .find(|plugin| plugin.manifest.plugin.id == "dlsite-metadata")
-        .expect("bundled dlsite-metadata manifest should be discovered");
-    let loaded = loader.load_plugin(dlsite).unwrap();
-    let mut instance = loaded
-        .instantiate(
-            dlsite.manifest.capabilities.to_capabilities(),
-            dlsite.manifest.rate_limits.http_requests_per_minute,
-            HashMap::new(),
-            None,
-        )
+    let mut manager = PluginManager::new(bundled_plugins_dir(), HashMap::new()).unwrap();
+    manager.init().unwrap();
+    let metadata = manager
+        .execute_plugin("dlsite-metadata", wirt::ExecutorRequest::Metadata)
+        .unwrap()
+        .into_metadata()
         .unwrap();
-
-    instance.init().unwrap();
-    let metadata = instance.get_metadata().unwrap();
     assert_eq!(metadata.id, "dlsite-metadata");
 }
 
 #[test]
 fn bundled_ui_demo_round_trips_through_wirt_world() {
-    let loader = PluginLoader::new(bundled_plugins_dir()).unwrap();
-    let discovered = loader.discover_plugins().unwrap();
-    let demo = discovered
-        .iter()
-        .find(|plugin| plugin.manifest.plugin.id == "ui-demo")
-        .expect("bundled ui-demo manifest should be discovered");
-    let mut instance = loader
-        .load_plugin(demo)
-        .unwrap()
-        .instantiate(
-            demo.manifest.capabilities.to_capabilities(),
-            demo.manifest.rate_limits.http_requests_per_minute,
-            HashMap::new(),
-            None,
+    let mut manager = PluginManager::new(bundled_plugins_dir(), HashMap::new()).unwrap();
+    manager.init().unwrap();
+    assert_eq!(
+        manager
+            .execute_plugin("ui-demo", wirt::ExecutorRequest::Metadata)
+            .unwrap()
+            .into_metadata()
+            .unwrap()
+            .id,
+        "ui-demo"
+    );
+    let layout = manager
+        .execute_plugin(
+            "ui-demo",
+            wirt::ExecutorRequest::UiLayout {
+                extension_point: wirt::PluginExtensionPoint::MainPage,
+            },
         )
         .unwrap();
-
-    instance.init().unwrap();
-    assert_eq!(instance.get_metadata().unwrap().id, "ui-demo");
-    let layout = instance
-        .get_ui_layout(arclain_plugins::types::PluginExtensionPoint::MainPage)
-        .unwrap();
+    let layout = layout.into_layout().unwrap();
     assert!(!layout.elements().is_empty());
-    assert!(instance.send_ui_event("demo_btn", None).unwrap().is_empty());
+    assert!(manager
+        .execute_plugin(
+            "ui-demo",
+            wirt::ExecutorRequest::UiEvent {
+                id: "demo_btn".to_string(),
+                value: None,
+            },
+        )
+        .unwrap()
+        .into_actions()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

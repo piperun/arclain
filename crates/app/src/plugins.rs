@@ -2338,14 +2338,17 @@ impl PluginSessionStore {
         let dispatch_plugin_id = plugin_id.clone();
         let actions = handle
             .spawn_blocking(move || {
-                let instance = dispatch_manager
-                    .lock()
-                    .get_plugin_instance(&dispatch_plugin_id)
-                    .ok_or_else(|| plugin_not_found(&dispatch_plugin_id))?;
-                let mut instance = instance.lock();
-                instance
-                    .send_ui_event(&event_id, value)
-                    .map_err(plugin_execution_error)
+                let executor = dispatch_manager.lock().wirt_executor();
+                let plugin_id = wirt::PluginId::parse(dispatch_plugin_id)?;
+                wirt::WirtExecutor::execute(
+                    executor.as_ref(),
+                    &plugin_id,
+                    wirt::ExecutorRequest::UiEvent {
+                        id: event_id,
+                        value,
+                    },
+                )
+                .and_then(wirt::ExecutorResponse::into_actions)
             })
             .await
             .map_err(|join_error| {
@@ -2354,7 +2357,14 @@ impl PluginSessionStore {
                     "plugin action worker failed",
                 )
                 .with_diagnostic(join_error.to_string())
-            })??;
+            })?;
+        let actions = match actions {
+            Ok(actions) => actions,
+            Err(error) => {
+                still_enabled()?;
+                return Err(plugin_execution_error(error));
+            }
+        };
 
         // The guest call could not be taken back; what it produced can be,
         // and is. Nothing below may happen for a plugin disabled while it
@@ -2426,19 +2436,21 @@ impl PluginSessionStore {
         extension_point: &PluginExtensionPointDto,
         handle: &tokio::runtime::Handle,
     ) -> Result<PluginUiNodeDto, ApplicationError> {
-        let manager = manager.clone();
+        let worker_manager = manager.clone();
         let worker_plugin_id = plugin_id.to_string();
         let host_extension_point = to_host_extension_point(extension_point);
         let layout = handle
             .spawn_blocking(move || {
-                let instance = manager
-                    .lock()
-                    .get_plugin_instance(&worker_plugin_id)
-                    .ok_or_else(|| plugin_not_found(&worker_plugin_id))?;
-                let mut instance = instance.lock();
-                instance
-                    .get_ui_layout(host_extension_point)
-                    .map_err(plugin_execution_error)
+                let executor = worker_manager.lock().wirt_executor();
+                let plugin_id = wirt::PluginId::parse(worker_plugin_id)?;
+                wirt::WirtExecutor::execute(
+                    executor.as_ref(),
+                    &plugin_id,
+                    wirt::ExecutorRequest::UiLayout {
+                        extension_point: host_extension_point,
+                    },
+                )
+                .and_then(wirt::ExecutorResponse::into_layout)
             })
             .await
             .map_err(|join_error| {
@@ -2447,7 +2459,14 @@ impl PluginSessionStore {
                     "plugin layout worker failed",
                 )
                 .with_diagnostic(join_error.to_string())
-            })??;
+            })?;
+        let layout = match layout {
+            Ok(layout) => layout,
+            Err(error) => {
+                require_enabled_plugin(manager, plugin_id)?;
+                return Err(plugin_execution_error(error));
+            }
+        };
         let root = ui_model::normalize_layout(&layout).map_err(normalize_error)?;
         Ok(rewrite_cache_keys(root, plugin_id))
     }
@@ -2499,17 +2518,23 @@ async fn resolve_request_fetches(
     pinned_archive_session: Option<ArchiveSessionId>,
     handle: &tokio::runtime::Handle,
 ) {
-    let Some(instance) = manager.lock().get_plugin_instance(plugin_id) else {
-        tracing::warn!(plugin_id, "dropped a RequestFetch for an unknown plugin");
-        return;
+    let (instance, executor) = {
+        let manager = manager.lock();
+        let Some(instance) = manager.get_plugin_instance(plugin_id) else {
+            tracing::warn!(plugin_id, "dropped a RequestFetch for an unknown plugin");
+            return;
+        };
+        (instance, manager.wirt_executor())
     };
     let pinned = pinned_archive_session.map(ArchiveSessionId::into_raw);
     for key in keys {
         let instance = instance.clone();
+        let executor = executor.clone();
         let worker_plugin_id = plugin_id.to_string();
         let outcome = handle
             .spawn_blocking(move || {
                 arclain_plugins::resolve_interactive_request_fetch(
+                    &executor,
                     &instance,
                     &worker_plugin_id,
                     &key,

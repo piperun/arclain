@@ -14,6 +14,7 @@ pub mod action_policy;
 mod component_contract;
 pub mod conversions;
 mod error;
+mod executor;
 pub mod limits;
 pub mod loader;
 mod manifest;
@@ -26,6 +27,9 @@ pub mod ui_model;
 pub use bindings::{wirt, PluginWorld};
 pub use component_contract::{inspect_component_contract, ComponentContract};
 pub use error::{PluginError, Result};
+pub use executor::{ExecutorRequest, ExecutorResponse, WirtExecutor, MAX_EXECUTOR_MESSAGE_BYTES};
+#[doc(hidden)]
+pub use executor::{ValidatedExecutorRequest, WirtExecutorBackend};
 pub use limits::{
     metadata_value_within_limit, PluginStoreLimiter, StoreQuotaExceeded, StoreQuotaKind,
     MAX_CORE_INSTANCES, MAX_LINEAR_MEMORY_BYTES, MAX_MEMORIES, MAX_PLUGIN_GUEST_DATA_BYTES,

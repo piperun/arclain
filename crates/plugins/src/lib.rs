@@ -43,6 +43,7 @@
 
 pub mod active_tab;
 mod conversions;
+mod executor;
 pub mod host_functions;
 pub mod loader;
 pub mod manager;
@@ -52,6 +53,7 @@ pub use wirt::{action_policy, ui_model};
 
 // Re-export main types
 pub use active_tab::ActiveTabBridge;
+pub use executor::InProcessWirtExecutor;
 pub use host_functions::HostFunctions;
 pub use loader::{DiscoveredPlugin, PluginArtifact, PluginLoader};
 pub use manager::{

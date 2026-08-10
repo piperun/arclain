@@ -12,7 +12,7 @@ mod lifecycle;
 mod queries;
 pub mod request_fetch;
 mod snapshot;
-mod types;
+pub(crate) mod types;
 
 pub use request_fetch::{resolve_interactive_request_fetch, RequestFetchOutcome};
 pub use snapshot::EnabledPluginSnapshot;
@@ -65,6 +65,10 @@ pub struct PluginManager {
     pub(crate) loader: PluginLoader,
     pub(crate) plugins: Arc<RwLock<HashMap<PluginIdentityKey, ManagedPlugin>>>,
     pub(crate) enabled_plugins: Arc<RwLock<HashMap<PluginIdentityKey, bool>>>,
+    pub(crate) plugin_state_transition: parking_lot::Mutex<()>,
+    #[cfg(test)]
+    pub(crate) disable_before_admission_hook: parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    pub(crate) executor: Arc<crate::InProcessWirtExecutor>,
     #[cfg(feature = "gameta")]
     pub(crate) library_service: Option<Arc<arclain_core::LibraryService>>,
     pub(crate) content_cache: Option<Arc<arclain_data::ContentCache>>,
@@ -88,6 +92,10 @@ pub struct PluginManager {
     /// WASM call into every enabled plugin (audit finding P3).
     pub(crate) cached_top_tabs:
         parking_lot::Mutex<Option<Vec<(String, crate::types::TopTabConfig)>>>,
+    pub(crate) cached_top_tabs_epoch: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    pub(crate) top_tabs_before_cache_store_hook:
+        parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// Cached settings snapshots indexed by plugin id. `get_all_settings`
     /// uses this to avoid locking + cloning instances whose
     /// `settings_dirty` flag is still `false` (audit P14). Populated on
@@ -138,6 +146,7 @@ impl PluginManager {
         let loader = PluginLoader::new(plugins_dir)?;
         let plugins = Arc::new(RwLock::new(HashMap::new()));
         let enabled_plugins = Arc::new(RwLock::new(HashMap::new()));
+        let executor = Arc::new(crate::InProcessWirtExecutor::new(plugins.clone()));
 
         // Create channel for async event dispatch
         let (event_sender, event_receiver) = bounded_event_channel(PLUGIN_EVENT_QUEUE_CAPACITY);
@@ -146,14 +155,24 @@ impl PluginManager {
         // Spawn worker thread to process events
         let plugins_clone = plugins.clone();
         let enabled_plugins_clone = enabled_plugins.clone();
+        let executor_clone = executor.clone();
         let worker_handle = std::thread::spawn(move || {
-            Self::event_worker(event_receiver, plugins_clone, enabled_plugins_clone);
+            Self::event_worker(
+                event_receiver,
+                plugins_clone,
+                enabled_plugins_clone,
+                executor_clone,
+            );
         });
 
         Ok(Self {
             loader,
             plugins,
             enabled_plugins,
+            plugin_state_transition: parking_lot::Mutex::new(()),
+            #[cfg(test)]
+            disable_before_admission_hook: parking_lot::Mutex::new(None),
+            executor,
             #[cfg(feature = "gameta")]
             library_service: None,
             content_cache: None,
@@ -166,6 +185,9 @@ impl PluginManager {
             _event_worker_handle: Some(worker_handle),
             active_tab_bridge: None,
             cached_top_tabs: parking_lot::Mutex::new(None),
+            cached_top_tabs_epoch: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            top_tabs_before_cache_store_hook: parking_lot::Mutex::new(None),
             settings_cache: parking_lot::Mutex::new(HashMap::new()),
             failed_plugins: parking_lot::Mutex::new(Vec::new()),
         })
@@ -174,7 +196,20 @@ impl PluginManager {
     /// Drop the cached top-tabs list. Called from any place that
     /// changes which plugins are enabled or which instances exist.
     pub(crate) fn invalidate_top_tabs_cache(&self) {
-        *self.cached_top_tabs.lock() = None;
+        let mut cache = self.cached_top_tabs.lock();
+        self.cached_top_tabs_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        *cache = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_disable_before_admission_hook(&self, hook: Box<dyn FnOnce() + Send>) {
+        *self.disable_before_admission_hook.lock() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_top_tabs_before_cache_store_hook(&self, hook: Box<dyn FnOnce() + Send>) {
+        *self.top_tabs_before_cache_store_hook.lock() = Some(hook);
     }
 
     /// Snapshot the per-plugin instance Arcs under a brief

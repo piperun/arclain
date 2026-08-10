@@ -2,7 +2,7 @@
 
 mod epoch;
 mod instance;
-mod quota;
+pub(crate) mod quota;
 #[cfg(test)]
 mod tests;
 

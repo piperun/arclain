@@ -8,15 +8,48 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
+use wirt::WirtExecutor;
 
 impl PluginManager {
+    /// Execute one bounded, serializable Wirt request for a loaded plugin.
+    pub fn execute_plugin(
+        &self,
+        plugin_id: &str,
+        request: wirt::ExecutorRequest,
+    ) -> Result<wirt::ExecutorResponse> {
+        let plugin_id = wirt::PluginId::parse(plugin_id.to_string())?;
+        self.executor.execute(&plugin_id, request)
+    }
+
+    /// Clone the bounded executor for work that must outlive a manager lock.
+    pub fn wirt_executor(&self) -> Arc<crate::InProcessWirtExecutor> {
+        self.executor.clone()
+    }
+
+    /// Read and convert one plugin's neutral default rules through the Wirt
+    /// message boundary.
+    pub fn get_default_rules(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Vec<arclain_core::OrganizationRule>> {
+        self.execute_plugin(plugin_id, wirt::ExecutorRequest::DefaultRules)?
+            .into_rules()
+            .map(|rules| {
+                rules
+                    .into_iter()
+                    .map(crate::conversions::convert_plugin_rule_definition)
+                    .collect()
+            })
+    }
     /// Enable a plugin (interior mutability safe)
     pub fn enable_plugin(&self, plugin_id: &str) -> Result<()> {
         let identity_key = PluginIdentityKey::parse(plugin_id)
             .map_err(|_| PluginError::NotFound(plugin_id.to_string()))?;
+        let _transition = self.plugin_state_transition.lock();
         let plugins = self.plugins.read();
 
-        if plugins.contains_key(&identity_key) {
+        if let Some(plugin) = plugins.get(&identity_key) {
+            plugin.execution_admission.enable();
             self.enabled_plugins.write().insert(identity_key, true);
             drop(plugins);
             self.invalidate_top_tabs_cache();
@@ -31,11 +64,22 @@ impl PluginManager {
     pub fn disable_plugin(&self, plugin_id: &str) -> Result<()> {
         let identity_key = PluginIdentityKey::parse(plugin_id)
             .map_err(|_| PluginError::NotFound(plugin_id.to_string()))?;
+        let _transition = self.plugin_state_transition.lock();
         let plugins = self.plugins.read();
 
-        if plugins.contains_key(&identity_key) {
+        if let Some(plugin) = plugins.get(&identity_key) {
+            let admission = plugin.execution_admission.clone();
             self.enabled_plugins.write().insert(identity_key, false);
+            #[cfg(test)]
+            if let Some(hook) = self.disable_before_admission_hook.lock().take() {
+                hook();
+            }
             drop(plugins);
+            // Close admission before returning and wait only for calls that
+            // already crossed it. This barrier is independent of the public
+            // instance mutex, so disabling remains safe from callbacks that
+            // already hold an instance handle.
+            admission.disable_and_wait();
             self.invalidate_top_tabs_cache();
             info!("Plugin disabled: {}", plugin_id);
             Ok(())
@@ -124,14 +168,29 @@ impl PluginManager {
     /// plugin every render frame). Cache is dropped automatically on
     /// `enable_plugin` / `disable_plugin` / `load_plugin`.
     pub fn get_all_top_tabs(&self) -> Vec<(String, crate::types::TopTabConfig)> {
+        let cache_epoch = self
+            .cached_top_tabs_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
         if let Some(cached) = self.cached_top_tabs.lock().clone() {
             return cached;
         }
 
         let all_tabs = self.enabled_plugin_snapshot().get_all_top_tabs();
-        // Cache the sorted output so subsequent renders just clone from
-        // cache without re-sorting or re-querying any plugin.
-        *self.cached_top_tabs.lock() = Some(all_tabs.clone());
+        #[cfg(test)]
+        if let Some(hook) = self.top_tabs_before_cache_store_hook.lock().take() {
+            hook();
+        }
+        // Cache only if no lifecycle change invalidated the snapshot while
+        // guest calls were running. The cache mutex makes the final epoch
+        // comparison and store atomic with invalidate_top_tabs_cache.
+        let mut cache = self.cached_top_tabs.lock();
+        if self
+            .cached_top_tabs_epoch
+            .load(std::sync::atomic::Ordering::Acquire)
+            == cache_epoch
+        {
+            *cache = Some(all_tabs.clone());
+        }
         all_tabs
     }
 
@@ -155,7 +214,7 @@ impl PluginManager {
             })
             .collect();
 
-        EnabledPluginSnapshot::new(snapshot)
+        EnabledPluginSnapshot::new(snapshot, self.executor.clone())
     }
 
     /// Get a thread-safe handle to a plugin instance.
@@ -182,8 +241,11 @@ impl PluginManager {
         authorized
     }
 
-    /// Access a plugin instance mutably (e.g. for UI interaction)
-    /// This now acquires a granular lock on the specific plugin instance.
+    /// Access a plugin instance mutably for host-state inspection or tests.
+    ///
+    /// Guest exports must go through [`PluginManager::execute_plugin`]; this
+    /// escape hatch exists for host-owned configuration and diagnostic state.
+    /// It acquires the granular lock on the specific plugin instance.
     pub fn with_plugin_instance<F, R>(&self, plugin_id: &str, f: F) -> Option<R>
     where
         F: FnOnce(&mut PluginInstance) -> R,
@@ -205,9 +267,8 @@ impl PluginManager {
     ///   render an empty state for this frame; do NOT block.
     /// - `None` — the plugin id is unknown.
     ///
-    /// Use this on the UI thread for plugin reads (`get_ui_layout`,
-    /// `get_top_tabs`, etc.) so a long-running plugin event on a worker
-    /// thread doesn't freeze the UI.
+    /// Guest reads still go through the bounded executor. Use this only for
+    /// host-owned state that cannot cross the Wirt message boundary.
     pub fn try_with_plugin_instance<F, R>(&self, plugin_id: &str, f: F) -> Option<Option<R>>
     where
         F: FnOnce(&mut PluginInstance) -> R,

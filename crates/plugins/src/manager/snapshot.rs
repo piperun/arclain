@@ -6,24 +6,32 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::debug;
+use wirt::ExecutorRequest;
 
 /// Enabled plugin instance handles detached from [`super::PluginManager`].
 ///
 /// Constructing this snapshot briefly reads the manager's plugin maps and
 /// clones each enabled instance `Arc`. Once returned, callers can release any
 /// outer `PluginManager` mutex before invoking plugin WASM or reading host
-/// state. Aggregate reads deliberately block on every captured instance so
-/// they return complete data instead of silently omitting busy plugins.
+/// state. Aggregate reads deliberately block on every still-current captured
+/// instance instead of silently omitting one merely because it is busy. A
+/// generation replaced after capture is omitted rather than redirected into
+/// the replacement instance.
 #[derive(Clone, Default)]
 pub struct EnabledPluginSnapshot {
     plugins: Vec<(PluginIdentityKey, String, Arc<Mutex<PluginInstance>>)>,
+    executor: Option<Arc<crate::InProcessWirtExecutor>>,
 }
 
 impl EnabledPluginSnapshot {
     pub(super) fn new(
         plugins: Vec<(PluginIdentityKey, String, Arc<Mutex<PluginInstance>>)>,
+        executor: Arc<crate::InProcessWirtExecutor>,
     ) -> Self {
-        Self { plugins }
+        Self {
+            plugins,
+            executor: Some(executor),
+        }
     }
 
     /// Return whether the snapshot captured no enabled plugins.
@@ -64,9 +72,17 @@ impl EnabledPluginSnapshot {
     pub fn get_all_top_tabs(&self) -> Vec<(String, TopTabConfig)> {
         let mut all_tabs = Vec::new();
 
+        let Some(executor) = &self.executor else {
+            return all_tabs;
+        };
         for (_, plugin_id, instance) in &self.plugins {
-            let mut instance = instance.lock();
-            match instance.get_top_tabs() {
+            let Ok(plugin_id_value) = wirt::PluginId::parse(plugin_id.clone()) else {
+                continue;
+            };
+            match executor
+                .execute_for_instance(&plugin_id_value, instance, ExecutorRequest::TopTabs)
+                .and_then(wirt::ExecutorResponse::into_top_tabs)
+            {
                 Ok(tabs) => {
                     all_tabs.extend(tabs.into_iter().map(|tab| (plugin_id.clone(), tab)));
                 }
