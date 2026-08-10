@@ -38,30 +38,6 @@ use arclain_ui::features::plugins::presentation::document_dispatch;
 use arclain_ui::shared::image_assets::{ImageAssetState, ImageAssetStore, ImageOwner};
 use eframe::egui;
 
-/// Copies a workspace plugin fixture into the folder layout the plugin
-/// loader expects -- mirrors `crates/app/tests/plugin_sessions.rs`'s
-/// helper of the same name (each test binary is its own crate).
-fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
-    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins")
-        .join(name);
-    let component = if name == "ui-demo" {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../wirt/tests/fixtures/bundled/ui-demo.wasm")
-    } else {
-        fixture_dir.join(format!("{name}.wasm"))
-    };
-    let dest = plugins_dir.join(name);
-    std::fs::create_dir_all(&dest).expect("create plugin fixture directory");
-    std::fs::copy(component, dest.join(format!("{name}.wasm")))
-        .unwrap_or_else(|error| panic!("copy maintained {name}.wasm fixture: {error}"));
-    std::fs::copy(
-        fixture_dir.join("plugin.toml"),
-        dest.join(format!("{name}.toml")),
-    )
-    .unwrap_or_else(|error| panic!("copy {name} plugin.toml fixture: {error}"));
-}
-
 fn bootstrap_with_plugin(temp: &tempfile::TempDir, plugin: &str) -> ArclainApp {
     let paths = AppPaths {
         config_dir: temp.path().join("config"),
@@ -71,7 +47,7 @@ fn bootstrap_with_plugin(temp: &tempfile::TempDir, plugin: &str) -> ArclainApp {
         plugins_dir: temp.path().join("plugins"),
     };
     std::fs::create_dir_all(&paths.plugins_dir).expect("create plugins dir");
-    install_plugin_fixture(&paths.plugins_dir, plugin);
+    common::install_plugin_fixture(&paths.plugins_dir, plugin);
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
         worker_threads: None,

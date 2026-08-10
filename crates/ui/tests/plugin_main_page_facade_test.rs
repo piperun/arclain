@@ -20,7 +20,6 @@
 mod common;
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use arclain_app::ids::PluginSessionId;
@@ -51,21 +50,6 @@ const DEMO: &str = "ui-demo";
 /// Copies a workspace plugin fixture into the folder layout the plugin
 /// loader expects -- mirrors `plugin_session_facade_test.rs`'s helper of
 /// the same name (each test binary is its own crate).
-fn install_plugin_fixture(plugins_dir: &Path, name: &str) {
-    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins")
-        .join(name);
-    let dest = plugins_dir.join(name);
-    std::fs::create_dir_all(&dest).expect("create plugin fixture directory");
-    for extension in ["wasm", "toml"] {
-        std::fs::copy(
-            fixture_dir.join(format!("{name}.{extension}")),
-            dest.join(format!("{name}.{extension}")),
-        )
-        .unwrap_or_else(|error| panic!("copy {name}.{extension} fixture: {error}"));
-    }
-}
-
 /// A `SharedState` whose facade is bootstrapped against an isolated temp
 /// directory with `plugins` installed and loaded.
 ///
@@ -82,7 +66,7 @@ fn shared_state_with_plugins(plugins: &[&str]) -> (tempfile::TempDir, SharedStat
     };
     std::fs::create_dir_all(&paths.plugins_dir).expect("create plugins dir");
     for plugin in plugins {
-        install_plugin_fixture(&paths.plugins_dir, plugin);
+        common::install_plugin_fixture(&paths.plugins_dir, plugin);
     }
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),

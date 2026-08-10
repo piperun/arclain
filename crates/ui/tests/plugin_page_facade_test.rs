@@ -32,21 +32,6 @@ const PAGE_ACTION: &str = "Page Multi Action";
 const OPEN_CHILD: &str = "Page Open Child";
 const CLOSE_PAGE: &str = "Page Close";
 
-fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
-    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins")
-        .join(name);
-    let dest = plugins_dir.join(name);
-    std::fs::create_dir_all(&dest).expect("create plugin fixture directory");
-    for extension in ["wasm", "toml"] {
-        std::fs::copy(
-            fixture_dir.join(format!("{name}.{extension}")),
-            dest.join(format!("{name}.{extension}")),
-        )
-        .unwrap_or_else(|error| panic!("copy {name}.{extension} fixture: {error}"));
-    }
-}
-
 fn shared_state_with_plugin() -> (TempDir, SharedState) {
     let temp = tempfile::tempdir().expect("create tempdir for the test facade");
     let paths = AppPaths {
@@ -57,7 +42,7 @@ fn shared_state_with_plugin() -> (TempDir, SharedState) {
         plugins_dir: temp.path().join("plugins"),
     };
     std::fs::create_dir_all(&paths.plugins_dir).expect("create plugins dir");
-    install_plugin_fixture(&paths.plugins_dir, PLUGIN);
+    common::install_plugin_fixture(&paths.plugins_dir, PLUGIN);
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
         worker_threads: None,

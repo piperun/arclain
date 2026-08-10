@@ -49,6 +49,31 @@ fn sevenzip_exe_name() -> &'static str {
     "7zz"
 }
 
+/// Install one maintained plugin fixture without relying on ignored output
+/// from a prior `just plugins` run.
+pub fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
+    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins")
+        .join(name);
+    let component = match name {
+        "dlsite-metadata" | "gstreamer-preview" | "ui-demo" => {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../wirt/tests/fixtures/bundled")
+                .join(format!("{name}.wasm"))
+        }
+        _ => fixture_dir.join(format!("{name}.wasm")),
+    };
+    let destination = plugins_dir.join(name);
+    std::fs::create_dir_all(&destination).expect("create plugin fixture directory");
+    std::fs::copy(component, destination.join(format!("{name}.wasm")))
+        .unwrap_or_else(|error| panic!("copy maintained {name}.wasm fixture: {error}"));
+    std::fs::copy(
+        fixture_dir.join("plugin.toml"),
+        destination.join(format!("{name}.toml")),
+    )
+    .unwrap_or_else(|error| panic!("copy {name} plugin.toml fixture: {error}"));
+}
+
 /// Build a minimal `SharedState` suitable for dispatcher unit tests.
 ///
 /// This fixture has no application facade, so facade-backed actions take
