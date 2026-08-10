@@ -232,10 +232,10 @@ fn loaded_binary_fixture(runtime: &WasmRuntime, id: &str, bytes: &[u8]) -> Loade
     }
 }
 
-fn assert_unavailable_reason(result: Result<PluginInstance<StubHost>>, expected: &str) {
+fn assert_resource_limit_reason(result: Result<PluginInstance<StubHost>>, expected: &str) {
     match result {
-        Err(PluginError::Unavailable(reason)) => assert_eq!(reason, expected),
-        Err(error) => panic!("expected redacted unavailable error, got {error}"),
+        Err(PluginError::ResourceLimit { reason }) => assert_eq!(reason, expected),
+        Err(error) => panic!("expected redacted resource-limit error, got {error}"),
         Ok(_) => panic!("resource-limit fixture unexpectedly instantiated"),
     }
 }
@@ -598,7 +598,7 @@ fn hostcall_fuel_accepts_exact_boundary_and_terminally_rejects_one_over() {
 
     assert!(matches!(
         first,
-        PluginError::Unavailable(ref reason)
+        PluginError::ResourceLimit { ref reason }
             if reason == "plugin hostcall data quota exceeded"
     ));
     assert!(matches!(second, PluginError::Unavailable(_)));
@@ -638,24 +638,52 @@ fn fuel_epoch_memory_and_table_quota_errors_have_redacted_classifications() {
     );
 }
 
-/// A guest trap that is *not* one of the two quota-shaped variants
-/// (a real out-of-bounds panic, `unreachable`, an integer division
-/// by zero, ...) must still be classified terminal -- see
-/// `resource_quota_reason`'s own doc comment for why every trap
-/// variant permanently poisons its `Store`, not just fuel/interrupt.
+#[test]
+fn quota_and_generic_traps_have_distinct_terminal_error_classes() {
+    let runtime = WasmRuntime::new().unwrap();
+
+    let mut quota_store = new_plugin_store(&runtime.engine, StubHost::new()).unwrap();
+    let mut quota_availability = InstanceAvailability::default();
+    let quota = call_with_quotas(
+        &mut quota_store,
+        &mut quota_availability,
+        |_| Err(wasmtime::Error::from(wasmtime::Trap::OutOfFuel)),
+        |_: &()| Ok(()),
+        PluginError::ExecutionError,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        quota,
+        PluginError::ResourceLimit { ref reason }
+            if reason == "plugin fuel quota exceeded"
+    ));
+
+    let mut trap_store = new_plugin_store(&runtime.engine, StubHost::new()).unwrap();
+    let mut trap_availability = InstanceAvailability::default();
+    let trap = call_with_quotas(
+        &mut trap_store,
+        &mut trap_availability,
+        |_| {
+            Err(wasmtime::Error::from(
+                wasmtime::Trap::UnreachableCodeReached,
+            ))
+        },
+        |_: &()| Ok(()),
+        PluginError::ExecutionError,
+    )
+    .unwrap_err();
+    assert!(matches!(trap, PluginError::Unavailable(_)));
+}
+
+/// A guest trap that is *not* one of the two quota-shaped variants is
+/// terminal but is not a resource-limit violation.
 #[test]
 fn a_generic_guest_trap_is_also_classified_as_terminal() {
     let unreachable = wasmtime::Error::from(wasmtime::Trap::UnreachableCodeReached);
     let division_by_zero = wasmtime::Error::from(wasmtime::Trap::IntegerDivisionByZero);
 
-    assert_eq!(
-        resource_quota_reason(&unreachable),
-        Some("plugin execution trapped")
-    );
-    assert_eq!(
-        resource_quota_reason(&division_by_zero),
-        Some("plugin execution trapped")
-    );
+    assert_eq!(resource_quota_reason(&unreachable), None);
+    assert_eq!(resource_quota_reason(&division_by_zero), None);
 }
 
 #[test]
@@ -980,7 +1008,7 @@ fn oversized_top_tabs_are_terminal_and_second_call_skips_guest_boundary() {
 
     assert!(matches!(
         first,
-        PluginError::Unavailable(ref reason) if reason == "plugin result quota exceeded"
+        PluginError::ResourceLimit { ref reason } if reason == "plugin result quota exceeded"
     ));
     assert!(matches!(second, PluginError::Unavailable(_)));
     assert_eq!(call_entries.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -1118,7 +1146,7 @@ fn resource_count_errors_are_redacted_during_generic_plugin_instantiation() {
     ];
     for (id, bytes, expected) in fixtures {
         let loaded = loaded_binary_fixture(&runtime, id, &bytes);
-        assert_unavailable_reason(loaded.instantiate(StubHost::new()), expected);
+        assert_resource_limit_reason(loaded.instantiate(StubHost::new()), expected);
     }
 }
 
@@ -1230,7 +1258,7 @@ fn infinite_component_becomes_terminal_and_second_call_never_reenters_guest() {
         .recv_timeout(Duration::from_secs(2))
         .expect("infinite guest call must terminate under a wall-clock guard")
         .unwrap();
-    assert!(matches!(first, PluginError::Unavailable(_)));
+    assert!(matches!(first, PluginError::ResourceLimit { .. }));
     assert!(matches!(second, PluginError::Unavailable(_)));
     assert_eq!(
         guest_entries, 1,
@@ -1316,7 +1344,7 @@ fn oversized_result_is_terminal_redacted_and_second_call_skips_guest_boundary() 
     .unwrap_err();
 
     assert!(
-        matches!(first, PluginError::Unavailable(ref reason) if reason == "plugin result quota exceeded" && !reason.contains(secret))
+        matches!(first, PluginError::ResourceLimit { ref reason } if reason == "plugin result quota exceeded" && !reason.contains(secret))
     );
     assert!(matches!(second, PluginError::Unavailable(_)));
     assert_eq!(call_entries.load(std::sync::atomic::Ordering::SeqCst), 1);

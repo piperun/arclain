@@ -1206,7 +1206,7 @@ impl PluginManager {
         let discovered = self
             .loader
             .discover_plugin_from_folder(&staged.manifest_path())?;
-        let managed = self.prepare_plugin(&discovered)?;
+        let managed = self.prepare_plugin(&discovered, false)?;
         if let Err(error) = staged.publish(&plugin_dir) {
             self.discard_prepared_plugin(plugin_id.as_str(), managed);
             return Err(error);
@@ -1219,8 +1219,28 @@ impl PluginManager {
     pub fn init(&mut self) -> Result<()> {
         let plugins = self.loader.discover_plugins()?;
         for plugin in plugins {
+            if matches!(
+                self.quarantine.state(&plugin.fingerprint),
+                crate::QuarantineState::PersistentlyDisabled(_)
+            ) {
+                let identity_key = PluginIdentityKey::parse(&plugin.manifest.plugin.id)?;
+                self.quarantined_plugins.write().insert(
+                    identity_key,
+                    super::types::QuarantinedPlugin {
+                        manifest: plugin.manifest.clone(),
+                        fingerprint: plugin.fingerprint.clone(),
+                    },
+                );
+                continue;
+            }
             match self.load_plugin(&plugin) {
                 Ok(_) => debug!("Loaded plugin: {}", plugin.manifest.plugin.id),
+                Err(PluginError::ResourceLimit { reason }) => {
+                    error!(
+                        "Plugin {} was blocked by a resource limit: {}",
+                        plugin.manifest.plugin.id, reason
+                    );
+                }
                 Err(e) => {
                     error!("Failed to load plugin {}: {}", plugin.manifest.plugin.id, e);
                     self.failed_plugins.lock().push(super::types::FailedPlugin {
@@ -1246,7 +1266,22 @@ impl PluginManager {
             )));
         }
 
-        let managed = self.prepare_plugin(discovered)?;
+        let managed = match self.prepare_plugin(discovered, false) {
+            Ok(managed) => managed,
+            Err(PluginError::ResourceLimit { reason }) => {
+                self.quarantine
+                    .record_initial_violation(&discovered.fingerprint, &reason)?;
+                self.quarantined_plugins.write().insert(
+                    identity_key,
+                    super::types::QuarantinedPlugin {
+                        manifest: discovered.manifest.clone(),
+                        fingerprint: discovered.fingerprint.clone(),
+                    },
+                );
+                return Err(PluginError::ResourceLimit { reason });
+            }
+            Err(error) => return Err(error),
+        };
         let plugin_name = managed.metadata.name.clone();
         self.register_prepared_plugin(identity_key, managed);
 
@@ -1254,12 +1289,16 @@ impl PluginManager {
         Ok(())
     }
 
-    fn prepare_plugin(&self, discovered: &DiscoveredPlugin) -> Result<ManagedPlugin> {
+    fn prepare_plugin(
+        &self,
+        discovered: &DiscoveredPlugin,
+        retry_authorized: bool,
+    ) -> Result<ManagedPlugin> {
         let plugin_id = discovered.manifest.plugin.id.clone();
         let identity_key = PluginIdentityKey::parse(&plugin_id)?;
 
         // Load the WASM module
-        let loaded = self.loader.load_plugin(discovered)?;
+        let (loaded, fingerprint) = self.loader.load_plugin_with_fingerprint(discovered)?;
 
         // Get capabilities from manifest
         let capabilities = discovered.manifest.capabilities.to_capabilities();
@@ -1355,6 +1394,8 @@ impl PluginManager {
             enabled: true,
             settings_dirty,
             execution_admission: super::types::ExecutionAdmission::enabled(),
+            fingerprint,
+            retry_authorized,
         };
 
         Ok(managed)
@@ -1365,6 +1406,7 @@ impl PluginManager {
     }
 
     fn register_prepared_plugin(&self, identity_key: PluginIdentityKey, managed: ManagedPlugin) {
+        self.quarantined_plugins.write().remove(&identity_key);
         self.plugins.write().insert(identity_key.clone(), managed);
         self.enabled_plugins.write().insert(identity_key, true);
         self.invalidate_top_tabs_cache();
@@ -1387,11 +1429,222 @@ impl PluginManager {
         }
     }
 
+    fn remove_live_plugin(
+        &self,
+        identity_key: &PluginIdentityKey,
+    ) -> Result<Option<ManagedPlugin>> {
+        let removed = self.plugins.write().remove(identity_key);
+        self.enabled_plugins.write().remove(identity_key);
+        self.settings_cache.lock().remove(identity_key);
+        let Some(removed) = removed else {
+            return Ok(None);
+        };
+        removed.execution_admission.disable_and_wait();
+        self.invalidate_top_tabs_cache();
+        if let Some(ref client) = self.async_http_client {
+            client.remove_plugin_configuration(&removed.metadata.id);
+        }
+        crate::InProcessWirtExecutor::execute_transient(
+            &mut removed.instance.lock(),
+            wirt::ExecutorRequest::Cleanup,
+        )?
+        .into_empty()?;
+        Ok(Some(removed))
+    }
+
+    fn discovered_plugin(&self, identity_key: &PluginIdentityKey) -> Result<DiscoveredPlugin> {
+        self.loader
+            .discover_plugins()?
+            .into_iter()
+            .find(|plugin| {
+                PluginIdentityKey::parse(&plugin.manifest.plugin.id)
+                    .is_ok_and(|candidate| candidate == *identity_key)
+            })
+            .ok_or_else(|| PluginError::NotFound(identity_key.to_string()))
+    }
+
+    /// Explicitly replace a resource-blocked instance with a fresh retry.
+    pub fn retry_plugin(&mut self, plugin_id: &str) -> Result<()> {
+        let identity_key = PluginIdentityKey::parse(plugin_id)
+            .map_err(|_| PluginError::NotFound(plugin_id.to_string()))?;
+        let discovered = self.discovered_plugin(&identity_key)?;
+        let (current_fingerprint, previous_manifest) = self
+            .plugins
+            .read()
+            .get(&identity_key)
+            .map(|plugin| (plugin.fingerprint.clone(), plugin.manifest.clone()))
+            .or_else(|| {
+                self.quarantined_plugins
+                    .read()
+                    .get(&identity_key)
+                    .map(|plugin| (plugin.fingerprint.clone(), plugin.manifest.clone()))
+            })
+            .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
+        let changed_artifact = current_fingerprint != discovered.fingerprint;
+        if !changed_artifact {
+            let live_violation = self
+                .plugins
+                .read()
+                .get(&identity_key)
+                .is_some_and(|plugin| self.quarantine.has_runtime_violation(&plugin.fingerprint));
+            let quarantined = self.quarantined_plugins.read().contains_key(&identity_key);
+            if !live_violation && !quarantined {
+                return Err(PluginError::Unavailable(
+                    "plugin is not blocked by a resource limit".to_string(),
+                ));
+            }
+            match self.quarantine.state(&current_fingerprint) {
+                crate::QuarantineState::Retryable(_) => {}
+                crate::QuarantineState::PersistentlyDisabled(_) => {
+                    return Err(PluginError::Unavailable(
+                        "plugin quarantine must be reset".to_string(),
+                    ));
+                }
+                crate::QuarantineState::Clear => {
+                    return Err(PluginError::Unavailable(
+                        "plugin has no retryable quarantine state".to_string(),
+                    ));
+                }
+            }
+        }
+
+        self.remove_live_plugin(&identity_key)?;
+        self.quarantined_plugins.write().remove(&identity_key);
+        let retry_authorized = !changed_artifact;
+        match self.prepare_plugin(&discovered, retry_authorized) {
+            Ok(managed) => {
+                self.quarantine
+                    .clear_runtime_violation(&current_fingerprint);
+                self.register_prepared_plugin(identity_key, managed);
+                Ok(())
+            }
+            Err(PluginError::ResourceLimit { reason }) => {
+                if retry_authorized {
+                    self.quarantine
+                        .record_failed_retry(&discovered.fingerprint, &reason)?;
+                } else {
+                    self.quarantine
+                        .clear_runtime_violation(&current_fingerprint);
+                    self.quarantine
+                        .record_initial_violation(&discovered.fingerprint, &reason)?;
+                }
+                self.quarantined_plugins.write().insert(
+                    identity_key,
+                    super::types::QuarantinedPlugin {
+                        manifest: discovered.manifest,
+                        fingerprint: discovered.fingerprint,
+                    },
+                );
+                Err(PluginError::ResourceLimit { reason })
+            }
+            Err(error) => {
+                self.quarantined_plugins.write().insert(
+                    identity_key,
+                    super::types::QuarantinedPlugin {
+                        manifest: previous_manifest,
+                        fingerprint: current_fingerprint,
+                    },
+                );
+                Err(error)
+            }
+        }
+    }
+
+    /// Remove a persistent quarantine record and load a fresh instance.
+    pub fn reset_plugin_quarantine(&mut self, plugin_id: &str) -> Result<()> {
+        let identity_key = PluginIdentityKey::parse(plugin_id)
+            .map_err(|_| PluginError::NotFound(plugin_id.to_string()))?;
+        let discovered = self.discovered_plugin(&identity_key)?;
+        let (fingerprint, previous_manifest) = self
+            .plugins
+            .read()
+            .get(&identity_key)
+            .map(|plugin| (plugin.fingerprint.clone(), plugin.manifest.clone()))
+            .or_else(|| {
+                self.quarantined_plugins
+                    .read()
+                    .get(&identity_key)
+                    .map(|plugin| (plugin.fingerprint.clone(), plugin.manifest.clone()))
+            })
+            .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
+        if !matches!(
+            self.quarantine.state(&fingerprint),
+            crate::QuarantineState::PersistentlyDisabled(_)
+        ) {
+            return Err(PluginError::Unavailable(
+                "plugin is not persistently quarantined".to_string(),
+            ));
+        }
+
+        self.remove_live_plugin(&identity_key)?;
+        self.quarantined_plugins.write().remove(&identity_key);
+        match self.prepare_plugin(&discovered, false) {
+            Ok(managed) => {
+                if let Err(error) = self.quarantine.reset(&fingerprint) {
+                    self.discard_prepared_plugin(plugin_id, managed);
+                    self.quarantined_plugins.write().insert(
+                        identity_key,
+                        super::types::QuarantinedPlugin {
+                            manifest: previous_manifest,
+                            fingerprint,
+                        },
+                    );
+                    return Err(error);
+                }
+                self.register_prepared_plugin(identity_key, managed);
+                Ok(())
+            }
+            Err(PluginError::ResourceLimit { reason }) => {
+                if let Err(error) = self.quarantine.reset(&fingerprint) {
+                    self.quarantined_plugins.write().insert(
+                        identity_key,
+                        super::types::QuarantinedPlugin {
+                            manifest: previous_manifest,
+                            fingerprint,
+                        },
+                    );
+                    return Err(error);
+                }
+                self.quarantine
+                    .record_initial_violation(&discovered.fingerprint, &reason)?;
+                self.quarantined_plugins.write().insert(
+                    identity_key,
+                    super::types::QuarantinedPlugin {
+                        manifest: discovered.manifest,
+                        fingerprint: discovered.fingerprint,
+                    },
+                );
+                Err(PluginError::ResourceLimit { reason })
+            }
+            Err(error) => {
+                self.quarantined_plugins.write().insert(
+                    identity_key,
+                    super::types::QuarantinedPlugin {
+                        manifest: previous_manifest,
+                        fingerprint,
+                    },
+                );
+                Err(error)
+            }
+        }
+    }
+
     /// Reload a plugin
     pub fn reload_plugin(&mut self, plugin_id: &str) -> Result<()> {
         info!("Reloading plugin: {}", plugin_id);
         let identity_key = PluginIdentityKey::parse(plugin_id)
             .map_err(|_| PluginError::NotFound(plugin_id.to_string()))?;
+        if self.quarantined_plugins.read().contains_key(&identity_key)
+            || self
+                .plugins
+                .read()
+                .get(&identity_key)
+                .is_some_and(|plugin| self.quarantine.has_runtime_violation(&plugin.fingerprint))
+        {
+            return Err(PluginError::Unavailable(
+                "resource-blocked plugins require Retry or Reset".to_string(),
+            ));
+        }
 
         // Remove existing plugin
         let removed = self.plugins.write().remove(&identity_key);
@@ -1544,7 +1797,7 @@ impl PluginManager {
         let discovered = self
             .loader
             .discover_plugin_from_folder(&staged.manifest_path())?;
-        let managed = self.prepare_plugin(&discovered)?;
+        let managed = self.prepare_plugin(&discovered, false)?;
 
         if let Err(error) = staged.publish(&plugin_dir) {
             self.discard_prepared_plugin(plugin_id.as_str(), managed);

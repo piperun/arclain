@@ -34,7 +34,12 @@ impl LoadedComponent {
         let plugin =
             PluginWorld::instantiate(&mut store, &self.component, &linker).map_err(|error| {
                 match resource_quota_reason(&error) {
-                    Some(reason) => PluginError::Unavailable(reason.to_string()),
+                    Some(reason) => PluginError::ResourceLimit {
+                        reason: reason.to_string(),
+                    },
+                    None if error.downcast_ref::<wasmtime::Trap>().is_some() => {
+                        PluginError::Unavailable("plugin execution trapped".to_string())
+                    }
                     None => PluginError::InitError(error.to_string()),
                 }
             })?;

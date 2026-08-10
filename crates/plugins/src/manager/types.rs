@@ -21,6 +21,7 @@ pub struct PluginListItem {
     pub manifest: crate::types::PluginManifest,
     pub enabled: bool,
     pub instance: Option<()>, // Just a marker for whether it's loaded
+    pub quarantine_state: crate::QuarantineState,
 }
 
 /// Cheap counts-only snapshot returned by [`super::PluginManager::status_summary`].
@@ -44,6 +45,14 @@ pub(crate) struct ManagedPlugin {
     /// `instance.lock()` (audit P14).
     pub(crate) settings_dirty: Arc<AtomicBool>,
     pub(crate) execution_admission: Arc<ExecutionAdmission>,
+    pub(crate) fingerprint: wirt::PackageFingerprint,
+    pub(crate) retry_authorized: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct QuarantinedPlugin {
+    pub(crate) manifest: crate::types::PluginManifest,
+    pub(crate) fingerprint: wirt::PackageFingerprint,
 }
 
 #[derive(Default)]
@@ -89,6 +98,10 @@ impl ExecutionAdmission {
         while state.in_flight != 0 {
             self.idle.wait(&mut state);
         }
+    }
+
+    pub(crate) fn disable(&self) {
+        self.state.lock().enabled = false;
     }
 }
 

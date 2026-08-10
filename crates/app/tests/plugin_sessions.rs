@@ -1256,6 +1256,66 @@ fn a_trapping_guest_fails_its_own_operation_without_crashing_the_host_or_the_ses
     }
 }
 
+#[test]
+fn resource_limit_state_and_explicit_retry_are_exposed_by_the_app_facade() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+    let snapshot = runtime
+        .block_on(app.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::MainPage,
+        ))
+        .unwrap();
+
+    let operation = runtime
+        .block_on(app.start_plugin_action(PluginActionRequest {
+            session_id: snapshot.session_id,
+            node_id: "trigger-result-quota".to_string(),
+            action: PluginActionDto::Activate,
+        }))
+        .unwrap();
+    assert!(matches!(
+        runtime.block_on(wait_for_terminal_state(&app, operation)),
+        OperationState::Failed { .. }
+    ));
+
+    let summary = runtime
+        .block_on(app.plugins())
+        .unwrap()
+        .into_iter()
+        .find(|plugin| plugin.id == "facade-test-fixture")
+        .unwrap();
+    assert!(!summary.enabled);
+    assert_eq!(
+        summary.quarantine_state,
+        arclain_app::plugins::PluginQuarantineState::Retryable { failed_retries: 0 }
+    );
+    assert_eq!(
+        summary.last_reason.as_deref(),
+        Some("plugin result quota exceeded")
+    );
+    assert!(runtime
+        .block_on(app.set_plugin_enabled("facade-test-fixture".to_string(), true))
+        .is_err());
+
+    runtime
+        .block_on(app.retry_plugin("facade-test-fixture".to_string()))
+        .unwrap();
+    let summary = runtime
+        .block_on(app.plugins())
+        .unwrap()
+        .into_iter()
+        .find(|plugin| plugin.id == "facade-test-fixture")
+        .unwrap();
+    assert!(summary.enabled);
+    assert_eq!(
+        summary.quarantine_state,
+        arclain_app::plugins::PluginQuarantineState::Clear
+    );
+    assert_eq!(summary.last_reason, None);
+}
+
 /// **Action ordering** (brief-mandated, previously only structurally
 /// true via a plain `for` loop, never asserted). `facade-test-fixture`'s
 /// `"multi-action"` button returns three different actions

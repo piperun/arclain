@@ -207,6 +207,13 @@ impl InstanceAvailability {
         Err(PluginError::Unavailable(reason.to_string()))
     }
 
+    fn mark_resource_limit<T>(&mut self, reason: &'static str) -> Result<T> {
+        self.reason = Some(reason);
+        Err(PluginError::ResourceLimit {
+            reason: reason.to_string(),
+        })
+    }
+
     pub(super) fn reason(&self) -> Option<&'static str> {
         self.reason
     }
@@ -214,15 +221,14 @@ impl InstanceAvailability {
 
 /// Return the redacted terminal reason for a Wasmtime failure.
 ///
-/// Every trap is terminal: after a component trap, entering the same instance
-/// again produces an internal Wasmtime error rather than a fresh guest call.
-/// Ordinary guest-owned errors stay nonterminal and are mapped by the caller.
+/// Generic traps are terminal too, but return `None`: only quota-shaped
+/// failures are security violations that contribute to quarantine.
 pub(super) fn resource_quota_reason(error: &wasmtime::Error) -> Option<&'static str> {
     if let Some(trap) = error.downcast_ref::<wasmtime::Trap>() {
         return match trap {
             wasmtime::Trap::OutOfFuel => Some("plugin fuel quota exceeded"),
             wasmtime::Trap::Interrupt => Some("plugin execution deadline exceeded"),
-            _ => Some("plugin execution trapped"),
+            _ => None,
         };
     }
 
@@ -266,7 +272,10 @@ pub(super) fn call_with_quotas<H: WirtStoreState, T>(
         Ok(value) => value,
         Err(error) => {
             if let Some(reason) = resource_quota_reason(&error) {
-                return availability.mark_unavailable(reason);
+                return availability.mark_resource_limit(reason);
+            }
+            if error.downcast_ref::<wasmtime::Trap>().is_some() {
+                return availability.mark_unavailable("plugin execution trapped");
             }
             return Err(map_ordinary_error(error.to_string()));
         }
@@ -275,7 +284,7 @@ pub(super) fn call_with_quotas<H: WirtStoreState, T>(
     match validate(&value) {
         Ok(()) => {}
         Err(ResultValidationError::Quota(violation)) => {
-            return availability.mark_unavailable(violation.redacted_reason());
+            return availability.mark_resource_limit(violation.redacted_reason());
         }
         Err(ResultValidationError::Serialization(error)) => {
             return Err(PluginError::Serialization(error));

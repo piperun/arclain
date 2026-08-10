@@ -49,6 +49,11 @@ impl PluginManager {
         let plugins = self.plugins.read();
 
         if let Some(plugin) = plugins.get(&identity_key) {
+            if self.quarantine.has_runtime_violation(&plugin.fingerprint) {
+                return Err(PluginError::Unavailable(
+                    "resource-blocked plugins require Retry or Reset".to_string(),
+                ));
+            }
             plugin.execution_admission.enable();
             self.enabled_plugins.write().insert(identity_key, true);
             drop(plugins);
@@ -104,16 +109,31 @@ impl PluginManager {
     pub fn list_plugins(&self) -> Vec<PluginListItem> {
         let plugins = self.plugins.read();
         let enabled = self.enabled_plugins.read();
+        let quarantined = self.quarantined_plugins.read();
 
-        plugins
+        let mut items = plugins
             .iter()
             .map(|(identity_key, p)| PluginListItem {
                 id: p.metadata.id.clone(),
                 manifest: p.manifest.clone(),
                 enabled: enabled.get(identity_key).copied().unwrap_or(false),
                 instance: if p.enabled { Some(()) } else { None },
+                quarantine_state: if self.quarantine.has_runtime_violation(&p.fingerprint) {
+                    self.quarantine.state(&p.fingerprint)
+                } else {
+                    crate::QuarantineState::Clear
+                },
             })
-            .collect()
+            .collect::<Vec<_>>();
+        items.extend(quarantined.values().map(|plugin| PluginListItem {
+            id: plugin.manifest.plugin.id.clone(),
+            manifest: plugin.manifest.clone(),
+            enabled: false,
+            instance: None,
+            quarantine_state: self.quarantine.state(&plugin.fingerprint),
+        }));
+        items.sort_by(|left, right| left.id.cmp(&right.id));
+        items
     }
 
     /// Every plugin discovered on disk that failed to load during
@@ -140,7 +160,7 @@ impl PluginManager {
     pub fn status_summary(&self) -> super::types::PluginStatusSummary {
         let plugins = self.plugins.read();
         let enabled = self.enabled_plugins.read();
-        let total = plugins.len();
+        let total = plugins.len() + self.quarantined_plugins.read().len();
         let enabled_count = plugins
             .keys()
             .filter(|id| enabled.get(*id).copied().unwrap_or(false))
@@ -154,10 +174,24 @@ impl PluginManager {
     /// Get plugin metadata
     pub fn get_plugin_metadata(&self, plugin_id: &str) -> Option<PluginMetadata> {
         let identity_key = PluginIdentityKey::parse(plugin_id).ok()?;
-        self.plugins
+        if let Some(metadata) = self
+            .plugins
             .read()
             .get(&identity_key)
             .map(|p| p.metadata.clone())
+        {
+            return Some(metadata);
+        }
+        self.quarantined_plugins
+            .read()
+            .get(&identity_key)
+            .map(|plugin| PluginMetadata {
+                id: plugin.manifest.plugin.id.clone(),
+                name: plugin.manifest.plugin.name.clone(),
+                version: plugin.manifest.plugin.version.clone(),
+                author: plugin.manifest.plugin.author.clone(),
+                description: plugin.manifest.plugin.description.clone(),
+            })
     }
 
     /// Get all top-level tabs registered by enabled plugins

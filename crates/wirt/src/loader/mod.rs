@@ -6,6 +6,7 @@ use crate::{ValidatedPackage, MAX_WIRT_PACKAGE_BYTES};
 use crate::{MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_WASM_BYTES};
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, File, OpenOptions};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::Read;
@@ -551,6 +552,7 @@ impl PluginLoader {
                         }
                         discovered.push(DiscoveredPlugin {
                             manifest: package.manifest,
+                            fingerprint: package.fingerprint,
                             artifact: PluginArtifact::Package { package_path: path },
                         });
                     }
@@ -618,10 +620,11 @@ impl PluginLoader {
 
         debug!("Found plugin WASM: {}", wasm_path.display());
 
-        self.read_verified_sidecars(manifest_path, &wasm_path, &manifest)?;
+        let (_, fingerprint) = self.read_verified_sidecars(manifest_path, &wasm_path, &manifest)?;
 
         Ok(DiscoveredPlugin {
             manifest,
+            fingerprint,
             artifact: PluginArtifact::Sidecars {
                 manifest_path: manifest_path.to_path_buf(),
                 wasm_path,
@@ -661,10 +664,11 @@ impl PluginLoader {
 
         debug!("Found plugin WASM: {}", wasm_path.display());
 
-        self.read_verified_sidecars(manifest_path, &wasm_path, &manifest)?;
+        let (_, fingerprint) = self.read_verified_sidecars(manifest_path, &wasm_path, &manifest)?;
 
         Ok(DiscoveredPlugin {
             manifest,
+            fingerprint,
             artifact: PluginArtifact::Sidecars {
                 manifest_path: manifest_path.to_path_buf(),
                 wasm_path,
@@ -731,8 +735,18 @@ impl PluginLoader {
 
     /// Load a plugin from a discovered plugin
     pub fn load_plugin(&self, discovered: &DiscoveredPlugin) -> Result<LoadedComponent> {
+        self.load_plugin_with_fingerprint(discovered)
+            .map(|(loaded, _)| loaded)
+    }
+
+    /// Load a discovered plugin and return the fingerprint bound to the
+    /// exact component bytes that were compiled.
+    pub fn load_plugin_with_fingerprint(
+        &self,
+        discovered: &DiscoveredPlugin,
+    ) -> Result<(LoadedComponent, crate::PackageFingerprint)> {
         info!("Loading plugin: {}", discovered.manifest.plugin.name);
-        let wasm_bytes = match &discovered.artifact {
+        let (wasm_bytes, fingerprint) = match &discovered.artifact {
             PluginArtifact::Sidecars {
                 manifest_path,
                 wasm_path,
@@ -742,9 +756,12 @@ impl PluginLoader {
                 if package.manifest != discovered.manifest {
                     return Err(load_error("Wirt package manifest changed after discovery"));
                 }
-                package.component
+                (package.component, package.fingerprint)
             }
         };
+        if fingerprint != discovered.fingerprint {
+            return Err(load_error("plugin artifact changed after discovery"));
+        }
         let loaded = self
             .runtime
             .load_component_from_bytes(discovered.manifest.plugin.id.clone(), &wasm_bytes)?;
@@ -753,7 +770,7 @@ impl PluginLoader {
             "Plugin loaded successfully: {}",
             discovered.manifest.plugin.name
         );
-        Ok(loaded)
+        Ok((loaded, fingerprint))
     }
 
     /// Load a plugin directly from WASM bytes
@@ -819,7 +836,7 @@ impl PluginLoader {
         manifest_path: &Path,
         wasm_path: &Path,
         expected_manifest: &PluginManifest,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<(Vec<u8>, crate::PackageFingerprint)> {
         let manifest_bytes = self.trusted_root.read_file_bounded(
             manifest_path,
             MAX_PLUGIN_MANIFEST_BYTES,
@@ -841,7 +858,7 @@ impl PluginLoader {
             .parent()
             .unwrap_or_else(|| Path::new(""))
             .join("package.sha256");
-        match self.trusted_root.dir().symlink_metadata(
+        let fingerprint = match self.trusted_root.dir().symlink_metadata(
             self.trusted_root
                 .relative_path(&fingerprint_path, "package fingerprint")?,
         ) {
@@ -858,11 +875,14 @@ impl PluginLoader {
                 if crate::PackageFingerprint::sha256(&canonical) != expected {
                     return Err(load_error("package fingerprint does not match sidecars"));
                 }
+                expected
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                legacy_sidecar_fingerprint(&manifest_bytes, &component)
+            }
             Err(error) => return Err(package_fingerprint_metadata_error(error)),
-        }
-        Ok(component)
+        };
+        Ok((component, fingerprint))
     }
 
     #[cfg(test)]
@@ -887,6 +907,26 @@ impl PluginLoader {
     }
 }
 
+fn legacy_sidecar_fingerprint(
+    manifest_bytes: &[u8],
+    component: &[u8],
+) -> crate::PackageFingerprint {
+    let mut hasher = Sha256::new();
+    hasher.update(b"wirt-legacy-sidecars-v1\0");
+    hasher.update((manifest_bytes.len() as u64).to_le_bytes());
+    hasher.update(manifest_bytes);
+    hasher.update((component.len() as u64).to_le_bytes());
+    hasher.update(component);
+    let fingerprint = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    fingerprint
+        .parse()
+        .expect("SHA-256 always yields a lowercase 64-hex fingerprint")
+}
+
 /// A discovered plugin with its manifest and paths
 #[derive(Debug, Clone)]
 pub enum PluginArtifact {
@@ -902,6 +942,7 @@ pub enum PluginArtifact {
 #[derive(Debug, Clone)]
 pub struct DiscoveredPlugin {
     pub manifest: PluginManifest,
+    pub fingerprint: crate::PackageFingerprint,
     pub artifact: PluginArtifact,
 }
 

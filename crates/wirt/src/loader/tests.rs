@@ -211,6 +211,43 @@ fn package_fingerprint_sidecar_is_verified_on_discovery_and_load() {
 }
 
 #[test]
+fn loaded_artifacts_report_verified_or_stable_legacy_fingerprints() {
+    use sha2::{Digest, Sha256};
+
+    let legacy = TempDir::new().unwrap();
+    let plugin_dir = legacy.path().join("ui-demo");
+    write_ui_demo_sidecars(&plugin_dir, false);
+    let manifest = std::fs::read(plugin_dir.join("ui-demo.toml")).unwrap();
+    let component = std::fs::read(plugin_dir.join("ui-demo.wasm")).unwrap();
+    let mut hasher = Sha256::new();
+    hasher.update(b"wirt-legacy-sidecars-v1\0");
+    hasher.update((manifest.len() as u64).to_le_bytes());
+    hasher.update(&manifest);
+    hasher.update((component.len() as u64).to_le_bytes());
+    hasher.update(&component);
+    let expected_legacy = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    let loader = PluginLoader::new(legacy.path().to_path_buf()).unwrap();
+    let discovered = loader.discover_plugins().unwrap();
+    let (_, fingerprint) = loader.load_plugin_with_fingerprint(&discovered[0]).unwrap();
+    assert_eq!(discovered[0].fingerprint, fingerprint);
+    assert_eq!(fingerprint.as_str(), expected_legacy);
+
+    let packaged = TempDir::new().unwrap();
+    let package = crate::package_bytes(&manifest, &component).unwrap();
+    let expected_package = crate::PackageFingerprint::sha256(&package);
+    std::fs::write(packaged.path().join("ui-demo.wirt"), package).unwrap();
+    let loader = PluginLoader::new(packaged.path().to_path_buf()).unwrap();
+    let discovered = loader.discover_plugins().unwrap();
+    let (_, fingerprint) = loader.load_plugin_with_fingerprint(&discovered[0]).unwrap();
+    assert_eq!(fingerprint, expected_package);
+}
+
+#[test]
 fn manifest_requires_the_current_wirt_abi() {
     let temp_dir = TempDir::new().unwrap();
     let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();

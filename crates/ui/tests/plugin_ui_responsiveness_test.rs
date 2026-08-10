@@ -187,6 +187,8 @@ fn plugin_settings_back_releases_the_selected_plugins_image_owner() {
             loaded: true,
             status: PluginStatus::Ready,
             error: None,
+            quarantine_state: arclain_app::plugins::PluginQuarantineState::Clear,
+            last_reason: None,
             visibility: HashMap::new(),
         }],
         selected_plugin: Some("plugin".to_string()),

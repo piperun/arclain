@@ -34,6 +34,15 @@ impl PluginLoader {
         self.inner.load_plugin(plugin).map(LoadedPlugin::from)
     }
 
+    pub(crate) fn load_plugin_with_fingerprint(
+        &self,
+        plugin: &DiscoveredPlugin,
+    ) -> Result<(LoadedPlugin, wirt::PackageFingerprint)> {
+        self.inner
+            .load_plugin_with_fingerprint(plugin)
+            .map(|(loaded, fingerprint)| (LoadedPlugin::from(loaded), fingerprint))
+    }
+
     /// Load a plugin directly from component bytes.
     pub fn load_wasm(&self, bytes: &[u8]) -> Result<LoadedPlugin> {
         self.inner.load_wasm(bytes).map(LoadedPlugin::from)

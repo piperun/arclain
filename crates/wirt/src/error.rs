@@ -10,6 +10,8 @@ pub enum PluginError {
     ExecutionError(String),
     #[error("Plugin unavailable: {0}")]
     Unavailable(String),
+    #[error("Plugin resource limit exceeded: {reason}")]
+    ResourceLimit { reason: String },
     #[error("Capability denied: {0:?}")]
     CapabilityDenied(PluginCapability),
     #[error("Invalid manifest: {0}")]
@@ -42,5 +44,16 @@ mod tests {
     fn unavailable_error_exposes_only_the_redacted_host_reason() {
         let error = PluginError::Unavailable("fuel quota exceeded".to_string());
         assert_eq!(error.to_string(), "Plugin unavailable: fuel quota exceeded");
+    }
+
+    #[test]
+    fn resource_limit_error_exposes_only_the_redacted_host_reason() {
+        let error = PluginError::ResourceLimit {
+            reason: "plugin fuel quota exceeded".to_string(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "Plugin resource limit exceeded: plugin fuel quota exceeded"
+        );
     }
 }

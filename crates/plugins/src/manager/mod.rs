@@ -17,7 +17,7 @@ pub(crate) mod types;
 pub use request_fetch::{resolve_interactive_request_fetch, RequestFetchOutcome};
 pub use snapshot::EnabledPluginSnapshot;
 pub use types::{FailedPlugin, PluginInstallPreview, PluginListItem, PluginStatusSummary};
-use types::{InitialPluginSettings, ManagedPlugin};
+use types::{InitialPluginSettings, ManagedPlugin, QuarantinedPlugin};
 
 use crate::loader::PluginLoader;
 use crate::types::{PluginError, PluginEvent, PluginIdentityKey, Result};
@@ -65,7 +65,9 @@ pub struct PluginManager {
     pub(crate) loader: PluginLoader,
     pub(crate) plugins: Arc<RwLock<HashMap<PluginIdentityKey, ManagedPlugin>>>,
     pub(crate) enabled_plugins: Arc<RwLock<HashMap<PluginIdentityKey, bool>>>,
-    pub(crate) plugin_state_transition: parking_lot::Mutex<()>,
+    pub(crate) quarantine: Arc<crate::QuarantineLedger>,
+    pub(crate) quarantined_plugins: RwLock<HashMap<PluginIdentityKey, QuarantinedPlugin>>,
+    pub(crate) plugin_state_transition: Arc<parking_lot::Mutex<()>>,
     #[cfg(test)]
     pub(crate) disable_before_admission_hook: parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     pub(crate) executor: Arc<crate::InProcessWirtExecutor>,
@@ -91,8 +93,8 @@ pub struct PluginManager {
     /// plugin is loaded, enabled, or disabled. Avoids the per-frame
     /// WASM call into every enabled plugin (audit finding P3).
     pub(crate) cached_top_tabs:
-        parking_lot::Mutex<Option<Vec<(String, crate::types::TopTabConfig)>>>,
-    pub(crate) cached_top_tabs_epoch: std::sync::atomic::AtomicU64,
+        Arc<parking_lot::Mutex<Option<Vec<(String, crate::types::TopTabConfig)>>>>,
+    pub(crate) cached_top_tabs_epoch: Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
     pub(crate) top_tabs_before_cache_store_hook:
         parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -144,9 +146,20 @@ impl PluginManager {
             }
         }
         let loader = PluginLoader::new(plugins_dir)?;
+        let quarantine = Arc::new(crate::QuarantineLedger::open(loader.trusted_root())?);
         let plugins = Arc::new(RwLock::new(HashMap::new()));
         let enabled_plugins = Arc::new(RwLock::new(HashMap::new()));
-        let executor = Arc::new(crate::InProcessWirtExecutor::new(plugins.clone()));
+        let plugin_state_transition = Arc::new(parking_lot::Mutex::new(()));
+        let cached_top_tabs = Arc::new(parking_lot::Mutex::new(None));
+        let cached_top_tabs_epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let executor = Arc::new(crate::InProcessWirtExecutor::new(
+            plugins.clone(),
+            enabled_plugins.clone(),
+            plugin_state_transition.clone(),
+            quarantine.clone(),
+            cached_top_tabs.clone(),
+            cached_top_tabs_epoch.clone(),
+        ));
 
         // Create channel for async event dispatch
         let (event_sender, event_receiver) = bounded_event_channel(PLUGIN_EVENT_QUEUE_CAPACITY);
@@ -169,7 +182,9 @@ impl PluginManager {
             loader,
             plugins,
             enabled_plugins,
-            plugin_state_transition: parking_lot::Mutex::new(()),
+            quarantine,
+            quarantined_plugins: RwLock::new(HashMap::new()),
+            plugin_state_transition,
             #[cfg(test)]
             disable_before_admission_hook: parking_lot::Mutex::new(None),
             executor,
@@ -184,8 +199,8 @@ impl PluginManager {
             event_scheduler,
             _event_worker_handle: Some(worker_handle),
             active_tab_bridge: None,
-            cached_top_tabs: parking_lot::Mutex::new(None),
-            cached_top_tabs_epoch: std::sync::atomic::AtomicU64::new(0),
+            cached_top_tabs,
+            cached_top_tabs_epoch,
             #[cfg(test)]
             top_tabs_before_cache_store_hook: parking_lot::Mutex::new(None),
             settings_cache: parking_lot::Mutex::new(HashMap::new()),

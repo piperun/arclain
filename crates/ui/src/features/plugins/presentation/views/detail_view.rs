@@ -60,6 +60,43 @@ fn plugin_proxy_override_map(
     settings
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QuarantineAction {
+    Retry,
+    Reset,
+}
+
+fn quarantine_action(
+    state: &arclain_app::plugins::PluginQuarantineState,
+) -> Option<QuarantineAction> {
+    match state {
+        arclain_app::plugins::PluginQuarantineState::Clear => None,
+        arclain_app::plugins::PluginQuarantineState::Retryable { .. } => {
+            Some(QuarantineAction::Retry)
+        }
+        arclain_app::plugins::PluginQuarantineState::PersistentlyDisabled { .. } => {
+            Some(QuarantineAction::Reset)
+        }
+    }
+}
+
+fn quarantine_status_label(state: &arclain_app::plugins::PluginQuarantineState) -> Option<String> {
+    match state {
+        arclain_app::plugins::PluginQuarantineState::Clear => None,
+        arclain_app::plugins::PluginQuarantineState::Retryable { failed_retries: 0 } => {
+            Some("Resource limit reached".to_string())
+        }
+        arclain_app::plugins::PluginQuarantineState::Retryable { failed_retries } => Some(format!(
+            "Resource limit reached ({failed_retries} of 3 retries failed)"
+        )),
+        arclain_app::plugins::PluginQuarantineState::PersistentlyDisabled { failed_retries } => {
+            Some(format!(
+                "Plugin quarantined ({failed_retries} of 3 retries failed)"
+            ))
+        }
+    }
+}
+
 /// Render the plugin detail view
 /// Returns true if the plugin list needs to be refreshed
 pub fn render(
@@ -91,11 +128,76 @@ pub fn render(
         crate::shared::components::settings_form::SectionHeader::new("Global Settings")
             .show(ui, &theme.colors);
 
-        // Enabled/Disabled Toggle using SettingsRow
-        let mut enabled = plugin_info.enabled;
-        crate::shared::components::settings_form::SettingsRow::new("Plugin Status")
-            .description("Enable or disable this plugin completely.")
-            .action(|ui| {
+        // A resource-blocked plugin cannot be revived through the ordinary
+        // enabled toggle. Only the explicit Retry/Reset operation creates a
+        // fresh instance, so the UI presents that decision directly.
+        if let Some(action) = quarantine_action(&plugin_info.quarantine_state) {
+            let reason = plugin_info
+                .last_reason
+                .as_deref()
+                .unwrap_or("Plugin exceeded a host resource limit.");
+            let label = quarantine_status_label(&plugin_info.quarantine_state)
+                .expect("quarantine action requires a visible state label");
+            let button = match action {
+                QuarantineAction::Retry => "Retry plugin",
+                QuarantineAction::Reset => "Reset quarantine",
+            };
+            crate::shared::components::settings_form::SettingsRow::new(label)
+                .description(reason)
+                .action(|ui| {
+                    if !ui.button(button).clicked() {
+                        return;
+                    }
+                    let Some(shared) = shared else {
+                        return;
+                    };
+                    let Some(facade) = shared.facade.as_ref() else {
+                        shared.toaster.lock().error(
+                            "Plugin quarantine was not changed: application facade is unavailable",
+                        );
+                        return;
+                    };
+                    let result = match action {
+                        QuarantineAction::Retry => shared
+                            .services
+                            .tokio_runtime
+                            .block_on(facade.retry_plugin(plugin_info.id.clone())),
+                        QuarantineAction::Reset => shared
+                            .services
+                            .tokio_runtime
+                            .block_on(facade.reset_plugin_quarantine(plugin_info.id.clone())),
+                    };
+                    match result {
+                        Ok(()) => {
+                            shared.plugin_ui_jobs.invalidate_plugin_snapshots();
+                            shared.plugin_ui_jobs.invalidate_chrome_snapshot();
+                            shared.plugin_sessions.close_plugin(
+                                facade,
+                                shared.services.tokio_runtime.handle(),
+                                &plugin_info.id,
+                            );
+                            shared
+                                .signals()
+                                .plugin_list_epoch
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            needs_refresh = true;
+                        }
+                        Err(error) => {
+                            tracing::error!("Failed to change plugin quarantine: {error:?}");
+                            shared.toaster.lock().error(format!(
+                                "Plugin quarantine was not changed: {}",
+                                error.summary
+                            ));
+                        }
+                    }
+                })
+                .show(ui, &theme.colors);
+        } else {
+            // Enabled/Disabled Toggle using SettingsRow
+            let mut enabled = plugin_info.enabled;
+            crate::shared::components::settings_form::SettingsRow::new("Plugin Status")
+                .description("Enable or disable this plugin completely.")
+                .action(|ui| {
                 if ui
                     .add(ToggleSwitch::new(&mut enabled).icons(
                         egui_phosphor::regular::LIGHTNING,
@@ -160,8 +262,9 @@ pub fn render(
                         }
                     }
                 }
-            })
-            .show(ui, &theme.colors);
+                })
+                .show(ui, &theme.colors);
+        }
 
         // Proxy Settings
         let network_settings = shared.map(|shared| shared.signals().network_settings.get());
@@ -571,6 +674,39 @@ mod tests {
 
         assert_eq!(map.get("existing"), Some(&false));
         assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn quarantine_actions_never_fall_back_to_the_enabled_toggle() {
+        use arclain_app::plugins::PluginQuarantineState;
+
+        assert_eq!(quarantine_action(&PluginQuarantineState::Clear), None);
+        assert_eq!(
+            quarantine_action(&PluginQuarantineState::Retryable { failed_retries: 0 }),
+            Some(QuarantineAction::Retry)
+        );
+        assert_eq!(
+            quarantine_action(&PluginQuarantineState::Retryable { failed_retries: 2 }),
+            Some(QuarantineAction::Retry)
+        );
+        assert_eq!(
+            quarantine_action(&PluginQuarantineState::PersistentlyDisabled { failed_retries: 3 }),
+            Some(QuarantineAction::Reset)
+        );
+        assert_eq!(
+            quarantine_status_label(&PluginQuarantineState::Retryable { failed_retries: 0 }),
+            Some("Resource limit reached".to_string())
+        );
+        assert_eq!(
+            quarantine_status_label(&PluginQuarantineState::Retryable { failed_retries: 2 }),
+            Some("Resource limit reached (2 of 3 retries failed)".to_string())
+        );
+        assert_eq!(
+            quarantine_status_label(&PluginQuarantineState::PersistentlyDisabled {
+                failed_retries: 3,
+            }),
+            Some("Plugin quarantined (3 of 3 retries failed)".to_string())
+        );
     }
 
     /// The domain rows are analyzed through the application facade. The

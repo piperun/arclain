@@ -495,6 +495,317 @@ fn ui_demo_package(path: &std::path::Path) -> wirt::PackageFingerprint {
     fingerprint
 }
 
+fn facade_fixture_package(path: &std::path::Path) -> wirt::PackageFingerprint {
+    let manifest = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/facade-test-fixture/facade-test-fixture.toml"
+    ));
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/facade-test-fixture/facade-test-fixture.wasm"
+    ));
+    let bytes = wirt::package_bytes(manifest, component).expect("valid facade fixture package");
+    let fingerprint = wirt::PackageFingerprint::sha256(&bytes);
+    std::fs::write(path, bytes).unwrap();
+    fingerprint
+}
+
+fn facade_fixture_package_with_manifest(
+    path: &std::path::Path,
+    mutate: impl FnOnce(&mut crate::types::PluginManifest),
+) -> wirt::PackageFingerprint {
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/facade-test-fixture/facade-test-fixture.toml"
+    ));
+    let mut manifest: crate::types::PluginManifest = toml::from_str(source).unwrap();
+    mutate(&mut manifest);
+    let manifest = toml::to_string(&manifest).unwrap();
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/facade-test-fixture/facade-test-fixture.wasm"
+    ));
+    let bytes = wirt::package_bytes(manifest.as_bytes(), component).unwrap();
+    let fingerprint = wirt::PackageFingerprint::sha256(&bytes);
+    std::fs::write(path, bytes).unwrap();
+    fingerprint
+}
+
+fn trigger_fixture_result_quota(manager: &PluginManager) -> crate::types::PluginError {
+    manager
+        .execute_plugin(
+            "facade-test-fixture",
+            wirt::ExecutorRequest::UiEvent {
+                id: "trigger-result-quota".to_string(),
+                value: None,
+            },
+        )
+        .unwrap_err()
+}
+
+#[test]
+fn resource_limit_disables_the_session_and_three_explicit_retry_failures_persist() {
+    let temp_dir = TempDir::new().unwrap();
+    let package_path = temp_dir.path().join("facade-test-fixture.wirt");
+    let fingerprint = facade_fixture_package(&package_path);
+    let plugins_dir = temp_dir.path().join("plugins");
+    let mut manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
+
+    assert!(matches!(
+        trigger_fixture_result_quota(&manager),
+        crate::types::PluginError::ResourceLimit { .. }
+    ));
+    let initial = manager.list_plugins().pop().unwrap();
+    assert!(!initial.enabled);
+    assert!(matches!(
+        initial.quarantine_state,
+        crate::QuarantineState::Retryable(ref record) if record.failed_retries == 0
+    ));
+    assert!(matches!(
+        manager
+            .execute_plugin("facade-test-fixture", wirt::ExecutorRequest::Metadata)
+            .unwrap_err(),
+        crate::types::PluginError::Unavailable(_)
+    ));
+
+    for failed_retries in 1..=3 {
+        manager.retry_plugin("facade-test-fixture").unwrap();
+        assert!(manager.is_plugin_enabled("facade-test-fixture"));
+        assert!(matches!(
+            trigger_fixture_result_quota(&manager),
+            crate::types::PluginError::ResourceLimit { .. }
+        ));
+        let item = manager.list_plugins().pop().unwrap();
+        let record = match item.quarantine_state {
+            crate::QuarantineState::Retryable(record)
+            | crate::QuarantineState::PersistentlyDisabled(record) => record,
+            crate::QuarantineState::Clear => panic!("failed retry lost quarantine state"),
+        };
+        assert_eq!(record.failed_retries, failed_retries);
+    }
+
+    drop(manager);
+    let mut restarted = PluginManager::new(plugins_dir, HashMap::new()).unwrap();
+    restarted.init().unwrap();
+    let persisted = restarted.list_plugins().pop().unwrap();
+    assert!(!persisted.enabled);
+    assert_eq!(persisted.instance, None);
+    assert!(matches!(
+        persisted.quarantine_state,
+        crate::QuarantineState::PersistentlyDisabled(ref record)
+            if record.failed_retries == 3
+    ));
+    assert_eq!(
+        restarted
+            .get_plugin_metadata("facade-test-fixture")
+            .unwrap()
+            .id,
+        "facade-test-fixture"
+    );
+
+    let identity_key = crate::types::PluginIdentityKey::parse("facade-test-fixture").unwrap();
+    restarted.initial_settings.insert(
+        identity_key.clone(),
+        super::types::InitialPluginSettings {
+            original_id: "facade-test-fixture".to_string(),
+            values: HashMap::from([("fail-init".to_string(), "true".to_string())]),
+        },
+    );
+    assert!(matches!(
+        restarted
+            .reset_plugin_quarantine("facade-test-fixture")
+            .unwrap_err(),
+        crate::types::PluginError::Unavailable(_)
+    ));
+    assert!(matches!(
+        restarted.list_plugins()[0].quarantine_state,
+        crate::QuarantineState::PersistentlyDisabled(ref record)
+            if record.failed_retries == 3
+    ));
+
+    restarted.initial_settings.remove(&identity_key);
+    restarted
+        .reset_plugin_quarantine("facade-test-fixture")
+        .unwrap();
+    assert!(restarted.is_plugin_enabled("facade-test-fixture"));
+    assert_eq!(
+        restarted.list_plugins()[0].quarantine_state,
+        crate::QuarantineState::Clear
+    );
+}
+
+#[test]
+fn enable_cannot_race_between_resource_disable_and_quarantine_recording() {
+    let temp_dir = TempDir::new().unwrap();
+    let package_path = temp_dir.path().join("facade-test-fixture.wirt");
+    let fingerprint = facade_fixture_package(&package_path);
+    let plugins_dir = temp_dir.path().join("plugins");
+    let mut manager = PluginManager::new(plugins_dir, HashMap::new()).unwrap();
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
+
+    let (disabled_tx, disabled_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    manager
+        .wirt_executor()
+        .set_resource_disabled_before_ledger_hook(Box::new(move || {
+            disabled_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        }));
+
+    std::thread::scope(|scope| {
+        let violation_manager = &manager;
+        let violation = scope.spawn(move || trigger_fixture_result_quota(violation_manager));
+        disabled_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("resource transition must reach the ledger boundary");
+
+        let (enable_done_tx, enable_done_rx) = std::sync::mpsc::channel();
+        let enable_manager = &manager;
+        let enable = scope.spawn(move || {
+            enable_done_tx
+                .send(enable_manager.enable_plugin("facade-test-fixture"))
+                .unwrap();
+        });
+        let early_enable = enable_done_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .ok();
+        let completed_early = early_enable.is_some();
+
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            violation.join().unwrap(),
+            crate::types::PluginError::ResourceLimit { .. }
+        ));
+        let enable_result = early_enable.unwrap_or_else(|| {
+            enable_done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+        });
+        assert!(matches!(
+            enable_result,
+            Err(crate::types::PluginError::Unavailable(_))
+        ));
+        enable.join().unwrap();
+        assert!(
+            !completed_early,
+            "Enable must wait for the resource-limit transition"
+        );
+    });
+
+    assert!(!manager.is_plugin_enabled("facade-test-fixture"));
+}
+
+#[test]
+fn ordinary_retry_load_failure_preserves_the_explicit_retry_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let package_path = temp_dir.path().join("facade-test-fixture.wirt");
+    let fingerprint = facade_fixture_package(&package_path);
+    let plugins_dir = temp_dir.path().join("plugins");
+    let mut manager = PluginManager::new_with_plugin_log_dir(
+        plugins_dir,
+        HashMap::new(),
+        temp_dir.path().join("initial-logs"),
+    )
+    .unwrap();
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
+    assert!(matches!(
+        trigger_fixture_result_quota(&manager),
+        crate::types::PluginError::ResourceLimit { .. }
+    ));
+
+    let identity_key = crate::types::PluginIdentityKey::parse("facade-test-fixture").unwrap();
+    manager.initial_settings.insert(
+        identity_key.clone(),
+        super::types::InitialPluginSettings {
+            original_id: "facade-test-fixture".to_string(),
+            values: HashMap::from([("fail-init".to_string(), "true".to_string())]),
+        },
+    );
+    assert!(matches!(
+        manager.retry_plugin("facade-test-fixture").unwrap_err(),
+        crate::types::PluginError::Unavailable(_)
+    ));
+
+    let blocked = manager.list_plugins().pop().unwrap();
+    assert!(matches!(
+        blocked.quarantine_state,
+        crate::QuarantineState::Retryable(ref record) if record.failed_retries == 0
+    ));
+
+    manager.initial_settings.remove(&identity_key);
+    manager.retry_plugin("facade-test-fixture").unwrap();
+    assert!(manager.is_plugin_enabled("facade-test-fixture"));
+    assert_eq!(
+        manager.list_plugins()[0].quarantine_state,
+        crate::QuarantineState::Clear
+    );
+}
+
+#[test]
+fn changed_fingerprint_retry_is_transactional_until_the_new_instance_is_ready() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    let installed = plugins_dir.join("facade-test-fixture.wirt");
+    let original_fingerprint = facade_fixture_package(&installed);
+    let mut manager = PluginManager::new_with_plugin_log_dir(
+        plugins_dir,
+        HashMap::new(),
+        temp_dir.path().join("logs"),
+    )
+    .unwrap();
+    manager.init().unwrap();
+    assert!(matches!(
+        trigger_fixture_result_quota(&manager),
+        crate::types::PluginError::ResourceLimit { .. }
+    ));
+
+    let changed_fingerprint = facade_fixture_package_with_manifest(&installed, |manifest| {
+        manifest.plugin.description.push_str(" changed");
+    });
+    assert_ne!(changed_fingerprint, original_fingerprint);
+    assert!(matches!(
+        manager.retry_plugin("facade-test-fixture").unwrap_err(),
+        crate::types::PluginError::InvalidManifest(_)
+    ));
+    assert!(matches!(
+        manager.list_plugins()[0].quarantine_state,
+        crate::QuarantineState::Retryable(ref record) if record.failed_retries == 0
+    ));
+
+    assert_eq!(facade_fixture_package(&installed), original_fingerprint);
+    manager.retry_plugin("facade-test-fixture").unwrap();
+    assert!(manager.is_plugin_enabled("facade-test-fixture"));
+    assert_eq!(
+        manager.list_plugins()[0].quarantine_state,
+        crate::QuarantineState::Clear
+    );
+}
+
+#[test]
+fn corrupt_quarantine_ledger_prevents_manager_creation_without_touching_plugins() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    facade_fixture_package(&plugins_dir.join("facade-test-fixture.wirt"));
+    std::fs::write(plugins_dir.join(".wirt-quarantine.json"), b"{").unwrap();
+
+    let error = match PluginManager::new(plugins_dir.clone(), HashMap::new()) {
+        Ok(_) => panic!("corrupt quarantine ledger was accepted"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("quarantine ledger"));
+    assert!(error.to_string().len() <= 256);
+    assert!(plugins_dir.join("facade-test-fixture.wirt").exists());
+}
+
 fn ui_demo_package_with_manifest(
     path: &std::path::Path,
     mutate: impl FnOnce(&mut crate::types::PluginManifest),

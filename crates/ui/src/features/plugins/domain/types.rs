@@ -38,6 +38,10 @@ pub struct PluginInfo {
     pub status: PluginStatus,
     /// Error message if any
     pub error: Option<String>,
+    #[serde(default)]
+    pub quarantine_state: arclain_app::plugins::PluginQuarantineState,
+    #[serde(default)]
+    pub last_reason: Option<String>,
     /// Visibility settings (e.g. "toolbar": true)
     #[serde(default)]
     pub visibility: std::collections::HashMap<String, bool>,

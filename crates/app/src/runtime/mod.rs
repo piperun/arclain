@@ -2157,6 +2157,26 @@ impl ArclainApp {
         .await?
     }
 
+    /// Replace a resource-blocked plugin with a fresh, user-authorized
+    /// instance. A later resource violation on that instance counts as a
+    /// failed retry in the persistent quarantine ledger.
+    pub async fn retry_plugin(&self, plugin_id: String) -> Result<(), ApplicationError> {
+        self.dispatch_blocking(move |inner| {
+            let manager = crate::plugins::require_manager(inner.plugin_manager())?;
+            crate::plugins::PluginSessionStore::retry_plugin(&manager, &plugin_id)
+        })
+        .await?
+    }
+
+    /// Remove a persistent quarantine record and load a fresh instance.
+    pub async fn reset_plugin_quarantine(&self, plugin_id: String) -> Result<(), ApplicationError> {
+        self.dispatch_blocking(move |inner| {
+            let manager = crate::plugins::require_manager(inner.plugin_manager())?;
+            crate::plugins::PluginSessionStore::reset_plugin_quarantine(&manager, &plugin_id)
+        })
+        .await?
+    }
+
     /// Persists `settings` as `plugin_id`'s own key/value settings bag
     /// (see `runtime::settings_ops::run_set_plugin_settings`'s own doc
     /// comment).

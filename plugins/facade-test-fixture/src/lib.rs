@@ -1,6 +1,6 @@
 //! Deterministic plugin fixture used only by `arclain_app`'s own facade
 //! tests (`crates/app/tests/plugin_sessions.rs`). Not a user-facing
-//! plugin: it exists purely to exercise three brief-mandated behaviors a
+//! plugin: it exists purely to exercise brief-mandated behaviors a
 //! "real" demo plugin (`ui-demo`, whose `on-ui-event` always returns an
 //! empty action list) cannot exercise:
 //!
@@ -14,6 +14,9 @@
 //!   resulting `ApplicationError`, and then dispatch a *different*
 //!   action against the same session to prove the instance and its
 //!   store are still usable afterward.
+//! - **Resource quarantine**: the `"trigger-result-quota"` button returns
+//!   an oversized action response, producing Wirt's structured result-quota
+//!   error without relying on timing or platform-specific memory behavior.
 //! - **Action ordering**: the `"multi-action"` button's handler returns
 //!   three different actions in one response (`ShowToast`,
 //!   `CopyToClipboard`, `SetPageDisplayName`), in a fixed order, so a
@@ -84,6 +87,12 @@ const REMEMBERED_SETTING_KEY: &str = "remembered-code";
 /// the guest.
 const LOAD_COUNT_SETTING_KEY: &str = "load-count";
 
+/// Test-only persisted input that makes a fresh instance fail during `init`.
+/// The manager quarantine regression uses this to distinguish an ordinary
+/// guest trap from another resource-limit failure without changing the
+/// component fingerprint between retries.
+const FAIL_INIT_SETTING_KEY: &str = "fail-init";
+
 /// Incremented on every `get-ui-layout` call for `"MainPage"`. Backed by
 /// this WASM instance's own linear memory, so it persists across calls
 /// for as long as the host keeps this plugin instance alive (the host
@@ -123,6 +132,11 @@ impl wirt_sdk::Guest for Component {
     }
 
     fn init() {
+        if wirt_sdk::wirt::plugin::host::get_setting(FAIL_INIT_SETTING_KEY).as_deref()
+            == Some("true")
+        {
+            panic!("facade-test-fixture: requested init failure");
+        }
         info("Facade test fixture initialized");
         log_network_activity(INIT_NETWORK_LOG_LINE);
         // A settings write from a guest call that is *not* `on-ui-event`
@@ -156,6 +170,11 @@ impl wirt_sdk::Guest for Component {
                     UiElement::Button(ButtonConfig {
                         id: "trigger-trap".to_string(),
                         label: "Trigger Trap".to_string(),
+                        action: None,
+                    }),
+                    UiElement::Button(ButtonConfig {
+                        id: "trigger-result-quota".to_string(),
+                        label: "Trigger Result Quota".to_string(),
                         action: None,
                     }),
                     UiElement::Button(ButtonConfig {
@@ -325,6 +344,10 @@ impl wirt_sdk::Guest for Component {
                 wirt_sdk::set_setting(REMEMBERED_SETTING_KEY, "trapped");
                 panic!("facade-test-fixture: intentional trap for crash-containment tests")
             }
+            "trigger-result-quota" => vec![PluginAction::ShowToast(ToastConfig {
+                message: "x".repeat(2 * 1024 * 1024),
+                level: ToastLevel::Info,
+            })],
             "multi-action" => vec![
                 PluginAction::ShowToast(ToastConfig {
                     message: "first".to_string(),

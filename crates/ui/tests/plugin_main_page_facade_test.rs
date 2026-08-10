@@ -117,6 +117,8 @@ fn plugin_info(id: &str) -> PluginInfo {
         loaded: true,
         status: PluginStatus::Ready,
         error: None,
+        quarantine_state: arclain_app::plugins::PluginQuarantineState::Clear,
+        last_reason: None,
         visibility: HashMap::new(),
     }
 }

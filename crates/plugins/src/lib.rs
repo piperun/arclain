@@ -47,6 +47,7 @@ mod executor;
 pub mod host_functions;
 pub mod loader;
 pub mod manager;
+mod quarantine;
 pub mod runtime;
 pub mod types;
 pub use wirt::{action_policy, ui_model};
@@ -60,6 +61,7 @@ pub use manager::{
     resolve_interactive_request_fetch, PluginEventScheduler, PluginInstallPreview, PluginListItem,
     PluginManager, RequestFetchOutcome,
 };
+pub use quarantine::{QuarantineLedger, QuarantineRecord, QuarantineState};
 pub use runtime::{LoadedPlugin, PluginInstance, WasmRuntime};
 pub use types::{
     BadgeConfig, PluginCapability, PluginError, PluginEvent, PluginInfo, PluginManifest,

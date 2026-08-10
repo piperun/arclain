@@ -677,7 +677,11 @@ fn project_plugins(plugins: Vec<PluginSummary>) -> Vec<PluginInfo> {
     let mut projected = plugins
         .into_iter()
         .map(|plugin| {
-            let loaded = plugin.load_error.is_none();
+            let loaded = plugin.load_error.is_none()
+                && matches!(
+                    &plugin.quarantine_state,
+                    arclain_app::plugins::PluginQuarantineState::Clear
+                );
             PluginInfo {
                 visibility: plugin.visibility.into_iter().collect(),
                 id: plugin.id,
@@ -697,7 +701,11 @@ fn project_plugins(plugins: Vec<PluginSummary>) -> Vec<PluginInfo> {
                 } else {
                     PluginStatus::Error
                 },
-                error: plugin.load_error,
+                error: plugin
+                    .load_error
+                    .or_else(|| plugin.last_reason.as_ref().cloned()),
+                quarantine_state: plugin.quarantine_state,
+                last_reason: plugin.last_reason,
             }
         })
         .collect::<Vec<_>>();
@@ -776,11 +784,24 @@ mod tests {
             visibility,
             enabled: true,
             load_error: None,
+            quarantine_state: arclain_app::plugins::PluginQuarantineState::Retryable {
+                failed_retries: 2,
+            },
+            last_reason: Some("plugin result quota exceeded".to_string()),
         }]);
 
         assert_eq!(plugins[0].capabilities, vec!["Network"]);
         assert_eq!(plugins[0].visibility.get("toolbar"), Some(&true));
-        assert_eq!(plugins[0].status, PluginStatus::Ready);
+        assert!(!plugins[0].loaded);
+        assert_eq!(plugins[0].status, PluginStatus::Error);
+        assert_eq!(
+            plugins[0].quarantine_state,
+            arclain_app::plugins::PluginQuarantineState::Retryable { failed_retries: 2 }
+        );
+        assert_eq!(
+            plugins[0].last_reason.as_deref(),
+            Some("plugin result quota exceeded")
+        );
     }
 
     #[test]

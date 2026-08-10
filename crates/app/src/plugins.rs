@@ -952,6 +952,18 @@ impl From<arclain_plugins::PluginInstallPreview> for PluginInstallPreviewDto {
 /// One plugin as reported by [`crate::ArclainApp::plugins`]: enough to
 /// render a plugin list/settings row without a caller needing to reach
 /// into `arclain_plugins::PluginListItem`/`PluginManifest` directly.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum PluginQuarantineState {
+    #[default]
+    Clear,
+    Retryable {
+        failed_retries: u8,
+    },
+    PersistentlyDisabled {
+        failed_retries: u8,
+    },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct PluginSummary {
     pub id: String,
@@ -987,6 +999,8 @@ pub struct PluginSummary {
     /// `capabilities` is always empty -- *not* "this plugin declared no
     /// capabilities", but "no manifest survived to say".
     pub load_error: Option<String>,
+    pub quarantine_state: PluginQuarantineState,
+    pub last_reason: Option<String>,
 }
 
 /// A renderer-neutral plugin UI document: [`wirt::ui_model::PluginUiNodeDto`]'s
@@ -1788,6 +1802,7 @@ fn plugin_install_error(error: PluginError) -> ApplicationError {
         | PluginError::InitError(_)
         | PluginError::ExecutionError(_)
         | PluginError::Unavailable(_)
+        | PluginError::ResourceLimit { .. }
         | PluginError::CapabilityDenied(_)
         | PluginError::NotFound(_)
         | PluginError::WasmError(_)
@@ -1972,6 +1987,21 @@ impl PluginSessionStore {
             .list_plugins()
             .into_iter()
             .map(|item| {
+                let (quarantine_state, last_reason) = match item.quarantine_state {
+                    arclain_plugins::QuarantineState::Clear => (PluginQuarantineState::Clear, None),
+                    arclain_plugins::QuarantineState::Retryable(record) => (
+                        PluginQuarantineState::Retryable {
+                            failed_retries: record.failed_retries,
+                        },
+                        Some(record.last_reason),
+                    ),
+                    arclain_plugins::QuarantineState::PersistentlyDisabled(record) => (
+                        PluginQuarantineState::PersistentlyDisabled {
+                            failed_retries: record.failed_retries,
+                        },
+                        Some(record.last_reason),
+                    ),
+                };
                 let plugin_visibility = visibility.get(&item.id).cloned().unwrap_or_default();
                 let capabilities = item
                     .manifest
@@ -1990,6 +2020,8 @@ impl PluginSessionStore {
                     visibility: plugin_visibility,
                     enabled: item.enabled,
                     load_error: None,
+                    quarantine_state,
+                    last_reason,
                 }
             })
             .collect();
@@ -2008,6 +2040,8 @@ impl PluginSessionStore {
                 visibility: plugin_visibility,
                 enabled: false,
                 load_error: Some(failed.error),
+                quarantine_state: PluginQuarantineState::Clear,
+                last_reason: None,
             }
         }));
         summaries
@@ -2024,7 +2058,30 @@ impl PluginSessionStore {
         } else {
             manager.disable_plugin(plugin_id)
         };
-        result.map_err(|_| plugin_not_found(plugin_id))
+        result.map_err(|error| match error {
+            PluginError::NotFound(_) => plugin_not_found(plugin_id),
+            error => plugin_execution_error(error),
+        })
+    }
+
+    pub(crate) fn retry_plugin(
+        manager: &SyncMutex<PluginManager>,
+        plugin_id: &str,
+    ) -> Result<(), ApplicationError> {
+        manager
+            .lock()
+            .retry_plugin(plugin_id)
+            .map_err(plugin_execution_error)
+    }
+
+    pub(crate) fn reset_plugin_quarantine(
+        manager: &SyncMutex<PluginManager>,
+        plugin_id: &str,
+    ) -> Result<(), ApplicationError> {
+        manager
+            .lock()
+            .reset_plugin_quarantine(plugin_id)
+            .map_err(plugin_execution_error)
     }
 
     pub(crate) fn inspect_plugin_package(
