@@ -170,7 +170,7 @@ pub fn handle_action(
     action: SettingsAction,
     security_state: &mut SecuritySettingsState,
     _archives_state: &mut ArchivesSettingsState,
-    _plugins_state: Option<&mut PluginsListState>,
+    plugins_state: Option<&mut PluginsListState>,
     network_state: &mut crate::features::settings::domain::types::NetworkSettingsState,
     server_state: &mut ServerSettingsState,
 
@@ -343,12 +343,59 @@ pub fn handle_action(
                 shared.toaster.lock().error(error.summary);
             }
         }
-        SettingsAction::InstallPlugin { wasm_path } => {
-            shared.plugin_ui_jobs.request(
-                crate::features::plugins::application::PluginUiRequest::Install {
-                    wasm_path: std::path::PathBuf::from(wasm_path),
+        SettingsAction::InspectPluginPackage { package_path } => {
+            let request_id = shared.plugin_ui_jobs.request(
+                crate::features::plugins::application::PluginUiRequest::InspectPackage {
+                    package_path: package_path.clone(),
                 },
             );
+            if let Some(plugins_state) = plugins_state {
+                plugins_state.begin_package_inspection(package_path, request_id);
+            }
+        }
+        SettingsAction::ApprovePluginPackage {
+            package_path,
+            expected_fingerprint,
+        } => {
+            let Some(plugins_state) = plugins_state else {
+                shared
+                    .toaster
+                    .lock()
+                    .error("Plugin approval is no longer available");
+                return;
+            };
+            let is_current = matches!(
+                plugins_state.pending_install.as_ref(),
+                Some(pending)
+                    if pending.package_path == package_path
+                        && pending.preview.as_ref().is_some_and(|preview| {
+                            preview.fingerprint == expected_fingerprint
+                        })
+                        && !pending.loading
+            );
+            if !is_current {
+                shared
+                    .toaster
+                    .lock()
+                    .error("Plugin approval no longer matches the inspected package");
+                return;
+            }
+            let request_id = shared.plugin_ui_jobs.request(
+                crate::features::plugins::application::PluginUiRequest::InstallPackage {
+                    package_path,
+                    expected_fingerprint,
+                },
+            );
+            let started = plugins_state.begin_package_install(request_id);
+            debug_assert!(
+                started,
+                "a current package approval must start exactly once"
+            );
+        }
+        SettingsAction::CancelPluginInstall => {
+            if let Some(plugins_state) = plugins_state {
+                plugins_state.cancel_package_install();
+            }
         }
         SettingsAction::ClearCacheIndex => {
             handle_cache_maintenance(

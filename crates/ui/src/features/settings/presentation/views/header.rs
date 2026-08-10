@@ -39,6 +39,32 @@ pub fn render_header(
     let plugins_state_ref: &mut crate::features::plugins::domain::types::PluginsListState =
         plugins_settings_state.unwrap_or(&mut plugins_fallback);
 
+    // Render the modal before the header borrows this state through its
+    // retained closures. Its foreground layer still paints above the page.
+    if let Some(pending) = plugins_state_ref.pending_install.as_mut() {
+        match crate::features::plugins::presentation::views::render_plugin_install_dialog(
+            ui.ctx(),
+            &shared.theme,
+            pending,
+        ) {
+            Some(
+                crate::features::plugins::presentation::views::PluginInstallDialogResult::Cancel,
+            ) => action = Some(SettingsAction::CancelPluginInstall),
+            Some(
+                crate::features::plugins::presentation::views::PluginInstallDialogResult::Install {
+                    package_path,
+                    expected_fingerprint,
+                },
+            ) => {
+                action = Some(SettingsAction::ApprovePluginPackage {
+                    package_path,
+                    expected_fingerprint,
+                })
+            }
+            None => {}
+        }
+    }
+
     let header_config =
         if *page == SettingsPage::Plugins {
             // Delegate to Plugins Page
@@ -139,33 +165,44 @@ SettingsHeaderConfig::new(page.display_name())
             ))
         };
 
-    let mut header = crate::shared::components::SettingsHeader::new(header_config.title)
-        .has_changes(header_config.has_changes);
+    let crate::features::settings::presentation::views::header_config::SettingsHeaderConfig {
+        title,
+        icon,
+        description,
+        sub_description,
+        has_changes,
+        on_back,
+        on_save,
+        custom_actions,
+        secondary_row,
+        tertiary_row,
+    } = header_config;
+    let mut header = crate::shared::components::SettingsHeader::new(title).has_changes(has_changes);
 
-    if let Some(icon) = header_config.icon {
+    if let Some(icon) = icon {
         header = header.icon(icon);
     }
-    if let Some(desc) = header_config.description {
+    if let Some(desc) = description {
         header = header.description(desc);
     }
-    if let Some(sub_desc) = header_config.sub_description {
+    if let Some(sub_desc) = sub_description {
         header = header.sub_description(sub_desc);
     }
-    if let Some(back) = header_config.on_back {
+    if let Some(back) = on_back {
         header = header.on_back(back);
     }
-    if let Some(row) = header_config.secondary_row {
+    if let Some(row) = secondary_row {
         header = header.secondary_row(row);
     }
-    if let Some(row) = header_config.tertiary_row {
+    if let Some(row) = tertiary_row {
         header = header.tertiary_row(row);
     }
-    if let Some(actions) = header_config.custom_actions {
+    if let Some(actions) = custom_actions {
         header = header.custom_actions(actions);
     }
 
     // Save Action Logic
-    if let Some(save_action) = header_config.on_save {
+    if let Some(save_action) = on_save {
         header = header.on_save(save_action);
     } else if *page != SettingsPage::Plugins && !matches!(page, SettingsPage::EditRule(_)) {
         header = header.on_save(|| match page {
@@ -324,17 +361,17 @@ SettingsHeaderConfig::new(page.display_name())
     }
 
     header.show(ui, &shared.theme);
-
     // Handle actions triggered by flags
     if install_clicked.get() {
         if let Some(file) = rfd::FileDialog::new()
-            .add_filter("WASM Plugin", &["wasm"])
-            .set_title("Select Plugin to Install")
+            .add_filter(
+                crate::features::settings::domain::types::WIRT_PLUGIN_FILTER_NAME,
+                crate::features::settings::domain::types::WIRT_PLUGIN_FILTER_SUFFIXES,
+            )
+            .set_title(crate::features::settings::domain::types::WIRT_PLUGIN_PICKER_TITLE)
             .pick_file()
         {
-            action = Some(SettingsAction::InstallPlugin {
-                wasm_path: file.to_string_lossy().into_owned(),
-            });
+            action = Some(SettingsAction::InspectPluginPackage { package_path: file });
         }
     }
 

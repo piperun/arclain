@@ -1,6 +1,7 @@
 //! Plugin UI type definitions
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_PLUGIN_UI_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -66,6 +67,18 @@ pub enum SnapshotStatus {
     Failed(String),
 }
 
+/// One user-selected package from inspection through explicit approval.
+#[derive(Clone, Debug)]
+pub struct PendingPluginInstall {
+    pub package_path: PathBuf,
+    pub preview: Option<arclain_app::plugins::PluginInstallPreviewDto>,
+    pub request_id: Option<RequestId>,
+    pub loading: bool,
+    pub installing: bool,
+    pub error_kind: Option<arclain_app::error::ApplicationErrorKind>,
+    pub error: Option<String>,
+}
+
 impl PluginStatus {
     /// Get icon for status
     pub fn icon(&self) -> &'static str {
@@ -115,9 +128,98 @@ pub struct PluginsListState {
     /// page) from showing a stale `enabled` flag for each other's most
     /// recent toggle.
     pub plugin_list_epoch_seen: u64,
+    /// The permission review currently owned by this page, if any.
+    pub pending_install: Option<PendingPluginInstall>,
 }
 
 impl PluginsListState {
+    pub fn begin_package_inspection(&mut self, package_path: PathBuf, request_id: RequestId) {
+        self.pending_install = Some(PendingPluginInstall {
+            package_path,
+            preview: None,
+            request_id: Some(request_id),
+            loading: true,
+            installing: false,
+            error_kind: None,
+            error: None,
+        });
+    }
+
+    pub fn apply_package_preview(
+        &mut self,
+        request_id: RequestId,
+        preview: arclain_app::plugins::PluginInstallPreviewDto,
+    ) -> bool {
+        let Some(pending) = self.pending_install.as_mut() else {
+            return false;
+        };
+        if pending.request_id != Some(request_id) || pending.installing {
+            return false;
+        }
+        pending.preview = Some(preview);
+        pending.request_id = None;
+        pending.loading = false;
+        pending.error_kind = None;
+        pending.error = None;
+        true
+    }
+
+    pub fn begin_package_install(&mut self, request_id: RequestId) -> bool {
+        let Some(pending) = self.pending_install.as_mut() else {
+            return false;
+        };
+        if pending.preview.is_none() || pending.loading {
+            return false;
+        }
+        pending.request_id = Some(request_id);
+        pending.loading = true;
+        pending.installing = true;
+        pending.error_kind = None;
+        pending.error = None;
+        true
+    }
+
+    pub fn apply_package_install_failure(
+        &mut self,
+        request_id: RequestId,
+        error_kind: Option<arclain_app::error::ApplicationErrorKind>,
+        error: String,
+    ) -> bool {
+        let Some(pending) = self.pending_install.as_mut() else {
+            return false;
+        };
+        if pending.request_id != Some(request_id) {
+            return false;
+        }
+        pending.request_id = None;
+        pending.loading = false;
+        pending.installing = false;
+        pending.error_kind = error_kind;
+        pending.error = Some(error);
+        true
+    }
+
+    pub fn complete_package_install(&mut self, request_id: RequestId) -> bool {
+        if !matches!(
+            self.pending_install.as_ref(),
+            Some(pending) if pending.request_id == Some(request_id) && pending.installing
+        ) {
+            return false;
+        }
+        self.pending_install = None;
+        true
+    }
+
+    pub fn cancel_package_install(&mut self) -> bool {
+        if matches!(
+            self.pending_install.as_ref(),
+            Some(pending) if pending.installing
+        ) {
+            return false;
+        }
+        self.pending_install.take().is_some()
+    }
+
     pub fn invalidate_snapshot(&mut self) {
         self.snapshot_status = SnapshotStatus::Idle;
         self.snapshot_request_id = None;

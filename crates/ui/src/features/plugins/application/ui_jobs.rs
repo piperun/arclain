@@ -5,8 +5,10 @@
 //! repaint epoch; `ArclainApp` owns every plugin call and all WASM execution.
 
 use crate::features::plugins::domain::types::{PluginInfo, PluginStatus, RequestId};
+use arclain_app::error::ApplicationErrorKind;
 use arclain_app::plugins::{
-    DomainWhitelistEntryDto, PluginChromeSnapshot, PluginNetworkLogEntryDto, PluginSummary,
+    DomainWhitelistEntryDto, PluginChromeSnapshot, PluginInstallPreviewDto,
+    PluginNetworkLogEntryDto, PluginSummary,
 };
 use arclain_app::{ArclainApp, Signal};
 use parking_lot::Mutex;
@@ -34,8 +36,12 @@ pub enum PluginUiRequest {
         domain: String,
         approved: bool,
     },
-    Install {
-        wasm_path: PathBuf,
+    InspectPackage {
+        package_path: PathBuf,
+    },
+    InstallPackage {
+        package_path: PathBuf,
+        expected_fingerprint: String,
     },
 }
 
@@ -52,8 +58,11 @@ pub enum PluginUiFailureContext {
         domain: String,
         approved: bool,
     },
-    Install {
-        wasm_path: PathBuf,
+    InspectPackage {
+        package_path: PathBuf,
+    },
+    InstallPackage {
+        package_path: PathBuf,
     },
 }
 
@@ -81,13 +90,18 @@ pub enum PluginUiResult {
         plugin_id: String,
         result: Result<(), String>,
     },
-    MutationFinished {
+    PackageInspected {
         request_id: RequestId,
-        result: Result<(), String>,
+        preview: PluginInstallPreviewDto,
+    },
+    PackageInstalled {
+        request_id: RequestId,
+        plugin_id: String,
     },
     Failed {
         request_id: RequestId,
         context: PluginUiFailureContext,
+        error_kind: Option<ApplicationErrorKind>,
         error: String,
     },
 }
@@ -103,7 +117,8 @@ enum RequestKey {
         domain: String,
         approved: bool,
     },
-    Install(RequestId),
+    InspectPackage(RequestId),
+    InstallPackage(RequestId),
 }
 
 impl PluginUiRequest {
@@ -122,7 +137,8 @@ impl PluginUiRequest {
                 domain: domain.clone(),
                 approved: *approved,
             },
-            Self::Install { .. } => RequestKey::Install(request_id),
+            Self::InspectPackage { .. } => RequestKey::InspectPackage(request_id),
+            Self::InstallPackage { .. } => RequestKey::InstallPackage(request_id),
         }
     }
 }
@@ -148,12 +164,22 @@ impl RequestKey {
                 domain: domain.clone(),
                 approved: *approved,
             },
-            (Self::Install(_), PluginUiRequest::Install { wasm_path }) => {
-                PluginUiFailureContext::Install {
-                    wasm_path: wasm_path.clone(),
+            (Self::InspectPackage(_), PluginUiRequest::InspectPackage { package_path }) => {
+                PluginUiFailureContext::InspectPackage {
+                    package_path: package_path.clone(),
                 }
             }
-            (Self::Install(_), _) => unreachable!("an install key always belongs to an install"),
+            (Self::InstallPackage(_), PluginUiRequest::InstallPackage { package_path, .. }) => {
+                PluginUiFailureContext::InstallPackage {
+                    package_path: package_path.clone(),
+                }
+            }
+            (Self::InspectPackage(_), _) => {
+                unreachable!("an inspection key always belongs to an inspection")
+            }
+            (Self::InstallPackage(_), _) => {
+                unreachable!("an install key always belongs to an install")
+            }
         }
     }
 }
@@ -205,7 +231,10 @@ impl PluginUiJobs {
         let key = request.key(request_id);
         {
             let mut pending = self.pending.lock();
-            if !matches!(key, RequestKey::Install(_)) {
+            if !matches!(
+                key,
+                RequestKey::InspectPackage(_) | RequestKey::InstallPackage(_)
+            ) {
                 if let Some(existing) = pending.get(&key) {
                     return *existing;
                 }
@@ -217,6 +246,7 @@ impl PluginUiJobs {
                     result: PluginUiResult::Failed {
                         request_id,
                         context: key.failure_context(&request),
+                        error_kind: None,
                         error: "plugin UI pending-job capacity reached".to_string(),
                     },
                     tracked: false,
@@ -449,7 +479,8 @@ impl PluginUiJobs {
                             .insert(plugin_id.clone(), error);
                     }
                     PluginUiFailureContext::SetDomainApproved { .. }
-                    | PluginUiFailureContext::Install { .. } => {}
+                    | PluginUiFailureContext::InspectPackage { .. }
+                    | PluginUiFailureContext::InstallPackage { .. } => {}
                 }
             }
             _ => {}
@@ -535,6 +566,7 @@ async fn execute(
         return PluginUiResult::Failed {
             request_id,
             context: request.key(request_id).failure_context(&request),
+            error_kind: None,
             error: "application facade is unavailable".to_string(),
         };
     };
@@ -548,6 +580,7 @@ async fn execute(
             Err(error) => PluginUiResult::Failed {
                 request_id,
                 context: PluginUiFailureContext::Snapshot,
+                error_kind: Some(error.kind),
                 error: error.summary,
             },
         },
@@ -559,6 +592,7 @@ async fn execute(
             Err(error) => PluginUiResult::Failed {
                 request_id,
                 context: PluginUiFailureContext::ChromeSnapshot,
+                error_kind: Some(error.kind),
                 error: error.summary,
             },
         },
@@ -570,6 +604,7 @@ async fn execute(
             Err(error) => PluginUiResult::Failed {
                 request_id,
                 context: PluginUiFailureContext::NetworkLog,
+                error_kind: Some(error.kind),
                 error: error.summary,
             },
         },
@@ -583,6 +618,7 @@ async fn execute(
                 Err(error) => PluginUiResult::Failed {
                     request_id,
                     context: PluginUiFailureContext::DomainWhitelist { plugin_id },
+                    error_kind: Some(error.kind),
                     error: error.summary,
                 },
             }
@@ -602,9 +638,37 @@ async fn execute(
                 result,
             }
         }
-        PluginUiRequest::Install { .. } => PluginUiResult::MutationFinished {
-            request_id,
-            result: Err("Plugin package approval is required before installation".to_string()),
+        PluginUiRequest::InspectPackage { package_path } => {
+            match facade.inspect_plugin_package(package_path.clone()).await {
+                Ok(preview) => PluginUiResult::PackageInspected {
+                    request_id,
+                    preview,
+                },
+                Err(error) => PluginUiResult::Failed {
+                    request_id,
+                    context: PluginUiFailureContext::InspectPackage { package_path },
+                    error_kind: Some(error.kind),
+                    error: error.summary,
+                },
+            }
+        }
+        PluginUiRequest::InstallPackage {
+            package_path,
+            expected_fingerprint,
+        } => match facade
+            .install_plugin_package(package_path.clone(), expected_fingerprint)
+            .await
+        {
+            Ok(plugin_id) => PluginUiResult::PackageInstalled {
+                request_id,
+                plugin_id,
+            },
+            Err(error) => PluginUiResult::Failed {
+                request_id,
+                context: PluginUiFailureContext::InstallPackage { package_path },
+                error_kind: Some(error.kind),
+                error: error.summary,
+            },
         },
     }
 }
@@ -663,7 +727,8 @@ fn result_request_id(result: &PluginUiResult) -> RequestId {
         | PluginUiResult::NetworkLogLoaded { request_id, .. }
         | PluginUiResult::DomainWhitelistLoaded { request_id, .. }
         | PluginUiResult::DomainApprovalFinished { request_id, .. }
-        | PluginUiResult::MutationFinished { request_id, .. }
+        | PluginUiResult::PackageInspected { request_id, .. }
+        | PluginUiResult::PackageInstalled { request_id, .. }
         | PluginUiResult::Failed { request_id, .. } => *request_id,
     }
 }
@@ -719,24 +784,27 @@ mod tests {
     }
 
     #[test]
-    fn legacy_install_request_fails_closed_until_package_approval_exists() {
+    fn package_inspection_failure_keeps_its_request_identity_and_context() {
         let temp = tempfile::tempdir().expect("temporary profile");
         let facade = crate::test_support::bootstrap_test_facade(&temp);
         let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+        let package_path = temp.path().join("missing.wirt");
         let result = runtime.block_on(execute(
             Some(facade),
             RequestId(40),
-            PluginUiRequest::Install {
-                wasm_path: temp.path().join("legacy.wasm"),
+            PluginUiRequest::InspectPackage {
+                package_path: package_path.clone(),
             },
         ));
 
         assert!(matches!(
             result,
-            PluginUiResult::MutationFinished {
+            PluginUiResult::Failed {
                 request_id: RequestId(40),
-                result: Err(error),
-            } if error == "Plugin package approval is required before installation"
+                context: PluginUiFailureContext::InspectPackage { package_path: failed_path },
+                error_kind: Some(ApplicationErrorKind::Backend),
+                error,
+            } if failed_path == package_path && !error.is_empty()
         ));
     }
 
@@ -906,7 +974,7 @@ mod tests {
             let mut pending = jobs.pending.lock();
             for index in 0..MAX_PENDING_JOBS {
                 let request_id = RequestId(index as u64);
-                pending.insert(RequestKey::Install(request_id), request_id);
+                pending.insert(RequestKey::InstallPackage(request_id), request_id);
             }
         }
 

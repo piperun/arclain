@@ -1,13 +1,61 @@
 mod common;
 
 use arclain_ui::core::SettingsPage;
-use arclain_ui::features::settings::types::{DropBehavior, EncryptedCrcPolicy};
+use arclain_ui::features::settings::types::{DropBehavior, EncryptedCrcPolicy, SettingsAction};
+use arclain_ui::features::settings::types::{
+    WIRT_PLUGIN_FILTER_NAME, WIRT_PLUGIN_FILTER_SUFFIXES, WIRT_PLUGIN_PICKER_TITLE,
+};
 use arclain_ui::features::settings::{SettingsFeature, SettingsFeatureRefs};
 
 fn no_cross_feature_refs() -> SettingsFeatureRefs<'static> {
     SettingsFeatureRefs {
         password_management: None,
     }
+}
+
+#[test]
+fn plugin_picker_offers_only_wirt_packages() {
+    assert_eq!(WIRT_PLUGIN_PICKER_TITLE, "Select Wirt Plugin to Install");
+    assert_eq!(WIRT_PLUGIN_FILTER_NAME, "Wirt Plugin");
+    assert_eq!(WIRT_PLUGIN_FILTER_SUFFIXES, &["wirt"]);
+}
+
+#[test]
+fn plugin_picker_action_preserves_the_exact_os_path() {
+    #[cfg(windows)]
+    let package_path = {
+        use std::os::windows::ffi::OsStringExt as _;
+        std::path::PathBuf::from(std::ffi::OsString::from_wide(&[
+            b'p' as u16,
+            b'l' as u16,
+            b'u' as u16,
+            b'g' as u16,
+            b'i' as u16,
+            b'n' as u16,
+            0xd800,
+            b'.' as u16,
+            b'w' as u16,
+            b'i' as u16,
+            b'r' as u16,
+            b't' as u16,
+        ]))
+    };
+    #[cfg(unix)]
+    let package_path = {
+        use std::os::unix::ffi::OsStringExt as _;
+        std::path::PathBuf::from(std::ffi::OsString::from_vec(b"plugin\xff.wirt".to_vec()))
+    };
+
+    let action = SettingsAction::InspectPluginPackage {
+        package_path: package_path.clone(),
+    };
+    let SettingsAction::InspectPluginPackage {
+        package_path: retained,
+    } = action
+    else {
+        panic!("constructed the inspection action")
+    };
+    assert_eq!(retained, package_path);
 }
 
 #[test]

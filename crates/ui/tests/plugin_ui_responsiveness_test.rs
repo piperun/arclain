@@ -2,6 +2,7 @@
 
 mod common;
 
+use arclain_app::error::ApplicationErrorKind;
 use arclain_ui::features::plugins::application::{
     process_plugin_ui_results, request_plugin_snapshot, PluginNavigation, PluginUiJobs,
     PluginUiRequest, PluginUiResult,
@@ -10,10 +11,24 @@ use arclain_ui::features::plugins::domain::types::{
     PluginInfo, PluginStatus, PluginsListState, SnapshotStatus,
 };
 use arclain_ui::features::plugins::PluginsFeature;
+use arclain_ui::features::settings::types::SettingsAction;
+use arclain_ui::features::settings::SettingsFeature;
 use arclain_ui::shared::image_assets::{ImageAssetState, ImageOwner};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+fn build_wirt_install_fixture(root: &std::path::Path) -> std::path::PathBuf {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/facade-test-fixture/facade-test-fixture.wasm");
+    let manifest = std::fs::read(fixture.with_extension("toml"))
+        .expect("read the maintained package manifest");
+    let component = std::fs::read(fixture).expect("read the maintained plugin component");
+    let package = wirt::package_bytes(&manifest, &component).expect("build canonical package");
+    let package_path = root.join("facade-test-fixture.wirt");
+    std::fs::write(&package_path, package).expect("write package fixture");
+    package_path
+}
 
 fn wait_for_image_failure(shared: &arclain_ui::shared::SharedState, key: &str) {
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -269,16 +284,191 @@ fn duplicate_facade_snapshot_requests_are_coalesced() {
 fn repeated_install_requests_are_distinct_side_effects() {
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
     let jobs = PluginUiJobs::new(None, runtime.handle().clone());
-    let wasm_path = std::path::PathBuf::from("plugin.wasm");
+    let package_path = std::path::PathBuf::from("plugin.wirt");
+    let expected_fingerprint = "ab".repeat(32);
 
-    let first = jobs.request(PluginUiRequest::Install {
-        wasm_path: wasm_path.clone(),
+    let first = jobs.request(PluginUiRequest::InstallPackage {
+        package_path: package_path.clone(),
+        expected_fingerprint: expected_fingerprint.clone(),
     });
-    let repeated = jobs.request(PluginUiRequest::Install { wasm_path });
+    let repeated = jobs.request(PluginUiRequest::InstallPackage {
+        package_path,
+        expected_fingerprint,
+    });
 
     assert_ne!(
         first, repeated,
         "repeated install clicks are side effects and must not coalesce"
+    );
+}
+
+#[test]
+fn package_inspection_failure_returns_to_the_permission_review_state() {
+    let (temp, shared) = common::create_test_shared_state_with_facade();
+    let mut settings = SettingsFeature::new(&shared);
+    let mut plugins = PluginsFeature::new(&shared);
+    let package_path = temp.path().join("missing.wirt");
+    let starting_epoch = shared.plugin_ui_jobs.completion_signal().get();
+
+    settings.handle_action(
+        SettingsAction::InspectPluginPackage {
+            package_path: package_path.clone(),
+        },
+        &shared,
+        Some(&mut plugins.settings_list_state),
+    );
+
+    let pending = plugins
+        .settings_list_state
+        .pending_install
+        .as_ref()
+        .expect("the selected package must own a review state immediately");
+    assert_eq!(pending.package_path, package_path);
+    assert!(pending.loading);
+    assert!(pending.error.is_none());
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while shared.plugin_ui_jobs.completion_signal().get() == starting_epoch {
+        assert!(
+            Instant::now() < deadline,
+            "package inspection failure did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    process_plugin_ui_results(&shared, &mut plugins);
+
+    let pending = plugins
+        .settings_list_state
+        .pending_install
+        .as_ref()
+        .expect("a failed inspection must keep the review dialog open");
+    assert_eq!(pending.package_path, package_path);
+    assert!(!pending.loading);
+    assert!(pending.preview.is_none());
+    assert_eq!(
+        pending.error_kind,
+        Some(ApplicationErrorKind::Backend),
+        "the facade's stable package failure class must reach the dialog"
+    );
+    assert!(
+        pending
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.is_empty()),
+        "the bounded facade failure must be shown in the dialog"
+    );
+}
+
+#[test]
+fn approved_package_completes_the_real_install_and_invalidates_plugin_views() {
+    let (temp, shared) = common::create_test_shared_state_with_facade();
+    let package_path = build_wirt_install_fixture(temp.path());
+    let mut settings = SettingsFeature::new(&shared);
+    let mut plugins = PluginsFeature::new(&shared);
+
+    settings.handle_action(
+        SettingsAction::InspectPluginPackage {
+            package_path: package_path.clone(),
+        },
+        &shared,
+        Some(&mut plugins.settings_list_state),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let fingerprint = loop {
+        process_plugin_ui_results(&shared, &mut plugins);
+        let pending = plugins
+            .settings_list_state
+            .pending_install
+            .as_ref()
+            .expect("inspection must retain its review state");
+        if let Some(preview) = pending.preview.as_ref() {
+            break preview.fingerprint.clone();
+        }
+        assert!(
+            pending.error.is_none(),
+            "the maintained package failed inspection: {:?}",
+            pending.error
+        );
+        assert!(Instant::now() < deadline, "package inspection timed out");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    plugins.list_state.snapshot_status = SnapshotStatus::Ready;
+    plugins.settings_list_state.snapshot_status = SnapshotStatus::Ready;
+    let starting_epoch = shared
+        .signals()
+        .plugin_list_epoch
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let starting_toasts = shared.toaster.lock().len();
+
+    settings.handle_action(
+        SettingsAction::ApprovePluginPackage {
+            package_path: package_path.clone(),
+            expected_fingerprint: fingerprint,
+        },
+        &shared,
+        Some(&mut plugins.settings_list_state),
+    );
+    assert!(
+        plugins
+            .settings_list_state
+            .pending_install
+            .as_ref()
+            .is_some_and(|pending| pending.installing),
+        "approval must enter a non-dismissible install state"
+    );
+
+    let install_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        process_plugin_ui_results(&shared, &mut plugins);
+        match plugins.settings_list_state.pending_install.as_ref() {
+            None => break,
+            Some(pending) => assert!(
+                pending.error.is_none(),
+                "the maintained package failed installation: {:?}",
+                pending.error
+            ),
+        }
+        assert!(
+            Instant::now() < install_deadline,
+            "package installation timed out"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(plugins.list_state.snapshot_status, SnapshotStatus::Idle);
+    assert_eq!(
+        plugins.settings_list_state.snapshot_status,
+        SnapshotStatus::Idle
+    );
+    assert_eq!(
+        shared
+            .signals()
+            .plugin_list_epoch
+            .load(std::sync::atomic::Ordering::Relaxed),
+        starting_epoch + 1,
+        "successful installation must invalidate independent plugin views"
+    );
+    assert_eq!(
+        shared.toaster.lock().len(),
+        starting_toasts + 1,
+        "successful installation must notify the user"
+    );
+    let installed = shared.services.tokio_runtime.block_on(async {
+        shared
+            .facade
+            .as_ref()
+            .expect("test facade")
+            .plugins()
+            .await
+            .expect("read installed plugins")
+    });
+    assert!(
+        installed
+            .iter()
+            .any(|plugin| plugin.id == "facade-test-fixture"),
+        "the approved package must be visible through the production facade"
     );
 }
 

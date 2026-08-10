@@ -49,21 +49,38 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
                     .settings_list_state
                     .apply_snapshot(request_id, snapshot);
             }
-            PluginUiResult::MutationFinished { result, .. } => {
-                // `SetEnabled` no longer runs through this queue -- the
-                // plugin detail view calls `ArclainApp::set_plugin_enabled`
-                // directly (durable: it persists `enabled_plugins` itself).
-                // `Install` is the only operation represented by the generic
-                // mutation result; domain approval has its own result so it
-                // can invalidate only that plugin's whitelist cache.
-                match result {
-                    Ok(()) => {
-                        plugins.list_state.invalidate_snapshot();
-                        plugins.settings_list_state.invalidate_snapshot();
-                        shared.plugin_ui_jobs.invalidate_plugin_snapshots();
-                        shared.plugin_ui_jobs.invalidate_chrome_snapshot();
-                    }
-                    Err(error) => shared.toaster.lock().error(error),
+            PluginUiResult::PackageInspected {
+                request_id,
+                preview,
+            } => {
+                plugins
+                    .list_state
+                    .apply_package_preview(request_id, preview.clone());
+                plugins
+                    .settings_list_state
+                    .apply_package_preview(request_id, preview);
+            }
+            PluginUiResult::PackageInstalled {
+                request_id,
+                plugin_id,
+            } => {
+                let accepted = plugins.list_state.complete_package_install(request_id)
+                    | plugins
+                        .settings_list_state
+                        .complete_package_install(request_id);
+                if accepted {
+                    plugins.list_state.invalidate_snapshot();
+                    plugins.settings_list_state.invalidate_snapshot();
+                    shared.plugin_ui_jobs.invalidate_plugin_snapshots();
+                    shared.plugin_ui_jobs.invalidate_chrome_snapshot();
+                    shared
+                        .signals()
+                        .plugin_list_epoch
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    shared
+                        .toaster
+                        .lock()
+                        .success(format!("Installed {plugin_id}"));
                 }
             }
             PluginUiResult::DomainApprovalFinished { result, .. } => {
@@ -77,21 +94,31 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
             PluginUiResult::Failed {
                 request_id,
                 context,
+                error_kind,
                 error,
-            } => {
-                match context {
-                    PluginUiFailureContext::Snapshot => {
-                        plugins
-                            .list_state
-                            .apply_snapshot_failure(request_id, error.clone());
-                        plugins
-                            .settings_list_state
-                            .apply_snapshot_failure(request_id, error.clone());
-                    }
-                    _ => {}
+            } => match context {
+                PluginUiFailureContext::Snapshot => {
+                    plugins
+                        .list_state
+                        .apply_snapshot_failure(request_id, error.clone());
+                    plugins
+                        .settings_list_state
+                        .apply_snapshot_failure(request_id, error.clone());
+                    shared.toaster.lock().error(error);
                 }
-                shared.toaster.lock().error(error);
-            }
+                PluginUiFailureContext::InspectPackage { .. }
+                | PluginUiFailureContext::InstallPackage { .. } => {
+                    plugins.list_state.apply_package_install_failure(
+                        request_id,
+                        error_kind.clone(),
+                        error.clone(),
+                    );
+                    plugins
+                        .settings_list_state
+                        .apply_package_install_failure(request_id, error_kind, error);
+                }
+                _ => shared.toaster.lock().error(error),
+            },
         }
     }
 

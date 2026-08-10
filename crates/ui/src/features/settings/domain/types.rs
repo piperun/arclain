@@ -160,6 +160,10 @@ impl EncryptedCrcPolicy {
     }
 }
 
+pub const WIRT_PLUGIN_PICKER_TITLE: &str = "Select Wirt Plugin to Install";
+pub const WIRT_PLUGIN_FILTER_NAME: &str = "Wirt Plugin";
+pub const WIRT_PLUGIN_FILTER_SUFFIXES: &[&str] = &["wirt"];
+
 /// Actions that can be triggered from settings pages
 #[derive(Clone)]
 pub enum SettingsAction {
@@ -182,8 +186,15 @@ pub enum SettingsAction {
     /// because the dropdown commits on change rather than on the page's
     /// Save button, matching the behavior it has always had.
     SaveCollisionPolicy { policy: CollisionPolicy },
-    /// Install a plugin from a .wasm file
-    InstallPlugin { wasm_path: String },
+    /// Inspect a selected `.wirt` package before asking for approval.
+    InspectPluginPackage { package_path: std::path::PathBuf },
+    /// Install the exact package and fingerprint shown in the review dialog.
+    ApprovePluginPackage {
+        package_path: std::path::PathBuf,
+        expected_fingerprint: String,
+    },
+    /// Close a package review that is not actively installing.
+    CancelPluginInstall,
     /// Clear the cache index (database entries)
     ClearCacheIndex,
     /// Clear the cache content (files on disk)
@@ -274,10 +285,19 @@ impl std::fmt::Debug for SettingsAction {
                 .debug_struct("SaveCollisionPolicy")
                 .field("policy", policy)
                 .finish(),
-            Self::InstallPlugin { wasm_path } => f
-                .debug_struct("InstallPlugin")
-                .field("wasm_path", wasm_path)
+            Self::InspectPluginPackage { package_path } => f
+                .debug_struct("InspectPluginPackage")
+                .field("package_path", package_path)
                 .finish(),
+            Self::ApprovePluginPackage {
+                package_path,
+                expected_fingerprint,
+            } => f
+                .debug_struct("ApprovePluginPackage")
+                .field("package_path", package_path)
+                .field("expected_fingerprint", expected_fingerprint)
+                .finish(),
+            Self::CancelPluginInstall => f.write_str("CancelPluginInstall"),
             Self::ClearCacheIndex => f.write_str("ClearCacheIndex"),
             Self::ClearCacheContent => f.write_str("ClearCacheContent"),
             Self::GarbageCollectCache => f.write_str("GarbageCollectCache"),
