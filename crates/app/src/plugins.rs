@@ -1706,7 +1706,7 @@ pub(crate) fn validate_install_path(wasm_path: &std::path::Path) -> Result<(), A
         .is_some_and(|extension| extension.eq_ignore_ascii_case("wasm"))
     {
         return Err(with_install_path(
-            invalid_install_path("a plugin must be installed from a .wasm file"),
+            invalid_install_path("a legacy component must use the WebAssembly suffix"),
             wasm_path,
         ));
     }

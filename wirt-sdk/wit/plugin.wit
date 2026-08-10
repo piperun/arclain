@@ -508,13 +508,9 @@ interface rules {
     }
 }
 
-// Plugin self-description. Plugins implement `get-metadata` so the host
-// can populate the plugin manager UI and (more importantly) derive a
-// stable plugin id when the user installs a bare .wasm file with no
-// sidecar manifest. Pre-2026-05-07 this came back as
-// `id: "unknown", name: "Unknown Plugin", ...` because the WIT had no
-// such export, so every auto-installed plugin landed under the same
-// id and collided with itself on second install.
+// Plugin self-description. Plugins implement `get-metadata` so the host can
+// populate the plugin manager UI and verify that every identity field exactly
+// matches the approved package manifest before initialization.
 interface meta {
     record plugin-metadata {
         id: string,

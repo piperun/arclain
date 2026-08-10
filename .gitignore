@@ -11,6 +11,7 @@ ui_archive/*
 *.txt
 *.md
 !README.md
+!docs/wirt/*.md
 # Cog-generated package changelogs — must be tracked so they survive
 # fresh clones and reach the remote. Cog rewrites these on `cog bump`
 # and stages them automatically; see cog.toml for `changelog_path`
