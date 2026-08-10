@@ -14,8 +14,39 @@ use std::sync::Arc;
 use tracing::{debug, info};
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine};
+use wasmtime_wasi::clocks::HostWallClock;
+use wasmtime_wasi::random::Deterministic;
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder};
 
 pub use instance::PluginInstance;
+
+struct FixedWallClock;
+
+impl HostWallClock for FixedWallClock {
+    fn resolution(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(1)
+    }
+
+    fn now(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+}
+
+/// Construct Wirt's fixed-authority WASI context.
+///
+/// Standard I/O is closed or discarded, environment/arguments/preopens are
+/// empty, the wall clock is fixed at the Unix epoch, and both random streams
+/// are deterministic. The real monotonic clock remains available for bounded
+/// guest scheduling and deadline support.
+pub fn sandboxed_wasi_ctx() -> WasiCtx {
+    let mut builder = WasiCtxBuilder::new();
+    builder
+        .wall_clock(FixedWallClock)
+        .secure_random(Deterministic::new(vec![0; 32]))
+        .insecure_random(Deterministic::new(vec![0; 32]))
+        .insecure_random_seed(0);
+    builder.build()
+}
 
 /// Store state required by the Wirt runtime boundary.
 pub trait WirtStoreState:

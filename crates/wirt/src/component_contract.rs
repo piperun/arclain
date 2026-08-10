@@ -34,6 +34,11 @@ const WASI_IMPORTS: [&str; 14] = [
     "wasi:cli/terminal-stderr@0.2.9",
 ];
 
+const OPTIONAL_FIXED_WASI_IMPORTS: [&str; 2] = [
+    "wasi:clocks/wall-clock@0.2.9",
+    "wasi:random/insecure-seed@0.2.9",
+];
+
 const EXPORTS: [&str; 6] = [
     "init",
     "get-default-rules",
@@ -57,6 +62,8 @@ const MAX_TYPE_GRAPH_DEPTH: usize = 64;
 const MAX_TYPE_GRAPH_TOKEN_BYTES: usize = 64 * 1024;
 const EXPECTED_CONTRACT_HASH: &str =
     "a4cd3fed4d07ad7a47ea5ec61a556ac0fc320711a34b130c1b183533b3628fba";
+const EXPECTED_FIXED_WASI_CONTRACT_HASH: &str =
+    "de3a0cc46ac6621acca0c4efd6f650da656e268401035dc6953f1624dfedf264";
 
 struct CanonicalMember {
     name: &'static str,
@@ -1012,6 +1019,26 @@ fn validate_wirt_interface(
     Ok(())
 }
 
+fn fixed_wasi_profile(
+    raw_imports: &BTreeSet<String>,
+    base_imports: &BTreeSet<String>,
+) -> Result<bool> {
+    if raw_imports == base_imports {
+        return Ok(false);
+    }
+    let fixed_imports = base_imports
+        .iter()
+        .cloned()
+        .chain(OPTIONAL_FIXED_WASI_IMPORTS.into_iter().map(str::to_owned))
+        .collect::<BTreeSet<_>>();
+    if raw_imports == &fixed_imports {
+        return Ok(true);
+    }
+    Err(contract_error(
+        "imports do not match the canonical Wirt world",
+    ))
+}
+
 pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract> {
     if component.len() > MAX_PLUGIN_WASM_BYTES {
         return Err(contract_error("component exceeds the 64-MiB limit"));
@@ -1023,6 +1050,7 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
     let runtime_names = WIRT_IMPORTS
         .into_iter()
         .chain(WASI_IMPORTS)
+        .chain(OPTIONAL_FIXED_WASI_IMPORTS)
         .collect::<BTreeSet<_>>();
     let public_type_names = PUBLIC_TYPE_IMPORTS.into_iter().collect::<BTreeSet<_>>();
     let mut imports = BTreeSet::new();
@@ -1069,16 +1097,13 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
             )));
         }
     }
-    let expected_raw_imports = runtime_names
-        .iter()
-        .chain(public_type_names.iter())
-        .map(|name| (*name).to_owned())
+    let expected_raw_imports = WIRT_IMPORTS
+        .into_iter()
+        .chain(WASI_IMPORTS)
+        .chain(public_type_names.iter().copied())
+        .map(str::to_owned)
         .collect::<BTreeSet<_>>();
-    if raw_imports != expected_raw_imports {
-        return Err(contract_error(
-            "imports do not match the canonical Wirt world",
-        ));
-    }
+    let uses_fixed_wasi = fixed_wasi_profile(&raw_imports, &expected_raw_imports)?;
 
     let required_exports = EXPORTS.into_iter().collect::<BTreeSet<_>>();
     if exports.iter().map(String::as_str).collect::<BTreeSet<_>>() != required_exports {
@@ -1110,6 +1135,14 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
             .ok_or_else(|| contract_error("validated import is missing type information"))?;
         hasher.root("interface", name, item.ty)?;
     }
+    if uses_fixed_wasi {
+        for name in OPTIONAL_FIXED_WASI_IMPORTS {
+            let item = types
+                .component_item_for_import(name)
+                .ok_or_else(|| contract_error("validated import is missing type information"))?;
+            hasher.root("interface", name, item.ty)?;
+        }
+    }
     for name in &required_exports {
         let item = types
             .component_item_for_export(name)
@@ -1117,7 +1150,12 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
         hasher.root("export", name, item.ty)?;
     }
     let actual = hasher.finish();
-    if actual != EXPECTED_CONTRACT_HASH {
+    let expected = if uses_fixed_wasi {
+        EXPECTED_FIXED_WASI_CONTRACT_HASH
+    } else {
+        EXPECTED_CONTRACT_HASH
+    };
+    if actual != expected {
         return Err(contract_error(&format!(
             "contract-type-mismatch ({actual})"
         )));
@@ -1132,7 +1170,7 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
 
 #[cfg(test)]
 mod tests {
-    use super::{inspect_component_contract, sort_watch};
+    use super::{fixed_wasi_profile, inspect_component_contract, sort_watch};
     use wasm_encoder::reencode::ReencodeComponent;
 
     const UI_DEMO_COMPONENT: &[u8] = include_bytes!(concat!(
@@ -1140,6 +1178,23 @@ mod tests {
         "/../../plugins/ui-demo/ui-demo.wasm"
     ));
     const WATCHED_PREFIX: &str = "many-common-prefix-segments-for-sort-review";
+
+    #[test]
+    fn fixed_wasi_profile_accepts_only_the_complete_fixed_pair() {
+        let base = ["wasi:io/poll@0.2.9"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert!(!fixed_wasi_profile(&base, &base).unwrap());
+
+        let mut fixed = base.clone();
+        fixed.insert("wasi:clocks/wall-clock@0.2.9".to_string());
+        fixed.insert("wasi:random/insecure-seed@0.2.9".to_string());
+        assert!(fixed_wasi_profile(&fixed, &base).unwrap());
+
+        fixed.remove("wasi:random/insecure-seed@0.2.9");
+        assert!(fixed_wasi_profile(&fixed, &base).is_err());
+    }
 
     struct ManyCommonPrefixNames;
 

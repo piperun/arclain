@@ -175,7 +175,7 @@ impl wirt_sdk::Guest for Component {
         // hardcoded "Unknown Plugin" placeholder because the WIT had
         // no such export. install_plugin therefore couldn't derive a
         // stable id from a bare .wasm. Now it asks the plugin
-        // directly. Values mirror dlsite-metadata.toml.
+        // directly. Values mirror plugin.toml.
         wirt_sdk::wirt::plugin::meta::PluginMetadata {
             id: "dlsite-metadata".to_string(),
             name: "DLSite Metadata".to_string(),
@@ -438,7 +438,7 @@ pub(crate) fn fetch_dlsite_metadata(
 ) -> Option<(serde_json::Value, Option<ScrapedData>)> {
     use wirt_sdk::{fetch_string_blocking, log_network_activity};
     use gameta_lib::providers::dlsite::{
-        parse_api_json, parse_html, plan_fetch, DlsiteFetchOptions, FetchStep,
+        parse_html, plan_fetch, DlsiteFetchOptions, FetchStep,
     };
 
     // Use the orchestrator to plan our fetch
@@ -464,32 +464,26 @@ pub(crate) fn fetch_dlsite_metadata(
                             body.len(),
                             body.chars().take(100).collect::<String>()
                         ));
-                        if let Ok(_meta) = parse_api_json(product_id, &body) {
-                            info("[DEBUG] JSON parsed successfully");
-                            // Store the RAW JSON value for the plugin's (legacy) usage
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
-                                if let Some(arr) = val.as_array() {
-                                    json_data = arr.first().cloned().unwrap_or(val);
-                                } else {
-                                    json_data = val;
-                                }
+                        match serde_json::from_str::<serde_json::Value>(&body) {
+                            Ok(val) => {
+                                info("[DEBUG] JSON parsed successfully");
+                                // Store the raw API object for the plugin's legacy
+                                // rendering path. DLSite sometimes wraps it in an
+                                // array; an empty array remains valid but has no item.
+                                json_data = val
+                                    .as_array()
+                                    .and_then(|items| items.first().cloned())
+                                    .unwrap_or(val);
                                 fetch_success = true;
                                 info("[DEBUG] fetch_success = true (JSON)");
-                            } else {
-                                // Invalid JSON structure
+                            }
+                            Err(_) => {
                                 info("[DEBUG] Failed to parse JSON structure");
                                 log_network_activity(
                                     "Failed to parse JSON structure. Invalidating cache.",
                                 );
                                 wirt_sdk::invalidate_cache(&cache_key);
                             }
-                        } else {
-                            // Parse failed (empty or invalid API response)
-                            info("[DEBUG] parse_api_response failed");
-                            log_network_activity(
-                                "Failed to parse API response. Invalidating cache.",
-                            );
-                            wirt_sdk::invalidate_cache(&cache_key);
                         }
                     }
                     Err(e) => {
@@ -523,12 +517,7 @@ pub(crate) fn fetch_dlsite_metadata(
                         ));
                         // If geo-blocked, dump the full HTML for debugging
                         if data.geo_blocked && STATE.with(|s| s.borrow().dump_html_debug) {
-                            let timestamp = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            let filename =
-                                format!("dlsite_blocked_{}_{}.html", product_id, timestamp);
+                            let filename = format!("dlsite_blocked_{}.html", product_id);
                             match wirt_sdk::create_file(&filename, body.as_bytes()) {
                                 Ok(path) => {
                                     wirt_sdk::warn(&format!(

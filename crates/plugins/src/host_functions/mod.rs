@@ -43,7 +43,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use wasmtime::component::ResourceTable;
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 #[allow(unused_imports)]
 pub(crate) use wirt::{
@@ -69,12 +69,6 @@ fn is_raw_metadata_cache_key(key: &str) -> bool {
         && ["json", "html", "metadata"]
             .iter()
             .any(|candidate| kind.eq_ignore_ascii_case(candidate))
-}
-
-fn sandboxed_wasi_ctx() -> WasiCtx {
-    // No inherited stdio, argv, environment, or filesystem preopens. Guest
-    // diagnostics must cross the bounded host logging API instead.
-    WasiCtxBuilder::new().build()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,7 +218,7 @@ impl HostFunctions {
     ) -> PluginResult<Self> {
         let plugin_id = PluginId::parse(plugin_id)?;
         let initial_settings = bounded_plugin_settings(initial_settings);
-        let ctx = sandboxed_wasi_ctx();
+        let ctx = wirt::sandboxed_wasi_ctx();
 
         let plugin_logger = Arc::new(match plugin_log_dir {
             Some(log_dir) => PluginLogger::new(&plugin_id, log_dir),

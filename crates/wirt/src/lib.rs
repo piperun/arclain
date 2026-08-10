@@ -52,6 +52,8 @@ pub use package::{
 pub use rules::{
     MoveFileRule, MoveRule, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger,
 };
-pub use runtime::{LoadedComponent, PluginInstance, WasmRuntime, WirtStoreState};
+pub use runtime::{
+    sandboxed_wasi_ctx, LoadedComponent, PluginInstance, WasmRuntime, WirtStoreState,
+};
 
 pub const WIRT_ABI_VERSION: &str = "0.1.0";

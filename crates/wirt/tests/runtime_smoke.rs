@@ -197,7 +197,7 @@ fn neutral_only_default_rule_data_counts_toward_the_terminal_result_quota() {
     let first = instance.get_default_rules().unwrap_err();
     assert!(matches!(
         first,
-        PluginError::Unavailable(ref reason) if reason == "plugin result quota exceeded"
+        PluginError::ResourceLimit { ref reason } if reason == "plugin result quota exceeded"
     ));
     assert_eq!(
         instance.unavailable_reason(),

@@ -1350,3 +1350,13 @@ fn oversized_result_is_terminal_redacted_and_second_call_skips_guest_boundary() 
     assert_eq!(call_entries.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(availability.reason(), Some("plugin result quota exceeded"));
 }
+#[test]
+fn sandboxed_wasi_wall_clock_is_fixed_at_the_unix_epoch() {
+    use wasmtime_wasi::clocks::HostWallClock;
+
+    assert_eq!(FixedWallClock.now(), std::time::Duration::ZERO);
+    assert_eq!(
+        FixedWallClock.resolution(),
+        std::time::Duration::from_secs(1)
+    );
+}

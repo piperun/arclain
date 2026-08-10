@@ -1,8 +1,8 @@
 use super::wirt_crate::bindings::wirt::plugin::host::{
     ArchiveInfo, DataRequest, DataResult, DataStatus, Host, LogLevel, MetadataSummary,
 };
-use super::wirt_crate::{PluginStoreLimiter, WirtStoreState};
-use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use super::wirt_crate::{sandboxed_wasi_ctx, PluginStoreLimiter, WirtStoreState};
+use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
 
 pub struct StubHost {
     table: ResourceTable,
@@ -16,7 +16,7 @@ impl StubHost {
     pub fn new() -> Self {
         Self {
             table: ResourceTable::new(),
-            ctx: WasiCtxBuilder::new().build(),
+            ctx: sandboxed_wasi_ctx(),
             store_limiter: PluginStoreLimiter,
             probe: String::new(),
             observed_log_calls: 0,
