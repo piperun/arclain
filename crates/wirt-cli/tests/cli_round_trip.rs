@@ -81,6 +81,7 @@ fn new_copies_the_maintained_starter_and_vendored_sdk_verbatim() {
         "src/lib.rs",
         "wirt-sdk/Cargo.lock",
         "wirt-sdk/Cargo.toml",
+        "wirt-sdk/README.md",
         "wirt-sdk/src/lib.rs",
         "wirt-sdk/wit/plugin.wit",
     ]
@@ -97,7 +98,13 @@ fn new_copies_the_maintained_starter_and_vendored_sdk_verbatim() {
             "starter file changed while copying: {path}"
         );
     }
-    for path in ["Cargo.lock", "Cargo.toml", "src/lib.rs", "wit/plugin.wit"] {
+    for path in [
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "src/lib.rs",
+        "wit/plugin.wit",
+    ] {
         assert_eq!(
             fs::read(project.join("wirt-sdk").join(path)).unwrap(),
             fs::read(repository.join("wirt-sdk").join(path)).unwrap(),
@@ -238,7 +245,7 @@ fn starter_round_trip_is_deterministic_and_failures_leave_no_output() {
     let invalid_package = project.join("invalid.wirt");
     fs::write(&invalid_package, b"not a package").unwrap();
     let invalid = assert_failure(run(&["validate", invalid_package.to_str().unwrap()]));
-    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid Wirt package"));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("Invalid Wirt package"));
 }
 
 #[test]
