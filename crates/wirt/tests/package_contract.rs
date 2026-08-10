@@ -9,6 +9,11 @@ use wirt::{
 };
 use zip::{CompressionMethod, ZipArchive};
 
+const FACADE_TEST_COMPONENT: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../plugins/facade-test-fixture/facade-test-fixture.wasm"
+));
+
 fn component_with_empty_interface_import(name: &str) -> Vec<u8> {
     use wasm_encoder::{
         Component, ComponentImportSection, ComponentTypeRef, ComponentTypeSection, InstanceType,
@@ -155,19 +160,19 @@ impl wasm_encoder::reencode::ReencodeComponent for InstanceMutation {
     }
 }
 
-fn mutate_instance_type(mutation: InstanceMutation) -> Vec<u8> {
+fn mutate_instance_type_in(component_bytes: &[u8], mutation: InstanceMutation) -> Vec<u8> {
     use wasm_encoder::reencode::ReencodeComponent;
 
     let mut mutation = mutation;
     let mut component = wasm_encoder::Component::new();
     mutation
-        .parse_component(
-            &mut component,
-            wasmparser::Parser::new(0),
-            UI_DEMO_COMPONENT,
-        )
+        .parse_component(&mut component, wasmparser::Parser::new(0), component_bytes)
         .unwrap();
     component.finish()
+}
+
+fn mutate_instance_type(mutation: InstanceMutation) -> Vec<u8> {
+    mutate_instance_type_in(UI_DEMO_COMPONENT, mutation)
 }
 
 struct PublicTypeNameSwap {
@@ -711,6 +716,69 @@ fn structural_preflight_rejects_wrong_wirt_interface_type() {
         extra_export_name: None,
     });
     assert_contract_type_rejection("wirt host", &component);
+}
+
+#[test]
+fn structural_preflight_accepts_canonical_sdk_interface_member_subsets() {
+    inspect_component_contract(UI_DEMO_COMPONENT)
+        .expect("the SDK guest that imports only host.log must be accepted");
+    inspect_component_contract(FACADE_TEST_COMPONENT)
+        .expect("the SDK guest that imports a larger canonical host subset must be accepted");
+}
+
+#[test]
+fn structural_preflight_accepts_canonical_member_unused_by_bundled_guests() {
+    let types = wasmparser::Validator::new()
+        .validate_all(FACADE_TEST_COMPONENT)
+        .expect("the facade fixture is a valid component");
+    let host = types
+        .component_item_for_import("wirt:plugin/host@0.1.0")
+        .expect("the facade fixture imports the Wirt host interface");
+    let wasmparser::component_types::ComponentEntityType::Instance(host) = host.ty else {
+        panic!("the Wirt host import is an instance");
+    };
+    assert!(
+        types[host].exports.contains_key("create-file"),
+        "the fixture must exercise a canonical host member omitted by bundled guests"
+    );
+
+    inspect_component_contract(FACADE_TEST_COMPONENT).expect(
+        "the external SDK fixture's create-file import is canonical even though bundled guests omit it",
+    );
+}
+
+#[test]
+fn structural_preflight_keeps_member_and_resource_checks_for_subsets() {
+    let cases = [
+        (
+            "unknown host member",
+            mutate_instance_type(InstanceMutation {
+                marker: "log",
+                fresh_resource_export: None,
+                extra_export_name: Some("mine-bitcoin".to_string()),
+            }),
+        ),
+        (
+            "wrong canonical host member type",
+            mutate_instance_type(InstanceMutation {
+                marker: "log",
+                fresh_resource_export: None,
+                extra_export_name: Some("get-setting".to_string()),
+            }),
+        ),
+        (
+            "fresh cross-interface resource",
+            mutate_instance_type(InstanceMutation {
+                marker: "get-stdout",
+                fresh_resource_export: Some("output-stream"),
+                extra_export_name: None,
+            }),
+        ),
+    ];
+
+    for (label, component) in cases {
+        assert_contract_type_rejection(label, &component);
+    }
 }
 
 #[test]

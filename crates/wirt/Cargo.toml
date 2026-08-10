@@ -21,3 +21,6 @@ zip.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 wasm-encoder = { version = "=0.252.0", default-features = false, features = ["std", "component-model", "wasmparser"] }
+
+[build-dependencies]
+wit-parser.workspace = true

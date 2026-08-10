@@ -97,6 +97,87 @@ class TestWirtBoundary(unittest.TestCase):
         self.assertEqual(dependencies["cap-std"], "=4.0.2")
         self.assertEqual(dependencies["cap-fs-ext"], "=4.0.2")
 
+    def test_wit_schema_generator_dependency_is_exact_and_build_only(self):
+        with (REPO_ROOT / "Cargo.toml").open("rb") as handle:
+            workspace = tomllib.load(handle)["workspace"]["dependencies"]
+        with (REPO_ROOT / "crates" / "wirt" / "Cargo.toml").open("rb") as handle:
+            manifest = tomllib.load(handle)
+
+        self.assertEqual(
+            workspace["wit-parser"],
+            {
+                "version": "=0.252.0",
+                "default-features": False,
+                "features": ["std"],
+            },
+        )
+        self.assertNotIn("wit-parser", manifest.get("dependencies", {}))
+        self.assertNotIn("wit-parser", manifest.get("dev-dependencies", {}))
+        self.assertEqual(
+            manifest["build-dependencies"]["wit-parser"],
+            {"workspace": True},
+        )
+
+    def test_wit_schema_dependency_fails_closed_outside_build_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                "[workspace]\nmembers = [\"crates/wirt\"]\n"
+                "[workspace.dependencies]\n"
+                'wit-parser = { version = "=0.252.0", default-features = false, '
+                'features = ["std"] }\n',
+                encoding="utf-8",
+            )
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n'
+                '[dependencies]\nwit-parser.workspace = true\n',
+                encoding="utf-8",
+            )
+            (crate / "build.rs").write_text(
+                'const WIT: &str = include_str!("../../wirt-sdk/wit/plugin.wit");\n'
+                'const SCHEMA: &str = include_str!("src/wirt_schema.rs");\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.dependency_violations(root),
+                [
+                    "crates/wirt/Cargo.toml: wit-parser is allowed only as the "
+                    "exact workspace build dependency"
+                ],
+            )
+
+    def test_wit_schema_dependency_alias_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crate = root / "crates" / "wirt"
+            (crate / "src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                "[workspace]\nmembers = [\"crates/wirt\"]\n"
+                "[workspace.dependencies]\n"
+                'wit-parser = { version = "=0.252.0", default-features = false, '
+                'features = ["std"] }\n',
+                encoding="utf-8",
+            )
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "wirt"\nversion = "0.1.0"\n'
+                '[dependencies]\n'
+                'wp = { package = "wit-parser", version = "=0.252.0", '
+                'default-features = false, features = ["std"] }\n'
+                '[build-dependencies]\nwit-parser.workspace = true\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                wirt_boundary.dependency_violations(root),
+                [
+                    "crates/wirt/Cargo.toml: wit-parser is allowed only as the "
+                    "exact workspace build dependency"
+                ],
+            )
+
     def test_product_manager_stays_out_of_wirt(self):
         self.assertTrue(
             (REPO_ROOT / "crates" / "plugins" / "src" / "manager" / "mod.rs").is_file()
@@ -334,6 +415,165 @@ class TestWirtBoundary(unittest.TestCase):
                 [
                     "crates/wirt/src/lib.rs:1: compiled source path escapes "
                     "crates/wirt/src: ../../../plugins/ui-demo/src/lib.rs"
+                ],
+            )
+
+    def test_build_script_must_read_only_the_canonical_wit_literal(self):
+        cases = (
+            (
+                "missing canonical WIT",
+                "fn main() {}\n",
+                "crates/wirt/build.rs:1: build script must include the canonical "
+                "wirt-sdk/wit/plugin.wit exactly once",
+            ),
+            (
+                "duplicate canonical WIT",
+                'const FIRST: &str = include_str!("../../wirt-sdk/wit/plugin.wit");\n'
+                'const SECOND: &str = include_str!("../../wirt-sdk/wit/plugin.wit");\n'
+                'const SCHEMA: &str = include_str!("src/wirt_schema.rs");\n',
+                "crates/wirt/build.rs:1: build script must include the canonical "
+                "wirt-sdk/wit/plugin.wit exactly once",
+            ),
+            (
+                "other WIT",
+                'const WIT: &str = include_str!("../../plugins/ui-demo/plugin.wit");\n',
+                "crates/wirt/build.rs:1: build script data include must be the "
+                "canonical WIT or checked schema literal",
+            ),
+            (
+                "dynamic canonical WIT",
+                'const WIT: &str = include_str!(concat!("../../wirt-sdk/wit/", '
+                '"plugin.wit"));\n',
+                "crates/wirt/build.rs:1: build script data include path is not a "
+                "string literal",
+            ),
+        )
+        for label, build_script, expected in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.write_source_tree(
+                    root,
+                    {
+                        "src/lib.rs": "pub struct Neutral;\n",
+                        "build.rs": build_script,
+                    },
+                )
+                self.assertEqual(wirt_boundary.source_violations(root), [expected])
+
+    def test_build_script_canonical_wit_literal_is_allowed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_source_tree(
+                root,
+                {
+                    "src/lib.rs": "pub struct Neutral;\n",
+                    "build.rs": (
+                        'const WIT: &str = include_str!("../../wirt-sdk/wit/plugin.wit");\n'
+                        'const SCHEMA: &str = include_str!("src/wirt_schema.rs");\n'
+                    ),
+                    "src/wirt_schema.rs": "const SCHEMA: &[u8] = &[];\n",
+                },
+            )
+
+            self.assertEqual(wirt_boundary.source_violations(root), [])
+
+    def test_build_script_cannot_read_an_additional_file_at_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_source_tree(
+                root,
+                {
+                    "src/lib.rs": "pub struct Neutral;\n",
+                    "src/wirt_schema.rs": "const SCHEMA: &[u8] = &[];\n",
+                    "build.rs": (
+                        'const WIT: &str = include_str!("../../wirt-sdk/wit/plugin.wit");\n'
+                        'const SCHEMA: &str = include_str!("src/wirt_schema.rs");\n'
+                        'fn main() { let _ = std::fs::read_to_string('
+                        '"../../plugins/ui-demo/plugin.wit"); }\n'
+                    ),
+                },
+            )
+
+            self.assertEqual(
+                wirt_boundary.source_violations(root),
+                [
+                    "crates/wirt/build.rs:3: build script may not read additional "
+                    "files at runtime"
+                ],
+            )
+
+    def test_build_script_cannot_alias_filesystem_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_source_tree(
+                root,
+                {
+                    "src/lib.rs": "pub struct Neutral;\n",
+                    "src/wirt_schema.rs": "const SCHEMA: &[u8] = &[];\n",
+                    "build.rs": (
+                        'const WIT: &str = include_str!("../../wirt-sdk/wit/plugin.wit");\n'
+                        'const SCHEMA: &str = include_str!("src/wirt_schema.rs");\n'
+                        "use std::fs as io;\n"
+                        'fn main() { let _ = io::copy("other.wit", "out.wit"); }\n'
+                    ),
+                },
+            )
+
+            self.assertEqual(
+                wirt_boundary.source_violations(root),
+                [
+                    "crates/wirt/build.rs:3: build script may not read additional "
+                    "files at runtime"
+                ],
+            )
+
+    def test_build_script_cannot_alias_data_include_macros(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_source_tree(
+                root,
+                {
+                    "src/lib.rs": "pub struct Neutral;\n",
+                    "src/wirt_schema.rs": "const SCHEMA: &[u8] = &[];\n",
+                    "build.rs": (
+                        'const WIT: &str = include_str!("../../wirt-sdk/wit/plugin.wit");\n'
+                        'const SCHEMA: &str = include_str!("src/wirt_schema.rs");\n'
+                        "use std::include_str as load;\n"
+                        'const OTHER: &str = load!("../../plugins/ui-demo/plugin.wit");\n'
+                    ),
+                },
+            )
+
+            self.assertEqual(
+                wirt_boundary.source_violations(root),
+                [
+                    "crates/wirt/build.rs:3: build script data include aliases are "
+                    "not allowed"
+                ],
+            )
+
+    def test_build_script_cannot_load_an_unscanned_module(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_source_tree(
+                root,
+                {
+                    "src/lib.rs": "pub struct Neutral;\n",
+                    "src/wirt_schema.rs": "const SCHEMA: &[u8] = &[];\n",
+                    "build.rs": (
+                        'const WIT: &str = include_str!("../../wirt-sdk/wit/plugin.wit");\n'
+                        'const SCHEMA: &str = include_str!("src/wirt_schema.rs");\n'
+                        "mod hidden;\n"
+                    ),
+                    "hidden.rs": "use arclain_core::Service;\n",
+                },
+            )
+
+            self.assertEqual(
+                wirt_boundary.source_violations(root),
+                [
+                    "crates/wirt/build.rs:3: build script module declarations must "
+                    "use an explicit checked include! path"
                 ],
             )
 

@@ -57,9 +57,13 @@
 //!   the only deterministic write point: it runs exactly once per load,
 //!   whereas anything on a UI path would make the line count depend on
 //!   how many other tests rendered first.
+//! - **SDK interface projection**: an intentionally unadvertised
+//!   `"schema-create-file"` event calls the canonical `create-file` host
+//!   member. Bundled guests do not use that member, so the fixture proves a
+//!   valid external SDK plugin may import more of an interface than they do.
 
-use wirt_sdk::{info, log_network_activity};
 use std::sync::atomic::{AtomicU32, Ordering};
+use wirt_sdk::{info, log_network_activity};
 
 /// The single network-log line [`Component::init`] writes. Named here so
 /// `crates/app`'s own test can assert on it without repeating the string.
@@ -137,9 +141,7 @@ impl wirt_sdk::Guest for Component {
         vec![]
     }
 
-    fn get_ui_layout(
-        extension_point: String,
-    ) -> wirt_sdk::wirt::plugin::ui::PluginLayout {
+    fn get_ui_layout(extension_point: String) -> wirt_sdk::wirt::plugin::ui::PluginLayout {
         use wirt_sdk::wirt::plugin::ui::*;
 
         match extension_point.as_str() {
@@ -311,10 +313,7 @@ impl wirt_sdk::Guest for Component {
             // refresh makes the guest's own view of it observable in the
             // very same dispatch.
             "remember" => {
-                wirt_sdk::set_setting(
-                    REMEMBERED_SETTING_KEY,
-                    value.as_deref().unwrap_or_default(),
-                );
+                wirt_sdk::set_setting(REMEMBERED_SETTING_KEY, value.as_deref().unwrap_or_default());
                 vec![PluginAction::RefreshPanel("Panel".to_string())]
             }
             "trigger-trap" => {
@@ -339,6 +338,10 @@ impl wirt_sdk::Guest for Component {
                 PluginAction::RefreshPanel("MainPage".to_string()),
                 PluginAction::RefreshPanel("MainPage".to_string()),
             ],
+            "schema-create-file" => {
+                let _ = wirt_sdk::create_file("schema-projection-probe", &[]);
+                vec![]
+            }
             _ => vec![],
         }
     }

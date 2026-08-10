@@ -2,6 +2,7 @@ use crate::{PluginError, Result, MAX_PLUGIN_WASM_BYTES, WIRT_ABI_VERSION};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use wasmparser::component_types::{
     ComponentAnyTypeId, ComponentDefinedType, ComponentDefinedTypeId, ComponentEntityType,
     ComponentFuncTypeId, ComponentInstanceTypeId, ComponentTypeId, ComponentValType,
@@ -55,7 +56,19 @@ const MAX_TYPE_GRAPH_NODES: usize = 100_000;
 const MAX_TYPE_GRAPH_DEPTH: usize = 64;
 const MAX_TYPE_GRAPH_TOKEN_BYTES: usize = 64 * 1024;
 const EXPECTED_CONTRACT_HASH: &str =
-    "982072700e275062606b7a7d62798f6ff52be85b35959067f40e45833f25550d";
+    "a4cd3fed4d07ad7a47ea5ec61a556ac0fc320711a34b130c1b183533b3628fba";
+
+struct CanonicalMember {
+    name: &'static str,
+    signature: &'static str,
+}
+
+struct CanonicalInterface {
+    name: &'static str,
+    members: &'static [CanonicalMember],
+}
+
+include!("wirt_schema.rs");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComponentContract {
@@ -672,6 +685,333 @@ impl<'a> TypeHasher<'a> {
     }
 }
 
+struct InterfaceSignature<'a> {
+    types: &'a Types,
+    resources: BTreeMap<ComponentAnyTypeId, &'a str>,
+    active: BTreeSet<ComponentAnyTypeId>,
+    nodes: usize,
+    token_bytes: usize,
+}
+
+impl<'a> InterfaceSignature<'a> {
+    fn new(types: &'a Types, instance: ComponentInstanceTypeId) -> Result<Self> {
+        let mut renderer = Self {
+            types,
+            resources: BTreeMap::new(),
+            active: BTreeSet::new(),
+            nodes: 0,
+            token_bytes: 0,
+        };
+        let instance = &types[instance];
+        for (name, item) in &instance.exports {
+            renderer.claim(name.len(), 0)?;
+            if let ComponentEntityType::Type {
+                referenced,
+                created,
+            } = item.ty
+            {
+                for id in [referenced, created] {
+                    let id = renderer.canonical_any(id, 0)?;
+                    if matches!(id, ComponentAnyTypeId::Resource(_)) {
+                        match renderer.resources.insert(id, name.as_str()) {
+                            Some(previous) if previous != name => {
+                                return Err(contract_error("contract-type-mismatch"));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        Ok(renderer)
+    }
+
+    fn claim(&mut self, bytes: usize, depth: usize) -> Result<()> {
+        if depth > MAX_TYPE_GRAPH_DEPTH {
+            return Err(contract_error("type-complexity"));
+        }
+        self.nodes = self
+            .nodes
+            .checked_add(1)
+            .filter(|nodes| *nodes <= MAX_TYPE_GRAPH_NODES)
+            .ok_or_else(|| contract_error("type-complexity"))?;
+        claim_token_bytes(&mut self.token_bytes, bytes)
+    }
+
+    fn push(&mut self, output: &mut String, value: &str, depth: usize) -> Result<()> {
+        self.claim(value.len(), depth)?;
+        output.push_str(value);
+        Ok(())
+    }
+
+    fn canonical_any(
+        &mut self,
+        mut id: ComponentAnyTypeId,
+        depth: usize,
+    ) -> Result<ComponentAnyTypeId> {
+        while let Some(peeled) = self.types.peel_alias(id) {
+            self.claim(0, depth)?;
+            id = peeled;
+        }
+        Ok(id)
+    }
+
+    fn entity(&mut self, entity: ComponentEntityType) -> Result<String> {
+        let mut output = String::new();
+        match entity {
+            ComponentEntityType::Func(id) => self.func(&mut output, id, 0)?,
+            ComponentEntityType::Type { created, .. } => {
+                self.push(&mut output, "type:", 0)?;
+                let id = self.canonical_any(created, 0)?;
+                match id {
+                    ComponentAnyTypeId::Resource(_) => {
+                        self.push(&mut output, "resource", 1)?;
+                    }
+                    ComponentAnyTypeId::Defined(id) => {
+                        self.defined(&mut output, id, 1)?;
+                    }
+                    _ => return Err(contract_error("contract-type-mismatch")),
+                }
+            }
+            _ => return Err(contract_error("contract-type-mismatch")),
+        }
+        Ok(output)
+    }
+
+    fn primitive(&mut self, output: &mut String, ty: PrimitiveValType, depth: usize) -> Result<()> {
+        self.push(
+            output,
+            match ty {
+                PrimitiveValType::Bool => "bool",
+                PrimitiveValType::S8 => "s8",
+                PrimitiveValType::U8 => "u8",
+                PrimitiveValType::S16 => "s16",
+                PrimitiveValType::U16 => "u16",
+                PrimitiveValType::S32 => "s32",
+                PrimitiveValType::U32 => "u32",
+                PrimitiveValType::S64 => "s64",
+                PrimitiveValType::U64 => "u64",
+                PrimitiveValType::F32 => "f32",
+                PrimitiveValType::F64 => "f64",
+                PrimitiveValType::Char => "char",
+                PrimitiveValType::String => "string",
+                PrimitiveValType::ErrorContext => "error-context",
+            },
+            depth,
+        )
+    }
+
+    fn val(&mut self, output: &mut String, ty: ComponentValType, depth: usize) -> Result<()> {
+        match ty {
+            ComponentValType::Primitive(ty) => self.primitive(output, ty, depth),
+            ComponentValType::Type(id) => self.defined(output, id, depth),
+        }
+    }
+
+    fn optional_val(
+        &mut self,
+        output: &mut String,
+        ty: Option<ComponentValType>,
+        depth: usize,
+    ) -> Result<()> {
+        match ty {
+            Some(ty) => self.val(output, ty, depth),
+            None => self.push(output, "none", depth),
+        }
+    }
+
+    fn func(&mut self, output: &mut String, id: ComponentFuncTypeId, depth: usize) -> Result<()> {
+        let function = &self.types[id];
+        self.push(
+            output,
+            if function.async_ {
+                "func:async("
+            } else {
+                "func:sync("
+            },
+            depth,
+        )?;
+        for (index, (name, ty)) in function.params.iter().enumerate() {
+            if index > 0 {
+                self.push(output, ",", depth)?;
+            }
+            self.push(output, name, depth)?;
+            self.push(output, "=", depth)?;
+            self.val(output, *ty, depth + 1)?;
+        }
+        self.push(output, ")->", depth)?;
+        self.optional_val(output, function.result, depth + 1)
+    }
+
+    fn any(&mut self, output: &mut String, id: ComponentAnyTypeId, depth: usize) -> Result<()> {
+        let id = self.canonical_any(id, depth)?;
+        match id {
+            ComponentAnyTypeId::Resource(_) => {
+                let name = self
+                    .resources
+                    .get(&id)
+                    .copied()
+                    .ok_or_else(|| contract_error("contract-type-mismatch"))?;
+                self.push(output, name, depth)
+            }
+            ComponentAnyTypeId::Defined(id) => self.defined(output, id, depth),
+            _ => Err(contract_error("contract-type-mismatch")),
+        }
+    }
+
+    fn defined(
+        &mut self,
+        output: &mut String,
+        id: ComponentDefinedTypeId,
+        depth: usize,
+    ) -> Result<()> {
+        let any = self.canonical_any(ComponentAnyTypeId::Defined(id), depth)?;
+        let ComponentAnyTypeId::Defined(id) = any else {
+            return self.any(output, any, depth);
+        };
+        if !self.active.insert(any) {
+            return Err(contract_error("type-complexity"));
+        }
+        self.claim(0, depth)?;
+        let result = match &self.types[id] {
+            ComponentDefinedType::Primitive(ty) => self.primitive(output, *ty, depth),
+            ComponentDefinedType::Record(record) => {
+                self.push(output, "record(", depth)?;
+                for (index, (name, ty)) in record.fields.iter().enumerate() {
+                    if index > 0 {
+                        self.push(output, ",", depth)?;
+                    }
+                    self.push(output, name, depth)?;
+                    self.push(output, "=", depth)?;
+                    self.val(output, *ty, depth + 1)?;
+                }
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::Variant(variant) => {
+                self.push(output, "variant(", depth)?;
+                for (index, (name, case)) in variant.cases.iter().enumerate() {
+                    if index > 0 {
+                        self.push(output, ",", depth)?;
+                    }
+                    self.push(output, name, depth)?;
+                    self.push(output, "=", depth)?;
+                    self.optional_val(output, case.ty, depth + 1)?;
+                }
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::List(ty) => {
+                self.push(output, "list(", depth)?;
+                self.val(output, *ty, depth + 1)?;
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::Map(key, value) => {
+                self.push(output, "map(", depth)?;
+                self.val(output, *key, depth + 1)?;
+                self.push(output, ",", depth)?;
+                self.val(output, *value, depth + 1)?;
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::FixedLengthList(ty, length) => {
+                self.push(output, "fixed-list(", depth)?;
+                write!(output, "{length}").unwrap();
+                self.claim(length.to_string().len(), depth)?;
+                self.push(output, ",", depth)?;
+                self.val(output, *ty, depth + 1)?;
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::Tuple(tuple) => {
+                self.push(output, "tuple(", depth)?;
+                for (index, ty) in tuple.types.iter().enumerate() {
+                    if index > 0 {
+                        self.push(output, ",", depth)?;
+                    }
+                    self.val(output, *ty, depth + 1)?;
+                }
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::Flags(flags) => {
+                self.push(output, "flags(", depth)?;
+                for (index, name) in flags.iter().enumerate() {
+                    if index > 0 {
+                        self.push(output, ",", depth)?;
+                    }
+                    self.push(output, name, depth)?;
+                }
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::Enum(cases) => {
+                self.push(output, "enum(", depth)?;
+                for (index, name) in cases.iter().enumerate() {
+                    if index > 0 {
+                        self.push(output, ",", depth)?;
+                    }
+                    self.push(output, name, depth)?;
+                }
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::Option(ty) => {
+                self.push(output, "option(", depth)?;
+                self.val(output, *ty, depth + 1)?;
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::Result { ok, err } => {
+                self.push(output, "result(", depth)?;
+                self.optional_val(output, *ok, depth + 1)?;
+                self.push(output, ",", depth)?;
+                self.optional_val(output, *err, depth + 1)?;
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::Own(resource) => {
+                self.push(output, "own(", depth)?;
+                self.any(output, ComponentAnyTypeId::Resource(*resource), depth + 1)?;
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::Borrow(resource) => {
+                self.push(output, "borrow(", depth)?;
+                self.any(output, ComponentAnyTypeId::Resource(*resource), depth + 1)?;
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::Future(ty) => {
+                self.push(output, "future(", depth)?;
+                self.optional_val(output, *ty, depth + 1)?;
+                self.push(output, ")", depth)
+            }
+            ComponentDefinedType::Stream(ty) => {
+                self.push(output, "stream(", depth)?;
+                self.optional_val(output, *ty, depth + 1)?;
+                self.push(output, ")", depth)
+            }
+        };
+        self.active.remove(&any);
+        result
+    }
+}
+
+fn validate_wirt_interface(
+    types: &Types,
+    name: &str,
+    instance: ComponentInstanceTypeId,
+) -> Result<()> {
+    let schema = CANONICAL_WIRT_INTERFACES
+        .binary_search_by_key(&name, |schema| schema.name)
+        .ok()
+        .map(|index| &CANONICAL_WIRT_INTERFACES[index])
+        .ok_or_else(|| contract_error("contract-type-mismatch"))?;
+    let mut renderer = InterfaceSignature::new(types, instance)?;
+    for (member_name, member) in &types[instance].exports {
+        let expected = schema
+            .members
+            .binary_search_by_key(&member_name.as_str(), |member| member.name)
+            .ok()
+            .map(|index| schema.members[index].signature)
+            .ok_or_else(|| contract_error("contract-type-mismatch"))?;
+        if renderer.entity(member.ty)? != expected {
+            return Err(contract_error("contract-type-mismatch"));
+        }
+    }
+    Ok(())
+}
+
 pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract> {
     if component.len() > MAX_PLUGIN_WASM_BYTES {
         return Err(contract_error("component exceeds the 64-MiB limit"));
@@ -747,6 +1087,16 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
         ));
     }
 
+    for name in WIRT_IMPORTS {
+        let item = types
+            .component_item_for_import(name)
+            .ok_or_else(|| contract_error("validated import is missing type information"))?;
+        let ComponentEntityType::Instance(instance) = item.ty else {
+            return Err(contract_error("contract-type-mismatch"));
+        };
+        validate_wirt_interface(&types, name, instance)?;
+    }
+
     let mut hasher = TypeHasher::new(&types);
     for name in &public_type_names {
         let item = types
@@ -754,7 +1104,7 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
             .ok_or_else(|| contract_error("validated import is missing type information"))?;
         hasher.root("public-type", name, item.ty)?;
     }
-    for name in &runtime_names {
+    for name in WASI_IMPORTS {
         let item = types
             .component_item_for_import(name)
             .ok_or_else(|| contract_error("validated import is missing type information"))?;

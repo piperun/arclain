@@ -102,6 +102,30 @@ def dependency_violations(workspace_root: Path) -> list[str]:
         violations.append(
             "crates/wirt/Cargo.toml: package wasmtime must use dependency key wasmtime"
         )
+    build_script = workspace_root / "crates" / "wirt" / "build.rs"
+    wit_parser_dependencies = [
+        (name, dependency)
+        for table in dependency_tables(document)
+        for name, dependency in table.items()
+        if dependency_package(name, dependency, inherited) == "wit-parser"
+    ]
+    expected_workspace_dependency = {
+        "version": "=0.252.0",
+        "default-features": False,
+        "features": ["std"],
+    }
+    expected_build_dependency = {"workspace": True}
+    schema_dependency_is_exact = (
+        inherited.get("wit-parser") == expected_workspace_dependency
+        and document.get("build-dependencies", {}).get("wit-parser")
+        == expected_build_dependency
+        and wit_parser_dependencies == [("wit-parser", expected_build_dependency)]
+    )
+    if (build_script.exists() or wit_parser_dependencies) and not schema_dependency_is_exact:
+        violations.append(
+            "crates/wirt/Cargo.toml: wit-parser is allowed only as the exact "
+            "workspace build dependency"
+        )
     return violations
 
 
@@ -536,6 +560,94 @@ def compiled_path_issues(tokens: list[RustToken]) -> list[tuple[int, int, str | 
     return issues
 
 
+def build_data_include_issues(
+    tokens: list[RustToken], build_script: Path, canonical_wit: Path, checked_schema: Path
+) -> list[tuple[int, int, str]]:
+    issues: list[tuple[int, int, str]] = []
+    canonical_includes = 0
+    schema_includes = 0
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if (
+            token.kind == "identifier"
+            and token.value in {"include_str", "include_bytes"}
+            and index + 2 < len(tokens)
+            and tokens[index + 1].value == "!"
+            and tokens[index + 2].value in {"(", "[", "{"}
+        ):
+            opening = tokens[index + 2].value or ""
+            closing = {"(": ")", "[": "]", "{": "}"}[opening]
+            end = closing_token(tokens, index + 2, opening, closing)
+            if end is None:
+                issues.append(
+                    (
+                        token.offset,
+                        token.line,
+                        "build script data include path is not a string literal",
+                    )
+                )
+                index += 1
+                continue
+            arguments = tokens[index + 3 : end]
+            if arguments and arguments[-1].value == ",":
+                arguments = arguments[:-1]
+            literal = arguments[0] if len(arguments) == 1 else None
+            if literal is None or literal.kind != "string":
+                issues.append(
+                    (
+                        token.offset,
+                        token.line,
+                        "build script data include path is not a string literal",
+                    )
+                )
+            elif token.value != "include_str":
+                issues.append(
+                    (
+                        token.offset,
+                        token.line,
+                        "build script data include must be the canonical WIT or "
+                        "checked schema literal",
+                    )
+                )
+            else:
+                resolved = (build_script.parent / (literal.value or "")).resolve()
+                if resolved == canonical_wit:
+                    canonical_includes += 1
+                elif resolved == checked_schema:
+                    schema_includes += 1
+                else:
+                    issues.append(
+                        (
+                            token.offset,
+                            token.line,
+                            "build script data include must be the canonical WIT or "
+                            "checked schema literal",
+                        )
+                    )
+            index = end + 1
+            continue
+        index += 1
+    if canonical_includes != 1 and not issues:
+        issues.append(
+            (
+                0,
+                1,
+                "build script must include the canonical "
+                "wirt-sdk/wit/plugin.wit exactly once",
+            )
+        )
+    elif schema_includes != 1 and not issues:
+        issues.append(
+            (
+                0,
+                1,
+                "build script must include the checked Wirt schema exactly once",
+            )
+        )
+    return issues
+
+
 def has_double_colon(tokens: list[RustToken], index: int) -> bool:
     return (
         index + 1 < len(tokens)
@@ -627,6 +739,85 @@ def parse_use_tree(
         local_name = tokens[index + 1].value or ""
         index += 2
     return [(path, local_name)], index, True
+
+
+def build_script_runtime_issues(tokens: list[RustToken]) -> list[tuple[int, int, str]]:
+    issues: list[tuple[int, int, str]] = []
+    seen: set[tuple[int, str]] = set()
+
+    def add(token: RustToken, message: str) -> None:
+        key = (token.line, message)
+        if key not in seen:
+            seen.add(key)
+            issues.append((token.offset, token.line, message))
+
+    forbidden_runtime_reads = {
+        "read",
+        "read_dir",
+        "read_to_string",
+        "File",
+        "OpenOptions",
+        "Command",
+        "push_dir",
+        "push_file",
+        "push_group",
+        "push_path",
+    }
+    for index, token in enumerate(tokens):
+        if token.kind == "identifier" and token.value == "mod":
+            add(
+                token,
+                "build script module declarations must use an explicit checked include! path",
+            )
+        if token.kind == "identifier" and token.value in forbidden_runtime_reads:
+            add(token, "build script may not read additional files at runtime")
+        if (
+            token.kind == "identifier"
+            and token.value == "std"
+            and index + 6 < len(tokens)
+            and has_double_colon(tokens, index + 1)
+            and tokens[index + 3].value == "fs"
+            and has_double_colon(tokens, index + 4)
+            and tokens[index + 6].value != "write"
+        ):
+            add(token, "build script may not read additional files at runtime")
+        if token.kind == "identifier" and token.value == "use":
+            end = next(
+                (
+                    candidate
+                    for candidate in range(index + 1, len(tokens))
+                    if tokens[candidate].value == ";"
+                ),
+                len(tokens),
+            )
+            statement = tokens[index + 1 : end]
+            absolute_root = has_double_colon(statement, 0)
+            bindings, cursor, valid = parse_use_tree(
+                statement, 0, absolute_root=absolute_root
+            )
+            if not valid or cursor != len(statement):
+                if any(candidate.value == "fs" for candidate in statement):
+                    add(token, "build script may not read additional files at runtime")
+            elif any(
+                path[:2] == ("std", "fs")
+                or (path == ("std",) and local_name != "std")
+                for path, local_name in bindings
+            ):
+                add(token, "build script may not read additional files at runtime")
+            if valid and cursor == len(statement) and any(
+                (path and path[-1] in {"include_str", "include_bytes"})
+                or local_name in {"include_str", "include_bytes"}
+                for path, local_name in bindings
+            ):
+                add(token, "build script data include aliases are not allowed")
+        if (
+            token.kind == "identifier"
+            and token.value == "extern"
+            and index + 1 < len(tokens)
+            and tokens[index + 1].value == "crate"
+        ):
+            add(token, "build script may not read additional files at runtime")
+    return issues
 
 
 def macro_path_before(
@@ -1037,6 +1228,7 @@ def source_violations(workspace_root: Path) -> list[str]:
     crate_root = workspace_root / "crates" / "wirt"
     resolved_source_root = source_root.resolve()
     canonical_wit = (workspace_root / "wirt-sdk" / "wit" / "plugin.wit").resolve()
+    checked_schema = (crate_root / "src" / "wirt_schema.rs").resolve()
     violations: list[str] = []
     roots: list[Path] = []
     if source_root.exists():
@@ -1049,6 +1241,9 @@ def source_violations(workspace_root: Path) -> list[str]:
                 violations.append(f"{relative}:1: source root file escapes crates/wirt/src")
                 continue
             roots.append(resolved)
+    build_script = crate_root / "build.rs"
+    if build_script.is_file():
+        roots.append(build_script.resolve())
     pending = list(roots)
     seen: set[Path] = set()
     while pending:
@@ -1072,6 +1267,13 @@ def source_violations(workspace_root: Path) -> list[str]:
         ]
         issues.extend(import_issues(tokens))
         issues.extend(component_bindgen_issues(tokens, crate_root, canonical_wit))
+        if path == build_script.resolve():
+            issues.extend(
+                build_data_include_issues(
+                    tokens, build_script, canonical_wit, checked_schema
+                )
+            )
+            issues.extend(build_script_runtime_issues(tokens))
         for offset, line, literal in compiled_path_issues(tokens):
             if literal is None:
                 issues.append((offset, line, "include! path is not a string literal"))

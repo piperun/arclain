@@ -48,6 +48,7 @@ tempfile = "3"
 tracing = "0.1"
 zip = "=7.2.0"
 wasmparser = { version = "=0.252.0", default-features = false, features = ["std", "validate", "component-model"] }
+wit-parser = { version = "=0.252.0", default-features = false, features = ["std"] }
 
 # Storage
 diesel = { version = "2.2", features = ["sqlite", "returning_clauses_for_sqlite_3_35", "r2d2", "64-column-tables"] }
