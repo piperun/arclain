@@ -13,6 +13,14 @@ const FACADE_TEST_COMPONENT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../plugins/facade-test-fixture/facade-test-fixture.wasm"
 ));
+const FACADE_TEST_MANIFEST: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../plugins/facade-test-fixture/plugin.toml"
+));
+const FACADE_TEST_PACKAGE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/bundled/facade-test-fixture.wirt"
+));
 
 fn component_with_empty_interface_import(name: &str) -> Vec<u8> {
     use wasm_encoder::{
@@ -510,6 +518,20 @@ fn package_bytes_are_deterministic_and_round_trip_exact_inputs() {
     assert_eq!(package.manifest_bytes, manifest_toml().as_bytes());
     assert_eq!(package.component, UI_DEMO_COMPONENT);
     assert_eq!(package.fingerprint, PackageFingerprint::sha256(&first));
+}
+
+#[test]
+fn maintained_facade_package_matches_its_manifest_and_component() {
+    let rebuilt = package_bytes(FACADE_TEST_MANIFEST, FACADE_TEST_COMPONENT).unwrap();
+    assert_eq!(rebuilt, FACADE_TEST_PACKAGE);
+
+    let package = read_package_bytes(FACADE_TEST_PACKAGE).unwrap();
+    assert_eq!(package.manifest_bytes, FACADE_TEST_MANIFEST);
+    assert_eq!(package.component, FACADE_TEST_COMPONENT);
+    assert_eq!(
+        package.fingerprint,
+        PackageFingerprint::sha256(FACADE_TEST_PACKAGE)
+    );
 }
 
 #[test]

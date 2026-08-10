@@ -19,15 +19,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn build_wirt_install_fixture(root: &std::path::Path) -> std::path::PathBuf {
-    let project =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/facade-test-fixture");
-    let fixture = project.join("facade-test-fixture.wasm");
-    let manifest =
-        std::fs::read(project.join("plugin.toml")).expect("read the maintained package manifest");
-    let component = std::fs::read(fixture).expect("read the maintained plugin component");
-    let package = wirt::package_bytes(&manifest, &component).expect("build canonical package");
     let package_path = root.join("facade-test-fixture.wirt");
-    std::fs::write(&package_path, package).expect("write package fixture");
+    std::fs::write(
+        &package_path,
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../wirt/tests/fixtures/bundled/facade-test-fixture.wirt"
+        )),
+    )
+    .expect("write maintained package fixture");
     package_path
 }
 
