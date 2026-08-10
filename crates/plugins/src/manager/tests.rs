@@ -1042,10 +1042,15 @@ fn package_metadata_mismatch_rolls_back_staging_and_live_state() {
 }
 
 fn fixture_path_for_manager_test(name: &str) -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins")
-        .join(name)
-        .join(format!("{name}.wasm"))
+    if name == "ui-demo" {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../wirt/tests/fixtures/bundled/ui-demo.wasm")
+    } else {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins")
+            .join(name)
+            .join(format!("{name}.wasm"))
+    }
 }
 
 #[test]

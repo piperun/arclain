@@ -63,20 +63,30 @@ fn dummy_sevenzip(temp: &tempfile::TempDir) -> PathBuf {
     support::create_dummy_executable(temp.path(), sevenzip_exe_name())
 }
 
-/// The workspace's built `plugins/{name}/{name}.wasm` (produced by `just
-/// plugins`) -- the component packaged for `install_plugin_package`, and the
-/// source half of [`install_plugin_fixture`]'s folder copy.
-fn fixture_wasm_path(name: &str) -> PathBuf {
+fn fixture_project_dir(name: &str) -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../plugins")
         .join(name)
-        .join(format!("{name}.wasm"))
+}
+
+/// A maintained, tracked component fixture. Tests must not depend on a prior
+/// `just plugins` run or on ignored build output in a plugin project.
+fn fixture_wasm_path(name: &str) -> PathBuf {
+    if name == "ui-demo" {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../wirt/tests/fixtures/bundled/ui-demo.wasm")
+    } else {
+        fixture_project_dir(name).join(format!("{name}.wasm"))
+    }
+}
+
+fn fixture_manifest_path(name: &str) -> PathBuf {
+    fixture_project_dir(name).join("plugin.toml")
 }
 
 fn fixture_package_path(temp: &tempfile::TempDir, name: &str) -> PathBuf {
-    let fixture = fixture_wasm_path(name);
-    let manifest = std::fs::read(fixture.with_extension("toml")).unwrap();
-    let component = std::fs::read(&fixture).unwrap();
+    let manifest = std::fs::read(fixture_manifest_path(name)).unwrap();
+    let component = std::fs::read(fixture_wasm_path(name)).unwrap();
     let package = wirt::package_bytes(&manifest, &component).unwrap();
     let path = temp.path().join(format!("{name}.WIRT"));
     std::fs::write(&path, package).unwrap();
@@ -110,10 +120,10 @@ fn unchecked_package_path(
     path
 }
 
-/// Copies a workspace plugin fixture (`plugins/{name}/{name}.toml`,
-/// `{name}.wasm`, built by `just plugins`) into `plugins_dir/{name}/`,
-/// the folder-mode layout `arclain_plugins::loader::PluginLoader::
-/// discover_plugins` expects. Exercising a real, running plugin instance
+/// Copies a maintained manifest and tracked component fixture into
+/// `plugins_dir/{name}/`, the folder-mode layout
+/// `arclain_plugins::loader::PluginLoader::discover_plugins` expects.
+/// Exercising a real, running plugin instance
 /// (rather than a hand-built `wirt::PluginLayout`)
 /// proves the whole path end to end: WASM `get-ui-layout`/`on-ui-event`
 /// calls, normalization, and the facade session/action wiring together.
@@ -123,18 +133,14 @@ fn unchecked_package_path(
 /// component's metadata export. Both paths are covered.
 fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
     let dest_dir = plugins_dir.join(name);
-    let fixture_dir = fixture_wasm_path(name)
-        .parent()
-        .expect("a fixture .wasm always has a parent directory")
-        .to_path_buf();
     std::fs::create_dir_all(&dest_dir).expect("create plugin fixture directory");
     std::fs::copy(
-        fixture_dir.join(format!("{name}.wasm")),
+        fixture_wasm_path(name),
         dest_dir.join(format!("{name}.wasm")),
     )
     .expect("copy plugin fixture .wasm");
     std::fs::copy(
-        fixture_dir.join(format!("{name}.toml")),
+        fixture_manifest_path(name),
         dest_dir.join(format!("{name}.toml")),
     )
     .expect("copy plugin fixture .toml");
@@ -666,7 +672,7 @@ fn inspect_plugin_reports_a_future_abi_as_unsupported() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app_without_plugins(&temp);
     let runtime = foreign_runtime();
-    let mut manifest = std::fs::read(fixture_wasm_path("ui-demo").with_extension("toml")).unwrap();
+    let mut manifest = std::fs::read(fixture_manifest_path("ui-demo")).unwrap();
     let abi = wirt::WIRT_ABI_VERSION.as_bytes();
     let position = manifest
         .windows(abi.len())

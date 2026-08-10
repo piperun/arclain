@@ -71,28 +71,31 @@ impl Env {
             .expect("failed to spawn arclain-cli")
     }
 
-    /// Installs a workspace plugin fixture (`plugins/{name}/{name}.{wasm,toml}`,
-    /// built by `just plugins`) into this env's own `plugins/{name}/`
-    /// folder before any command runs -- mirrors
+    /// Installs a maintained workspace plugin fixture into this env's own
+    /// `plugins/{name}/` folder before any command runs -- mirrors
     /// `crates/app/tests/plugin_sessions.rs::install_plugin_fixture`.
     fn install_plugin_fixture(&self, name: &str) {
         let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../plugins")
             .join(name);
+        let fixture_component = if name == "ui-demo" {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../wirt/tests/fixtures/bundled/ui-demo.wasm")
+        } else {
+            fixture_dir.join(format!("{name}.wasm"))
+        };
         let dest_dir = self.config_dir.join("plugins").join(name);
         std::fs::create_dir_all(&dest_dir).expect("create plugin fixture directory");
+        std::fs::copy(fixture_component, dest_dir.join(format!("{name}.wasm"))).unwrap_or_else(
+            |error| {
+                panic!(
+                    "copy maintained {name}.wasm: {error} -- fixture dir was {}",
+                    fixture_dir.display()
+                )
+            },
+        );
         std::fs::copy(
-            fixture_dir.join(format!("{name}.wasm")),
-            dest_dir.join(format!("{name}.wasm")),
-        )
-        .unwrap_or_else(|error| {
-            panic!(
-                "copy {name}.wasm (built via `just plugins`): {error} -- fixture dir was {}",
-                fixture_dir.display()
-            )
-        });
-        std::fs::copy(
-            fixture_dir.join(format!("{name}.toml")),
+            fixture_dir.join("plugin.toml"),
             dest_dir.join(format!("{name}.toml")),
         )
         .unwrap_or_else(|error| panic!("copy {name}.toml: {error}"));

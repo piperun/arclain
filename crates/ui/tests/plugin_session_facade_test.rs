@@ -45,15 +45,21 @@ fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
     let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../plugins")
         .join(name);
+    let component = if name == "ui-demo" {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../wirt/tests/fixtures/bundled/ui-demo.wasm")
+    } else {
+        fixture_dir.join(format!("{name}.wasm"))
+    };
     let dest = plugins_dir.join(name);
     std::fs::create_dir_all(&dest).expect("create plugin fixture directory");
-    for extension in ["wasm", "toml"] {
-        std::fs::copy(
-            fixture_dir.join(format!("{name}.{extension}")),
-            dest.join(format!("{name}.{extension}")),
-        )
-        .unwrap_or_else(|error| panic!("copy {name}.{extension} fixture: {error}"));
-    }
+    std::fs::copy(component, dest.join(format!("{name}.wasm")))
+        .unwrap_or_else(|error| panic!("copy maintained {name}.wasm fixture: {error}"));
+    std::fs::copy(
+        fixture_dir.join("plugin.toml"),
+        dest.join(format!("{name}.toml")),
+    )
+    .unwrap_or_else(|error| panic!("copy {name} plugin.toml fixture: {error}"));
 }
 
 fn bootstrap_with_plugin(temp: &tempfile::TempDir, plugin: &str) -> ArclainApp {
