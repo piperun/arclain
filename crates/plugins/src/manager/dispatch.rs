@@ -449,6 +449,14 @@ mod tests {
                 "archive_metadata_read = false",
                 &format!("archive_metadata_read = {archive_metadata_read}"),
             );
+        let manifest = if network {
+            manifest.replace(
+                "network = true",
+                "network = true\nnetwork_domains = [\"example.invalid\"]",
+            )
+        } else {
+            manifest
+        };
         std::fs::write(plugin_dir.join(format!("{plugin_id}.toml")), manifest)
             .expect("write tailored plugin manifest");
 

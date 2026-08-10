@@ -5,8 +5,8 @@
 //! public facade against the real bundled `ui-demo` WASM fixture, the
 //! same way a real frontend would.
 //!
-//! Plus the plugin-*management* surface beside them: `install_plugin`,
-//! the widened `PluginSummary`, and the `plugin_chrome`/
+//! Plus the plugin-*management* surface beside them: package inspection and
+//! installation, the widened `PluginSummary`, and the `plugin_chrome`/
 //! `plugin_network_log` read models. Those need a live guest to register
 //! a top tab and write a log line; the mirror-fidelity half of the same
 //! surface is unit-tested inside `arclain_app::plugins`.
@@ -64,13 +64,50 @@ fn dummy_sevenzip(temp: &tempfile::TempDir) -> PathBuf {
 }
 
 /// The workspace's built `plugins/{name}/{name}.wasm` (produced by `just
-/// plugins`) -- the real component `ArclainApp::install_plugin` is pointed
-/// at, and the source half of [`install_plugin_fixture`]'s folder copy.
+/// plugins`) -- the component packaged for `install_plugin_package`, and the
+/// source half of [`install_plugin_fixture`]'s folder copy.
 fn fixture_wasm_path(name: &str) -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../plugins")
         .join(name)
         .join(format!("{name}.wasm"))
+}
+
+fn fixture_package_path(temp: &tempfile::TempDir, name: &str) -> PathBuf {
+    let fixture = fixture_wasm_path(name);
+    let manifest = std::fs::read(fixture.with_extension("toml")).unwrap();
+    let component = std::fs::read(&fixture).unwrap();
+    let package = wirt::package_bytes(&manifest, &component).unwrap();
+    let path = temp.path().join(format!("{name}.WIRT"));
+    std::fs::write(&path, package).unwrap();
+    path
+}
+
+fn unchecked_package_path(
+    temp: &tempfile::TempDir,
+    name: &str,
+    manifest: &[u8],
+    component: &[u8],
+) -> PathBuf {
+    use std::io::{Cursor, Write as _};
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
+
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .compression_level(Some(9))
+        .last_modified_time(zip::DateTime::default())
+        .unix_permissions(0o644)
+        .large_file(false);
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    writer.start_file("plugin.toml", options).unwrap();
+    writer.write_all(manifest).unwrap();
+    writer.start_file("plugin.wasm", options).unwrap();
+    writer.write_all(component).unwrap();
+    let bytes = writer.finish().unwrap().into_inner();
+    let path = temp.path().join(format!("{name}.wirt"));
+    std::fs::write(&path, bytes).unwrap();
+    path
 }
 
 /// Copies a workspace plugin fixture (`plugins/{name}/{name}.toml`,
@@ -81,9 +118,9 @@ fn fixture_wasm_path(name: &str) -> PathBuf {
 /// proves the whole path end to end: WASM `get-ui-layout`/`on-ui-event`
 /// calls, normalization, and the facade session/action wiring together.
 ///
-/// Not the same thing as [`ArclainApp::install_plugin`], which derives its
-/// manifest from the component's own metadata export rather than from the
-/// hand-written `.toml` this copies. Both paths are covered.
+/// Not the same thing as [`ArclainApp::install_plugin_package`], which reads
+/// the manifest from the approved `.wirt` package and verifies it against the
+/// component's metadata export. Both paths are covered.
 fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
     let dest_dir = plugins_dir.join(name);
     let fixture_dir = fixture_wasm_path(name)
@@ -173,9 +210,9 @@ fn rebootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
 }
 
 /// The same isolated temp profile, with an *empty* plugins directory --
-/// the starting point for the `install_plugin` tests, which need the
-/// component to arrive through the facade rather than through a folder
-/// copy made before bootstrap.
+/// the starting point for package-install tests, which need the component to
+/// arrive through the facade rather than through a folder copy made before
+/// bootstrap.
 fn bootstrap_app_without_plugins(temp: &tempfile::TempDir) -> ArclainApp {
     let paths = support::temp_paths(temp.path());
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
@@ -438,7 +475,7 @@ fn plugins_reports_a_plugin_that_declares_no_capabilities_with_an_empty_list() {
 }
 
 #[test]
-fn install_plugin_loads_a_wasm_component_and_reports_it_immediately() {
+fn install_plugin_loads_a_wirt_package_and_reports_it_immediately() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app_without_plugins(&temp);
     let runtime = foreign_runtime();
@@ -446,8 +483,12 @@ fn install_plugin_loads_a_wasm_component_and_reports_it_immediately() {
     let before = runtime.block_on(app.plugins()).unwrap();
     assert!(before.is_empty(), "the profile must start with no plugins");
 
+    let package_path = fixture_package_path(&temp, "facade-test-fixture");
+    let preview = runtime
+        .block_on(app.inspect_plugin_package(package_path.clone()))
+        .unwrap();
     let installed = runtime
-        .block_on(app.install_plugin(fixture_wasm_path("facade-test-fixture")))
+        .block_on(app.install_plugin_package(package_path, preview.fingerprint))
         .expect("installing the bundled fixture component must succeed");
 
     assert_eq!(installed, "facade-test-fixture");
@@ -462,10 +503,64 @@ fn install_plugin_loads_a_wasm_component_and_reports_it_immediately() {
     );
     assert_eq!(fixture.load_error, None);
     assert_eq!(fixture.name, "Facade Test Fixture");
-    // An install derives its manifest from the component's own metadata
-    // export, which declares no capabilities -- unlike the folder-mode
-    // fixture, whose hand-written `.toml` does.
-    assert!(fixture.capabilities.is_empty());
+    // Package installs preserve the capabilities approved during preview
+    // from the package manifest.
+    assert_eq!(
+        fixture.capabilities,
+        vec![
+            PluginCapabilityDto::ArchiveMetadataRead,
+            PluginCapabilityDto::FileRead,
+        ]
+    );
+}
+
+#[test]
+fn package_preview_round_trips_its_fingerprint_into_install() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+    let package_path = fixture_package_path(&temp, "ui-demo");
+
+    let preview = runtime
+        .block_on(app.inspect_plugin_package(package_path.clone()))
+        .expect("preview package");
+    assert_eq!(preview.plugin_id, "ui-demo");
+    assert_eq!(preview.name, "UI Demo Plugin");
+    assert_eq!(preview.version, "0.2.1");
+    assert_eq!(preview.author, "Arclain Team");
+    assert_eq!(preview.abi, wirt::WIRT_ABI_VERSION);
+    assert_eq!(preview.capabilities, Vec::<PluginCapabilityDto>::new());
+    assert_eq!(preview.network_domains, Vec::<String>::new());
+    assert_eq!(preview.fingerprint.len(), 64);
+    assert!(preview
+        .fingerprint
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+    assert_eq!(
+        preview.fingerprint,
+        wirt::PackageFingerprint::sha256(&std::fs::read(&package_path).unwrap()).to_string(),
+    );
+    assert!(runtime.block_on(app.plugins()).unwrap().is_empty());
+
+    let installed = runtime
+        .block_on(app.install_plugin_package(package_path, preview.fingerprint))
+        .expect("install approved package");
+    assert_eq!(installed, "ui-demo");
+}
+
+#[test]
+fn package_install_rejects_a_malformed_expected_fingerprint() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+    let package_path = fixture_package_path(&temp, "ui-demo");
+
+    let error = runtime
+        .block_on(app.install_plugin_package(package_path, "ABC".to_string()))
+        .unwrap_err();
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(error.field.as_deref(), Some("expected_fingerprint"));
+    assert!(runtime.block_on(app.plugins()).unwrap().is_empty());
 }
 
 #[test]
@@ -474,16 +569,20 @@ fn install_plugin_refuses_a_second_install_of_the_same_plugin() {
     let app = bootstrap_app_without_plugins(&temp);
     let runtime = foreign_runtime();
 
+    let package_path = fixture_package_path(&temp, "facade-test-fixture");
+    let preview = runtime
+        .block_on(app.inspect_plugin_package(package_path.clone()))
+        .unwrap();
     runtime
-        .block_on(app.install_plugin(fixture_wasm_path("facade-test-fixture")))
+        .block_on(app.install_plugin_package(package_path.clone(), preview.fingerprint.clone()))
         .expect("the first install must succeed");
 
     let error = runtime
-        .block_on(app.install_plugin(fixture_wasm_path("facade-test-fixture")))
+        .block_on(app.install_plugin_package(package_path, preview.fingerprint))
         .expect_err("installing an already-installed plugin must fail");
 
-    assert_eq!(error.kind, ApplicationErrorKind::Plugin);
-    assert_eq!(error.field.as_deref(), Some("wasm_path"));
+    assert_eq!(error.kind, ApplicationErrorKind::Conflict);
+    assert_eq!(error.field.as_deref(), Some("package_path"));
     let diagnostic = error.diagnostic.expect("a diagnostic must be attached");
     assert!(diagnostic.len() <= 4096);
     assert!(
@@ -493,7 +592,7 @@ fn install_plugin_refuses_a_second_install_of_the_same_plugin() {
 }
 
 #[test]
-fn install_plugin_rejects_a_file_that_is_not_a_wasm_component() {
+fn install_plugin_rejects_a_file_that_is_not_a_wirt_package() {
     let temp = tempfile::tempdir().unwrap();
     let app = bootstrap_app_without_plugins(&temp);
     let runtime = foreign_runtime();
@@ -502,11 +601,11 @@ fn install_plugin_rejects_a_file_that_is_not_a_wasm_component() {
     std::fs::write(&not_wasm, b"definitely not a wasm component").unwrap();
 
     let error = runtime
-        .block_on(app.install_plugin(not_wasm))
-        .expect_err("a non-wasm file must not install");
+        .block_on(app.install_plugin_package(not_wasm, "0".repeat(64)))
+        .expect_err("a non-package file must not install");
 
     assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
-    assert_eq!(error.field.as_deref(), Some("wasm_path"));
+    assert_eq!(error.field.as_deref(), Some("package_path"));
     assert!(runtime.block_on(app.plugins()).unwrap().is_empty());
 }
 
@@ -517,13 +616,71 @@ fn install_plugin_reports_a_missing_file_without_installing_anything() {
     let runtime = foreign_runtime();
 
     let error = runtime
-        .block_on(app.install_plugin(temp.path().join("nowhere").join("ghost.wasm")))
+        .block_on(app.install_plugin_package(
+            temp.path().join("nowhere").join("ghost.wirt"),
+            "0".repeat(64),
+        ))
         .expect_err("a path that names no file must not install");
 
-    assert_eq!(error.kind, ApplicationErrorKind::Plugin);
+    assert_eq!(error.kind, ApplicationErrorKind::Backend);
     let diagnostic = error.diagnostic.expect("a diagnostic must be attached");
     assert!(diagnostic.len() <= 4096);
     assert!(runtime.block_on(app.plugins()).unwrap().is_empty());
+}
+
+#[test]
+fn inspect_plugin_reports_malformed_package_bytes_as_invalid_input() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+    let path = temp.path().join("malformed.wirt");
+    std::fs::write(&path, b"not a ZIP archive").unwrap();
+
+    let error = runtime
+        .block_on(app.inspect_plugin_package(path))
+        .expect_err("malformed package bytes must fail inspection");
+
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+}
+
+#[test]
+fn inspect_plugin_reports_an_oversized_package_as_invalid_input() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+    let path = temp.path().join("oversized.wirt");
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(wirt::MAX_WIRT_PACKAGE_BYTES + 1).unwrap();
+
+    let error = runtime
+        .block_on(app.inspect_plugin_package(path))
+        .expect_err("an oversized package must fail inspection");
+
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(error.field.as_deref(), Some("package_path"));
+    assert!(runtime.block_on(app.plugins()).unwrap().is_empty());
+}
+
+#[test]
+fn inspect_plugin_reports_a_future_abi_as_unsupported() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+    let mut manifest = std::fs::read(fixture_wasm_path("ui-demo").with_extension("toml")).unwrap();
+    let abi = wirt::WIRT_ABI_VERSION.as_bytes();
+    let position = manifest
+        .windows(abi.len())
+        .position(|window| window == abi)
+        .expect("fixture manifest contains the current ABI");
+    manifest[position..position + abi.len()].copy_from_slice(b"9.9.9");
+    let component = std::fs::read(fixture_wasm_path("ui-demo")).unwrap();
+    let package_path = unchecked_package_path(&temp, "future-abi", &manifest, &component);
+
+    let error = runtime
+        .block_on(app.inspect_plugin_package(package_path))
+        .expect_err("a future ABI must fail inspection");
+
+    assert_eq!(error.kind, ApplicationErrorKind::Unsupported);
 }
 
 #[test]
@@ -1371,7 +1528,7 @@ fn a_setting_written_before_a_guest_trap_is_still_persisted() {
     );
 }
 
-/// `install_plugin` runs the new plugin's `init` in the guest, and no
+/// `install_plugin_package` runs the new plugin's `init` in the guest, and no
 /// session is opened afterwards -- so the per-interaction pull never
 /// fires and only the exit sweep can save what `init` wrote. Install,
 /// shut down, restart: the load counter reaches two only if the sweep
@@ -1382,7 +1539,12 @@ fn a_setting_written_at_install_is_persisted_by_the_exit_flush() {
     let app = bootstrap_app_without_plugins(&temp);
     let runtime = foreign_runtime();
     runtime
-        .block_on(app.install_plugin(fixture_wasm_path("facade-test-fixture")))
+        .block_on(async {
+            let package_path = fixture_package_path(&temp, "facade-test-fixture");
+            let preview = app.inspect_plugin_package(package_path.clone()).await?;
+            app.install_plugin_package(package_path, preview.fingerprint)
+                .await
+        })
         .expect("installing the fixture must succeed");
 
     runtime

@@ -17,7 +17,7 @@ const MIN_RATIO_CHECK_BYTES: u64 = 1024 * 1024;
 const EOCD_BYTES: usize = 22;
 const ZIP64_LOCATOR_BYTES: usize = 20;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct PackageFingerprint(String);
 
@@ -29,6 +29,37 @@ impl PackageFingerprint {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl std::str::FromStr for PackageFingerprint {
+    type Err = PluginError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        if value.len() != 64
+            || !value
+                .as_bytes()
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        {
+            return Err(package_error(
+                "package fingerprint must be exactly 64 lowercase hexadecimal characters",
+            ));
+        }
+        Ok(Self(value.to_owned()))
+    }
+}
+
+impl<'de> Deserialize<'de> for PackageFingerprint {
+    fn deserialize<Deserializer>(
+        deserializer: Deserializer,
+    ) -> std::result::Result<Self, Deserializer::Error>
+    where
+        Deserializer: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -47,7 +78,7 @@ pub struct ValidatedPackage {
 }
 
 fn package_error(message: impl Into<String>) -> PluginError {
-    PluginError::LoadError(format!("invalid Wirt package: {}", message.into()))
+    PluginError::InvalidPackage(message.into())
 }
 
 fn checked_input<'a>(bytes: &'a [u8], max: usize, kind: &str) -> Result<&'a [u8]> {
@@ -64,7 +95,8 @@ pub fn package_bytes(manifest: &[u8], component: &[u8]) -> Result<Vec<u8>> {
     checked_input(component, MAX_PLUGIN_WASM_BYTES, "plugin component")?;
     let parsed = parse_manifest(manifest)?;
     validate_manifest(&parsed)?;
-    let contract = inspect_component_contract(component)?;
+    let contract =
+        inspect_component_contract(component).map_err(|error| package_error(error.to_string()))?;
     if contract.abi != parsed.wirt.abi {
         return Err(package_error("manifest and component ABI differ"));
     }
@@ -135,7 +167,8 @@ pub fn read_package_bytes(bytes: &[u8]) -> Result<ValidatedPackage> {
             "archive-canonical: archive bytes do not match the canonical Wirt encoding",
         ));
     }
-    let contract = inspect_component_contract(&component)?;
+    let contract =
+        inspect_component_contract(&component).map_err(|error| package_error(error.to_string()))?;
     if contract.abi != manifest.wirt.abi || manifest.wirt.abi != WIRT_ABI_VERSION {
         return Err(package_error("manifest, component, and host ABI differ"));
     }
@@ -270,6 +303,43 @@ fn read_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_fingerprint_parses_only_exact_lowercase_sha256() {
+        let expected = "0123456789abcdef".repeat(4);
+        let parsed: PackageFingerprint = expected.parse().expect("valid SHA-256");
+        assert_eq!(parsed.as_str(), expected);
+
+        for invalid in [
+            "0".repeat(63),
+            "0".repeat(65),
+            "ABCDEF0123456789".repeat(4),
+            "g123456789abcdef".repeat(4),
+        ] {
+            assert!(
+                invalid.parse::<PackageFingerprint>().is_err(),
+                "accepted malformed fingerprint {invalid:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn package_fingerprint_deserialization_uses_the_strict_parser() {
+        let expected = "0123456789abcdef".repeat(4);
+        let parsed: PackageFingerprint =
+            serde_json::from_str(&serde_json::to_string(&expected).unwrap()).unwrap();
+        assert_eq!(parsed.as_str(), expected);
+
+        for invalid in ["ABC".to_string(), "0".repeat(63), "A".repeat(64)] {
+            assert!(
+                serde_json::from_str::<PackageFingerprint>(
+                    &serde_json::to_string(&invalid).unwrap()
+                )
+                .is_err(),
+                "deserialized malformed fingerprint {invalid:?}",
+            );
+        }
+    }
 
     #[test]
     fn deterministic_writer_has_a_small_inline_fixed_output_golden() {

@@ -7,18 +7,23 @@ use tempfile::TempDir;
 
 fn installed_ui_demo() -> (TempDir, PluginManager) {
     let temp_dir = TempDir::new().unwrap();
-    let wasm_path = temp_dir.path().join("ui-demo.wasm");
-    std::fs::write(
-        &wasm_path,
-        include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/ui-demo/ui-demo.wasm"
-        )),
-    )
-    .unwrap();
+    let package_path = temp_dir.path().join("ui-demo.wirt");
+    let manifest = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.toml"
+    ));
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ));
+    let package = wirt::package_bytes(manifest, component).unwrap();
+    let fingerprint = wirt::PackageFingerprint::sha256(&package);
+    std::fs::write(&package_path, package).unwrap();
 
     let mut manager = PluginManager::new(temp_dir.path().join("plugins"), HashMap::new()).unwrap();
-    manager.install_plugin(&wasm_path).unwrap();
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
     (temp_dir, manager)
 }
 

@@ -47,6 +47,28 @@ fn write_plugin_pair(directory: &std::path::Path, file_id: &str, manifest_id: &s
     std::fs::write(directory.join(format!("{file_id}.wasm")), b"component").unwrap();
 }
 
+fn write_ui_demo_sidecars(directory: &std::path::Path, with_fingerprint: bool) {
+    std::fs::create_dir_all(directory).unwrap();
+    let manifest = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.toml"
+    ));
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ));
+    std::fs::write(directory.join("ui-demo.toml"), manifest).unwrap();
+    std::fs::write(directory.join("ui-demo.wasm"), component).unwrap();
+    if with_fingerprint {
+        let package = crate::package_bytes(manifest, component).unwrap();
+        std::fs::write(
+            directory.join("package.sha256"),
+            crate::PackageFingerprint::sha256(&package).as_str(),
+        )
+        .unwrap();
+    }
+}
+
 #[cfg(unix)]
 fn create_file_link(target: &std::path::Path, link: &std::path::Path) -> bool {
     std::os::unix::fs::symlink(target, link).unwrap();
@@ -90,6 +112,105 @@ fn test_plugin_loader_creation() {
 }
 
 #[test]
+fn discovery_accepts_a_root_wirt_package_and_legacy_sidecars() {
+    let temp_dir = TempDir::new().unwrap();
+    let manifest = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.toml"
+    ));
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ));
+    std::fs::write(
+        temp_dir.path().join("ui-demo.WIRT"),
+        crate::package_bytes(manifest, component).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(temp_dir.path().join("loose.wasm"), component).unwrap();
+    let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
+    let discovered = loader.discover_plugins().unwrap();
+    assert_eq!(discovered.len(), 1);
+    assert!(matches!(
+        discovered[0].artifact,
+        PluginArtifact::Package { .. }
+    ));
+    loader
+        .load_plugin(&discovered[0])
+        .expect("a discovered root package must compile and load");
+
+    let legacy = TempDir::new().unwrap();
+    write_ui_demo_sidecars(&legacy.path().join("ui-demo"), false);
+    let loader = PluginLoader::new(legacy.path().to_path_buf()).unwrap();
+    let discovered = loader.discover_plugins().unwrap();
+    assert_eq!(discovered.len(), 1);
+    assert!(matches!(
+        discovered[0].artifact,
+        PluginArtifact::Sidecars { .. }
+    ));
+    loader
+        .load_plugin(&discovered[0])
+        .expect("discovered legacy sidecars must compile and load");
+}
+
+#[test]
+fn discovery_rejects_case_folded_identity_duplicates_across_artifact_kinds() {
+    let temp_dir = TempDir::new().unwrap();
+    write_ui_demo_sidecars(&temp_dir.path().join("ui-demo"), false);
+
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.toml"
+    ));
+    let mut manifest: crate::PluginManifest = toml::from_str(source).unwrap();
+    manifest.plugin.id = "UI-DEMO".to_string();
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ));
+    std::fs::write(
+        temp_dir.path().join("renamed.wirt"),
+        crate::package_bytes(toml::to_string(&manifest).unwrap().as_bytes(), component).unwrap(),
+    )
+    .unwrap();
+
+    let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
+    assert!(loader.discover_plugins().is_err());
+}
+
+#[test]
+fn package_fingerprint_metadata_error_preserves_io_kind() {
+    let error = package_fingerprint_metadata_error(std::io::Error::from(
+        std::io::ErrorKind::PermissionDenied,
+    ));
+
+    assert!(matches!(
+        error,
+        PluginError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied
+    ));
+}
+
+#[test]
+fn package_fingerprint_sidecar_is_verified_on_discovery_and_load() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugin_dir = temp_dir.path().join("ui-demo");
+    write_ui_demo_sidecars(&plugin_dir, true);
+    let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
+    let discovered = loader.discover_plugins().unwrap();
+    assert_eq!(discovered.len(), 1);
+
+    std::fs::write(plugin_dir.join("package.sha256"), "0".repeat(64)).unwrap();
+    assert!(loader.load_plugin(&discovered[0]).is_err());
+
+    let malformed = TempDir::new().unwrap();
+    let plugin_dir = malformed.path().join("ui-demo");
+    write_ui_demo_sidecars(&plugin_dir, true);
+    std::fs::write(plugin_dir.join("package.sha256"), "not-a-fingerprint").unwrap();
+    let loader = PluginLoader::new(malformed.path().to_path_buf()).unwrap();
+    assert!(loader.discover_plugins().unwrap().is_empty());
+}
+
+#[test]
 fn manifest_requires_the_current_wirt_abi() {
     let temp_dir = TempDir::new().unwrap();
     let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
@@ -103,6 +224,7 @@ fn manifest_requires_the_current_wirt_abi() {
     let error = loader
         .validate_manifest(&valid_manifest_with_abi("0.2.0"))
         .unwrap_err();
+    assert!(matches!(error, PluginError::Unsupported(_)));
     assert!(error.to_string().contains("unsupported Wirt ABI"));
 }
 
@@ -527,4 +649,25 @@ fn bounded_read_does_not_follow_a_final_component_swapped_after_validation() {
         result.is_err(),
         "bounded read followed a swapped final component"
     );
+}
+
+#[test]
+fn selected_package_read_rejects_a_final_component_replaced_before_open() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    let selected = temp_dir.path().join("selected.wirt");
+    let outside = temp_dir.path().join("outside.wirt");
+    std::fs::write(&selected, b"selected").unwrap();
+    std::fs::write(&outside, b"outside").unwrap();
+    let loader = PluginLoader::new(plugins_dir).unwrap();
+
+    let result = loader.read_package_file_with_hook(&selected, || {
+        std::fs::remove_file(&selected).unwrap();
+        if !create_file_link(&outside, &selected) {
+            std::fs::create_dir(&selected).unwrap();
+        }
+    });
+
+    assert!(result.is_err(), "selected package replacement was followed");
 }

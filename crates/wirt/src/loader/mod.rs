@@ -2,6 +2,7 @@
 
 use crate::runtime::{LoadedComponent, WasmRuntime};
 use crate::{PluginError, PluginId, PluginInfo, PluginManifest, Result, WIRT_ABI_VERSION};
+use crate::{ValidatedPackage, MAX_WIRT_PACKAGE_BYTES};
 use crate::{MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_WASM_BYTES};
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, File, OpenOptions};
@@ -24,10 +25,28 @@ fn load_error(message: impl Into<String>) -> PluginError {
     PluginError::LoadError(message.into())
 }
 
+fn io_error(context: impl std::fmt::Display, error: std::io::Error) -> PluginError {
+    PluginError::Io(std::io::Error::new(
+        error.kind(),
+        format!("{context}: {error}"),
+    ))
+}
+
+fn package_fingerprint_metadata_error(error: std::io::Error) -> PluginError {
+    io_error("Failed to inspect package fingerprint", error)
+}
+
+fn package_read_error(error: PluginError) -> PluginError {
+    match error {
+        PluginError::LoadError(message) => PluginError::InvalidPackage(message),
+        error => error,
+    }
+}
+
 fn read_opened_file_bounded(mut file: File, max_bytes: usize, kind: &str) -> Result<Vec<u8>> {
     let metadata = file
         .metadata()
-        .map_err(|error| load_error(format!("Failed to inspect {kind} file: {error}")))?;
+        .map_err(|error| io_error(format_args!("Failed to inspect {kind} file"), error))?;
     if !metadata.is_file() {
         return Err(load_error(format!("{kind} path is not a regular file")));
     }
@@ -41,7 +60,7 @@ fn read_opened_file_bounded(mut file: File, max_bytes: usize, kind: &str) -> Res
     file.by_ref()
         .take(max_bytes as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| load_error(format!("Failed to read {kind} file: {error}")))?;
+        .map_err(|error| io_error(format_args!("Failed to read {kind} file"), error))?;
     if bytes.len() > max_bytes {
         return Err(load_error(format!(
             "{kind} file grew beyond the {max_bytes}-byte limit while reading"
@@ -77,22 +96,25 @@ fn open_directory_no_follow(path: &Path, kind: &str) -> Result<Dir> {
     })?;
     let parent = parent.unwrap_or_else(|| Path::new("."));
     let parent = parent.canonicalize().map_err(|error| {
-        load_error(format!(
-            "Failed to resolve {kind} parent {}: {error}",
-            parent.display()
-        ))
+        io_error(
+            format_args!("Failed to resolve {kind} parent {}", parent.display()),
+            error,
+        )
     })?;
     let parent = Dir::open_ambient_dir(&parent, cap_std::ambient_authority()).map_err(|error| {
-        load_error(format!(
-            "Failed to open {kind} parent {}: {error}",
-            parent.display()
-        ))
+        io_error(
+            format_args!("Failed to open {kind} parent {}", parent.display()),
+            error,
+        )
     })?;
     parent.open_dir_nofollow(file_name).map_err(|error| {
-        load_error(format!(
-            "Failed to open {kind} without following links {}: {error}",
-            path.display()
-        ))
+        io_error(
+            format_args!(
+                "Failed to open {kind} without following links {}",
+                path.display()
+            ),
+            error,
+        )
     })
 }
 
@@ -107,9 +129,9 @@ pub struct TrustedPluginRoot {
 impl TrustedPluginRoot {
     fn open(configured_path: PathBuf) -> Result<Self> {
         let dir = open_directory_no_follow(&configured_path, "plugin root")?;
-        let metadata = dir.dir_metadata().map_err(|error| {
-            load_error(format!("Failed to inspect opened plugin root: {error}"))
-        })?;
+        let metadata = dir
+            .dir_metadata()
+            .map_err(|error| io_error("Failed to inspect opened plugin root", error))?;
         if !metadata.is_dir() {
             return Err(load_error(format!(
                 "Plugin root is not a directory: {}",
@@ -117,10 +139,13 @@ impl TrustedPluginRoot {
             )));
         }
         let canonical_path = configured_path.canonicalize().map_err(|error| {
-            load_error(format!(
-                "Failed to resolve plugin root {}: {error}",
-                configured_path.display()
-            ))
+            io_error(
+                format_args!(
+                    "Failed to resolve plugin root {}",
+                    configured_path.display()
+                ),
+                error,
+            )
         })?;
         Ok(Self {
             configured_path,
@@ -140,9 +165,9 @@ impl TrustedPluginRoot {
 
     pub fn revalidate_current_path(&self) -> Result<()> {
         let current = open_directory_no_follow(&self.configured_path, "plugin root")?;
-        let current_metadata = current.dir_metadata().map_err(|error| {
-            load_error(format!("Failed to inspect current plugin root: {error}"))
-        })?;
+        let current_metadata = current
+            .dir_metadata()
+            .map_err(|error| io_error("Failed to inspect current plugin root", error))?;
         if FileIdentity::from_metadata(&current_metadata) != self.identity {
             return Err(load_error(format!(
                 "Configured plugin root was replaced after it was opened: {}",
@@ -194,16 +219,16 @@ impl TrustedPluginRoot {
         let (file_name, parents) = components
             .split_last()
             .ok_or_else(|| load_error(format!("{kind} has no file component")))?;
-        let mut parent = self.dir.try_clone().map_err(|error| {
-            load_error(format!(
-                "Failed to clone trusted plugin root handle: {error}"
-            ))
-        })?;
+        let mut parent = self
+            .dir
+            .try_clone()
+            .map_err(|error| io_error("Failed to clone trusted plugin root handle", error))?;
         for component in parents {
             parent = parent.open_dir_nofollow(component).map_err(|error| {
-                load_error(format!(
-                    "Failed to open {kind} parent without following links: {error}"
-                ))
+                io_error(
+                    format_args!("Failed to open {kind} parent without following links"),
+                    error,
+                )
             })?;
         }
         Ok((parent, file_name.clone()))
@@ -221,9 +246,10 @@ impl TrustedPluginRoot {
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
         parent.open_with(file_name, &options).map_err(|error| {
-            load_error(format!(
-                "Failed to open {kind} file without following links: {error}"
-            ))
+            io_error(
+                format_args!("Failed to open {kind} file without following links"),
+                error,
+            )
         })
     }
 
@@ -246,7 +272,7 @@ impl TrustedPluginRoot {
         let file = self.open_file_no_follow_with_hook(path, kind, || {})?;
         let metadata = file
             .metadata()
-            .map_err(|error| load_error(format!("Failed to inspect {kind} file: {error}")))?;
+            .map_err(|error| io_error(format_args!("Failed to inspect {kind} file"), error))?;
         if !metadata.is_file() {
             return Err(load_error(format!("{kind} path is not a regular file")));
         }
@@ -260,6 +286,15 @@ impl TrustedPluginRoot {
 }
 
 fn read_ambient_file_bounded(path: &Path, max_bytes: usize, kind: &str) -> Result<Vec<u8>> {
+    read_ambient_file_bounded_with_hook(path, max_bytes, kind, || {})
+}
+
+fn read_ambient_file_bounded_with_hook(
+    path: &Path,
+    max_bytes: usize,
+    kind: &str,
+    before_open: impl FnOnce(),
+) -> Result<Vec<u8>> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty());
@@ -270,14 +305,20 @@ fn read_ambient_file_bounded(path: &Path, max_bytes: usize, kind: &str) -> Resul
         ))
     })?;
     let parent = parent.unwrap_or_else(|| Path::new("."));
-    let parent = Dir::open_ambient_dir(parent, cap_std::ambient_authority())
-        .map_err(|error| load_error(format!("Failed to open {kind} parent directory: {error}")))?;
+    let parent = Dir::open_ambient_dir(parent, cap_std::ambient_authority()).map_err(|error| {
+        io_error(
+            format_args!("Failed to open {kind} parent directory"),
+            error,
+        )
+    })?;
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No);
+    before_open();
     let file = parent.open_with(file_name, &options).map_err(|error| {
-        load_error(format!(
-            "Failed to open {kind} file without following links: {error}"
-        ))
+        io_error(
+            format_args!("Failed to open {kind} file without following links"),
+            error,
+        )
     })?;
     read_opened_file_bounded(file, max_bytes, kind)
 }
@@ -331,7 +372,7 @@ fn is_canonical_hostname(domain: &str) -> bool {
 
 pub(crate) fn validate_manifest(manifest: &PluginManifest) -> Result<()> {
     if manifest.wirt.abi != WIRT_ABI_VERSION {
-        return Err(PluginError::InvalidManifest(format!(
+        return Err(PluginError::Unsupported(format!(
             "unsupported Wirt ABI; expected {WIRT_ABI_VERSION}"
         )));
     }
@@ -435,7 +476,7 @@ impl PluginLoader {
             .trusted_root
             .dir()
             .entries()
-            .map_err(|error| load_error(format!("Failed to scan plugin root: {error}")))?
+            .map_err(|error| io_error("Failed to scan plugin root", error))?
             .collect::<std::io::Result<Vec<_>>>()?;
         entries.sort_by_key(cap_std::fs::DirEntry::file_name);
 
@@ -492,6 +533,28 @@ impl PluginLoader {
                             }
                         }
                     }
+                }
+            } else if entry_type.is_file()
+                && path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("wirt"))
+            {
+                match self.read_trusted_package(&path) {
+                    Ok(package) => {
+                        let plugin_id = PluginId::parse(package.manifest.plugin.id.clone())?;
+                        let identity_key = plugin_id.identity_key();
+                        if !discovered_ids.insert(identity_key.clone()) {
+                            return Err(PluginError::InvalidManifest(format!(
+                                "Duplicate discovered plugin ID: {identity_key}"
+                            )));
+                        }
+                        discovered.push(DiscoveredPlugin {
+                            manifest: package.manifest,
+                            artifact: PluginArtifact::Package { package_path: path },
+                        });
+                    }
+                    Err(error) => warn!("Rejected Wirt package {}: {}", path.display(), error),
                 }
             } else if entry_type.is_file()
                 && path.extension().and_then(|s| s.to_str()) == Some("toml")
@@ -555,10 +618,14 @@ impl PluginLoader {
 
         debug!("Found plugin WASM: {}", wasm_path.display());
 
+        self.read_verified_sidecars(manifest_path, &wasm_path, &manifest)?;
+
         Ok(DiscoveredPlugin {
             manifest,
-            manifest_path: manifest_path.to_path_buf(),
-            wasm_path,
+            artifact: PluginArtifact::Sidecars {
+                manifest_path: manifest_path.to_path_buf(),
+                wasm_path,
+            },
         })
     }
 
@@ -594,10 +661,14 @@ impl PluginLoader {
 
         debug!("Found plugin WASM: {}", wasm_path.display());
 
+        self.read_verified_sidecars(manifest_path, &wasm_path, &manifest)?;
+
         Ok(DiscoveredPlugin {
             manifest,
-            manifest_path: manifest_path.to_path_buf(),
-            wasm_path,
+            artifact: PluginArtifact::Sidecars {
+                manifest_path: manifest_path.to_path_buf(),
+                wasm_path,
+            },
         })
     }
 
@@ -612,7 +683,7 @@ impl PluginLoader {
             .open_file_no_follow_with_hook(path, kind, || {})?;
         if require_file {
             let metadata = file.metadata().map_err(|error| {
-                load_error(format!("Failed to inspect opened {kind} file: {error}"))
+                io_error(format_args!("Failed to inspect opened {kind} file"), error)
             })?;
             if !metadata.is_file() {
                 return Err(load_error(format!(
@@ -661,13 +732,19 @@ impl PluginLoader {
     /// Load a plugin from a discovered plugin
     pub fn load_plugin(&self, discovered: &DiscoveredPlugin) -> Result<LoadedComponent> {
         info!("Loading plugin: {}", discovered.manifest.plugin.name);
-
-        self.validate_path_within_plugin_root(&discovered.wasm_path, true, "plugin WASM")?;
-        let wasm_bytes = self.trusted_root.read_file_bounded(
-            &discovered.wasm_path,
-            MAX_PLUGIN_WASM_BYTES,
-            "plugin WASM",
-        )?;
+        let wasm_bytes = match &discovered.artifact {
+            PluginArtifact::Sidecars {
+                manifest_path,
+                wasm_path,
+            } => self.read_verified_sidecars(manifest_path, wasm_path, &discovered.manifest)?,
+            PluginArtifact::Package { package_path } => {
+                let package = self.read_trusted_package(package_path)?;
+                if package.manifest != discovered.manifest {
+                    return Err(load_error("Wirt package manifest changed after discovery"));
+                }
+                package.component
+            }
+        };
         let loaded = self
             .runtime
             .load_component_from_bytes(discovered.manifest.plugin.id.clone(), &wasm_bytes)?;
@@ -697,6 +774,97 @@ impl PluginLoader {
         read_ambient_file_bounded(wasm_path, MAX_PLUGIN_WASM_BYTES, "plugin WASM")
     }
 
+    /// Open a user-selected Wirt package without following its final link,
+    /// bound the opened handle, and validate the exact bytes read from it.
+    pub fn read_package_file(&self, package_path: &Path) -> Result<ValidatedPackage> {
+        let bytes = read_ambient_file_bounded(
+            package_path,
+            MAX_WIRT_PACKAGE_BYTES as usize,
+            "Wirt package",
+        )
+        .map_err(package_read_error)?;
+        crate::read_package_bytes(&bytes)
+    }
+
+    #[cfg(test)]
+    fn read_package_file_with_hook(
+        &self,
+        package_path: &Path,
+        before_open: impl FnOnce(),
+    ) -> Result<ValidatedPackage> {
+        let bytes = read_ambient_file_bounded_with_hook(
+            package_path,
+            MAX_WIRT_PACKAGE_BYTES as usize,
+            "Wirt package",
+            before_open,
+        )
+        .map_err(package_read_error)?;
+        crate::read_package_bytes(&bytes)
+    }
+
+    fn read_trusted_package(&self, package_path: &Path) -> Result<ValidatedPackage> {
+        let bytes = self
+            .trusted_root
+            .read_file_bounded(
+                package_path,
+                MAX_WIRT_PACKAGE_BYTES as usize,
+                "Wirt package",
+            )
+            .map_err(package_read_error)?;
+        crate::read_package_bytes(&bytes)
+    }
+
+    fn read_verified_sidecars(
+        &self,
+        manifest_path: &Path,
+        wasm_path: &Path,
+        expected_manifest: &PluginManifest,
+    ) -> Result<Vec<u8>> {
+        let manifest_bytes = self.trusted_root.read_file_bounded(
+            manifest_path,
+            MAX_PLUGIN_MANIFEST_BYTES,
+            "plugin manifest",
+        )?;
+        let manifest: PluginManifest =
+            toml::from_str(std::str::from_utf8(&manifest_bytes).map_err(|_| {
+                PluginError::InvalidManifest("Plugin manifest is not UTF-8".into())
+            })?)
+            .map_err(|_| PluginError::InvalidManifest("Plugin manifest TOML is invalid".into()))?;
+        validate_manifest(&manifest)?;
+        if &manifest != expected_manifest {
+            return Err(load_error("plugin manifest changed after discovery"));
+        }
+        let component =
+            self.trusted_root
+                .read_file_bounded(wasm_path, MAX_PLUGIN_WASM_BYTES, "plugin WASM")?;
+        let fingerprint_path = manifest_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join("package.sha256");
+        match self.trusted_root.dir().symlink_metadata(
+            self.trusted_root
+                .relative_path(&fingerprint_path, "package fingerprint")?,
+        ) {
+            Ok(_) => {
+                let fingerprint_bytes = self.trusted_root.read_file_bounded(
+                    &fingerprint_path,
+                    64,
+                    "package fingerprint",
+                )?;
+                let fingerprint_text = std::str::from_utf8(&fingerprint_bytes)
+                    .map_err(|_| load_error("package fingerprint is not UTF-8"))?;
+                let expected: crate::PackageFingerprint = fingerprint_text.parse()?;
+                let canonical = crate::package_bytes(&manifest_bytes, &component)?;
+                if crate::PackageFingerprint::sha256(&canonical) != expected {
+                    return Err(load_error("package fingerprint does not match sidecars"));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(package_fingerprint_metadata_error(error)),
+        }
+        Ok(component)
+    }
+
     #[cfg(test)]
     fn read_plugin_file_bounded_with_hook(
         &self,
@@ -721,15 +889,34 @@ impl PluginLoader {
 
 /// A discovered plugin with its manifest and paths
 #[derive(Debug, Clone)]
+pub enum PluginArtifact {
+    Sidecars {
+        manifest_path: PathBuf,
+        wasm_path: PathBuf,
+    },
+    Package {
+        package_path: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct DiscoveredPlugin {
     pub manifest: PluginManifest,
-    pub manifest_path: PathBuf,
-    pub wasm_path: PathBuf,
+    pub artifact: PluginArtifact,
 }
 
 impl DiscoveredPlugin {
     /// Get plugin info for display
     pub fn to_plugin_info(&self) -> PluginInfo {
+        let (manifest_path, wasm_path) = match &self.artifact {
+            PluginArtifact::Sidecars {
+                manifest_path,
+                wasm_path,
+            } => (manifest_path.clone(), wasm_path.clone()),
+            PluginArtifact::Package { package_path } => {
+                (package_path.clone(), package_path.clone())
+            }
+        };
         PluginInfo {
             metadata: crate::PluginMetadata {
                 id: self.manifest.plugin.id.clone(),
@@ -739,8 +926,8 @@ impl DiscoveredPlugin {
                 description: self.manifest.plugin.description.clone(),
             },
             capabilities: self.manifest.capabilities.to_capabilities(),
-            manifest_path: self.manifest_path.clone(),
-            wasm_path: self.wasm_path.clone(),
+            manifest_path,
+            wasm_path,
         }
     }
 }

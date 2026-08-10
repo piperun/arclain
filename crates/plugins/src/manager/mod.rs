@@ -16,7 +16,7 @@ mod types;
 
 pub use request_fetch::{resolve_interactive_request_fetch, RequestFetchOutcome};
 pub use snapshot::EnabledPluginSnapshot;
-pub use types::{FailedPlugin, PluginListItem, PluginStatusSummary};
+pub use types::{FailedPlugin, PluginInstallPreview, PluginListItem, PluginStatusSummary};
 use types::{InitialPluginSettings, ManagedPlugin};
 
 use crate::loader::PluginLoader;

@@ -915,6 +915,40 @@ impl PluginCapabilityDto {
     }
 }
 
+/// Renderer-neutral metadata returned before a package install is approved.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PluginInstallPreviewDto {
+    pub plugin_id: String,
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub abi: String,
+    pub capabilities: Vec<PluginCapabilityDto>,
+    pub network_domains: Vec<String>,
+    pub fingerprint: String,
+}
+
+impl From<arclain_plugins::PluginInstallPreview> for PluginInstallPreviewDto {
+    fn from(preview: arclain_plugins::PluginInstallPreview) -> Self {
+        let manifest = preview.manifest;
+        Self {
+            plugin_id: manifest.plugin.id,
+            name: manifest.plugin.name,
+            version: manifest.plugin.version,
+            author: manifest.plugin.author,
+            abi: manifest.wirt.abi,
+            capabilities: manifest
+                .capabilities
+                .to_capabilities()
+                .into_iter()
+                .map(PluginCapabilityDto::from)
+                .collect(),
+            network_domains: manifest.capabilities.network_domains,
+            fingerprint: preview.fingerprint.to_string(),
+        }
+    }
+}
+
 /// One plugin as reported by [`crate::ArclainApp::plugins`]: enough to
 /// render a plugin list/settings row without a caller needing to reach
 /// into `arclain_plugins::PluginListItem`/`PluginManifest` directly.
@@ -1593,14 +1627,13 @@ fn plugin_execution_error(error: PluginError) -> ApplicationError {
         .with_recoverability(Recoverability::Retry)
 }
 
-/// The longest `wasm_path` [`crate::ArclainApp::install_plugin`] accepts.
-/// Matches the bound the pre-facade egui `PluginUiJobs` queue applied to
-/// the same field, kept here so it survives that queue's removal: a path
-/// this long cannot name a real file on any supported platform, so
+/// The longest caller-selected plugin package path the facade accepts.
+/// A path this long cannot name a real file on any supported platform, so
 /// rejecting it costs nothing and keeps an absurd caller-supplied value
 /// out of the manager, the error envelope, and the log.
 pub const MAX_PLUGIN_INSTALL_PATH_BYTES: usize = 32 * 1024;
 
+#[cfg(test)]
 fn invalid_install_path(reason: &str) -> ApplicationError {
     ApplicationError::new(
         ApplicationErrorKind::InvalidInput,
@@ -1623,6 +1656,7 @@ fn invalid_install_path(reason: &str) -> ApplicationError {
 /// Skipped for a path over [`MAX_PLUGIN_INSTALL_PATH_BYTES`]: echoing
 /// tens of kilobytes back into an error envelope helps nobody, and the
 /// diagnostic already says what was wrong with it.
+#[cfg(test)]
 fn with_install_path(error: ApplicationError, wasm_path: &std::path::Path) -> ApplicationError {
     if wasm_path.as_os_str().as_encoded_bytes().len() > MAX_PLUGIN_INSTALL_PATH_BYTES {
         return error;
@@ -1642,6 +1676,7 @@ fn with_install_path(error: ApplicationError, wasm_path: &std::path::Path) -> Ap
 /// purpose: the manager reports it as an untyped `LoadError` string among
 /// a dozen others, and matching on that string to recover the distinction
 /// would be far more fragile than re-deriving it from the path.
+#[cfg(test)]
 pub(crate) fn validate_install_path(wasm_path: &std::path::Path) -> Result<(), ApplicationError> {
     if wasm_path.as_os_str().is_empty() {
         return Err(invalid_install_path("a plugin path must not be empty"));
@@ -1664,24 +1699,90 @@ pub(crate) fn validate_install_path(wasm_path: &std::path::Path) -> Result<(), A
     Ok(())
 }
 
+pub(crate) fn validate_package_path(
+    package_path: &std::path::Path,
+) -> Result<(), ApplicationError> {
+    if package_path.as_os_str().is_empty() {
+        return Err(invalid_package_path(
+            "a plugin package path must not be empty",
+        ));
+    }
+    if package_path.as_os_str().as_encoded_bytes().len() > MAX_PLUGIN_INSTALL_PATH_BYTES {
+        return Err(invalid_package_path(&format!(
+            "a plugin package path must not exceed {MAX_PLUGIN_INSTALL_PATH_BYTES} bytes"
+        )));
+    }
+    if !package_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("wirt"))
+    {
+        return Err(with_package_path(
+            invalid_package_path("a plugin must be installed from a .wirt package"),
+            package_path,
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_package_path(reason: &str) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::InvalidInput,
+        "plugin package cannot be installed",
+    )
+    .with_diagnostic(reason.to_string())
+    .with_recoverability(Recoverability::UserAction)
+    .with_field("package_path")
+}
+
+fn with_package_path(error: ApplicationError, package_path: &std::path::Path) -> ApplicationError {
+    if package_path.as_os_str().as_encoded_bytes().len() > MAX_PLUGIN_INSTALL_PATH_BYTES {
+        error
+    } else {
+        error.with_path(package_path)
+    }
+}
+
+fn plugin_package_error(error: PluginError) -> ApplicationError {
+    let kind = match &error {
+        PluginError::InvalidManifest(_) | PluginError::InvalidPackage(_) => {
+            ApplicationErrorKind::InvalidInput
+        }
+        PluginError::Unsupported(_) => ApplicationErrorKind::Unsupported,
+        PluginError::Conflict(_) => ApplicationErrorKind::Conflict,
+        PluginError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            ApplicationErrorKind::PermissionDenied
+        }
+        PluginError::Io(_) => ApplicationErrorKind::Backend,
+        _ => ApplicationErrorKind::Plugin,
+    };
+    ApplicationError::new(kind, "plugin package could not be processed")
+        .with_diagnostic(error.to_string())
+        .with_recoverability(Recoverability::UserAction)
+        .with_field("package_path")
+}
+
 /// Maps a failed `PluginManager::install_plugin` onto the error envelope.
 ///
-/// Classified by `PluginError` *variant* rather than by its message: the
-/// message is the only thing that distinguishes "file does not exist"
-/// from "already installed" inside `LoadError`, and a facade that
-/// branches on backend prose breaks the first time that prose is
-/// reworded. Everything the manager rejects is therefore reported as a
-/// `Plugin` failure the user must act on, with the manager's own wording
-/// carried verbatim in the (bounded, path-redacted) diagnostic -- except
-/// the variants that genuinely mean something more specific.
+/// Classified by `PluginError` *variant* rather than by its message, so a
+/// frontend can branch on invalid packages, unsupported ABIs, collisions,
+/// permission failures, and backend I/O without parsing diagnostics.
 ///
 /// The caller's own path is attached separately (see
 /// [`with_install_path`]), because the diagnostic's redaction removes it.
+#[cfg(test)]
 fn plugin_install_error(error: PluginError) -> ApplicationError {
-    let kind = match error {
+    let kind = match &error {
         // A manifest this plugin's own metadata export produced is
         // malformed -- the plugin file is the invalid input.
-        PluginError::InvalidManifest(_) => ApplicationErrorKind::InvalidInput,
+        PluginError::InvalidManifest(_) | PluginError::InvalidPackage(_) => {
+            ApplicationErrorKind::InvalidInput
+        }
+        PluginError::Unsupported(_) => ApplicationErrorKind::Unsupported,
+        PluginError::Conflict(_) => ApplicationErrorKind::Conflict,
+        PluginError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            ApplicationErrorKind::PermissionDenied
+        }
         PluginError::Io(_) => ApplicationErrorKind::Backend,
         PluginError::LoadError(_)
         | PluginError::InitError(_)
@@ -1926,17 +2027,26 @@ impl PluginSessionStore {
         result.map_err(|_| plugin_not_found(plugin_id))
     }
 
-    /// Backs [`crate::ArclainApp::install_plugin`]. Blocking: compiles and
-    /// instantiates a WASM component and copies files, so every caller
-    /// must already be on a blocking-pool thread.
-    pub(crate) fn install_plugin(
+    pub(crate) fn inspect_plugin_package(
         manager: &SyncMutex<PluginManager>,
-        wasm_path: &std::path::Path,
+        package_path: &std::path::Path,
+    ) -> Result<PluginInstallPreviewDto, ApplicationError> {
+        manager
+            .lock()
+            .inspect_plugin_package(package_path)
+            .map(PluginInstallPreviewDto::from)
+            .map_err(|error| with_package_path(plugin_package_error(error), package_path))
+    }
+
+    pub(crate) fn install_plugin_package(
+        manager: &SyncMutex<PluginManager>,
+        package_path: &std::path::Path,
+        expected: &wirt::PackageFingerprint,
     ) -> Result<String, ApplicationError> {
         manager
             .lock()
-            .install_plugin(wasm_path)
-            .map_err(|error| with_install_path(plugin_install_error(error), wasm_path))
+            .install_plugin_package(package_path, expected)
+            .map_err(|error| with_package_path(plugin_package_error(error), package_path))
     }
 
     /// Backs [`crate::ArclainApp::plugin_chrome`]. Blocking: reading the
@@ -4744,6 +4854,16 @@ mod chrome_and_network_log_tests {
     }
 
     #[test]
+    fn package_path_accepts_wirt_case_insensitively_and_rejects_wasm() {
+        validate_package_path(std::path::Path::new("/tmp/plugin.WIRT"))
+            .expect("mixed-case package extension must be accepted");
+        let error = validate_package_path(std::path::Path::new("/tmp/plugin.wasm"))
+            .expect_err("loose components are not package install inputs");
+        assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(error.field.as_deref(), Some("package_path"));
+    }
+
+    #[test]
     fn install_path_accepts_any_case_of_the_wasm_extension() {
         validate_install_path(std::path::Path::new("/tmp/plugin.WASM"))
             .expect("extension matching must not depend on the user's shift key");
@@ -4838,5 +4958,38 @@ mod chrome_and_network_log_tests {
         let error = plugin_install_error(PluginError::Io(std::io::Error::other("disk gone")));
 
         assert_eq!(error.kind, ApplicationErrorKind::Backend);
+    }
+
+    #[test]
+    fn package_errors_keep_stable_semantic_classes() {
+        let cases = [
+            (
+                PluginError::InvalidPackage("not a package".to_string()),
+                ApplicationErrorKind::InvalidInput,
+            ),
+            (
+                PluginError::Unsupported("future ABI".to_string()),
+                ApplicationErrorKind::Unsupported,
+            ),
+            (
+                PluginError::Conflict("already installed".to_string()),
+                ApplicationErrorKind::Conflict,
+            ),
+            (
+                PluginError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "denied",
+                )),
+                ApplicationErrorKind::PermissionDenied,
+            ),
+            (
+                PluginError::Io(std::io::Error::other("disk gone")),
+                ApplicationErrorKind::Backend,
+            ),
+        ];
+
+        for (source, expected) in cases {
+            assert_eq!(plugin_package_error(source).kind, expected);
+        }
     }
 }

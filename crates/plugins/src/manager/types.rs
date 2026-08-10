@@ -7,6 +7,13 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+/// Validated package metadata shown before the caller approves installation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginInstallPreview {
+    pub manifest: crate::types::PluginManifest,
+    pub fingerprint: wirt::PackageFingerprint,
+}
+
 /// Information about a plugin for UI display
 #[derive(Clone, Debug)]
 pub struct PluginListItem {

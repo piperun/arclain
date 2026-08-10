@@ -2851,51 +2851,46 @@ impl ArclainApp {
     // sections above: a concurrent worktree may be touching this same
     // shared file.
 
-    /// Installs a plugin from a `.wasm` component file, returning the
-    /// installed plugin's id.
-    ///
-    /// Copies the component and a manifest derived from its own metadata
-    /// export into this application's plugins directory, then loads and
-    /// initializes it -- so the plugin is usable immediately, without a
-    /// restart. `InvalidInput` for a request that is malformed on its face
-    /// (empty path, a path over
-    /// [`crate::plugins::MAX_PLUGIN_INSTALL_PATH_BYTES`], or one that does
-    /// not name a `.wasm` file); `Plugin` for a file that is not a valid,
-    /// installable plugin -- missing, not a component, declaring an id
-    /// that is already installed, failing its own `init`; `Unsupported`
-    /// when this application has no plugin runtime at all.
-    ///
-    /// # Not a registered operation, and not cancellable
-    ///
-    /// Deliberately a plain awaited `Result` rather than an
-    /// [`crate::ids::OperationId`]: `PluginManager::install_plugin` is one
-    /// synchronous call with no interior cancellation point and no
-    /// progress to report, and it holds the plugin manager's lock from
-    /// start to finish, so there is nothing an operation id could observe,
-    /// interleave with, or interrupt. Handing one out would advertise a
-    /// cancellation this application cannot honor -- and a cancel that
-    /// "succeeded" after the component was already published and
-    /// registered would be a lie about the state of the user's plugins
-    /// directory, not merely a no-op.
-    ///
-    /// # The installed plugin is enabled for this run only
-    ///
-    /// A freshly installed plugin starts enabled in the live manager but
-    /// is **not** added to the persisted enabled-plugin set. Once that set
-    /// exists at all, `bootstrap` trusts it completely and disables
-    /// anything absent from it, so a plugin installed and never explicitly
-    /// toggled is disabled again at the next start. Call
-    /// [`Self::set_plugin_enabled`] after installing to make it durable.
-    /// Long-standing behavior, carried over unchanged rather than fixed
-    /// here: the pre-facade install path did exactly the same thing.
-    pub async fn install_plugin(
+    /// Validate a selected `.wirt` package and return the exact metadata and
+    /// fingerprint the renderer must present for approval.
+    pub async fn inspect_plugin_package(
         &self,
-        wasm_path: std::path::PathBuf,
-    ) -> Result<String, ApplicationError> {
-        crate::plugins::validate_install_path(&wasm_path)?;
+        package_path: std::path::PathBuf,
+    ) -> Result<crate::plugins::PluginInstallPreviewDto, ApplicationError> {
+        crate::plugins::validate_package_path(&package_path)?;
         self.dispatch_blocking(move |inner| {
             let manager = crate::plugins::require_manager(inner.plugin_manager())?;
-            crate::plugins::PluginSessionStore::install_plugin(&manager, &wasm_path)
+            crate::plugins::PluginSessionStore::inspect_plugin_package(&manager, &package_path)
+        })
+        .await?
+    }
+
+    /// Reopen and install a `.wirt` package only when it still matches the
+    /// fingerprint returned by [`Self::inspect_plugin_package`].
+    pub async fn install_plugin_package(
+        &self,
+        package_path: std::path::PathBuf,
+        expected_fingerprint: String,
+    ) -> Result<String, ApplicationError> {
+        crate::plugins::validate_package_path(&package_path)?;
+        let expected = expected_fingerprint
+            .parse::<wirt::PackageFingerprint>()
+            .map_err(|error| {
+                ApplicationError::new(
+                    ApplicationErrorKind::InvalidInput,
+                    "package fingerprint is malformed",
+                )
+                .with_diagnostic(error.to_string())
+                .with_recoverability(crate::error::Recoverability::UserAction)
+                .with_field("expected_fingerprint")
+            })?;
+        self.dispatch_blocking(move |inner| {
+            let manager = crate::plugins::require_manager(inner.plugin_manager())?;
+            crate::plugins::PluginSessionStore::install_plugin_package(
+                &manager,
+                &package_path,
+                &expected,
+            )
         })
         .await?
     }

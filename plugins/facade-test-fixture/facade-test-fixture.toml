@@ -5,7 +5,7 @@ abi = "0.1.0"
 id = "facade-test-fixture"
 name = "Facade Test Fixture"
 version = "0.1.0"
-description = "Deterministic plugin used only by arclain_app's own facade tests (crash containment, action ordering, refresh coalescing) -- not a user-facing plugin"
+description = "Deterministic plugin used only by arclain_app's own facade tests"
 author = "Arclain Team"
 
 # Two capabilities are declared so `PluginSummary.capabilities` has a

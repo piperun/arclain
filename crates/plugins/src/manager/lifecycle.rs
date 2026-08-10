@@ -1,27 +1,91 @@
 //! Plugin lifecycle management (loading, unloading, installation)
 
-use super::types::ManagedPlugin;
+use super::types::{ManagedPlugin, PluginInstallPreview};
 use super::PluginManager;
 use crate::loader::{DiscoveredPlugin, TrustedPluginRoot};
+#[cfg(test)]
+use crate::types::{CapabilitiesConfig, PluginInfoConfig, RateLimits};
 use crate::types::{
-    CapabilitiesConfig, PluginError, PluginId, PluginIdentityKey, PluginInfoConfig, PluginManifest,
-    PluginMetadata, RateLimits, Result,
+    PluginError, PluginId, PluginIdentityKey, PluginManifest, PluginMetadata, Result,
 };
 #[cfg(not(windows))]
 use cap_fs_ext::DirExt;
-use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+use cap_fs_ext::{FollowSymlinks, MetadataExt as CapMetadataExt, OpenOptionsFollowExt};
 #[cfg(windows)]
-use cap_fs_ext::{MetadataExt as CapMetadataExt, OpenOptionsMaybeDirExt, OsMetadataExt};
+use cap_fs_ext::{OpenOptionsMaybeDirExt, OsMetadataExt};
 #[cfg(windows)]
 use cap_std::fs::OpenOptionsExt as CapOpenOptionsExt;
 use cap_std::fs::{Dir, OpenOptions};
 use parking_lot::Mutex;
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+fn require_wirt_extension(path: &Path) -> Result<()> {
+    if path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("wirt"))
+    {
+        Ok(())
+    } else {
+        Err(PluginError::InvalidPackage(
+            "plugin package must have a .wirt extension".to_string(),
+        ))
+    }
+}
+
+fn plugin_io_error(context: impl std::fmt::Display, error: std::io::Error) -> PluginError {
+    PluginError::Io(std::io::Error::new(
+        error.kind(),
+        format!("{context}: {error}"),
+    ))
+}
+
+fn publish_error(destination: &Path, error: std::io::Error) -> PluginError {
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        PluginError::Conflict(format!(
+            "Plugin destination already exists: {}",
+            destination.display()
+        ))
+    } else {
+        plugin_io_error(
+            format_args!(
+                "Failed to atomically publish plugin to {}",
+                destination.display()
+            ),
+            error,
+        )
+    }
+}
+
+fn validate_guest_metadata(manifest: &PluginManifest, metadata: &PluginMetadata) -> Result<()> {
+    let expected = &manifest.plugin;
+    let mismatch = if metadata.id != expected.id {
+        Some("id")
+    } else if metadata.name != expected.name {
+        Some("name")
+    } else if metadata.version != expected.version {
+        Some("version")
+    } else if metadata.author != expected.author {
+        Some("author")
+    } else if metadata.description != expected.description {
+        Some("description")
+    } else {
+        None
+    };
+    if let Some(field) = mismatch {
+        return Err(PluginError::InvalidManifest(format!(
+            "guest metadata does not match manifest field {field}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 pub(super) fn manifest_from_metadata(
     plugin_id: &PluginId,
     metadata: PluginMetadata,
@@ -44,6 +108,7 @@ pub(super) fn manifest_from_metadata(
     }
 }
 
+#[cfg(test)]
 pub(super) fn serialize_manifest(manifest: &PluginManifest) -> Result<String> {
     toml::to_string_pretty(manifest).map_err(|error| {
         PluginError::InvalidManifest(format!("Failed to serialize plugin manifest: {error}"))
@@ -53,13 +118,14 @@ pub(super) fn serialize_manifest(manifest: &PluginManifest) -> Result<String> {
 pub(super) struct StagedPluginPackage {
     trusted_root: Arc<TrustedPluginRoot>,
     staging_name: String,
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_vendor = "apple",
-        target_os = "redox"
-    ))]
+    #[cfg(not(windows))]
     staging_dir: Dir,
+    #[cfg(not(windows))]
+    artifact_dir: Dir,
+    #[cfg(not(windows))]
+    staging_identity: DirectoryIdentity,
+    #[cfg(not(windows))]
+    artifact_identity: DirectoryIdentity,
     #[cfg(windows)]
     staging_dir: Option<Dir>,
     #[cfg(windows)]
@@ -71,48 +137,108 @@ pub(super) struct StagedPluginPackage {
     staging_path: PathBuf,
     artifact: PathBuf,
     identity_key: PluginIdentityKey,
+    staged_files: Vec<OsString>,
     published: bool,
 }
 
 impl StagedPluginPackage {
+    #[cfg(test)]
     pub(super) fn new(
         trusted_root: Arc<TrustedPluginRoot>,
         plugin_id: &PluginId,
         wasm_bytes: &[u8],
         manifest: &PluginManifest,
     ) -> Result<Self> {
+        let manifest_content = serialize_manifest(manifest)?;
+        Self::new_inner(
+            trusted_root,
+            plugin_id,
+            wasm_bytes,
+            manifest_content.as_bytes(),
+            None,
+        )
+    }
+
+    pub(super) fn new_package(
+        trusted_root: Arc<TrustedPluginRoot>,
+        plugin_id: &PluginId,
+        component: &[u8],
+        manifest_bytes: &[u8],
+        fingerprint: &wirt::PackageFingerprint,
+    ) -> Result<Self> {
+        Self::new_inner(
+            trusted_root,
+            plugin_id,
+            component,
+            manifest_bytes,
+            Some(fingerprint),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_package_with_after_step(
+        trusted_root: Arc<TrustedPluginRoot>,
+        plugin_id: &PluginId,
+        component: &[u8],
+        manifest_bytes: &[u8],
+        fingerprint: &wirt::PackageFingerprint,
+        after_step: impl FnMut(&str) -> std::io::Result<()>,
+    ) -> Result<Self> {
+        Self::new_inner_with_after_step(
+            trusted_root,
+            plugin_id,
+            component,
+            manifest_bytes,
+            Some(fingerprint),
+            after_step,
+        )
+    }
+
+    fn new_inner(
+        trusted_root: Arc<TrustedPluginRoot>,
+        plugin_id: &PluginId,
+        wasm_bytes: &[u8],
+        manifest_bytes: &[u8],
+        fingerprint: Option<&wirt::PackageFingerprint>,
+    ) -> Result<Self> {
+        Self::new_inner_with_after_step(
+            trusted_root,
+            plugin_id,
+            wasm_bytes,
+            manifest_bytes,
+            fingerprint,
+            |_| Ok(()),
+        )
+    }
+
+    fn new_inner_with_after_step(
+        trusted_root: Arc<TrustedPluginRoot>,
+        plugin_id: &PluginId,
+        wasm_bytes: &[u8],
+        manifest_bytes: &[u8],
+        fingerprint: Option<&wirt::PackageFingerprint>,
+        mut after_step: impl FnMut(&str) -> std::io::Result<()>,
+    ) -> Result<Self> {
         trusted_root.revalidate_current_path()?;
         let staging_name = create_staging_directory(trusted_root.dir())?;
-        let staging_dir =
-            open_staged_directory(trusted_root.dir(), &staging_name, false).map_err(|error| {
-                PluginError::LoadError(format!("Failed to open plugin staging directory: {error}"))
-            })?;
+        let mut staging_guard = EmptyDirectoryEntryGuard::new(trusted_root.dir(), &staging_name);
+        after_step("staging directory").map_err(|error| {
+            plugin_io_error("Injected failure after staging directory creation", error)
+        })?;
+        let staging_dir = open_staged_directory(trusted_root.dir(), &staging_name, false)
+            .map_err(|error| plugin_io_error("Failed to open plugin staging directory", error))?;
         let identity_key = plugin_id.identity_key();
-        staging_dir
-            .create_dir(identity_key.as_str())
-            .map_err(|error| {
-                PluginError::LoadError(format!("Failed to create staged plugin directory: {error}"))
-            })?;
+        create_private_directory(&staging_dir, identity_key.as_str())
+            .map_err(|error| plugin_io_error("Failed to create staged plugin directory", error))?;
+        let mut artifact_guard = EmptyDirectoryEntryGuard::new(&staging_dir, identity_key.as_str());
+        after_step("artifact directory").map_err(|error| {
+            plugin_io_error("Injected failure after artifact directory creation", error)
+        })?;
         let artifact_dir = open_staged_directory(&staging_dir, identity_key.as_str(), false)
-            .map_err(|error| {
-                PluginError::LoadError(format!("Failed to open staged plugin directory: {error}"))
-            })?;
+            .map_err(|error| plugin_io_error("Failed to open staged plugin directory", error))?;
         let staging_path = trusted_root.configured_path().join(&staging_name);
         let artifact_relative = PathBuf::from(&staging_name).join(identity_key.as_str());
         let artifact = trusted_root.configured_path().join(&artifact_relative);
-        write_new_file(
-            &artifact_dir,
-            &format!("{}.wasm", identity_key.as_str()),
-            wasm_bytes,
-            "plugin WASM",
-        )?;
-        let manifest_content = serialize_manifest(manifest)?;
-        write_new_file(
-            &artifact_dir,
-            &format!("{}.toml", identity_key.as_str()),
-            manifest_content.as_bytes(),
-            "plugin manifest",
-        )?;
 
         #[cfg(windows)]
         let staging_identity =
@@ -120,17 +246,27 @@ impl StagedPluginPackage {
         #[cfg(windows)]
         let artifact_identity =
             windows_directory_identity(&artifact_dir, "staged plugin directory")?;
+        #[cfg(not(windows))]
+        let staging_identity = directory_identity(&staging_dir, "plugin staging directory")?;
+        #[cfg(not(windows))]
+        let artifact_identity = directory_identity(&artifact_dir, "staged plugin directory")?;
 
-        let staged = Self {
+        artifact_guard.disarm();
+        staging_guard.disarm();
+        drop(artifact_guard);
+        drop(staging_guard);
+
+        let mut staged = Self {
             trusted_root,
             staging_name,
-            #[cfg(any(
-                target_os = "linux",
-                target_os = "android",
-                target_vendor = "apple",
-                target_os = "redox"
-            ))]
+            #[cfg(not(windows))]
             staging_dir,
+            #[cfg(not(windows))]
+            artifact_dir,
+            #[cfg(not(windows))]
+            staging_identity,
+            #[cfg(not(windows))]
+            artifact_identity,
             #[cfg(windows)]
             staging_dir: Some(staging_dir),
             #[cfg(windows)]
@@ -142,8 +278,34 @@ impl StagedPluginPackage {
             staging_path,
             artifact,
             identity_key,
+            staged_files: Vec::with_capacity(if fingerprint.is_some() { 3 } else { 2 }),
             published: false,
         };
+
+        staged.write_new_file(
+            &format!("{}.wasm", staged.identity_key.as_str()),
+            wasm_bytes,
+            "plugin WASM",
+        )?;
+        after_step("plugin WASM")
+            .map_err(|error| plugin_io_error("Injected failure after plugin WASM", error))?;
+        staged.write_new_file(
+            &format!("{}.toml", staged.identity_key.as_str()),
+            manifest_bytes,
+            "plugin manifest",
+        )?;
+        after_step("plugin manifest")
+            .map_err(|error| plugin_io_error("Injected failure after plugin manifest", error))?;
+        if let Some(fingerprint) = fingerprint {
+            staged.write_new_file(
+                "package.sha256",
+                fingerprint.as_str().as_bytes(),
+                "package fingerprint",
+            )?;
+            after_step("package fingerprint").map_err(|error| {
+                plugin_io_error("Injected failure after package fingerprint", error)
+            })?;
+        }
 
         Ok(staged)
     }
@@ -158,9 +320,43 @@ impl StagedPluginPackage {
             .join(format!("{}.toml", self.identity_key.as_str()))
     }
 
+    fn artifact_directory(&self) -> Result<&Dir> {
+        #[cfg(not(windows))]
+        {
+            Ok(&self.artifact_dir)
+        }
+        #[cfg(windows)]
+        {
+            self.artifact_dir.as_ref().ok_or_else(|| {
+                PluginError::LoadError("Staged plugin directory handle is unavailable".to_string())
+            })
+        }
+    }
+
+    fn write_new_file(&mut self, name: &str, bytes: &[u8], kind: &str) -> Result<()> {
+        let mut options = OpenOptions::new();
+        options
+            .write(true)
+            .create_new(true)
+            .follow(FollowSymlinks::No);
+        let mut file = self
+            .artifact_directory()?
+            .open_with(name, &options)
+            .map_err(|error| {
+                plugin_io_error(format_args!("Failed to create staged {kind}"), error)
+            })?;
+        self.staged_files.push(OsString::from(name));
+        file.write_all(bytes).map_err(|error| {
+            plugin_io_error(format_args!("Failed to write staged {kind}"), error)
+        })?;
+        file.sync_all()
+            .map_err(|error| plugin_io_error(format_args!("Failed to flush staged {kind}"), error))
+    }
+
     pub(super) fn publish(mut self, destination: &Path) -> Result<()> {
         self.validate_publish_destination(destination)?;
         self.prepare_windows_artifact_for_mutation()?;
+        self.prepare_unix_artifact_for_mutation()?;
         rename_staged_no_replace(&self)?;
         self.published = true;
         Ok(())
@@ -177,6 +373,9 @@ impl StagedPluginPackage {
         before_rename(&self).map_err(|error| {
             PluginError::LoadError(format!("Injected pre-publish failure: {error}"))
         })?;
+        // On Unix, this is the final name-to-identity check. There is
+        // intentionally no test hook between it and the no-replace rename.
+        self.prepare_unix_artifact_for_mutation()?;
         rename_staged_no_replace(&self)?;
         self.published = true;
         Ok(())
@@ -219,9 +418,10 @@ impl StagedPluginPackage {
         })?;
         let artifact_dir = open_staged_directory(staging_dir, self.identity_key.as_str(), true)
             .map_err(|error| {
-                PluginError::LoadError(format!(
-                    "Failed to open staged plugin directory for publication: {error}"
-                ))
+                plugin_io_error(
+                    "Failed to open staged plugin directory for publication",
+                    error,
+                )
             })?;
         validate_windows_directory_handle(
             &artifact_dir,
@@ -229,9 +429,10 @@ impl StagedPluginPackage {
             "staged plugin directory",
         )
         .map_err(|error| {
-            PluginError::LoadError(format!(
-                "Failed to validate staged plugin directory for publication: {error}"
-            ))
+            plugin_io_error(
+                "Failed to validate staged plugin directory for publication",
+                error,
+            )
         })?;
         self.artifact_dir = Some(artifact_dir);
         Ok(())
@@ -255,6 +456,41 @@ impl StagedPluginPackage {
         Ok(())
     }
 
+    #[cfg(windows)]
+    fn prepare_unix_artifact_for_mutation(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    fn prepare_unix_artifact_for_mutation(&mut self) -> Result<()> {
+        validate_directory_handle(
+            &self.staging_dir,
+            self.staging_identity,
+            "plugin staging directory",
+        )
+        .map_err(|error| plugin_io_error("Failed to validate plugin staging directory", error))?;
+        validate_directory_handle(
+            &self.artifact_dir,
+            self.artifact_identity,
+            "staged plugin directory",
+        )
+        .map_err(|error| plugin_io_error("Failed to validate staged plugin directory", error))?;
+        let current = open_staged_directory(&self.staging_dir, self.identity_key.as_str(), false)
+            .map_err(|error| {
+            plugin_io_error("Failed to re-open staged plugin directory", error)
+        })?;
+        validate_directory_handle(
+            &current,
+            self.artifact_identity,
+            "staged plugin directory entry",
+        )
+        .map_err(|error| {
+            plugin_io_error("Failed to validate staged plugin directory entry", error)
+        })?;
+        self.artifact_dir = current;
+        Ok(())
+    }
+
     fn validate_publish_destination(&self, destination: &Path) -> Result<()> {
         let destination_parent = destination.parent().ok_or_else(|| {
             PluginError::LoadError("Plugin destination has no parent directory".to_string())
@@ -274,17 +510,20 @@ impl StagedPluginPackage {
             .symlink_metadata(self.identity_key.as_str())
         {
             Ok(_) => {
-                return Err(PluginError::LoadError(format!(
+                return Err(PluginError::Conflict(format!(
                     "Plugin destination already exists: {}",
                     destination.display()
                 )));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                return Err(PluginError::LoadError(format!(
-                    "Failed to inspect plugin destination {}: {error}",
-                    destination.display()
-                )));
+                return Err(plugin_io_error(
+                    format_args!(
+                        "Failed to inspect plugin destination {}",
+                        destination.display()
+                    ),
+                    error,
+                ));
             }
         }
         Ok(())
@@ -346,7 +585,7 @@ impl StagedPluginPackage {
                 self.artifact_identity,
                 "staged plugin directory",
             )?;
-            cleanup_windows_staged_files(artifact_dir, &self.identity_key)?;
+            cleanup_windows_staged_files(artifact_dir, &self.staged_files)?;
 
             let artifact_dir = self.artifact_dir.take().ok_or_else(|| {
                 std::io::Error::other("staged plugin directory handle is unavailable")
@@ -367,7 +606,68 @@ impl StagedPluginPackage {
 
     #[cfg(not(windows))]
     fn cleanup_staging(&mut self) -> std::io::Result<()> {
-        self.trusted_root.dir().remove_dir_all(&self.staging_name)
+        validate_directory_handle(
+            &self.staging_dir,
+            self.staging_identity,
+            "plugin staging directory",
+        )?;
+
+        if self.published {
+            ensure_directory_empty(&self.staging_dir, "plugin staging directory")?;
+        } else {
+            self.prepare_unix_artifact_for_mutation()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            cleanup_staged_files(&self.artifact_dir, &self.staged_files)?;
+
+            let current =
+                open_staged_directory(&self.staging_dir, self.identity_key.as_str(), false)?;
+            validate_directory_handle(
+                &current,
+                self.artifact_identity,
+                "staged plugin directory entry",
+            )?;
+            drop(current);
+            self.staging_dir.remove_dir(self.identity_key.as_str())?;
+            ensure_directory_empty(&self.staging_dir, "plugin staging directory")?;
+        }
+
+        let current = open_staged_directory(self.trusted_root.dir(), &self.staging_name, false)?;
+        validate_directory_handle(
+            &current,
+            self.staging_identity,
+            "plugin staging directory entry",
+        )?;
+        ensure_directory_empty(&current, "plugin staging directory entry")?;
+        drop(current);
+        self.trusted_root.dir().remove_dir(&self.staging_name)
+    }
+}
+
+struct EmptyDirectoryEntryGuard<'a> {
+    parent: &'a Dir,
+    name: OsString,
+    armed: bool,
+}
+
+impl<'a> EmptyDirectoryEntryGuard<'a> {
+    fn new(parent: &'a Dir, name: impl Into<OsString>) -> Self {
+        Self {
+            parent,
+            name: name.into(),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for EmptyDirectoryEntryGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.parent.remove_dir(&self.name);
+        }
     }
 }
 
@@ -380,19 +680,73 @@ fn create_staging_directory(root: &Dir) -> Result<String> {
             ".arclain-plugin-install-{}-{sequence:016x}",
             std::process::id()
         );
-        match root.create_dir(&name) {
+        match create_private_directory(root, &name) {
             Ok(()) => return Ok(name),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
-                return Err(PluginError::LoadError(format!(
-                    "Failed to create plugin staging directory: {error}"
-                )));
+                return Err(plugin_io_error(
+                    "Failed to create plugin staging directory",
+                    error,
+                ));
             }
         }
     }
-    Err(PluginError::LoadError(
-        "Failed to allocate a unique plugin staging directory".to_string(),
+    Err(plugin_io_error(
+        "Failed to allocate a unique plugin staging directory",
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "all staging directory candidates already exist",
+        ),
     ))
+}
+
+fn create_private_directory(parent: &Dir, name: impl AsRef<Path>) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::{DirBuilder, DirBuilderExt};
+
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700);
+        parent.create_dir_with(name, &builder)
+    }
+    #[cfg(not(unix))]
+    {
+        parent.create_dir(name)
+    }
+}
+
+#[cfg(not(windows))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DirectoryIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(not(windows))]
+fn directory_identity(directory: &Dir, kind: &str) -> std::io::Result<DirectoryIdentity> {
+    let metadata = directory.dir_metadata()?;
+    if !metadata.is_dir() {
+        return Err(std::io::Error::other(format!("{kind} is not a directory")));
+    }
+    Ok(DirectoryIdentity {
+        device: CapMetadataExt::dev(&metadata),
+        inode: CapMetadataExt::ino(&metadata),
+    })
+}
+
+#[cfg(not(windows))]
+fn validate_directory_handle(
+    directory: &Dir,
+    expected: DirectoryIdentity,
+    kind: &str,
+) -> std::io::Result<()> {
+    let actual = directory_identity(directory, kind)?;
+    if actual != expected {
+        return Err(std::io::Error::other(format!(
+            "{kind} identity changed after it was opened"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -488,17 +842,14 @@ fn ensure_windows_directory_empty(directory: &Dir, kind: &str) -> std::io::Resul
 #[cfg(windows)]
 fn cleanup_windows_staged_files(
     artifact_dir: &Dir,
-    identity_key: &PluginIdentityKey,
+    staged_files: &[OsString],
 ) -> std::io::Result<()> {
     let mut actual = artifact_dir
         .entries()?
         .map(|entry| entry.map(|entry| entry.file_name()))
         .collect::<std::io::Result<Vec<_>>>()?;
     actual.sort();
-    let mut expected = vec![
-        std::ffi::OsString::from(format!("{}.toml", identity_key.as_str())),
-        std::ffi::OsString::from(format!("{}.wasm", identity_key.as_str())),
-    ];
+    let mut expected = staged_files.to_vec();
     expected.sort();
     if actual != expected {
         return Err(std::io::Error::other(
@@ -512,6 +863,43 @@ fn cleanup_windows_staged_files(
         drop(file);
     }
     ensure_windows_directory_empty(artifact_dir, "staged plugin directory")
+}
+
+#[cfg(not(windows))]
+fn ensure_directory_empty(directory: &Dir, kind: &str) -> std::io::Result<()> {
+    if directory.entries()?.next().transpose()?.is_some() {
+        return Err(std::io::Error::other(format!(
+            "{kind} contains an unexpected entry; refusing recursive cleanup"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn cleanup_staged_files(artifact_dir: &Dir, staged_files: &[OsString]) -> std::io::Result<()> {
+    let mut actual = artifact_dir
+        .entries()?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    actual.sort();
+    let mut expected = staged_files.to_vec();
+    expected.sort();
+    if actual != expected {
+        return Err(std::io::Error::other(
+            "staged plugin directory contents changed; refusing cleanup",
+        ));
+    }
+
+    for file_name in expected {
+        let metadata = artifact_dir.symlink_metadata(&file_name)?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::other(
+                "staged plugin file is not a non-symlink regular file",
+            ));
+        }
+        artifact_dir.remove_file(&file_name)?;
+    }
+    ensure_directory_empty(artifact_dir, "staged plugin directory")
 }
 
 #[cfg(windows)]
@@ -571,22 +959,6 @@ fn mark_windows_handle_for_deletion(
     }
 }
 
-fn write_new_file(directory: &Dir, name: &str, bytes: &[u8], kind: &str) -> Result<()> {
-    let mut options = OpenOptions::new();
-    options
-        .write(true)
-        .create_new(true)
-        .follow(FollowSymlinks::No);
-    let mut file = directory.open_with(name, &options).map_err(|error| {
-        PluginError::LoadError(format!("Failed to create staged {kind}: {error}"))
-    })?;
-    file.write_all(bytes).map_err(|error| {
-        PluginError::LoadError(format!("Failed to write staged {kind}: {error}"))
-    })?;
-    file.sync_all()
-        .map_err(|error| PluginError::LoadError(format!("Failed to flush staged {kind}: {error}")))
-}
-
 #[cfg(any(
     target_os = "linux",
     target_os = "android",
@@ -594,6 +966,10 @@ fn write_new_file(directory: &Dir, name: &str, bytes: &[u8], kind: &str) -> Resu
     target_os = "redox"
 ))]
 fn rename_staged_no_replace(staged: &StagedPluginPackage) -> Result<()> {
+    let destination = staged
+        .trusted_root
+        .configured_path()
+        .join(staged.identity_key.as_str());
     rustix::fs::renameat_with(
         &staged.staging_dir,
         staged.identity_key.as_str(),
@@ -602,20 +978,15 @@ fn rename_staged_no_replace(staged: &StagedPluginPackage) -> Result<()> {
         rustix::fs::RenameFlags::NOREPLACE,
     )
     .map_err(std::io::Error::from)
-    .map_err(|error| {
-        PluginError::LoadError(format!(
-            "Failed to atomically publish plugin to {}: {error}",
-            staged
-                .trusted_root
-                .configured_path()
-                .join(staged.identity_key.as_str())
-                .display()
-        ))
-    })
+    .map_err(|error| publish_error(&destination, error))
 }
 
 #[cfg(windows)]
 fn rename_staged_no_replace(staged: &StagedPluginPackage) -> Result<()> {
+    let destination = staged
+        .trusted_root
+        .configured_path()
+        .join(staged.identity_key.as_str());
     let staging_dir = staged.staging_dir.as_ref().ok_or_else(|| {
         PluginError::LoadError("Plugin staging directory handle is unavailable".to_string())
     })?;
@@ -627,36 +998,19 @@ fn rename_staged_no_replace(staged: &StagedPluginPackage) -> Result<()> {
         staged.staging_identity,
         "plugin staging directory",
     )
-    .map_err(|error| {
-        PluginError::LoadError(format!(
-            "Failed to validate plugin staging directory: {error}"
-        ))
-    })?;
+    .map_err(|error| plugin_io_error("Failed to validate plugin staging directory", error))?;
     validate_windows_directory_handle(
         artifact_dir,
         staged.artifact_identity,
         "staged plugin directory",
     )
-    .map_err(|error| {
-        PluginError::LoadError(format!(
-            "Failed to validate staged plugin directory: {error}"
-        ))
-    })?;
+    .map_err(|error| plugin_io_error("Failed to validate staged plugin directory", error))?;
     rename_windows_handle_relative_no_replace(
         artifact_dir,
         staged.trusted_root.dir(),
         std::ffi::OsStr::new(staged.identity_key.as_str()),
     )
-    .map_err(|error| {
-        PluginError::LoadError(format!(
-            "Failed to atomically publish plugin to {}: {error}",
-            staged
-                .trusted_root
-                .configured_path()
-                .join(staged.identity_key.as_str())
-                .display()
-        ))
-    })
+    .map_err(|error| publish_error(&destination, error))
 }
 
 #[cfg(windows)]
@@ -725,16 +1079,12 @@ pub(super) fn rename_windows_handle_relative_no_replace(
     target_os = "redox"
 )))]
 fn rename_staged_no_replace(staged: &StagedPluginPackage) -> Result<()> {
-    arclain_core::utilities::rename_no_replace(
-        &staged.artifact,
-        &staged
-            .trusted_root
-            .configured_path()
-            .join(staged.identity_key.as_str()),
-    )
-    .map_err(|error| {
-        PluginError::LoadError(format!("Failed to atomically publish plugin: {error}"))
-    })
+    let destination = staged
+        .trusted_root
+        .configured_path()
+        .join(staged.identity_key.as_str());
+    arclain_core::utilities::rename_no_replace(&staged.artifact, &destination)
+        .map_err(|error| publish_error(&destination, error))
 }
 
 fn on_disk_identity_collision(
@@ -742,16 +1092,18 @@ fn on_disk_identity_collision(
     identity_key: &PluginIdentityKey,
 ) -> Result<Option<PathBuf>> {
     let entries = trusted_root.dir().entries().map_err(|error| {
-        PluginError::LoadError(format!(
-            "Failed to scan plugin root {}: {error}",
-            trusted_root.configured_path().display()
-        ))
+        plugin_io_error(
+            format_args!(
+                "Failed to scan plugin root {}",
+                trusted_root.configured_path().display()
+            ),
+            error,
+        )
     })?;
 
     for entry in entries {
-        let entry = entry.map_err(|error| {
-            PluginError::LoadError(format!("Failed to inspect plugin root entry: {error}"))
-        })?;
+        let entry =
+            entry.map_err(|error| plugin_io_error("Failed to inspect plugin root entry", error))?;
         let file_name = entry.file_name();
         let Some(file_name) = file_name.to_str() else {
             continue;
@@ -776,6 +1128,85 @@ fn on_disk_identity_collision(
 }
 
 impl PluginManager {
+    /// Validate and preview a selected package without initializing or
+    /// registering it.
+    pub fn inspect_plugin_package(&self, package_path: &Path) -> Result<PluginInstallPreview> {
+        require_wirt_extension(package_path)?;
+        let package = self.loader.read_package_file(package_path)?;
+        let loaded = self.loader.load_wasm(&package.component)?;
+        let mut instance = loaded.instantiate_for_metadata_validation()?;
+        let metadata_result = instance.get_metadata();
+        let cleanup_result = instance.cleanup();
+        let metadata = metadata_result?;
+        cleanup_result?;
+        validate_guest_metadata(&package.manifest, &metadata)?;
+        Ok(PluginInstallPreview {
+            manifest: package.manifest,
+            fingerprint: package.fingerprint,
+        })
+    }
+
+    /// Install a selected package only if it is byte-identical to the one
+    /// the caller approved during inspection.
+    pub fn install_plugin_package(
+        &mut self,
+        package_path: &Path,
+        expected: &wirt::PackageFingerprint,
+    ) -> Result<String> {
+        require_wirt_extension(package_path)?;
+        let package = self.loader.read_package_file(package_path)?;
+        if &package.fingerprint != expected {
+            return Err(PluginError::Conflict(
+                "selected package changed after approval".to_string(),
+            ));
+        }
+        let plugin_id = PluginId::parse(package.manifest.plugin.id.clone())?;
+        let identity_key = plugin_id.identity_key();
+        if self.is_identity_registered(&identity_key) {
+            return Err(PluginError::Conflict(format!(
+                "Plugin '{}' is already installed",
+                plugin_id
+            )));
+        }
+        if self.loader.discover_plugins()?.iter().any(|artifact| {
+            PluginIdentityKey::parse(&artifact.manifest.plugin.id)
+                .is_ok_and(|candidate| candidate == identity_key)
+        }) {
+            return Err(PluginError::Conflict(format!(
+                "Plugin '{}' collides with an existing on-disk identity",
+                plugin_id
+            )));
+        }
+        if let Some(existing) =
+            on_disk_identity_collision(&self.loader.trusted_root(), &identity_key)?
+        {
+            return Err(PluginError::Conflict(format!(
+                "Plugin '{}' collides with an existing on-disk identity at {}",
+                plugin_id,
+                existing.display()
+            )));
+        }
+
+        let plugin_dir = identity_key.join_under(self.plugins_dir());
+        let staged = StagedPluginPackage::new_package(
+            self.loader.trusted_root(),
+            &plugin_id,
+            &package.component,
+            &package.manifest_bytes,
+            &package.fingerprint,
+        )?;
+        let discovered = self
+            .loader
+            .discover_plugin_from_folder(&staged.manifest_path())?;
+        let managed = self.prepare_plugin(&discovered)?;
+        if let Err(error) = staged.publish(&plugin_dir) {
+            self.discard_prepared_plugin(plugin_id.as_str(), managed);
+            return Err(error);
+        }
+        self.register_prepared_plugin(identity_key, managed);
+        Ok(plugin_id.as_str().to_owned())
+    }
+
     /// Initialize the plugin manager and load discovered plugins
     pub fn init(&mut self) -> Result<()> {
         let plugins = self.loader.discover_plugins()?;
@@ -844,6 +1275,17 @@ impl PluginManager {
             &self.plugin_log_dir,
         )?;
 
+        let metadata = match instance.get_metadata().and_then(|metadata| {
+            validate_guest_metadata(&discovered.manifest, &metadata)?;
+            Ok(metadata)
+        }) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                let _ = instance.cleanup();
+                return Err(error);
+            }
+        };
+
         // Inject optional services
         #[cfg(feature = "gameta")]
         if let Some(ref lib_svc) = self.library_service {
@@ -873,18 +1315,9 @@ impl PluginManager {
             if let Some(ref client) = self.async_http_client {
                 client.remove_plugin_configuration(&plugin_id);
             }
+            let _ = instance.cleanup();
             return Err(error);
         }
-
-        // Get metadata from manifest (WIT get_metadata is not yet implemented and returns defaults)
-        let manifest = &discovered.manifest;
-        let metadata = PluginMetadata {
-            id: manifest.plugin.id.clone(),
-            name: manifest.plugin.name.clone(),
-            version: manifest.plugin.version.clone(),
-            description: manifest.plugin.description.clone(),
-            author: manifest.plugin.author.clone(),
-        };
 
         // Snapshot the dirty handle BEFORE moving the instance into the
         // Arc<Mutex<...>> — saves a redundant lock just to clone an Arc.
@@ -993,7 +1426,8 @@ impl PluginManager {
     /// 3. Create a directory in plugins/ with the plugin ID
     /// 4. Copy `<id>.wasm` and create `<id>.toml`
     /// 5. Load the plugin into the manager
-    pub fn install_plugin(&mut self, wasm_path: &std::path::Path) -> Result<String> {
+    #[cfg(test)]
+    pub(crate) fn install_plugin(&mut self, wasm_path: &std::path::Path) -> Result<String> {
         info!("Installing plugin from: {}", wasm_path.display());
 
         // Validate file exists and is a .wasm file

@@ -14,6 +14,12 @@ pub enum PluginError {
     CapabilityDenied(PluginCapability),
     #[error("Invalid manifest: {0}")]
     InvalidManifest(String),
+    #[error("Invalid Wirt package: {0}")]
+    InvalidPackage(String),
+    #[error("Unsupported plugin package: {0}")]
+    Unsupported(String),
+    #[error("Plugin package conflict: {0}")]
+    Conflict(String),
     #[error("Plugin not found: {0}")]
     NotFound(String),
     #[error("WASM error: {0}")]

@@ -46,8 +46,9 @@
 //! fetch_plugin_image}` for the plugin-scoped namespace and
 //! `ArclainApp::{read_host_image, fetch_host_image, discard_host_image}`
 //! for the host-owned one, kept apart by [`plugins::is_plugin_image_key`].
-//! It further owns plugin *management*: `ArclainApp::install_plugin`, and
-//! the two read models an application frame draws its plugin-owned
+//! It further owns plugin *management* through
+//! `ArclainApp::{inspect_plugin_package, install_plugin_package}`, and the
+//! two read models an application frame draws its plugin-owned
 //! surfaces from -- [`plugins::PluginChromeSnapshot`] (status counts plus
 //! the live top-tab strip, via `ArclainApp::plugin_chrome`) and
 //! [`plugins::PluginNetworkLogEntryDto`] (via

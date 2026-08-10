@@ -602,14 +602,10 @@ async fn execute(
                 result,
             }
         }
-        PluginUiRequest::Install { wasm_path } => {
-            let result = facade
-                .install_plugin(wasm_path)
-                .await
-                .map(|_| ())
-                .map_err(|error| error.summary);
-            PluginUiResult::MutationFinished { request_id, result }
-        }
+        PluginUiRequest::Install { .. } => PluginUiResult::MutationFinished {
+            request_id,
+            result: Err("Plugin package approval is required before installation".to_string()),
+        },
     }
 }
 
@@ -720,6 +716,28 @@ mod tests {
         assert_eq!(plugins[0].capabilities, vec!["Network"]);
         assert_eq!(plugins[0].visibility.get("toolbar"), Some(&true));
         assert_eq!(plugins[0].status, PluginStatus::Ready);
+    }
+
+    #[test]
+    fn legacy_install_request_fails_closed_until_package_approval_exists() {
+        let temp = tempfile::tempdir().expect("temporary profile");
+        let facade = crate::test_support::bootstrap_test_facade(&temp);
+        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+        let result = runtime.block_on(execute(
+            Some(facade),
+            RequestId(40),
+            PluginUiRequest::Install {
+                wasm_path: temp.path().join("legacy.wasm"),
+            },
+        ));
+
+        assert!(matches!(
+            result,
+            PluginUiResult::MutationFinished {
+                request_id: RequestId(40),
+                result: Err(error),
+            } if error == "Plugin package approval is required before installation"
+        ));
     }
 
     #[test]

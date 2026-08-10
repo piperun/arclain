@@ -5,8 +5,8 @@ use crate::types::{PluginManifest, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use wirt::DiscoveredPlugin;
 pub(crate) use wirt::TrustedPluginRoot;
+pub use wirt::{DiscoveredPlugin, PluginArtifact};
 
 /// Discovers and loads plugins through Wirt's product-neutral loader.
 pub struct PluginLoader {
@@ -39,8 +39,13 @@ impl PluginLoader {
         self.inner.load_wasm(bytes).map(LoadedPlugin::from)
     }
 
+    #[cfg(test)]
     pub(crate) fn read_wasm_file(&self, wasm_path: &Path) -> Result<Vec<u8>> {
         self.inner.read_wasm_file(wasm_path)
+    }
+
+    pub(crate) fn read_package_file(&self, package_path: &Path) -> Result<wirt::ValidatedPackage> {
+        self.inner.read_package_file(package_path)
     }
 
     pub(crate) fn discover_plugin_from_folder(

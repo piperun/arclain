@@ -1238,9 +1238,9 @@ pub(super) async fn flush_plugin_settings(inner: &Arc<AppRuntime>, plugin_id: &s
 /// ever happens, and then the write is simply lost. Three guest entries
 /// have no pull of their own and are only reachable this way:
 ///
-/// - `install_plugin`, whose `init` runs in the guest. Install a plugin
-///   that records something at load, close the application, and without
-///   this the record is gone.
+/// - `install_plugin_package`, whose approved package's `init` runs in the
+///   guest. Install a plugin that records something at load, close the
+///   application, and without this the record is gone.
 /// - the top-tab query behind `plugin_chrome`, on a cache miss.
 /// - the `OnArchiveOpen` event worker inside `arclain_plugins`, which runs
 ///   enabled guests with no plugin session involved at all -- the ordinary

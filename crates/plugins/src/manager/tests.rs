@@ -26,6 +26,21 @@ fn create_manager_test_directory_link(target: &std::path::Path, link: &std::path
     std::os::unix::fs::symlink(target, link).unwrap();
 }
 
+#[cfg(unix)]
+fn create_manager_test_file_link(target: &std::path::Path, link: &std::path::Path) -> bool {
+    std::os::unix::fs::symlink(target, link).unwrap();
+    true
+}
+
+#[cfg(windows)]
+fn create_manager_test_file_link(target: &std::path::Path, link: &std::path::Path) -> bool {
+    match std::os::windows::fs::symlink_file(target, link) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(error) => panic!("failed to create test file symlink: {error}"),
+    }
+}
+
 #[cfg(windows)]
 fn create_manager_test_directory_link(target: &std::path::Path, link: &std::path::Path) {
     let output = std::process::Command::new("cmd")
@@ -143,6 +158,263 @@ fn test_list_plugins_empty() {
     assert_eq!(manager.list_plugins().len(), 0);
 }
 
+fn ui_demo_package(path: &std::path::Path) -> wirt::PackageFingerprint {
+    let manifest = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.toml"
+    ));
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ));
+    let bytes = wirt::package_bytes(manifest, component).expect("valid ui-demo package");
+    let fingerprint = wirt::PackageFingerprint::sha256(&bytes);
+    std::fs::write(path, bytes).unwrap();
+    fingerprint
+}
+
+fn ui_demo_package_with_manifest(
+    path: &std::path::Path,
+    mutate: impl FnOnce(&mut crate::types::PluginManifest),
+) -> wirt::PackageFingerprint {
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.toml"
+    ));
+    let mut manifest: crate::types::PluginManifest = toml::from_str(source).unwrap();
+    mutate(&mut manifest);
+    let manifest = toml::to_string(&manifest).unwrap();
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ));
+    let bytes = wirt::package_bytes(manifest.as_bytes(), component).unwrap();
+    let fingerprint = wirt::PackageFingerprint::sha256(&bytes);
+    std::fs::write(path, bytes).unwrap();
+    fingerprint
+}
+
+#[test]
+fn package_preview_and_install_use_the_approved_fingerprint() {
+    let temp_dir = TempDir::new().unwrap();
+    let package_path = temp_dir.path().join("ui-demo.WIRT");
+    let fingerprint = ui_demo_package(&package_path);
+    let mut manager = PluginManager::new_with_plugin_log_dir(
+        temp_dir.path().join("plugins"),
+        HashMap::new(),
+        temp_dir.path().join("logs"),
+    )
+    .unwrap();
+
+    let preview = manager.inspect_plugin_package(&package_path).unwrap();
+    assert_eq!(preview.manifest.plugin.id, "ui-demo");
+    assert_eq!(preview.fingerprint, fingerprint);
+    assert!(
+        manager.list_plugins().is_empty(),
+        "preview must not register"
+    );
+
+    assert_eq!(
+        manager
+            .install_plugin_package(&package_path, &fingerprint)
+            .unwrap(),
+        "ui-demo"
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp_dir.path().join("plugins/ui-demo/package.sha256")).unwrap(),
+        fingerprint.as_str(),
+    );
+}
+
+#[test]
+fn package_install_rejects_loose_wasm_at_the_manager_boundary() {
+    let temp_dir = TempDir::new().unwrap();
+    let wasm_path = fixture_path_for_manager_test("ui-demo");
+    let expected = wirt::PackageFingerprint::sha256(b"not the selected file");
+    let mut manager = PluginManager::new(temp_dir.path().join("plugins"), HashMap::new()).unwrap();
+
+    assert!(manager
+        .install_plugin_package(&wasm_path, &expected)
+        .is_err());
+    assert!(manager.list_plugins().is_empty());
+}
+
+#[test]
+fn package_install_reopens_and_rejects_a_previewed_package_that_changed() {
+    let temp_dir = TempDir::new().unwrap();
+    let package_path = temp_dir.path().join("ui-demo.wirt");
+    ui_demo_package(&package_path);
+    let mut manager = PluginManager::new(temp_dir.path().join("plugins"), HashMap::new()).unwrap();
+    let preview = manager.inspect_plugin_package(&package_path).unwrap();
+
+    ui_demo_package_with_manifest(&package_path, |manifest| {
+        manifest.plugin.version = "9.9.9".to_string();
+    });
+    let result = manager.install_plugin_package(&package_path, &preview.fingerprint);
+
+    assert!(result.is_err());
+    assert!(manager.list_plugins().is_empty());
+    assert!(std::fs::read_dir(manager.plugins_dir())
+        .unwrap()
+        .next()
+        .is_none());
+}
+
+#[test]
+fn package_preview_rejects_each_guest_manifest_metadata_mismatch() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = PluginManager::new(temp_dir.path().join("plugins"), HashMap::new()).unwrap();
+    let cases: [(&str, fn(&mut crate::types::PluginManifest)); 5] = [
+        ("id", |manifest| manifest.plugin.id = "other-demo".into()),
+        ("name", |manifest| {
+            manifest.plugin.name = "Other Name".into()
+        }),
+        ("version", |manifest| {
+            manifest.plugin.version = "9.9.9".into()
+        }),
+        ("author", |manifest| {
+            manifest.plugin.author = "Other Author".into()
+        }),
+        ("description", |manifest| {
+            manifest.plugin.description = "Other description".into()
+        }),
+    ];
+    for (field, mutate) in cases {
+        let package_path = temp_dir.path().join(format!("mismatch-{field}.wirt"));
+        ui_demo_package_with_manifest(&package_path, mutate);
+        let error = manager.inspect_plugin_package(&package_path).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::types::PluginError::InvalidManifest(_)
+        ));
+        assert!(error.to_string().contains(field));
+    }
+}
+
+#[test]
+fn package_install_rejects_a_root_package_with_the_same_identity() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    ui_demo_package(&plugins_dir.join("renamed-package.wirt"));
+    let selected = temp_dir.path().join("selected.wirt");
+    let expected = ui_demo_package(&selected);
+    let mut manager = PluginManager::new(plugins_dir, HashMap::new()).unwrap();
+
+    assert!(manager
+        .install_plugin_package(&selected, &expected)
+        .is_err());
+    assert!(manager.list_plugins().is_empty());
+}
+
+#[test]
+fn package_preview_rejects_a_link_or_non_file_final_component() {
+    let temp_dir = TempDir::new().unwrap();
+    let target = temp_dir.path().join("target.wirt");
+    ui_demo_package(&target);
+    let selected = temp_dir.path().join("selected.wirt");
+    if !create_manager_test_file_link(&target, &selected) {
+        // Creating symlinks can require an unavailable Windows privilege.
+        // Keep the test non-vacuous: a directory exercises the same final
+        // component regular-file gate without weakening production policy.
+        std::fs::create_dir(&selected).unwrap();
+    }
+    let manager = PluginManager::new(temp_dir.path().join("plugins"), HashMap::new()).unwrap();
+
+    assert!(manager.inspect_plugin_package(&selected).is_err());
+    assert!(manager.list_plugins().is_empty());
+}
+
+#[test]
+fn package_init_failure_rolls_back_sidecars_staging_and_live_state() {
+    const MANIFEST: &[u8] = br#"[wirt]
+abi = "0.1.0"
+
+[plugin]
+id = "failing-init"
+name = "Failing Init Fixture"
+version = "0.1.0"
+author = "Arclain security tests"
+description = "Package-valid guest that traps during initialization"
+
+[capabilities]
+
+[rate_limits]
+http_requests_per_minute = 60
+"#;
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/failing-init/failing-init.wasm"
+    ));
+    let package = wirt::package_bytes(MANIFEST, component).unwrap();
+    let fingerprint = wirt::PackageFingerprint::sha256(&package);
+    let temp_dir = TempDir::new().unwrap();
+    let package_path = temp_dir.path().join("failing-init.wirt");
+    std::fs::write(&package_path, package).unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let mut manager = PluginManager::new_with_plugin_log_dir(
+        plugins_dir.clone(),
+        HashMap::new(),
+        temp_dir.path().join("logs"),
+    )
+    .unwrap();
+
+    let preview = manager
+        .inspect_plugin_package(&package_path)
+        .expect("preview must validate metadata without calling init");
+    assert_eq!(preview.fingerprint, fingerprint);
+    assert!(manager.list_plugins().is_empty());
+
+    assert!(manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .is_err());
+    assert!(manager.list_plugins().is_empty());
+    assert!(!plugins_dir.join("failing-init").exists());
+    assert!(
+        std::fs::read_dir(&plugins_dir).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".arclain-plugin-install-")),
+        "failed init retained package sidecars or staging",
+    );
+}
+
+#[test]
+fn package_metadata_mismatch_rolls_back_staging_and_live_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let package_path = temp_dir.path().join("metadata-mismatch.wirt");
+    let fingerprint = ui_demo_package_with_manifest(&package_path, |manifest| {
+        manifest.plugin.name = "Mismatched Name".to_string();
+    });
+    let plugins_dir = temp_dir.path().join("plugins");
+    let mut manager = PluginManager::new_with_plugin_log_dir(
+        plugins_dir.clone(),
+        HashMap::new(),
+        temp_dir.path().join("logs"),
+    )
+    .unwrap();
+
+    let error = manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .expect_err("installation must re-check guest metadata from staging");
+
+    assert!(matches!(
+        error,
+        crate::types::PluginError::InvalidManifest(_)
+    ));
+    assert!(manager.list_plugins().is_empty());
+    assert!(!plugins_dir.join("ui-demo").exists());
+    assert!(std::fs::read_dir(&plugins_dir).unwrap().next().is_none());
+}
+
+fn fixture_path_for_manager_test(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins")
+        .join(name)
+        .join(format!("{name}.wasm"))
+}
+
 #[test]
 fn init_records_a_discovered_but_uninstantiable_plugin_as_a_failed_plugin() {
     let temp_dir = TempDir::new().unwrap();
@@ -152,6 +424,9 @@ fn init_records_a_discovered_but_uninstantiable_plugin_as_a_failed_plugin() {
     std::fs::write(
         plugin_dir.join("broken-plugin.toml"),
         r#"
+[wirt]
+abi = "0.1.0"
+
 [plugin]
 id = "broken-plugin"
 name = "Broken Plugin"
@@ -484,7 +759,7 @@ fn install_uses_the_case_folded_identity_key_for_its_destination() {
 }
 
 #[test]
-fn installed_plugin_lifecycle_uses_case_folded_identity_keys() {
+fn case_folded_lifecycle_rejects_manifest_spelling_that_differs_from_guest() {
     let temp_dir = TempDir::new().unwrap();
     let plugins_dir = temp_dir.path().join("plugins");
     let wasm_path = temp_dir.path().join("uppercase-id.wasm");
@@ -529,16 +804,13 @@ fn installed_plugin_lifecycle_uses_case_folded_identity_keys() {
     manifest.plugin.id = "Ui-DeMo".to_string();
     std::fs::write(&manifest_path, toml::to_string_pretty(&manifest).unwrap()).unwrap();
 
-    manager.reload_plugin("ui-demo").unwrap();
-    assert_eq!(
-        manager.get_plugin_metadata("ui-demo").unwrap().id,
-        "Ui-DeMo",
-        "reload must retain the manifest spelling for display/runtime state",
-    );
-    assert!(manager.is_plugin_enabled("ui-demo"));
-
-    manager.unload_plugin("ui-demo").unwrap();
+    let error = manager.reload_plugin("ui-demo").unwrap_err();
+    assert!(matches!(
+        error,
+        crate::types::PluginError::InvalidManifest(_)
+    ));
     assert!(manager.get_plugin_metadata("ui-demo").is_none());
+    assert!(manager.get_plugin_instance("ui-demo").is_none());
     assert!(!manager.is_plugin_enabled("ui-demo"));
 }
 
@@ -875,6 +1147,196 @@ fn staged_publish_never_replaces_a_concurrent_destination() {
     assert!(
         !staging_root.exists(),
         "failed publish leaked staging files"
+    );
+}
+
+#[test]
+fn package_publish_race_rolls_back_fingerprint_sidecar_and_staging() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    let manifest_bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.toml"
+    ));
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ));
+    let fingerprint =
+        wirt::PackageFingerprint::sha256(&wirt::package_bytes(manifest_bytes, component).unwrap());
+    let plugin_id = crate::types::PluginId::parse("ui-demo").unwrap();
+    let loader = crate::loader::PluginLoader::new(plugins_dir.clone()).unwrap();
+    let staged = super::lifecycle::StagedPluginPackage::new_package(
+        loader.trusted_root(),
+        &plugin_id,
+        component,
+        manifest_bytes,
+        &fingerprint,
+    )
+    .unwrap();
+    let staging_root = staged.root_path().to_path_buf();
+    let destination = plugins_dir.join("ui-demo");
+
+    let result = staged.publish_with_before_rename(&destination, |_| {
+        std::fs::create_dir(&destination)?;
+        std::fs::write(destination.join("sentinel"), "preserve")?;
+        Ok(())
+    });
+
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::read_to_string(destination.join("sentinel")).unwrap(),
+        "preserve"
+    );
+    assert!(!staging_root.exists());
+    assert!(!destination.join("package.sha256").exists());
+}
+
+#[test]
+fn package_staging_construction_failure_preserves_io_kind_and_removes_every_partial_tree() {
+    let manifest = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.toml"
+    ));
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ));
+    let fingerprint =
+        wirt::PackageFingerprint::sha256(&wirt::package_bytes(manifest, component).unwrap());
+    let plugin_id = crate::types::PluginId::parse("ui-demo").unwrap();
+
+    for failing_step in [
+        "staging directory",
+        "artifact directory",
+        "plugin WASM",
+        "plugin manifest",
+        "package fingerprint",
+    ] {
+        let temp_dir = TempDir::new().unwrap();
+        let plugins_dir = temp_dir.path().join("plugins");
+        let loader = crate::loader::PluginLoader::new(plugins_dir.clone()).unwrap();
+
+        let result = super::lifecycle::StagedPluginPackage::new_package_with_after_step(
+            loader.trusted_root(),
+            &plugin_id,
+            component,
+            manifest,
+            &fingerprint,
+            |completed_step| {
+                if completed_step == failing_step {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("injected failure after {completed_step}"),
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        let error = match result {
+            Ok(_) => panic!("{failing_step} failure unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                crate::types::PluginError::Io(ref source)
+                    if source.kind() == std::io::ErrorKind::PermissionDenied
+            ),
+            "{failing_step} lost its permission-denied class: {error:?}",
+        );
+        assert!(
+            std::fs::read_dir(&plugins_dir).unwrap().next().is_none(),
+            "{failing_step} failure leaked a staging tree",
+        );
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn unix_publish_rejects_a_swapped_staged_artifact_identity() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    let manifest = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.toml"
+    ));
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ));
+    let fingerprint =
+        wirt::PackageFingerprint::sha256(&wirt::package_bytes(manifest, component).unwrap());
+    let plugin_id = crate::types::PluginId::parse("ui-demo").unwrap();
+    let loader = crate::loader::PluginLoader::new(plugins_dir.clone()).unwrap();
+    let staged = super::lifecycle::StagedPluginPackage::new_package(
+        loader.trusted_root(),
+        &plugin_id,
+        component,
+        manifest,
+        &fingerprint,
+    )
+    .unwrap();
+    let original_artifact = staged.artifact_path().to_path_buf();
+    let moved_artifact = staged.root_path().join("validated-artifact");
+    let destination = plugins_dir.join("ui-demo");
+
+    let result = staged.publish_with_before_rename(&destination, |_| {
+        std::fs::rename(&original_artifact, &moved_artifact)?;
+        std::fs::create_dir(&original_artifact)?;
+        std::fs::write(original_artifact.join("replacement-sentinel"), "preserve")?;
+        Ok(())
+    });
+
+    assert!(result.is_err(), "a swapped artifact was published");
+    assert!(!destination.exists());
+    assert_eq!(
+        std::fs::read_to_string(original_artifact.join("replacement-sentinel")).unwrap(),
+        "preserve",
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn unix_cleanup_preserves_a_swapped_staging_root() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    let plugin_id = crate::types::PluginId::parse("ui-demo").unwrap();
+    let manifest: crate::types::PluginManifest = toml::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.toml"
+    )))
+    .unwrap();
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ));
+    let loader = crate::loader::PluginLoader::new(plugins_dir).unwrap();
+    let staged = super::lifecycle::StagedPluginPackage::new(
+        loader.trusted_root(),
+        &plugin_id,
+        component,
+        &manifest,
+    )
+    .unwrap();
+    let original_root = staged.root_path().to_path_buf();
+    let moved_root = temp_dir.path().join("validated-staging-root");
+
+    let result = staged.rollback_with_before_cleanup(|_| {
+        std::fs::rename(&original_root, &moved_root).unwrap();
+        std::fs::create_dir(&original_root).unwrap();
+        std::fs::write(original_root.join("replacement-sentinel"), "preserve").unwrap();
+    });
+
+    assert!(result.is_err(), "cleanup accepted a swapped staging root");
+    assert_eq!(
+        std::fs::read_to_string(original_root.join("replacement-sentinel")).unwrap(),
+        "preserve",
     );
 }
 

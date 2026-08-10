@@ -53,10 +53,10 @@ pub use wirt::{action_policy, ui_model};
 // Re-export main types
 pub use active_tab::ActiveTabBridge;
 pub use host_functions::HostFunctions;
-pub use loader::{DiscoveredPlugin, PluginLoader};
+pub use loader::{DiscoveredPlugin, PluginArtifact, PluginLoader};
 pub use manager::{
-    resolve_interactive_request_fetch, PluginEventScheduler, PluginListItem, PluginManager,
-    RequestFetchOutcome,
+    resolve_interactive_request_fetch, PluginEventScheduler, PluginInstallPreview, PluginListItem,
+    PluginManager, RequestFetchOutcome,
 };
 pub use runtime::{LoadedPlugin, PluginInstance, WasmRuntime};
 pub use types::{

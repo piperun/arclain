@@ -107,6 +107,9 @@ mod loader_tests {
         fs::create_dir(&plugin_dir).unwrap();
 
         let manifest = r#"
+[wirt]
+abi = "0.1.0"
+
 [plugin]
 id = "test-plugin"
 name = "Test Plugin"
@@ -116,6 +119,7 @@ description = "A test plugin"
 
 [capabilities]
 network = true
+network_domains = ["example.invalid"]
 file_read = false
 
 [rate_limits]
