@@ -35,6 +35,7 @@ use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 use arclain_ui::core::tabs::TabId;
 use arclain_ui::features::plugins::application::{PluginSessions, PluginSlot, SlotView};
 use arclain_ui::features::plugins::presentation::document_dispatch;
+use arclain_ui::features::plugins::presentation::rendering::DocumentEvent;
 use arclain_ui::shared::image_assets::{ImageAssetState, ImageAssetStore, ImageOwner};
 use eframe::egui;
 
@@ -224,6 +225,8 @@ fn an_action_round_trips_through_the_facade_and_advances_the_slots_document() {
             .start_action(
                 &app,
                 &slot,
+                opened.session_id,
+                opened.revision,
                 "multi-action".to_string(),
                 PluginActionDto::Activate,
             )
@@ -271,6 +274,156 @@ fn an_action_round_trips_through_the_facade_and_advances_the_slots_document() {
     });
 }
 
+/// A delayed dispatch must retain the revision from the document that
+/// rendered the event. If `start_action` re-reads the open slot instead,
+/// this revision-1 event is relabelled revision 2 and incorrectly reaches
+/// the guest instead of failing with the app facade's stale-action conflict.
+#[test]
+fn a_delayed_document_event_keeps_its_rendered_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "facade-test-fixture");
+    let mut shared = common::create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.handle().clone();
+    let slot = PluginSlot::MainPage {
+        plugin_id: "facade-test-fixture".to_string(),
+    };
+
+    runtime.block_on(async {
+        let SlotView::Ready(opened) =
+            view_until_resolved(&shared.plugin_sessions, &app, &runtime, &slot).await
+        else {
+            panic!("the main-page slot must resolve to a document");
+        };
+        assert_eq!(opened.revision, 1);
+        let stale_event = DocumentEvent::Interact {
+            expected_session_id: opened.session_id,
+            expected_revision: opened.revision,
+            node_id: "multi-action".to_string(),
+            action: PluginActionDto::Activate,
+        };
+
+        let advancing_operation = shared
+            .plugin_sessions
+            .start_action(
+                &app,
+                &slot,
+                opened.session_id,
+                opened.revision,
+                "multi-action".to_string(),
+                PluginActionDto::Activate,
+            )
+            .await
+            .expect("the revision-1 action must start");
+        let OperationState::Completed {
+            result: OperationResult::PluginUiUpdated { update },
+        } = wait_for_plugin_action_completion(&app, advancing_operation).await
+        else {
+            panic!("the revision-1 action must advance the document");
+        };
+        let applied = shared
+            .plugin_sessions
+            .apply_update(advancing_operation, update)
+            .expect("the registry must apply the advancing document");
+        assert_eq!(applied.document.revision, 2);
+
+        let mut operations = app.subscribe_operations();
+        document_dispatch::apply_document_events(&shared, &slot, TabId(1), vec![stale_event]);
+        let stale_operation = loop {
+            let event = tokio::time::timeout(Duration::from_secs(30), operations.recv())
+                .await
+                .expect("the delayed document event must start an operation")
+                .expect("the operation subscription must stay live");
+            if event.kind == OperationKind::PluginAction {
+                break event.operation_id;
+            }
+        };
+        match wait_for_plugin_action_completion(&app, stale_operation).await {
+            OperationState::Failed { error } => {
+                assert_eq!(error.kind, ApplicationErrorKind::Conflict)
+            }
+            other => panic!("the revision-1 event must remain stale, got {other:?}"),
+        }
+    });
+}
+
+/// A delayed event must target the exact session whose document rendered it.
+/// If dispatch substitutes the slot's replacement session id, this old
+/// session-A/revision-1 event is admitted against session B at revision 1.
+#[test]
+fn a_delayed_document_event_keeps_its_rendered_session_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_with_plugin(&temp, "facade-test-fixture");
+    let mut shared = common::create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.handle().clone();
+    let slot = PluginSlot::MainPage {
+        plugin_id: "facade-test-fixture".to_string(),
+    };
+
+    runtime.block_on(async {
+        let SlotView::Ready(opened) =
+            view_until_resolved(&shared.plugin_sessions, &app, &runtime, &slot).await
+        else {
+            panic!("the main-page slot must resolve to a document");
+        };
+        assert_eq!(opened.revision, 1);
+        let stale_event = DocumentEvent::Interact {
+            expected_session_id: opened.session_id,
+            expected_revision: opened.revision,
+            node_id: "multi-action".to_string(),
+            action: PluginActionDto::Activate,
+        };
+
+        shared.plugin_sessions.close(&app, &runtime, &slot);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match app.plugin_ui_document(opened.session_id).await {
+                Err(error) if error.kind == ApplicationErrorKind::NotFound => break,
+                Ok(_) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the original session never closed"
+                    );
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("closing the original session failed: {error:?}"),
+            }
+        }
+
+        let SlotView::Ready(replacement) =
+            view_until_resolved(&shared.plugin_sessions, &app, &runtime, &slot).await
+        else {
+            panic!("the replacement slot must resolve to a document");
+        };
+        assert_ne!(replacement.session_id, opened.session_id);
+        assert_eq!(replacement.revision, 1);
+
+        let mut operations = app.subscribe_operations();
+        document_dispatch::apply_document_events(&shared, &slot, TabId(1), vec![stale_event]);
+        let stale_operation = loop {
+            let event = tokio::time::timeout(Duration::from_secs(30), operations.recv())
+                .await
+                .expect("the delayed document event must start an operation")
+                .expect("the operation subscription must stay live");
+            if event.kind == OperationKind::PluginAction {
+                break event.operation_id;
+            }
+        };
+        match wait_for_plugin_action_completion(&app, stale_operation).await {
+            OperationState::Failed { error } => {
+                assert_eq!(error.kind, ApplicationErrorKind::NotFound)
+            }
+            other => panic!("the old-session event must not reach its replacement, got {other:?}"),
+        }
+        let retained = app
+            .plugin_ui_document(replacement.session_id)
+            .await
+            .expect("the replacement session must remain open");
+        assert_eq!(retained.revision, 1);
+    });
+}
+
 /// A plugin trap must not take the host down, must surface as a failed
 /// operation, and must leave the slot's last good document intact.
 #[test]
@@ -284,13 +437,19 @@ fn a_trapping_action_fails_the_operation_without_discarding_the_slots_document()
     };
 
     runtime.block_on(async {
-        view_until_resolved(&sessions, &app, runtime.handle(), &slot).await;
+        let SlotView::Ready(opened) =
+            view_until_resolved(&sessions, &app, runtime.handle(), &slot).await
+        else {
+            panic!("the main-page slot must resolve to a document");
+        };
         let session_id = sessions.session_id(&slot).expect("session opened");
 
         let operation_id = sessions
             .start_action(
                 &app,
                 &slot,
+                opened.session_id,
+                opened.revision,
                 "trigger-trap".to_string(),
                 PluginActionDto::Activate,
             )
@@ -383,6 +542,8 @@ fn reconcile_after_lag_recovers_a_plugin_action_whose_terminal_event_was_dropped
             .start_action(
                 &app,
                 &slot,
+                opened.session_id,
+                opened.revision,
                 "multi-action".to_string(),
                 PluginActionDto::Activate,
             )
@@ -887,6 +1048,8 @@ fn the_started_action_re_read_applies_a_result_that_raced_its_registration() {
             .start_action(
                 &app,
                 &slot,
+                opened.session_id,
+                opened.revision,
                 "multi-action".to_string(),
                 PluginActionDto::Activate,
             )

@@ -680,13 +680,17 @@ impl PluginSessions {
         }
     }
 
-    /// Starts one interaction against `slot`'s open session and records
-    /// the resulting operation id so the operation bridge can route the
-    /// result back here.
+    /// Starts one interaction against the exact session and document
+    /// revision that rendered it, then records the resulting operation id
+    /// so the operation bridge can route the result back here.
     ///
-    /// Returns `Ok(None)` for a slot that is not `Open`: there is no
+    /// Returns `None` for a slot that is not `Open`: there is no
     /// session to act against yet, and the interaction that produced this
     /// call cannot have come from a document the user could see.
+    /// An `Open` replacement under the same slot key does not replace the
+    /// supplied identity: delayed events still target their rendered
+    /// session and the registry's existing session/revision checks reject
+    /// any update that no longer belongs to the slot.
     ///
     /// Deliberately `async` and *not* self-spawning. The spawn belongs to
     /// the caller (`crate::features::plugins::presentation::
@@ -701,11 +705,31 @@ impl PluginSessions {
         &self,
         facade: &ArclainApp,
         slot: &PluginSlot,
+        session_id: PluginSessionId,
+        expected_revision: u64,
         node_id: String,
         action: PluginActionDto,
     ) -> Option<OperationId> {
-        self.start_action_with_purpose(facade, slot, node_id, action, ActionPurpose::Interaction)
-            .await
+        let slot_is_open = {
+            let registry = self.inner.lock();
+            matches!(
+                registry.slots.get(slot).map(|state| &state.phase),
+                Some(SlotPhase::Open { .. })
+            )
+        };
+        if !slot_is_open {
+            return None;
+        }
+        self.start_action_with_purpose(
+            facade,
+            slot,
+            session_id,
+            expected_revision,
+            node_id,
+            action,
+            ActionPurpose::Interaction,
+        )
+        .await
     }
 
     /// Starts the one lifecycle action that makes a freshly-opened page
@@ -725,9 +749,23 @@ impl PluginSessions {
             matches!(slot, PluginSlot::Page { page_id: slot_page, .. } if slot_page == &page_id),
             "page init must target the page named by its slot"
         );
+        let (session_id, expected_revision) =
+            self.inner
+                .lock()
+                .slots
+                .get(slot)
+                .and_then(|state| match &state.phase {
+                    SlotPhase::Open {
+                        session_id,
+                        document,
+                    } => Some((*session_id, document.revision)),
+                    _ => None,
+                })?;
         self.start_action_with_purpose(
             facade,
             slot,
+            session_id,
+            expected_revision,
             "__page_init".to_string(),
             PluginActionDto::SetValue {
                 value: Some(page_id),
@@ -741,22 +779,12 @@ impl PluginSessions {
         &self,
         facade: &ArclainApp,
         slot: &PluginSlot,
+        session_id: PluginSessionId,
+        expected_revision: u64,
         node_id: String,
         action: PluginActionDto,
         purpose: ActionPurpose,
     ) -> Option<OperationId> {
-        let (session_id, expected_revision) =
-            self.inner.lock().slots.get(slot).and_then(|state| {
-                let SlotPhase::Open {
-                    session_id,
-                    document,
-                } = &state.phase
-                else {
-                    return None;
-                };
-                Some((*session_id, document.revision))
-            })?;
-
         let request = PluginActionRequest {
             session_id,
             expected_revision,

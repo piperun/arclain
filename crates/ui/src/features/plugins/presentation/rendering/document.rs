@@ -45,6 +45,7 @@
 //! `crate::features::plugins::application::facade_sessions`'s module doc
 //! comment for the encoding this replaces.
 
+use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
     PluginActionDto, PluginImageDto, PluginKeyValueDto, PluginToolbarButtonDto, PluginUiDocument,
     PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto,
@@ -69,21 +70,38 @@ pub enum DocumentEvent {
     /// An interaction the plugin resolves, submitted through
     /// `ArclainApp::start_plugin_action`.
     Interact {
+        /// The session whose document rendered this interaction.
+        expected_session_id: PluginSessionId,
+        /// The revision of the document that rendered this interaction.
+        expected_revision: u64,
         node_id: String,
         action: PluginActionDto,
     },
 }
 
 impl DocumentEvent {
-    fn activate(node_id: impl Into<String>) -> Self {
+    fn activate(
+        node_id: impl Into<String>,
+        expected_session_id: PluginSessionId,
+        expected_revision: u64,
+    ) -> Self {
         Self::Interact {
+            expected_session_id,
+            expected_revision,
             node_id: node_id.into(),
             action: PluginActionDto::Activate,
         }
     }
 
-    fn set_value(node_id: impl Into<String>, value: impl Into<String>) -> Self {
+    fn set_value(
+        node_id: impl Into<String>,
+        value: impl Into<String>,
+        expected_session_id: PluginSessionId,
+        expected_revision: u64,
+    ) -> Self {
         Self::Interact {
+            expected_session_id,
+            expected_revision,
             node_id: node_id.into(),
             action: PluginActionDto::SetValue {
                 value: Some(value.into()),
@@ -140,6 +158,8 @@ pub struct DocumentContext<'a> {
 struct Sink<'a> {
     ctx: DocumentContext<'a>,
     plugin_id: &'a str,
+    /// The session whose retained document is being drawn.
+    session_id: PluginSessionId,
     /// The revision of the document being drawn. Read by widgets that
     /// hold optimistic local state across a facade round trip, so a reply
     /// of any kind retires the guess -- see the `Checkbox` arm.
@@ -178,6 +198,7 @@ pub fn render_document(
     let mut sink = Sink {
         ctx,
         plugin_id: &document.plugin_id,
+        session_id: document.session_id,
         document_revision: document.revision,
         events: Vec::new(),
     };
@@ -213,6 +234,7 @@ fn render_node(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'_>) {
 fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'_>) {
     let id = node.id.as_str();
     let colors = sink.colors();
+    let session_id = sink.session_id;
     let document_revision = sink.document_revision;
     match &node.kind {
         PluginUiNodeKind::Single { children } => render_children(ui, children, sink),
@@ -347,7 +369,11 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                 if let Some(navigation) = navigation {
                     sink.events.push(DocumentEvent::Navigate(navigation));
                 } else if let Some(node_id) = interaction {
-                    sink.events.push(DocumentEvent::activate(node_id));
+                    sink.events.push(DocumentEvent::activate(
+                        node_id,
+                        session_id,
+                        document_revision,
+                    ));
                 }
             }
         }
@@ -393,8 +419,12 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                 })
                 .show(ui, colors);
             if let Some(checked) = toggled {
-                sink.events
-                    .push(DocumentEvent::set_value(id, checked.to_string()));
+                sink.events.push(DocumentEvent::set_value(
+                    id,
+                    checked.to_string(),
+                    session_id,
+                    document_revision,
+                ));
             }
         }
         PluginUiNodeKind::RadioGroup {
@@ -423,7 +453,12 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                 })
                 .show(ui, colors);
             if let Some(chosen) = chosen {
-                sink.events.push(DocumentEvent::set_value(id, chosen));
+                sink.events.push(DocumentEvent::set_value(
+                    id,
+                    chosen,
+                    session_id,
+                    document_revision,
+                ));
             }
         }
         PluginUiNodeKind::Slider {
@@ -449,8 +484,12 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                 })
                 .show(ui, colors);
             if let Some(value) = moved {
-                sink.events
-                    .push(DocumentEvent::set_value(id, f64::from(value).to_string()));
+                sink.events.push(DocumentEvent::set_value(
+                    id,
+                    f64::from(value).to_string(),
+                    session_id,
+                    document_revision,
+                ));
             }
         }
         PluginUiNodeKind::Dropdown {
@@ -481,7 +520,12 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                 })
                 .show(ui, colors);
             if let Some(chosen) = chosen {
-                sink.events.push(DocumentEvent::set_value(id, chosen));
+                sink.events.push(DocumentEvent::set_value(
+                    id,
+                    chosen,
+                    session_id,
+                    document_revision,
+                ));
             }
         }
         PluginUiNodeKind::Tabs { tabs, selected } => {
@@ -517,7 +561,12 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                     });
                 });
             if let Some(tab) = picked {
-                sink.events.push(DocumentEvent::set_value(id, tab));
+                sink.events.push(DocumentEvent::set_value(
+                    id,
+                    tab,
+                    session_id,
+                    document_revision,
+                ));
             }
         }
         PluginUiNodeKind::Toolbar { buttons } => render_toolbar(ui, sink, buttons),
@@ -605,7 +654,8 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                 })
                 .response;
             if response.interact(egui::Sense::click()).clicked() {
-                sink.events.push(DocumentEvent::activate(id));
+                sink.events
+                    .push(DocumentEvent::activate(id, session_id, document_revision));
             }
         }
         PluginUiNodeKind::Carousel {
@@ -761,7 +811,12 @@ fn render_text_input(
     }
 
     if let Some(value) = submitted {
-        sink.events.push(DocumentEvent::set_value(id, value));
+        sink.events.push(DocumentEvent::set_value(
+            id,
+            value,
+            sink.session_id,
+            sink.document_revision,
+        ));
     }
 }
 
@@ -804,7 +859,11 @@ fn render_toolbar(ui: &mut egui::Ui, sink: &mut Sink<'_>, buttons: &[PluginToolb
         // node of its own, so its id names nothing in the tree. The
         // application layer dispatches an unknown node id normally rather
         // than rejecting it -- see `PluginUiNodeDto::find`'s doc comment.
-        sink.events.push(DocumentEvent::activate(node_id));
+        sink.events.push(DocumentEvent::activate(
+            node_id,
+            sink.session_id,
+            sink.document_revision,
+        ));
     }
 }
 
@@ -884,7 +943,11 @@ fn render_carousel(
             CarouselEvent::Select(index) => format!("{id}_select_{index}"),
             CarouselEvent::OpenLightbox => format!("{id}_open_lightbox"),
         };
-        sink.events.push(DocumentEvent::activate(node_id));
+        sink.events.push(DocumentEvent::activate(
+            node_id,
+            sink.session_id,
+            sink.document_revision,
+        ));
     }
 }
 

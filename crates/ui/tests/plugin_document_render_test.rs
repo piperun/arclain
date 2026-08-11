@@ -99,6 +99,8 @@ fn a_plain_button_press_dispatches_the_nodes_own_id_to_the_plugin() {
     assert_eq!(
         harness.state().events,
         vec![DocumentEvent::Interact {
+            expected_session_id: PluginSessionId::from_raw(1),
+            expected_revision: 1,
             node_id: "go".to_string(),
             action: PluginActionDto::Activate,
         }]
@@ -124,6 +126,8 @@ fn a_custom_button_action_dispatches_the_custom_id_not_the_node_id() {
     assert_eq!(
         harness.state().events,
         vec![DocumentEvent::Interact {
+            expected_session_id: PluginSessionId::from_raw(1),
+            expected_revision: 1,
             node_id: "do_thing".to_string(),
             action: PluginActionDto::Activate,
         }]
@@ -245,6 +249,8 @@ fn group_children_render_inside_the_group() {
     assert_eq!(
         harness.state().events,
         vec![DocumentEvent::Interact {
+            expected_session_id: PluginSessionId::from_raw(1),
+            expected_revision: 1,
             node_id: "inner".to_string(),
             action: PluginActionDto::Activate,
         }]
@@ -275,6 +281,8 @@ fn a_toolbar_button_press_dispatches_its_own_id() {
     assert_eq!(
         harness.state().events,
         vec![DocumentEvent::Interact {
+            expected_session_id: PluginSessionId::from_raw(1),
+            expected_revision: 1,
             node_id: "refresh".to_string(),
             action: PluginActionDto::Activate,
         }]
@@ -301,6 +309,8 @@ fn sibling_nodes_with_identical_labels_stay_individually_addressable() {
     assert_eq!(
         harness.state().events,
         vec![DocumentEvent::Interact {
+            expected_session_id: PluginSessionId::from_raw(1),
+            expected_revision: 1,
             node_id: "second".to_string(),
             action: PluginActionDto::Activate,
         }]

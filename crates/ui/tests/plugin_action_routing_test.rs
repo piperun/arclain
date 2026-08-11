@@ -235,7 +235,14 @@ fn dispatch_action_is_inert_without_a_facade() {
         .plugin_sessions
         .adopt_for_test(&slot, PluginSessionId::from_raw(5), document(5, 1));
 
-    document_dispatch::dispatch_action(&shared, &slot, "go".to_string(), PluginActionDto::Activate);
+    document_dispatch::dispatch_action(
+        &shared,
+        &slot,
+        PluginSessionId::from_raw(5),
+        1,
+        "go".to_string(),
+        PluginActionDto::Activate,
+    );
 
     assert!(shared.plugin_sessions.tracked_ids().is_empty());
     assert_eq!(

@@ -36,8 +36,20 @@ pub fn apply_document_events(
             DocumentEvent::Navigate(navigation) => {
                 apply_navigation(shared, slot.plugin_id(), origin_tab, navigation);
             }
-            DocumentEvent::Interact { node_id, action } => {
-                dispatch_action(shared, slot, node_id, action);
+            DocumentEvent::Interact {
+                expected_session_id,
+                expected_revision,
+                node_id,
+                action,
+            } => {
+                dispatch_action(
+                    shared,
+                    slot,
+                    expected_session_id,
+                    expected_revision,
+                    node_id,
+                    action,
+                );
             }
         }
     }
@@ -60,6 +72,8 @@ pub fn apply_document_events(
 pub fn dispatch_action(
     shared: &SharedState,
     slot: &PluginSlot,
+    expected_session_id: arclain_app::ids::PluginSessionId,
+    expected_revision: u64,
     node_id: String,
     action: PluginActionDto,
 ) {
@@ -76,7 +90,14 @@ pub fn dispatch_action(
         .spawn(async move {
             let Some(operation_id) = shared
                 .plugin_sessions
-                .start_action(&facade, &slot, node_id, action)
+                .start_action(
+                    &facade,
+                    &slot,
+                    expected_session_id,
+                    expected_revision,
+                    node_id,
+                    action,
+                )
                 .await
             else {
                 return;

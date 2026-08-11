@@ -181,6 +181,8 @@ fn render_named_button(
     match PluginNavigation::resolve(button_id, action.as_ref()) {
         (Some(navigation), _) => vec![DocumentEvent::Navigate(navigation)],
         (None, Some(node_id)) => vec![DocumentEvent::Interact {
+            expected_session_id: document.session_id,
+            expected_revision: document.revision,
             node_id,
             action: PluginActionDto::Activate,
         }],
