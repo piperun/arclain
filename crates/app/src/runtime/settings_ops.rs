@@ -1198,27 +1198,9 @@ pub(super) async fn run_set_plugin_domain_approved(
 /// written would discard a document the user is looking at in order to
 /// report a problem with something else. The write is retried implicitly
 /// by the next interaction: a failed save leaves the mirror untouched, so
-/// the comparison above still finds a difference next time.
+/// that comparison still finds a difference next time.
 pub(super) async fn flush_plugin_settings(inner: &Arc<AppRuntime>, plugin_id: &str) {
-    let Some(manager) = inner.plugin_manager() else {
-        return;
-    };
-    // Scoped so neither lock guard is held across the await below.
-    let settings = {
-        let manager = manager.lock();
-        manager.get_settings_for(plugin_id)
-    };
-    let Some(settings) = settings else {
-        return;
-    };
-    let already_persisted = {
-        let mutable = inner.session.mutable.read();
-        mutable.user_config.get_plugin_settings(plugin_id) == settings
-    };
-    if already_persisted {
-        return;
-    }
-    if let Err(error) = run_flush_plugin_settings(inner, plugin_id.to_string(), settings).await {
+    if let Err(error) = run_flush_plugin_settings(inner, plugin_id.to_string()).await {
         tracing::error!(
             plugin_id,
             ?error,
@@ -1262,6 +1244,15 @@ pub(super) async fn flush_plugin_settings(inner: &Arc<AppRuntime>, plugin_id: &s
 /// is no longer loaded keeps whatever was last saved for it instead of
 /// being silently dropped from the row.
 pub(super) async fn run_flush_all_plugin_settings(inner: &Arc<AppRuntime>) {
+    run_flush_all_plugin_settings_after(inner, std::future::ready(())).await;
+}
+
+async fn run_flush_all_plugin_settings_after(
+    inner: &Arc<AppRuntime>,
+    before_write_lock: impl std::future::Future<Output = ()>,
+) {
+    before_write_lock.await;
+    let _write_guard = inner.settings_write_lock.lock().await;
     let Some(manager) = inner.plugin_manager() else {
         return;
     };
@@ -1273,7 +1264,6 @@ pub(super) async fn run_flush_all_plugin_settings(inner: &Arc<AppRuntime>) {
         return;
     }
 
-    let _write_guard = inner.settings_write_lock.lock().await;
     let Some(config_service) = inner.core_services().config_service.clone() else {
         return;
     };
@@ -1451,9 +1441,34 @@ pub(super) async fn run_set_plugin_settings(
 pub(super) async fn run_flush_plugin_settings(
     inner: &Arc<AppRuntime>,
     plugin_id: String,
-    settings: HashMap<String, String>,
 ) -> Result<(), ApplicationError> {
+    run_flush_plugin_settings_after(inner, plugin_id, std::future::ready(())).await
+}
+
+async fn run_flush_plugin_settings_after(
+    inner: &Arc<AppRuntime>,
+    plugin_id: String,
+    before_write_lock: impl std::future::Future<Output = ()>,
+) -> Result<(), ApplicationError> {
+    before_write_lock.await;
     let _write_guard = inner.settings_write_lock.lock().await;
+    let Some(manager) = inner.plugin_manager() else {
+        return Ok(());
+    };
+    let settings = {
+        let manager = manager.lock();
+        manager.get_settings_for(&plugin_id)
+    };
+    let Some(settings) = settings else {
+        return Ok(());
+    };
+    let already_persisted = {
+        let mutable = inner.session.mutable.read();
+        mutable.user_config.get_plugin_settings(&plugin_id) == settings
+    };
+    if already_persisted {
+        return Ok(());
+    }
     let config_service = inner
         .core_services()
         .config_service
@@ -2193,5 +2208,154 @@ mod tests {
         assert_eq!(error.kind, ApplicationErrorKind::Backend);
         assert!(error.retryable);
         assert_eq!(error.field.as_deref(), Some("server_url"));
+    }
+
+    const SETTINGS_RACE_PLUGIN_ID: &str = "ui-demo";
+
+    fn bootstrap_settings_race_fixture(root: &std::path::Path) -> crate::ArclainApp {
+        let paths = crate::AppPaths {
+            config_dir: root.join("config"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            log_dir: root.join("logs"),
+            plugins_dir: root.join("plugins"),
+        };
+        let plugin_dir = paths.plugins_dir.join(SETTINGS_RACE_PLUGIN_ID);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../wirt/tests/fixtures/bundled/ui-demo.wasm"),
+            plugin_dir.join("ui-demo.wasm"),
+        )
+        .unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../plugins/ui-demo/plugin.toml"),
+            plugin_dir.join("ui-demo.toml"),
+        )
+        .unwrap();
+        crate::ArclainApp::bootstrap(crate::BootstrapConfig {
+            paths_override: Some(paths),
+            worker_threads: Some(2),
+            archive_backend_override: None,
+            extract_runner_override: None,
+            materialization_lease_ttl_override: None,
+            materialization_cleanup_interval_override: None,
+        })
+        .expect("bootstrap facade test fixture")
+    }
+
+    fn replace_live_plugin_settings(app: &crate::ArclainApp, values: BTreeMap<String, String>) {
+        let manager = app.inner.plugin_manager().expect("plugin manager");
+        let target = manager
+            .lock()
+            .prepare_plugin_settings_replacement(SETTINGS_RACE_PLUGIN_ID)
+            .expect("loaded plugin generation");
+        let validated = arclain_plugins::validate_plugin_settings(values).unwrap();
+        manager
+            .lock()
+            .replace_plugin_settings(target, validated)
+            .expect("replace live plugin settings");
+    }
+
+    #[derive(Clone, Copy)]
+    enum SettingsFlushPath {
+        Plugin,
+        WholeMap,
+    }
+
+    fn assert_waiting_flush_cannot_overwrite_a_cas(path: SettingsFlushPath) {
+        let temp = tempfile::tempdir().unwrap();
+        let app = bootstrap_settings_race_fixture(temp.path());
+        replace_live_plugin_settings(
+            &app,
+            BTreeMap::from([("source".to_string(), "guest-before-cas".to_string())]),
+        );
+        let caller_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let before = caller_runtime
+            .block_on(app.plugin_settings(SETTINGS_RACE_PLUGIN_ID.to_string()))
+            .expect("settings snapshot before CAS");
+        let inner = app.inner.clone();
+        let handle = inner.tokio_handle().expect("application runtime");
+        let flush_inner = inner.clone();
+        let (waiting_tx, waiting_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let flush = handle.spawn(async move {
+            let pause = async move {
+                waiting_tx.send(()).expect("race observer remains alive");
+                release_rx.await.expect("race release remains alive");
+            };
+            match path {
+                SettingsFlushPath::Plugin => {
+                    run_flush_plugin_settings_after(
+                        &flush_inner,
+                        SETTINGS_RACE_PLUGIN_ID.to_string(),
+                        pause,
+                    )
+                    .await
+                    .expect("plugin settings flush");
+                }
+                SettingsFlushPath::WholeMap => {
+                    run_flush_all_plugin_settings_after(&flush_inner, pause).await;
+                }
+            }
+        });
+        caller_runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), waiting_rx)
+                .await
+                .expect("flush must reach the write-lock boundary")
+                .expect("flush must signal the write-lock boundary");
+        });
+        let cas = caller_runtime
+            .block_on(app.set_plugin_settings(
+                SETTINGS_RACE_PLUGIN_ID.to_string(),
+                before.revision,
+                BTreeMap::from([("source".to_string(), "cas".to_string())]),
+            ))
+            .expect("CAS must succeed while the older flush waits");
+        release_tx.send(()).expect("flush remains alive");
+        caller_runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), flush)
+                .await
+                .expect("flush must finish after release")
+                .expect("flush task must not panic");
+        });
+
+        let after = caller_runtime
+            .block_on(app.plugin_settings(SETTINGS_RACE_PLUGIN_ID.to_string()))
+            .expect("settings snapshot after flush");
+        assert_eq!(after.values, cas.values);
+        assert_eq!(after.revision, cas.revision);
+        let persisted = app
+            .inner
+            .core_services()
+            .config_service
+            .as_ref()
+            .expect("configuration service")
+            .get_user_config()
+            .expect("persisted user config");
+        assert_eq!(
+            BTreeMap::from_iter(persisted.get_plugin_settings(SETTINGS_RACE_PLUGIN_ID)),
+            cas.values,
+        );
+        caller_runtime.block_on(app.shutdown()).unwrap();
+    }
+
+    /// Catches the old ordering where a guest flush captured settings before
+    /// waiting for `settings_write_lock`, then overwrote a newer CAS row after
+    /// that CAS had already persisted and activated its replacement.
+    #[test]
+    fn guest_flush_snapshot_waiting_for_the_settings_lock_cannot_overwrite_a_cas() {
+        assert_waiting_flush_cannot_overwrite_a_cas(SettingsFlushPath::Plugin);
+    }
+
+    /// The shutdown sweep is a distinct whole-map persistence path and must
+    /// take its live snapshot only after admission to the same write lock.
+    #[test]
+    fn shutdown_flush_snapshot_waiting_for_settings_lock_cannot_overwrite_a_cas() {
+        assert_waiting_flush_cannot_overwrite_a_cas(SettingsFlushPath::WholeMap);
     }
 }
