@@ -1037,6 +1037,8 @@ pub struct PluginUiUpdate {
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct PluginActionRequest {
     pub session_id: PluginSessionId,
+    /// The revision of the retained document that rendered this action.
+    pub expected_revision: u64,
     pub node_id: String,
     pub action: PluginActionDto,
 }
@@ -1872,6 +1874,18 @@ fn action_rejected(node_id: &str) -> ApplicationError {
     .with_field("node_id")
 }
 
+fn stale_document_action(expected_revision: u64, actual_revision: u64) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::Conflict,
+        "plugin UI document changed since this action was prepared",
+    )
+    .with_diagnostic(format!(
+        "expected revision {expected_revision}, current revision {actual_revision}"
+    ))
+    .with_recoverability(Recoverability::Retry)
+    .with_retryable(true)
+}
+
 // ============================================================================
 // Session store
 // ============================================================================
@@ -2335,11 +2349,41 @@ impl PluginSessionStore {
         request: PluginActionRequest,
         handle: &tokio::runtime::Handle,
     ) -> Result<PluginUiUpdate, ApplicationError> {
-        let (plugin_id, extension_point, pinned_archive_session, force_page_init_refresh) = {
+        let plugin_id = {
             let sessions = self.sessions.read();
             let record = sessions
                 .get(&request.session_id)
                 .ok_or_else(|| unknown_plugin_session(request.session_id))?;
+            record.plugin_id.clone()
+        };
+        // Re-evaluated at every boundary below where this dispatch is
+        // about to act on the plugin's behalf again. Named once so the
+        // repetition reads as the deliberate pattern it is rather than as
+        // a check someone forgot to hoist: each call site guards a
+        // *different* window, and the windows are wide -- a queue wait, a
+        // guest call, seconds of network I/O.
+        let still_enabled = || require_enabled_plugin(&manager, &plugin_id);
+
+        still_enabled()?;
+
+        let plugin_lock = self.lock_for_plugin(&plugin_id);
+        let _guard = plugin_lock.lock().await;
+        // The queue wait: the per-plugin lock can be held for as long as
+        // another action's guest call takes, and the plugin can be
+        // disabled while this dispatch waits its turn behind it.
+        still_enabled()?;
+
+        let (extension_point, pinned_archive_session, force_page_init_refresh) = {
+            let sessions = self.sessions.read();
+            let record = sessions
+                .get(&request.session_id)
+                .ok_or_else(|| unknown_plugin_session(request.session_id))?;
+            if record.revision != request.expected_revision {
+                return Err(stale_document_action(
+                    request.expected_revision,
+                    record.revision,
+                ));
+            }
             if let Some(target) = record.root.find(&request.node_id) {
                 if !target.visible || !target.enabled {
                     return Err(action_rejected(&request.node_id));
@@ -2363,28 +2407,11 @@ impl PluginSessionStore {
                 ) if request.node_id == "__page_init" && init_page_id == page_id
             );
             (
-                record.plugin_id.clone(),
                 record.extension_point.clone(),
                 record.pinned_archive_session,
                 force_page_init_refresh,
             )
         };
-        // Re-evaluated at every boundary below where this dispatch is
-        // about to act on the plugin's behalf again. Named once so the
-        // repetition reads as the deliberate pattern it is rather than as
-        // a check someone forgot to hoist: each call site guards a
-        // *different* window, and the windows are wide -- a queue wait, a
-        // guest call, seconds of network I/O.
-        let still_enabled = || require_enabled_plugin(&manager, &plugin_id);
-
-        still_enabled()?;
-
-        let plugin_lock = self.lock_for_plugin(&plugin_id);
-        let _guard = plugin_lock.lock().await;
-        // The queue wait: the per-plugin lock can be held for as long as
-        // another action's guest call takes, and the plugin can be
-        // disabled while this dispatch waits its turn behind it.
-        still_enabled()?;
 
         let event_id = request.node_id.clone();
         let value = match request.action {

@@ -2352,8 +2352,8 @@ impl ArclainApp {
     /// [`Self::subscribe_operations`] to observe `Started` /
     /// `Completed { PluginUiUpdated }` / `Failed`. See `crate::plugins`'s
     /// module doc comment for per-plugin action serialization and the
-    /// hidden/disabled node rejection this performs before ever reaching
-    /// the WASM guest.
+    /// hidden/disabled node and stale-document revision rejection this
+    /// performs before ever reaching the WASM guest.
     ///
     /// An action against a *disabled* plugin's session fails the
     /// operation -- `Failed` carrying the same `PermissionDenied` refusal

@@ -980,6 +980,7 @@ fn page_init_action_returns_a_fresh_post_init_document() {
     let operation_id = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: "__page_init".to_string(),
             action: PluginActionDto::SetValue {
                 value: Some("fixture-page".to_string()),
@@ -1074,6 +1075,7 @@ fn start_plugin_action_dispatches_through_the_real_plugin_and_completes_with_plu
     let operation_id = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: "demo_btn".to_string(),
             action: PluginActionDto::Activate,
         }))
@@ -1118,6 +1120,7 @@ fn start_plugin_action_fails_the_operation_for_an_unknown_session() {
     let operation_id = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: PluginSessionId::from_raw(999_999),
+            expected_revision: 1,
             node_id: "does-not-matter".to_string(),
             action: PluginActionDto::Activate,
         }))
@@ -1172,6 +1175,85 @@ async fn wait_for_terminal_state(
     }
 }
 
+/// A document revision is the renderer's admission token: an interaction
+/// rendered from an older document must fail without crossing into the guest.
+/// The fixture's label embeds each `get-ui-layout` guest call, making the
+/// unchanged `"layout-call-2"` document evidence that the stale action did
+/// not trigger the guest's refresh path.
+#[test]
+fn stale_document_action_is_rejected_before_guest_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+    let snapshot = runtime
+        .block_on(app.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::MainPage,
+        ))
+        .expect("fixture session must open at revision 1");
+    let label_text = |document: &PluginUiDocument| {
+        let arclain_app::plugins::PluginUiNodeKind::Single { children } = &document.root.kind
+        else {
+            panic!("expected a Single root");
+        };
+        let arclain_app::plugins::PluginUiNodeKind::Label { text, .. } = &children[0].kind else {
+            panic!("expected the first child to be a Label");
+        };
+        text.clone()
+    };
+
+    let first_operation = runtime
+        .block_on(app.start_plugin_action(PluginActionRequest {
+            session_id: snapshot.session_id,
+            expected_revision: 1,
+            node_id: "multi-refresh".to_string(),
+            action: PluginActionDto::Activate,
+        }))
+        .expect("the revision-1 action must start");
+    let first_update = runtime.block_on(wait_for_plugin_ui_updated(&app, first_operation));
+    assert_eq!(first_update.document.revision, 2);
+    assert_eq!(label_text(&first_update.document), "layout-call-2");
+
+    let stale_operation = runtime
+        .block_on(app.start_plugin_action(PluginActionRequest {
+            session_id: snapshot.session_id,
+            expected_revision: 1,
+            node_id: "multi-refresh".to_string(),
+            action: PluginActionDto::Activate,
+        }))
+        .expect("the stale request is still a well-formed operation request");
+    match runtime.block_on(wait_for_terminal_state(&app, stale_operation)) {
+        OperationState::Failed { error } => assert_eq!(error.kind, ApplicationErrorKind::Conflict),
+        other => panic!("expected a stale action conflict, got {other:?}"),
+    }
+
+    let retained = runtime
+        .block_on(app.plugin_ui_document(snapshot.session_id))
+        .expect("a rejected action must retain the current document");
+    assert_eq!(retained.revision, 2);
+    assert_eq!(
+        label_text(&retained),
+        "layout-call-2",
+        "the stale action must not advance the guest's layout-call counter"
+    );
+
+    let current_operation = runtime
+        .block_on(app.start_plugin_action(PluginActionRequest {
+            session_id: snapshot.session_id,
+            expected_revision: 2,
+            node_id: "multi-refresh".to_string(),
+            action: PluginActionDto::Activate,
+        }))
+        .expect("the current-revision action must start");
+    let current_update = runtime.block_on(wait_for_plugin_ui_updated(&app, current_operation));
+    assert_eq!(current_update.document.revision, 3);
+    assert_eq!(
+        label_text(&current_update.document),
+        "layout-call-3",
+        "only the current-revision action advances the guest's layout-call counter"
+    );
+}
+
 /// **Plugin crash containment** (brief-mandated, previously only argued
 /// structurally, not proven). `facade-test-fixture`'s `"trigger-trap"`
 /// button panics unconditionally inside `on-ui-event`, which -- under
@@ -1216,6 +1298,7 @@ fn a_trapping_guest_fails_its_own_operation_without_crashing_the_host_or_the_ses
     let trap_operation = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: "trigger-trap".to_string(),
             action: PluginActionDto::Activate,
         }))
@@ -1244,6 +1327,7 @@ fn a_trapping_guest_fails_its_own_operation_without_crashing_the_host_or_the_ses
     let second_operation = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: "multi-action".to_string(),
             action: PluginActionDto::Activate,
         }))
@@ -1277,6 +1361,7 @@ fn resource_limit_state_and_explicit_retry_are_exposed_by_the_app_facade() {
     let operation = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: "trigger-result-quota".to_string(),
             action: PluginActionDto::Activate,
         }))
@@ -1343,6 +1428,7 @@ fn multiple_actions_in_one_response_apply_in_order() {
     let operation_id = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: "multi-action".to_string(),
             action: PluginActionDto::Activate,
         }))
@@ -1406,6 +1492,7 @@ fn several_refresh_panel_actions_in_one_response_trigger_exactly_one_refetch() {
     let operation_id = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: "multi-refresh".to_string(),
             action: PluginActionDto::Activate,
         }))
@@ -1475,6 +1562,7 @@ fn a_setting_written_from_a_ui_event_survives_a_restart() {
     let operation_id = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: "remember".to_string(),
             action: PluginActionDto::SetValue {
                 value: Some("RJ123456".to_string()),
@@ -1567,6 +1655,7 @@ fn a_setting_written_before_a_guest_trap_is_still_persisted() {
     let operation_id = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: "trigger-trap".to_string(),
             action: PluginActionDto::Activate,
         }))
@@ -1653,6 +1742,7 @@ fn a_plugin_that_writes_no_setting_keeps_reporting_none() {
     let operation_id = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: "multi-action".to_string(),
             action: PluginActionDto::Activate,
         }))
@@ -2057,6 +2147,7 @@ fn an_action_against_a_disabled_plugins_session_fails_the_operation_without_adva
     let operation_id = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: "demo_btn".to_string(),
             action: PluginActionDto::Activate,
         }))
@@ -2146,6 +2237,7 @@ fn disabling_one_plugin_leaves_every_other_plugins_session_working() {
     let operation_id = runtime
         .block_on(app.start_plugin_action(PluginActionRequest {
             session_id: fixture.session_id,
+            expected_revision: fixture.document.revision,
             node_id: "multi-action".to_string(),
             action: PluginActionDto::Activate,
         }))

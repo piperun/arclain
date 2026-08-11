@@ -745,15 +745,21 @@ impl PluginSessions {
         action: PluginActionDto,
         purpose: ActionPurpose,
     ) -> Option<OperationId> {
-        let session_id = self
-            .inner
-            .lock()
-            .slots
-            .get(slot)
-            .and_then(SlotState::session_id)?;
+        let (session_id, expected_revision) =
+            self.inner.lock().slots.get(slot).and_then(|state| {
+                let SlotPhase::Open {
+                    session_id,
+                    document,
+                } = &state.phase
+                else {
+                    return None;
+                };
+                Some((*session_id, document.revision))
+            })?;
 
         let request = PluginActionRequest {
             session_id,
+            expected_revision,
             node_id,
             action,
         };

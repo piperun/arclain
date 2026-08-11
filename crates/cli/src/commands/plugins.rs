@@ -156,6 +156,7 @@ async fn run_action(app: &ArclainApp, args: &ActionArgs, ctx: &super::Invocation
     let operation_id = match app
         .start_plugin_action(PluginActionRequest {
             session_id: snapshot.session_id,
+            expected_revision: snapshot.document.revision,
             node_id: args.node_id.clone(),
             action,
         })
