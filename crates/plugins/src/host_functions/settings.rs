@@ -8,21 +8,47 @@ const MAX_SETTING_KEY_BYTES: usize = 128;
 const MAX_SETTING_VALUE_BYTES: usize = 64 * 1024;
 const MAX_SETTING_TOTAL_BYTES: usize = 1024 * 1024;
 
-fn insert_bounded_setting(
-    settings: &mut std::collections::HashMap<String, String>,
-    key: String,
-    value: String,
-) -> bool {
-    if key.len() > MAX_SETTING_KEY_BYTES || value.len() > MAX_SETTING_VALUE_BYTES {
-        return false;
+/// A whole-map settings replacement that has passed the exact limits the host
+/// applies to guest `set-setting` calls. Its fields stay private so callers
+/// cannot manufacture an unchecked replacement for a live plugin instance.
+#[derive(Clone, Debug)]
+pub struct ValidatedPluginSettings {
+    values: std::collections::HashMap<String, String>,
+}
+
+impl ValidatedPluginSettings {
+    pub(crate) fn into_values(self) -> std::collections::HashMap<String, String> {
+        self.values
+    }
+}
+
+/// The stable reason a host-facing whole-map settings replacement was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PluginSettingsValidationError {
+    TooManyEntries,
+    KeyTooLong,
+    ValueTooLong,
+    TotalTooLarge,
+}
+
+fn validate_setting_entry(
+    settings: &std::collections::HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), PluginSettingsValidationError> {
+    if key.len() > MAX_SETTING_KEY_BYTES {
+        return Err(PluginSettingsValidationError::KeyTooLong);
+    }
+    if value.len() > MAX_SETTING_VALUE_BYTES {
+        return Err(PluginSettingsValidationError::ValueTooLong);
     }
 
-    let is_existing = settings.contains_key(&key);
+    let is_existing = settings.contains_key(key);
     let old_entry_bytes = settings
-        .get_key_value(&key)
+        .get_key_value(key)
         .map_or(0, |(old_key, old_value)| old_key.len() + old_value.len());
     if !is_existing && settings.len() >= MAX_SETTING_ENTRIES {
-        return false;
+        return Err(PluginSettingsValidationError::TooManyEntries);
     }
     let retained_bytes = settings
         .iter()
@@ -33,6 +59,34 @@ fn insert_bounded_setting(
         .saturating_add(key.len())
         .saturating_add(value.len());
     if next_bytes > MAX_SETTING_TOTAL_BYTES {
+        return Err(PluginSettingsValidationError::TotalTooLarge);
+    }
+
+    Ok(())
+}
+
+/// Validates a host-requested whole-map replacement with the same per-entry
+/// and aggregate limits that guest `set-setting` calls use.
+pub fn validate_plugin_settings(
+    settings: std::collections::BTreeMap<String, String>,
+) -> Result<ValidatedPluginSettings, PluginSettingsValidationError> {
+    let mut validated = std::collections::HashMap::with_capacity(settings.len());
+    for (key, value) in settings {
+        validate_setting_entry(&validated, &key, &value)?;
+        validated.insert(
+            key.into_boxed_str().into_string(),
+            value.into_boxed_str().into_string(),
+        );
+    }
+    Ok(ValidatedPluginSettings { values: validated })
+}
+
+fn insert_bounded_setting(
+    settings: &mut std::collections::HashMap<String, String>,
+    key: String,
+    value: String,
+) -> bool {
+    if validate_setting_entry(settings, &key, &value).is_err() {
         return false;
     }
 
@@ -172,6 +226,20 @@ mod tests {
             .map(|(key, value)| key.len() + value.len())
             .sum::<usize>();
         assert!(retained <= MAX_SETTING_TOTAL_BYTES);
+    }
+
+    /// Catches a host-facing settings validator that silently truncates an
+    /// over-bound form instead of refusing the whole replacement.
+    #[test]
+    fn validated_plugin_settings_reject_an_over_bound_map() {
+        let over_bound = (0..=MAX_SETTING_ENTRIES)
+            .map(|index| (format!("key-{index:03}"), "value".to_string()))
+            .collect();
+
+        assert!(
+            crate::validate_plugin_settings(over_bound).is_err(),
+            "a replacement map with more than {MAX_SETTING_ENTRIES} entries must be rejected"
+        );
     }
 
     #[test]

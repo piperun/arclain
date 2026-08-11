@@ -24,6 +24,9 @@ mod write_budget;
 mod tests;
 
 pub use plugin_logger::PluginLogger;
+pub use settings::{
+    validate_plugin_settings, PluginSettingsValidationError, ValidatedPluginSettings,
+};
 
 pub(crate) fn bounded_plugin_settings(
     settings: HashMap<String, String>,

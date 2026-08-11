@@ -111,6 +111,15 @@ pub struct PluginManager {
     pub(crate) failed_plugins: parking_lot::Mutex<Vec<types::FailedPlugin>>,
 }
 
+/// An opaque handle to the exact loaded plugin generation that accepted a
+/// host-side settings replacement preflight. It prevents a later activation
+/// from silently applying those settings to a reloaded instance.
+pub struct PluginSettingsReplacement {
+    plugin_id: String,
+    identity_key: PluginIdentityKey,
+    instance: Arc<parking_lot::Mutex<crate::runtime::PluginInstance>>,
+}
+
 impl PluginManager {
     /// Create a new plugin manager
     pub fn new(

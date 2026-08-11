@@ -74,6 +74,7 @@
 //! (both in `tests/settings_facade.rs`) pin down exactly this documented
 //! end state for steps 2 and 3 respectively.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -83,6 +84,7 @@ use arclain_network::features::proxy::ConnectionTestResult;
 
 use crate::challenge::SecretInput;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
+use crate::plugins::PluginSettingsSnapshot;
 use crate::settings::{
     self, CacheMaintenanceReport, CacheMaintenanceTask, GametaServerInfo, NetworkProbeReport,
     PasswordRuleEditInput, PasswordRuleInput, PasswordRuleSummary, ProbeStepDto, SettingsPatch,
@@ -1180,7 +1182,7 @@ pub(super) async fn run_set_plugin_domain_approved(
 ///
 /// # Why it compares before writing
 ///
-/// [`run_set_plugin_settings`] reads the whole user-config row, rewrites
+/// [`run_flush_plugin_settings`] reads the whole user-config row, rewrites
 /// it, and saves it back. Doing that on every plugin interaction, when
 /// the overwhelming majority write no setting at all, would put a
 /// full-row database round trip behind every button click. The comparison
@@ -1216,7 +1218,7 @@ pub(super) async fn flush_plugin_settings(inner: &Arc<AppRuntime>, plugin_id: &s
     if already_persisted {
         return;
     }
-    if let Err(error) = run_set_plugin_settings(inner, plugin_id.to_string(), settings).await {
+    if let Err(error) = run_flush_plugin_settings(inner, plugin_id.to_string(), settings).await {
         tracing::error!(
             plugin_id,
             ?error,
@@ -1325,17 +1327,131 @@ pub(super) async fn run_flush_all_plugin_settings(inner: &Arc<AppRuntime>) {
     }
 }
 
-/// Persists `settings` as `plugin_id`'s own key/value settings bag
-/// (`UserConfig::plugin_settings`), reported back to the plugin at its
-/// next `get-ui-layout`/`on-ui-event` call via `PluginManager::new`'s own
-/// `plugin_settings` seed at bootstrap. Does not validate that
-/// `plugin_id` names a currently-loaded plugin: a frontend saving a
-/// settings form and [`flush_plugin_settings`] are both callers, and
-/// neither reaches here without the plugin having run.
+/// Reads a loaded plugin's host-bounded settings and the application-wide
+/// revision that protects a later replacement. Taking the same write lock as
+/// mutations keeps the live map and revision from straddling a successful
+/// compare-and-set activation.
+pub(super) async fn run_plugin_settings(
+    inner: &Arc<AppRuntime>,
+    plugin_id: String,
+) -> Result<PluginSettingsSnapshot, ApplicationError> {
+    let _write_guard = inner.settings_write_lock.lock().await;
+    let manager = crate::plugins::require_manager(inner.plugin_manager())?;
+    let values = {
+        let manager = manager.lock();
+        if manager.get_plugin_instance(&plugin_id).is_none() {
+            return Err(crate::plugins::plugin_not_found(&plugin_id));
+        }
+        manager
+            .get_settings_for(&plugin_id)
+            .ok_or_else(|| crate::plugins::plugin_not_found(&plugin_id))?
+    };
+    let revision = inner.session.mutable.read().revision;
+    Ok(PluginSettingsSnapshot {
+        plugin_id,
+        revision,
+        values: values.into_iter().collect(),
+    })
+}
+
+/// Persists a frontend-requested whole-map replacement only after its expected
+/// shared revision, plugin liveness, and the host's canonical settings limits
+/// have all been checked while `settings_write_lock` is held. The running
+/// instance changes only after the user-config row saves successfully.
 pub(super) async fn run_set_plugin_settings(
     inner: &Arc<AppRuntime>,
     plugin_id: String,
-    settings: std::collections::HashMap<String, String>,
+    expected_revision: u64,
+    values: BTreeMap<String, String>,
+) -> Result<PluginSettingsSnapshot, ApplicationError> {
+    let _write_guard = inner.settings_write_lock.lock().await;
+    let current_revision = inner.session.mutable.read().revision;
+    if expected_revision != current_revision {
+        return Err(conflict_error(current_revision));
+    }
+    let validated = arclain_plugins::validate_plugin_settings(values.clone())
+        .map_err(plugin_settings_validation_error)?;
+    let manager = crate::plugins::require_manager(inner.plugin_manager())?;
+    let replacement = {
+        let manager = manager.lock();
+        if manager.get_plugin_instance(&plugin_id).is_none() {
+            return Err(crate::plugins::plugin_not_found(&plugin_id));
+        }
+        manager
+            .prepare_plugin_settings_replacement(&plugin_id)
+            .map_err(|error| plugin_settings_activation_error(&plugin_id, error))?
+    };
+    let config_service = inner
+        .core_services()
+        .config_service
+        .clone()
+        .ok_or_else(settings_unavailable_error)?;
+    let handle = inner
+        .tokio_handle()
+        .ok_or_else(shutdown_mid_request_error)?;
+
+    let read_config_service = config_service.clone();
+    let original = handle
+        .spawn_blocking(move || {
+            read_config_service
+                .get_user_config()
+                .map_err(|error| backend_error("reading current settings", error))
+        })
+        .await
+        .map_err(internal_join_error)??;
+    let mut candidate = original.clone();
+    candidate.set_plugin_settings(&plugin_id, HashMap::from_iter(values.clone()));
+
+    let persisted = candidate.clone();
+    let save_config_service = config_service.clone();
+    handle
+        .spawn_blocking(move || {
+            save_config_service
+                .save_user_config(&persisted)
+                .map_err(|error| persistence_error("saving plugin settings", error))
+        })
+        .await
+        .map_err(internal_join_error)??;
+
+    let activation = {
+        let mut manager = manager.lock();
+        manager.replace_plugin_settings(replacement, validated)
+    };
+    if let Err(error) = activation {
+        let rollback_service = config_service.clone();
+        let rollback = handle
+            .spawn_blocking(move || rollback_service.save_user_config(&original))
+            .await;
+        match rollback {
+            Ok(Ok(())) => return Err(plugin_settings_activation_error(&plugin_id, error)),
+            Ok(Err(rollback_error)) => {
+                return Err(persistence_error(
+                    "restoring plugin settings after live activation failed",
+                    rollback_error,
+                ))
+            }
+            Err(rollback_error) => return Err(internal_join_error(rollback_error)),
+        }
+    }
+
+    let mut mutable = inner.session.mutable.write();
+    mutable.user_config = candidate;
+    mutable.revision += 1;
+    Ok(PluginSettingsSnapshot {
+        plugin_id,
+        revision: mutable.revision,
+        values,
+    })
+}
+
+/// Persists guest-written settings after a guest entry. This intentionally
+/// keeps the pre-CAS behavior: it trusts the running instance's already
+/// bounded map, advances the shared revision after a successful save, and does
+/// not try to reactivate the instance it just read from.
+pub(super) async fn run_flush_plugin_settings(
+    inner: &Arc<AppRuntime>,
+    plugin_id: String,
+    settings: HashMap<String, String>,
 ) -> Result<(), ApplicationError> {
     let _write_guard = inner.settings_write_lock.lock().await;
     let config_service = inner
@@ -1801,6 +1917,32 @@ fn conflict_error(current_revision: u64) -> ApplicationError {
     .with_recoverability(Recoverability::Retry)
     .with_suggested_action(SuggestedAction::Retry)
     .with_field("expected_revision")
+}
+
+fn plugin_settings_validation_error(
+    _error: arclain_plugins::PluginSettingsValidationError,
+) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::InvalidInput,
+        "plugin settings exceed host limits",
+    )
+    .with_recoverability(Recoverability::UserAction)
+    .with_field("values")
+}
+
+fn plugin_settings_activation_error(
+    plugin_id: &str,
+    error: arclain_plugins::PluginError,
+) -> ApplicationError {
+    match error {
+        arclain_plugins::PluginError::NotFound(_) => crate::plugins::plugin_not_found(plugin_id),
+        error => ApplicationError::new(
+            ApplicationErrorKind::Plugin,
+            "failed to activate plugin settings",
+        )
+        .with_diagnostic(error.to_string())
+        .with_recoverability(Recoverability::Retry),
+    }
 }
 
 fn settings_unavailable_error() -> ApplicationError {

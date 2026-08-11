@@ -55,7 +55,9 @@ pub use wirt::{action_policy, ui_model};
 // Re-export main types
 pub use active_tab::ActiveTabBridge;
 pub use executor::InProcessWirtExecutor;
-pub use host_functions::HostFunctions;
+pub use host_functions::{
+    validate_plugin_settings, HostFunctions, PluginSettingsValidationError, ValidatedPluginSettings,
+};
 pub use loader::{DiscoveredPlugin, PluginArtifact, PluginLoader};
 pub use manager::{
     resolve_interactive_request_fetch, PluginEventScheduler, PluginInstallPreview, PluginListItem,

@@ -1003,6 +1003,16 @@ pub struct PluginSummary {
     pub last_reason: Option<String>,
 }
 
+/// A point-in-time view of one live plugin's bounded settings bag. The
+/// revision is the application-wide optimistic-concurrency token, shared with
+/// [`crate::settings::SettingsSnapshot`] rather than maintained separately.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginSettingsSnapshot {
+    pub plugin_id: String,
+    pub revision: u64,
+    pub values: BTreeMap<String, String>,
+}
+
 /// A renderer-neutral plugin UI document: [`wirt::ui_model::PluginUiNodeDto`]'s
 /// normalized tree, plus the session/plugin/revision identity
 /// `wirt::ui_model` itself cannot carry (it has no
@@ -1532,7 +1542,7 @@ pub(crate) fn require_manager(
     manager.ok_or_else(plugin_manager_unavailable)
 }
 
-fn plugin_not_found(plugin_id: &str) -> ApplicationError {
+pub(crate) fn plugin_not_found(plugin_id: &str) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::NotFound, "plugin not found")
         .with_diagnostic(format!("plugin id: {plugin_id}"))
         .with_recoverability(Recoverability::UserAction)

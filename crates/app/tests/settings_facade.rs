@@ -23,6 +23,7 @@
 
 mod support;
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -150,6 +151,52 @@ fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
     .expect("bootstrap must succeed")
 }
 
+/// Copies the maintained UI-demo component into the folder layout the real
+/// plugin loader discovers. The settings tests deliberately use this real
+/// instance so a stale compare-and-set must leave both its live host settings
+/// and the persisted row unchanged.
+fn install_ui_demo_fixture(plugins_dir: &Path) {
+    let plugin_dir = plugins_dir.join("ui-demo");
+    std::fs::create_dir_all(&plugin_dir).expect("create UI-demo fixture directory");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../wirt/tests/fixtures/bundled/ui-demo.wasm"),
+        plugin_dir.join("ui-demo.wasm"),
+    )
+    .expect("copy UI-demo component");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/ui-demo/plugin.toml"),
+        plugin_dir.join("ui-demo.toml"),
+    )
+    .expect("copy UI-demo manifest");
+}
+
+fn bootstrap_app_with_ui_demo(temp: &tempfile::TempDir) -> ArclainApp {
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
+    install_ui_demo_fixture(&paths.plugins_dir);
+    ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .expect("bootstrap with UI-demo fixture must succeed")
+}
+
+fn rebootstrap_app_with_ui_demo(temp: &tempfile::TempDir) -> ArclainApp {
+    ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(support::temp_paths(temp.path())),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .expect("rebootstrap with UI-demo fixture must succeed")
+}
+
 fn keep_archive_patch() -> ArchiveSettingsPatch {
     ArchiveSettingsPatch {
         backend_mode: PatchValue::Keep,
@@ -178,6 +225,198 @@ fn keep_security_patch() -> SecuritySettingsPatch {
         key_file_path: PatchValue::Keep,
         encrypted_crc_policy: PatchValue::Keep,
     }
+}
+
+// ============================================================================
+// Revisioned plugin settings snapshots.
+// ============================================================================
+
+/// Catches a facade that persists a plugin-settings form but leaves the
+/// running guest on its bootstrap-time values, or returns a private revision
+/// unrelated to the application-wide settings revision.
+#[test]
+fn plugin_settings_reads_the_live_bounded_map_and_a_successful_cas_returns_a_fresh_snapshot() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+
+    let initial = runtime
+        .block_on(app.plugin_settings("ui-demo".to_string()))
+        .expect("known plugin settings must be readable");
+    assert_eq!(initial.plugin_id, "ui-demo");
+    assert_eq!(initial.revision, 0);
+    assert!(initial.values.is_empty());
+
+    let values = BTreeMap::from([
+        (
+            "endpoint".to_string(),
+            "https://example.test/api".to_string(),
+        ),
+        ("theme".to_string(), "dark".to_string()),
+    ]);
+    let updated = runtime
+        .block_on(app.set_plugin_settings("ui-demo".to_string(), initial.revision, values.clone()))
+        .expect("matching revision must persist plugin settings");
+
+    assert_eq!(updated.plugin_id, "ui-demo");
+    assert_eq!(updated.revision, 1);
+    assert_eq!(updated.values, values);
+    assert_eq!(
+        runtime.block_on(app.settings()).unwrap().revision,
+        updated.revision,
+        "plugin settings must advance the shared application revision"
+    );
+    assert_eq!(
+        runtime
+            .block_on(app.plugin_settings("ui-demo".to_string()))
+            .unwrap()
+            .values,
+        values,
+        "the facade read must return the exact stored bounded map"
+    );
+
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let manager = legacy.plugin_manager.expect("UI-demo must be live").clone();
+    let instance = manager
+        .lock()
+        .get_plugin_instance("ui-demo")
+        .expect("live UI-demo instance");
+    let live = instance
+        .lock()
+        .get_settings()
+        .expect("live UI-demo settings");
+    assert_eq!(
+        BTreeMap::from_iter(live),
+        BTreeMap::from([
+            (
+                "endpoint".to_string(),
+                "https://example.test/api".to_string()
+            ),
+            ("theme".to_string(), "dark".to_string()),
+        ]),
+        "successful persistence must activate the same map in the live plugin"
+    );
+}
+
+/// Catches a stale writer that overwrites the accepted settings either on disk
+/// or in the running guest instance.
+#[test]
+fn stale_plugin_settings_revision_changes_neither_disk_nor_live_instance() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+
+    let initial = runtime
+        .block_on(app.plugin_settings("ui-demo".to_string()))
+        .unwrap();
+    let accepted = BTreeMap::from([("mode".to_string(), "accepted".to_string())]);
+    let current = runtime
+        .block_on(app.set_plugin_settings(
+            "ui-demo".to_string(),
+            initial.revision,
+            accepted.clone(),
+        ))
+        .unwrap();
+
+    let error = runtime
+        .block_on(app.set_plugin_settings(
+            "ui-demo".to_string(),
+            initial.revision,
+            BTreeMap::from([("mode".to_string(), "stale".to_string())]),
+        ))
+        .expect_err("a stale revision must be rejected");
+    assert_eq!(error.kind, ApplicationErrorKind::Conflict);
+    assert_eq!(error.field.as_deref(), Some("expected_revision"));
+
+    assert_eq!(
+        runtime
+            .block_on(app.plugin_settings("ui-demo".to_string()))
+            .unwrap(),
+        current,
+        "a stale write must not replace the facade snapshot"
+    );
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let manager = legacy
+        .plugin_manager
+        .as_ref()
+        .expect("UI-demo must be live")
+        .clone();
+    let instance = manager
+        .lock()
+        .get_plugin_instance("ui-demo")
+        .expect("live UI-demo instance");
+    let live = instance
+        .lock()
+        .get_settings()
+        .expect("live UI-demo settings");
+    assert_eq!(BTreeMap::from_iter(live), accepted);
+
+    drop(legacy);
+    runtime
+        .block_on(app.shutdown())
+        .expect("shutdown must succeed");
+    drop(app);
+    let restarted = rebootstrap_app_with_ui_demo(&temp);
+    let after_restart = runtime
+        .block_on(restarted.plugin_settings("ui-demo".to_string()))
+        .unwrap();
+    assert_eq!(
+        after_restart.values, current.values,
+        "a restart must observe the accepted settings, not the stale write"
+    );
+}
+
+/// Catches validation that happens after persistence, or that silently lets
+/// the plugin runtime truncate an over-bound map while reporting success.
+#[test]
+fn unknown_or_over_bound_plugin_settings_fail_before_persistence() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+    let initial = runtime
+        .block_on(app.plugin_settings("ui-demo".to_string()))
+        .unwrap();
+
+    let unknown = runtime
+        .block_on(app.set_plugin_settings(
+            "not-installed".to_string(),
+            initial.revision,
+            BTreeMap::new(),
+        ))
+        .expect_err("unknown plugin ids must be rejected before persistence");
+    assert_eq!(unknown.kind, ApplicationErrorKind::NotFound);
+    assert_eq!(unknown.field.as_deref(), Some("plugin_id"));
+
+    let over_bound = (0..=128)
+        .map(|index| (format!("key-{index:03}"), "value".to_string()))
+        .collect();
+    let error = runtime
+        .block_on(app.set_plugin_settings("ui-demo".to_string(), initial.revision, over_bound))
+        .expect_err("the host setting bounds must reject an over-bound map");
+    assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(error.field.as_deref(), Some("values"));
+
+    assert_eq!(
+        runtime
+            .block_on(app.plugin_settings("ui-demo".to_string()))
+            .unwrap(),
+        initial,
+        "validation failures must leave the saved snapshot untouched"
+    );
+
+    runtime
+        .block_on(app.shutdown())
+        .expect("shutdown must succeed");
+    drop(app);
+    let restarted = rebootstrap_app_with_ui_demo(&temp);
+    assert_eq!(
+        runtime
+            .block_on(restarted.plugin_settings("ui-demo".to_string()))
+            .unwrap()
+            .values,
+        initial.values,
+        "unknown or over-bound requests must not persist a settings row"
+    );
 }
 
 fn no_op_patch(expected_revision: u64) -> SettingsPatch {

@@ -1,7 +1,7 @@
 //! Query methods for plugin manager
 
 use super::types::PluginListItem;
-use super::{EnabledPluginSnapshot, PluginManager};
+use super::{EnabledPluginSnapshot, PluginManager, PluginSettingsReplacement};
 use crate::runtime::PluginInstance;
 use crate::types::{PluginError, PluginIdentityKey, PluginMetadata, Result};
 use parking_lot::Mutex;
@@ -411,5 +411,59 @@ impl PluginManager {
         self.initial_settings
             .get(&identity_key)
             .map(|entry| entry.values.clone())
+    }
+
+    /// Captures the exact live plugin generation a host has proven exists
+    /// before starting a durable settings write. The opaque handle is consumed
+    /// by [`Self::replace_plugin_settings`], which rejects it if a reload
+    /// replaced that generation in the meantime.
+    pub fn prepare_plugin_settings_replacement(
+        &self,
+        plugin_id: &str,
+    ) -> Result<PluginSettingsReplacement> {
+        let identity_key = PluginIdentityKey::parse(plugin_id)?;
+        let plugins = self.plugins.read();
+        let plugin = plugins
+            .get(&identity_key)
+            .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
+        Ok(PluginSettingsReplacement {
+            plugin_id: plugin.metadata.id.clone(),
+            identity_key,
+            instance: plugin.instance.clone(),
+        })
+    }
+
+    /// Replaces one exact loaded plugin generation's settings from an opaque
+    /// snapshot validated by [`crate::validate_plugin_settings`]. The
+    /// replacement is applied to both the live instance and the seed used by
+    /// later retries or reloads, while keeping guest-written dirty flushing
+    /// unchanged.
+    pub fn replace_plugin_settings(
+        &mut self,
+        target: PluginSettingsReplacement,
+        settings: crate::ValidatedPluginSettings,
+    ) -> Result<()> {
+        let values = settings.into_values();
+        let plugins = self.plugins.read();
+        let plugin = plugins
+            .get(&target.identity_key)
+            .filter(|plugin| Arc::ptr_eq(&plugin.instance, &target.instance))
+            .ok_or_else(|| PluginError::NotFound(target.plugin_id.clone()))?;
+        let original_id = plugin.metadata.id.clone();
+        {
+            let mut instance = plugin.instance.lock();
+            instance.replace_settings(values.clone());
+        }
+        self.settings_cache
+            .lock()
+            .insert(target.identity_key.clone(), values.clone());
+        self.initial_settings.insert(
+            target.identity_key,
+            super::types::InitialPluginSettings {
+                original_id,
+                values,
+            },
+        );
+        Ok(())
     }
 }

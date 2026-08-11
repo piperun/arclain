@@ -256,6 +256,16 @@ impl PluginInstance {
         Some(self.inner.host_state().settings.lock().clone())
     }
 
+    /// Replaces the host-owned settings map after the embedding host has
+    /// durably persisted a validated snapshot. Only `PluginManager` calls
+    /// this; its validated handoff prevents unchecked maps reaching a guest.
+    pub(crate) fn replace_settings(&mut self, settings: HashMap<String, String>) {
+        let host = self.inner.host_state();
+        *host.settings.lock() = settings;
+        host.settings_dirty
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
     /// Cheap clone of the plugin's `settings_dirty` flag.
     pub fn settings_dirty_handle(&self) -> Arc<std::sync::atomic::AtomicBool> {
         self.inner.host_state().settings_dirty.clone()

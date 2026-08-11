@@ -1132,6 +1132,90 @@ fn manager_does_not_retain_unbounded_persisted_plugin_settings() {
     assert!(retained_bytes <= 1024 * 1024);
 }
 
+/// Catches a facade settings save that updates the persisted bootstrap map but
+/// leaves the current running guest on its old values.
+#[test]
+fn manager_replaces_live_plugin_settings_from_a_validated_snapshot() {
+    let temp_dir = TempDir::new().unwrap();
+    let wasm_path = temp_dir.path().join("ui-demo.wasm");
+    std::fs::write(
+        &wasm_path,
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        )),
+    )
+    .unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().join("plugins"), HashMap::new())
+        .expect("create plugin manager");
+    assert_eq!(manager.install_plugin(&wasm_path).unwrap(), "ui-demo");
+
+    let target = manager
+        .prepare_plugin_settings_replacement("ui-demo")
+        .expect("known live plugin must prepare a replacement handoff");
+    let replacement = crate::validate_plugin_settings(std::collections::BTreeMap::from([
+        ("mode".to_string(), "host-updated".to_string()),
+        ("theme".to_string(), "dark".to_string()),
+    ]))
+    .expect("bounded settings must validate");
+    manager
+        .replace_plugin_settings(target, replacement)
+        .expect("known live plugin must accept a validated replacement");
+
+    let instance = manager
+        .get_plugin_instance("ui-demo")
+        .expect("installed plugin must expose a live instance");
+    assert_eq!(
+        instance.lock().get_settings(),
+        Some(HashMap::from([
+            ("mode".to_string(), "host-updated".to_string()),
+            ("theme".to_string(), "dark".to_string()),
+        ])),
+        "the live plugin instance must observe the replacement"
+    );
+}
+
+/// Catches a save handoff that targets a replacement instance after the
+/// originally validated plugin generation has been reloaded.
+#[test]
+fn plugin_settings_handoff_rejects_a_reloaded_plugin_generation() {
+    let temp_dir = TempDir::new().unwrap();
+    let wasm_path = temp_dir.path().join("ui-demo.wasm");
+    std::fs::write(
+        &wasm_path,
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        )),
+    )
+    .unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().join("plugins"), HashMap::new())
+        .expect("create plugin manager");
+    manager.install_plugin(&wasm_path).unwrap();
+    let target = manager
+        .prepare_plugin_settings_replacement("ui-demo")
+        .expect("known live plugin must prepare a replacement handoff");
+    manager.reload_plugin("ui-demo").expect("reload UI-demo");
+
+    let replacement = crate::validate_plugin_settings(std::collections::BTreeMap::from([(
+        "mode".to_string(),
+        "must-not-reach-reloaded-instance".to_string(),
+    )]))
+    .expect("bounded settings must validate");
+    assert!(matches!(
+        manager.replace_plugin_settings(target, replacement),
+        Err(crate::types::PluginError::NotFound(_))
+    ));
+
+    let current = manager
+        .get_plugin_instance("ui-demo")
+        .expect("reloaded plugin instance");
+    assert!(
+        current.lock().get_settings().unwrap().is_empty(),
+        "a stale handoff must not update the reloaded instance"
+    );
+}
+
 #[test]
 fn install_rejects_exported_unsafe_id_before_filesystem_use() {
     let temp_dir = TempDir::new().unwrap();

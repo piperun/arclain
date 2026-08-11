@@ -2177,16 +2177,31 @@ impl ArclainApp {
         .await?
     }
 
-    /// Persists `settings` as `plugin_id`'s own key/value settings bag
-    /// (see `runtime::settings_ops::run_set_plugin_settings`'s own doc
-    /// comment).
+    /// Reads `plugin_id`'s live, host-bounded settings together with the
+    /// shared application settings revision a caller must present to replace
+    /// them.
+    pub async fn plugin_settings(
+        &self,
+        plugin_id: String,
+    ) -> Result<crate::plugins::PluginSettingsSnapshot, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_plugin_settings(&inner, plugin_id).await
+        })
+        .await?
+    }
+
+    /// Replaces `plugin_id`'s settings only if `expected_revision` still
+    /// matches the shared application revision. The candidate is validated and
+    /// persisted before it is activated in the running plugin instance.
     pub async fn set_plugin_settings(
         &self,
         plugin_id: String,
-        settings: std::collections::HashMap<String, String>,
-    ) -> Result<(), ApplicationError> {
+        expected_revision: u64,
+        values: std::collections::BTreeMap<String, String>,
+    ) -> Result<crate::plugins::PluginSettingsSnapshot, ApplicationError> {
         self.dispatch_async(move |inner| async move {
-            settings_ops::run_set_plugin_settings(&inner, plugin_id, settings).await
+            settings_ops::run_set_plugin_settings(&inner, plugin_id, expected_revision, values)
+                .await
         })
         .await?
     }
