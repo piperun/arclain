@@ -374,12 +374,12 @@ mod tests {
 
     #[test]
     fn deterministic_writer_has_a_small_inline_fixed_output_golden() {
-        const MANIFEST: &[u8] = b"[wirt]\nabi = \"0.2.0\"\n";
+        const MANIFEST: &[u8] = b"[wirt]\nabi = \"0.3.0\"\n";
         const COMPONENT: &[u8] = b"\0asm\x0d\0\x01\0";
         let package = write_package_bytes(MANIFEST, COMPONENT).unwrap();
         assert_eq!(
             PackageFingerprint::sha256(&package).as_str(),
-            "8f8415c612b3e08fe18e039e9ef303fbcd187bf865b9fcfe7a63e41b7c3cbe44"
+            "155d1a891acc32d46b5492084fccb4d32c7985b0e17f2f1a30a210ebdef1d1ca"
         );
     }
 }

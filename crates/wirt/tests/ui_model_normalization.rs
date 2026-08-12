@@ -16,7 +16,10 @@ use wirt::ui_model::{
     normalize_layout, PluginButtonActionDto, PluginUiNodeKind, PluginUiNormalizeError,
     PluginWarningIconDto, MAX_UI_ASSETS, MAX_UI_NODES, MAX_UI_TEXT_BYTES, MAX_UI_TREE_DEPTH,
 };
-use wirt::{ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, ToolbarButton, WarningIcon};
+use wirt::{
+    ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, SpacingStep, ToolbarButton,
+    WarningIcon,
+};
 
 fn single(elements: Vec<PluginUiElement>) -> PluginLayout {
     PluginLayout::Single { elements }
@@ -218,11 +221,18 @@ fn image_is_display_only_and_counts_toward_the_asset_budget() {
 fn separator_and_space_are_display_only() {
     let layout = single(vec![
         PluginUiElement::Separator,
-        PluginUiElement::Space { size: 12.0 },
+        PluginUiElement::Space {
+            step: SpacingStep::Large,
+        },
     ]);
     let children = root_children(&layout);
     assert_eq!(children[0].kind, PluginUiNodeKind::Separator);
-    assert_eq!(children[1].kind, PluginUiNodeKind::Space { size: 12.0 });
+    assert_eq!(
+        children[1].kind,
+        PluginUiNodeKind::Space {
+            step: SpacingStep::Large
+        }
+    );
 }
 
 #[test]

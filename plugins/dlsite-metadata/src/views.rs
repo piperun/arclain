@@ -26,7 +26,7 @@ pub(crate) fn dispatch(
         ButtonAction, ButtonConfig, CarouselConfig, CheckboxConfig, DropdownConfig, ImageConfig,
         KeyValueListConfig, KeyValuePair, LabelConfig, ListContainerConfig, ListItemConfig,
         LoadingConfig, MetadataGridConfig, PluginLayout, SectionHeaderConfig, SettingsGroupHeader,
-        SplitConfig, TabsConfig, TagChipsConfig, TextInputConfig, ToolbarButtonConfig,
+        SpacingStep, SplitConfig, TabsConfig, TagChipsConfig, TextInputConfig, ToolbarButtonConfig,
         ToolbarConfig, UiElement, WarningConfig, WarningIcon,
     };
 
@@ -609,7 +609,7 @@ pub(crate) fn dispatch(
                     checked: rename_checked,
                 }));
 
-                elements.push(UiElement::Space(10.0));
+                elements.push(UiElement::Space(SpacingStep::Medium));
 
                 elements.push(UiElement::Button(ButtonConfig {
                     id: "close_search_dialog".to_string(),
@@ -637,7 +637,7 @@ pub(crate) fn dispatch(
                         icon: WarningIcon::Warning,
                         message: "This action cannot be undone. All cached metadata and images will be removed.".to_string(),
                     }),
-                    UiElement::Space(20.0),
+                    UiElement::Space(SpacingStep::Large),
                     UiElement::Button(ButtonConfig {
                         id: "do_clear_all_cache".to_string(),
                         label: "Yes, Clear All".to_string(),
@@ -892,7 +892,7 @@ pub(crate) fn dispatch(
 
                 // Show current archive filename with copy button
                 if let Some(archive_info) = wirt_sdk::current_archive_info() {
-                    sidebar_elements.push(UiElement::Space(8.0));
+                    sidebar_elements.push(UiElement::Space(SpacingStep::Small));
                     sidebar_elements.push(UiElement::Label(LabelConfig {
                         text: "Current Archive:".to_string(),
                         bold: false,
@@ -1145,7 +1145,7 @@ pub(crate) fn dispatch(
                         description: None,
                     }));
 
-                    content_elements.push(UiElement::Space(8.0));
+                    content_elements.push(UiElement::Space(SpacingStep::Small));
 
                     // ===== CAROUSEL GALLERY =====
                     // Use cached image list to avoid has_data() calls on every frame
@@ -1262,7 +1262,7 @@ pub(crate) fn dispatch(
                         }));
                     }
 
-                    content_elements.push(UiElement::Space(12.0));
+                    content_elements.push(UiElement::Space(SpacingStep::Medium));
 
                     // ===== METADATA INFO (Card-style Grid) =====
                     let release_str = release_date.unwrap_or("Unknown");
@@ -1311,7 +1311,7 @@ pub(crate) fn dispatch(
                             tags: tags.clone(),
                             max_display: Some(15),
                         }));
-                        content_elements.push(UiElement::Space(10.0));
+                        content_elements.push(UiElement::Space(SpacingStep::Medium));
                     }
 
                     // ===== DESCRIPTION =====
@@ -1358,7 +1358,7 @@ pub(crate) fn dispatch(
                                 bold: true,
                                 size: Some(14.0),
                             }));
-                            content_elements.push(UiElement::Space(5.0));
+                            content_elements.push(UiElement::Space(SpacingStep::Small));
 
                             // Show up to 3 samples
                             for (i, sample) in samples.iter().take(3).enumerate() {
@@ -1373,7 +1373,7 @@ pub(crate) fn dispatch(
                                         url: Some(url.to_string()),
                                         max_height: Some(200.0),
                                     }));
-                                    content_elements.push(UiElement::Space(8.0));
+                                    content_elements.push(UiElement::Space(SpacingStep::Small));
                                 }
                             }
                         }
@@ -1385,7 +1385,7 @@ pub(crate) fn dispatch(
                     // Logic in on_ui_event ensures this loads quickly, but if it takes a frame, show loading
                 }
             } else {
-                content_elements.push(UiElement::Space(50.0));
+                content_elements.push(UiElement::Space(SpacingStep::Large));
                 content_elements.push(UiElement::Label(LabelConfig {
                     text: "Select an item to view details".to_string(),
                     bold: true,

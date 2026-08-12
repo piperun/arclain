@@ -71,6 +71,12 @@ use crate::model::{
     WarningIcon,
 };
 
+/// Re-exported because a node kind names it directly. Steps are host
+/// vocabulary rather than plugin-supplied data, so there is nothing for a
+/// DTO twin to normalize -- the enum a plugin picks from is the enum a
+/// frontend matches on.
+pub use crate::model::SpacingStep;
+
 /// Maximum nesting depth (containers within containers within the root)
 /// a normalized tree may reach.
 pub const MAX_UI_TREE_DEPTH: usize = 64;
@@ -220,7 +226,7 @@ pub enum PluginUiNodeKind {
     },
     Separator,
     Space {
-        size: f32,
+        step: SpacingStep,
     },
     Tabs {
         tabs: Vec<String>,
@@ -796,9 +802,9 @@ fn normalize_element(
             ctx.register_id(structural_path.to_string())?,
             PluginUiNodeKind::Separator,
         ),
-        PluginUiElement::Space { size } => (
+        PluginUiElement::Space { step } => (
             ctx.register_id(structural_path.to_string())?,
-            PluginUiNodeKind::Space { size: *size },
+            PluginUiNodeKind::Space { step: *step },
         ),
         PluginUiElement::Tabs { id, tabs, selected } => {
             for tab in tabs {
@@ -977,6 +983,25 @@ fn normalize_element(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings::wirt::plugin::ui::{
+        SpacingStep as WitSpacingStep, UiElement as WitUiElement,
+    };
+    use crate::conversions::convert_ui_element;
+
+    #[test]
+    fn spacing_step_survives_the_conversion() {
+        for (wit, expected) in [
+            (WitSpacingStep::Small, SpacingStep::Small),
+            (WitSpacingStep::Medium, SpacingStep::Medium),
+            (WitSpacingStep::Large, SpacingStep::Large),
+        ] {
+            let element = convert_ui_element(WitUiElement::Space(wit));
+            let PluginUiElement::Space { step } = element else {
+                panic!("space converts to a space");
+            };
+            assert_eq!(step, expected);
+        }
+    }
 
     fn label(text: &str) -> PluginUiElement {
         PluginUiElement::Label {

@@ -1,4 +1,4 @@
-package wirt:plugin@0.2.0;
+package wirt:plugin@0.3.0;
 
 interface host {
     // Logging
@@ -371,6 +371,14 @@ interface ui {
         columns: option<u32>,  // Number of columns (default: auto-fit based on available width)
     }
 
+    // How much room a plugin wants between two elements. The host owns the
+    // pixel value for each step, so a density change moves every gap at once.
+    enum spacing-step {
+        small,
+        medium,
+        large,
+    }
+
     // UI Element variant (Leaf nodes and simple containers)
     variant ui-element {
         label(label-config),
@@ -382,7 +390,7 @@ interface ui {
         slider(slider-config),
         dropdown(dropdown-config),
         separator,
-        space(f32),
+        space(spacing-step),
         image(image-config),
         tabs(tabs-config),
         list-container(list-container-config),

@@ -1053,7 +1053,7 @@ fn package_preview_rejects_a_link_or_non_file_final_component() {
 #[test]
 fn package_init_failure_rolls_back_sidecars_staging_and_live_state() {
     const MANIFEST: &[u8] = br#"[wirt]
-abi = "0.2.0"
+abi = "0.3.0"
 
 [plugin]
 id = "failing-init"
@@ -1155,7 +1155,7 @@ fn init_records_a_discovered_but_uninstantiable_plugin_as_a_failed_plugin() {
         plugin_dir.join("broken-plugin.toml"),
         r#"
 [wirt]
-abi = "0.2.0"
+abi = "0.3.0"
 
 [plugin]
 id = "broken-plugin"

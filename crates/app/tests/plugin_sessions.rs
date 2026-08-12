@@ -148,7 +148,7 @@ fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
 
 fn install_failing_init_fixture(plugins_dir: &std::path::Path) {
     const MANIFEST: &[u8] = br#"[wirt]
-abi = "0.2.0"
+abi = "0.3.0"
 
 [plugin]
 id = "failing-init"

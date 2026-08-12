@@ -9,7 +9,7 @@ pub const UI_DEMO_COMPONENT: &[u8] = include_bytes!(concat!(
 #[allow(dead_code)]
 pub fn manifest_toml() -> &'static str {
     r#"[wirt]
-abi = "0.2.0"
+abi = "0.3.0"
 
 [plugin]
 id = "ui-demo"

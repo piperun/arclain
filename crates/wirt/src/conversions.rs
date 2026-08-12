@@ -2,7 +2,7 @@
 
 use crate::{
     BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginLayout, PluginUiElement,
-    ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
+    SpacingStep, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
 };
 use crate::{MoveFileRule, MoveRule, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger};
 
@@ -92,7 +92,9 @@ pub fn convert_ui_element(
             selected: config.selected,
         },
         UiElement::Separator => PluginUiElement::Separator,
-        UiElement::Space(size) => PluginUiElement::Space { size },
+        UiElement::Space(step) => PluginUiElement::Space {
+            step: convert_spacing_step(step),
+        },
         UiElement::Image(config) => PluginUiElement::Image {
             cache_key: config.cache_key,
             url: config.url,
@@ -187,6 +189,16 @@ pub fn convert_ui_element(
             description: header.description,
         },
         UiElement::GroupEnd => PluginUiElement::GroupEnd,
+    }
+}
+
+fn convert_spacing_step(step: crate::bindings::wirt::plugin::ui::SpacingStep) -> SpacingStep {
+    use crate::bindings::wirt::plugin::ui::SpacingStep as WitStep;
+
+    match step {
+        WitStep::Small => SpacingStep::Small,
+        WitStep::Medium => SpacingStep::Medium,
+        WitStep::Large => SpacingStep::Large,
     }
 }
 

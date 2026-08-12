@@ -15,6 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wirt_boundary
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Derived, never written out: a fixture that declares a version the rule no
+# longer enforces stops testing what its name says it tests.
+CANONICAL_PACKAGE_LINE = "package {}:{}@{};\n".format(
+    *wirt_boundary.CANONICAL_WIT_PACKAGE
+)
 
 
 class TestWirtBoundary(unittest.TestCase):
@@ -31,7 +36,7 @@ class TestWirtBoundary(unittest.TestCase):
         canonical = root / "wirt-sdk" / "wit"
         canonical.mkdir(parents=True)
         (canonical / "plugin.wit").write_text(
-            "package wirt:plugin@0.2.0;\n", encoding="utf-8"
+            CANONICAL_PACKAGE_LINE, encoding="utf-8"
         )
         for relative, source in sources.items():
             path = crate / relative
@@ -605,10 +610,10 @@ class TestWirtBoundary(unittest.TestCase):
                 encoding="utf-8",
             )
             (canonical / "plugin.wit").write_text(
-                "package wirt:plugin@0.2.0;\n", encoding="utf-8"
+                CANONICAL_PACKAGE_LINE, encoding="utf-8"
             )
             (legacy / "plugin.wit").write_text(
-                "package wirt:plugin@0.2.0;\n", encoding="utf-8"
+                CANONICAL_PACKAGE_LINE, encoding="utf-8"
             )
 
             self.assertEqual(
@@ -627,7 +632,7 @@ class TestWirtBoundary(unittest.TestCase):
             canonical.mkdir(parents=True)
             alternate.parent.mkdir()
             (canonical / "plugin.wit").write_text(
-                "package wirt:plugin@0.2.0;\n", encoding="utf-8"
+                CANONICAL_PACKAGE_LINE, encoding="utf-8"
             )
             alternate.write_text("package example:plugin@1.0.0;\n", encoding="utf-8")
 
@@ -645,10 +650,10 @@ class TestWirtBoundary(unittest.TestCase):
             canonical = root / "wirt-sdk" / "wit"
             canonical.mkdir(parents=True)
             (canonical / "plugin.wit").write_text(
-                "package wirt:plugin@0.2.0;\n", encoding="utf-8"
+                CANONICAL_PACKAGE_LINE, encoding="utf-8"
             )
             (root / "alternate.wit").write_text(
-                "package wirt:plugin@0.2.0;\n", encoding="utf-8"
+                CANONICAL_PACKAGE_LINE, encoding="utf-8"
             )
 
             self.assertEqual(
@@ -665,7 +670,7 @@ class TestWirtBoundary(unittest.TestCase):
             canonical = root / "wirt-sdk" / "wit"
             canonical.mkdir(parents=True)
             (canonical / "plugin.wit").write_text(
-                "package wirt:plugin@0.2.0;\n", encoding="utf-8"
+                CANONICAL_PACKAGE_LINE, encoding="utf-8"
             )
             (root / "alternate.wit").write_text(
                 "package wirt:plugin@0.1.0;\n", encoding="utf-8"
@@ -685,10 +690,10 @@ class TestWirtBoundary(unittest.TestCase):
             canonical = root / "wirt-sdk" / "wit"
             canonical.mkdir(parents=True)
             (canonical / "plugin.wit").write_text(
-                "package wirt:plugin@0.2.0;\n", encoding="utf-8"
+                CANONICAL_PACKAGE_LINE, encoding="utf-8"
             )
             (root / "alternate.wit").write_text(
-                "  package wirt:plugin@0.2.0;\n", encoding="utf-8"
+                "  " + CANONICAL_PACKAGE_LINE, encoding="utf-8"
             )
 
             self.assertEqual(
@@ -705,11 +710,13 @@ class TestWirtBoundary(unittest.TestCase):
             canonical = root / "wirt-sdk" / "wit"
             canonical.mkdir(parents=True)
             (canonical / "plugin.wit").write_text(
-                "package wirt:plugin@0.2.0;\n", encoding="utf-8"
+                CANONICAL_PACKAGE_LINE, encoding="utf-8"
             )
             (root / "alternate.wit").write_text(
                 "// another WIT source\n"
-                "package /* namespace */ wirt /* separator */ : plugin @ 0.2.0;\n",
+                "package /* namespace */ {} /* separator */ : {} @ {};\n".format(
+                    *wirt_boundary.CANONICAL_WIT_PACKAGE
+                ),
                 encoding="utf-8",
             )
 
@@ -727,7 +734,7 @@ class TestWirtBoundary(unittest.TestCase):
             canonical = root / "wirt-sdk" / "wit"
             canonical.mkdir(parents=True)
             (canonical / "plugin.wit").write_text(
-                "package wirt:plugin@0.2.0;\n", encoding="utf-8"
+                CANONICAL_PACKAGE_LINE, encoding="utf-8"
             )
             (root / "alternate.wit").write_text(
                 "package wirt:plugin@;\n", encoding="utf-8"
@@ -744,7 +751,7 @@ class TestWirtBoundary(unittest.TestCase):
             canonical = root / "wirt-sdk" / "wit"
             canonical.mkdir(parents=True)
             (canonical / "plugin.wit").write_text(
-                "package wirt:plugin@0.2.0;\n", encoding="utf-8"
+                CANONICAL_PACKAGE_LINE, encoding="utf-8"
             )
             (root / "alternate.wit").write_text(
                 "package example:one@1.0.0;\n"

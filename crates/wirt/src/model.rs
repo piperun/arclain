@@ -89,8 +89,8 @@ pub enum PluginUiElement {
     },
     Separator,
     Space {
-        #[serde(default = "default_space_size")]
-        size: f32,
+        #[serde(default)]
+        step: SpacingStep,
     },
     Tabs {
         id: String,
@@ -184,6 +184,17 @@ pub struct ToolbarButton {
     pub spacer_before: bool,
 }
 
+/// How much room a plugin wants between two elements. The host owns the
+/// pixel value for each step, so a density change moves every gap at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SpacingStep {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WarningIcon {
     Warning,
@@ -224,10 +235,6 @@ pub enum PluginAction {
     RequestFetch {
         key: String,
     },
-}
-
-fn default_space_size() -> f32 {
-    8.0
 }
 
 fn default_true() -> bool {

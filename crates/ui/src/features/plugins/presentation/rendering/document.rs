@@ -48,7 +48,7 @@
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
     PluginActionDto, PluginImageDto, PluginKeyValueDto, PluginToolbarButtonDto, PluginUiDocument,
-    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto,
+    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SpacingStep,
 };
 use eframe::egui;
 
@@ -356,7 +356,11 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
             ui.separator();
             ui.add_space(8.0);
         }
-        PluginUiNodeKind::Space { size } => ui.add_space(*size),
+        PluginUiNodeKind::Space { step } => ui.add_space(match step {
+            SpacingStep::Small => 8.0,
+            SpacingStep::Medium => 12.0,
+            SpacingStep::Large => 20.0,
+        }),
         PluginUiNodeKind::Button { label, action } => {
             if ui
                 .add(

@@ -350,10 +350,10 @@ fn deeply_nested_contract(depth: u32) -> Vec<u8> {
     };
 
     const INTERFACES: [&str; 18] = [
-        "wirt:plugin/host@0.2.0",
-        "wirt:plugin/meta@0.2.0",
-        "wirt:plugin/rules@0.2.0",
-        "wirt:plugin/ui@0.2.0",
+        "wirt:plugin/host@0.3.0",
+        "wirt:plugin/meta@0.3.0",
+        "wirt:plugin/rules@0.3.0",
+        "wirt:plugin/ui@0.3.0",
         "wasi:io/poll@0.2.9",
         "wasi:clocks/monotonic-clock@0.2.9",
         "wasi:io/error@0.2.9",
@@ -430,10 +430,10 @@ fn wide_contract(field_count: usize) -> Vec<u8> {
     };
 
     const INTERFACES: [&str; 18] = [
-        "wirt:plugin/host@0.2.0",
-        "wirt:plugin/meta@0.2.0",
-        "wirt:plugin/rules@0.2.0",
-        "wirt:plugin/ui@0.2.0",
+        "wirt:plugin/host@0.3.0",
+        "wirt:plugin/meta@0.3.0",
+        "wirt:plugin/rules@0.3.0",
+        "wirt:plugin/ui@0.3.0",
         "wasi:io/poll@0.2.9",
         "wasi:clocks/monotonic-clock@0.2.9",
         "wasi:io/error@0.2.9",
@@ -593,10 +593,10 @@ fn canonical_component_has_only_the_fixed_wirt_and_wasi_contract() {
             "wasi:io/error@0.2.9",
             "wasi:io/poll@0.2.9",
             "wasi:io/streams@0.2.9",
-            "wirt:plugin/host@0.2.0",
-            "wirt:plugin/meta@0.2.0",
-            "wirt:plugin/rules@0.2.0",
-            "wirt:plugin/ui@0.2.0",
+            "wirt:plugin/host@0.3.0",
+            "wirt:plugin/meta@0.3.0",
+            "wirt:plugin/rules@0.3.0",
+            "wirt:plugin/ui@0.3.0",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -616,7 +616,7 @@ fn structural_preflight_accepts_duplicated_equivalent_nonresource_types() {
 
 #[test]
 fn payload_strings_cannot_spoof_component_imports() {
-    let payload = b"wirt:plugin/host@0.2.0 wasi:io/poll@0.2.9";
+    let payload = b"wirt:plugin/host@0.3.0 wasi:io/poll@0.2.9";
     let mut bytes = b"\0asm\x0d\0\x01\0".to_vec();
     bytes.push(0);
     bytes.push((payload.len() + 1) as u8);
@@ -780,7 +780,7 @@ fn structural_preflight_accepts_canonical_member_unused_by_bundled_guests() {
         .validate_all(FACADE_TEST_COMPONENT)
         .expect("the facade fixture is a valid component");
     let host = types
-        .component_item_for_import("wirt:plugin/host@0.2.0")
+        .component_item_for_import("wirt:plugin/host@0.3.0")
         .expect("the facade fixture imports the Wirt host interface");
     let wasmparser::component_types::ComponentEntityType::Instance(host) = host.ty else {
         panic!("the Wirt host import is an instance");
@@ -832,10 +832,10 @@ fn structural_preflight_keeps_member_and_resource_checks_for_subsets() {
 #[test]
 fn structural_preflight_rejects_wrong_type_for_every_allowed_interface() {
     for (name, marker) in [
-        ("wirt:plugin/rules@0.2.0", "plugin-rule-definition"),
-        ("wirt:plugin/ui@0.2.0", "ui-element"),
-        ("wirt:plugin/meta@0.2.0", "plugin-metadata"),
-        ("wirt:plugin/host@0.2.0", "log"),
+        ("wirt:plugin/rules@0.3.0", "plugin-rule-definition"),
+        ("wirt:plugin/ui@0.3.0", "ui-element"),
+        ("wirt:plugin/meta@0.3.0", "plugin-metadata"),
+        ("wirt:plugin/host@0.3.0", "log"),
         ("wasi:io/poll@0.2.9", "poll"),
         ("wasi:clocks/monotonic-clock@0.2.9", "subscribe-duration"),
         ("wasi:io/error@0.2.9", "error"),

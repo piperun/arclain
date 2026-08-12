@@ -11,10 +11,10 @@ use wasmparser::types::Types;
 use wasmparser::{Encoding, Parser, Payload, PrimitiveValType, Validator};
 
 const WIRT_IMPORTS: [&str; 4] = [
-    "wirt:plugin/host@0.2.0",
-    "wirt:plugin/meta@0.2.0",
-    "wirt:plugin/rules@0.2.0",
-    "wirt:plugin/ui@0.2.0",
+    "wirt:plugin/host@0.3.0",
+    "wirt:plugin/meta@0.3.0",
+    "wirt:plugin/rules@0.3.0",
+    "wirt:plugin/ui@0.3.0",
 ];
 
 const WASI_IMPORTS: [&str; 14] = [
@@ -61,9 +61,9 @@ const MAX_TYPE_GRAPH_NODES: usize = 100_000;
 const MAX_TYPE_GRAPH_DEPTH: usize = 64;
 const MAX_TYPE_GRAPH_TOKEN_BYTES: usize = 64 * 1024;
 const EXPECTED_CONTRACT_HASH: &str =
-    "a4cd3fed4d07ad7a47ea5ec61a556ac0fc320711a34b130c1b183533b3628fba";
+    "58d6a6022b5dfd86ce60bcca1a0a58564a3a93d50e9b71865086d1ea39795962";
 const EXPECTED_FIXED_WASI_CONTRACT_HASH: &str =
-    "de3a0cc46ac6621acca0c4efd6f650da656e268401035dc6953f1624dfedf264";
+    "9a348e4f35fd7f0a284832e79b84ed1869bdffa2cb354c65a433f8829802778b";
 
 struct CanonicalMember {
     name: &'static str,
@@ -1235,8 +1235,8 @@ mod tests {
     #[test]
     fn bounded_name_renders_short_ascii_verbatim_and_marks_what_it_cut() {
         assert_eq!(
-            bounded_name("wirt:plugin/ui@0.2.0"),
-            "\"wirt:plugin/ui@0.2.0\""
+            bounded_name("wirt:plugin/ui@0.3.0"),
+            "\"wirt:plugin/ui@0.3.0\""
         );
         assert_eq!(bounded_name(""), "\"\"");
 

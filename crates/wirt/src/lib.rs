@@ -43,7 +43,7 @@ pub use manifest::{
 };
 pub use model::{
     BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginExtensionPoint, PluginLayout,
-    PluginUiElement, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
+    PluginUiElement, SpacingStep, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
 };
 pub use package::{
     package_bytes, read_package, read_package_bytes, PackageFingerprint, ValidatedPackage,
@@ -56,4 +56,4 @@ pub use runtime::{
     sandboxed_wasi_ctx, LoadedComponent, PluginInstance, WasmRuntime, WirtStoreState,
 };
 
-pub const WIRT_ABI_VERSION: &str = "0.2.0";
+pub const WIRT_ABI_VERSION: &str = "0.3.0";

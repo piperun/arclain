@@ -22,7 +22,7 @@ fn preview() -> PluginInstallPreviewDto {
         name: "Archive Viewer".to_string(),
         version: "1.4.2".to_string(),
         author: "Wirt Labs".to_string(),
-        abi: "0.2.0".to_string(),
+        abi: "0.3.0".to_string(),
         capabilities: vec![
             PluginCapabilityDto::FileRead,
             PluginCapabilityDto::Network,
@@ -69,7 +69,7 @@ fn preview_dialog_shows_exact_identity_permissions_domains_and_fingerprint() {
         "tools.archive-viewer",
         "Version 1.4.2",
         "Wirt Labs",
-        "Wirt ABI 0.2.0",
+        "Wirt ABI 0.3.0",
         "FileRead",
         "Network",
         "ArchiveMetadataRead",
@@ -245,7 +245,7 @@ fn maximum_length_identity_fields_stay_inside_the_review_dialog() {
     harness.run();
 
     let author_rect = harness.get_by_label(&author).rect();
-    let abi_rect = harness.get_by_label("Wirt ABI 0.2.0").rect();
+    let abi_rect = harness.get_by_label("Wirt ABI 0.3.0").rect();
     assert!(
         author_rect.right() <= 660.0,
         "the full valid author must wrap within the 520 px modal: {author_rect:?}"

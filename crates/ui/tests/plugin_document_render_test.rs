@@ -10,7 +10,7 @@
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
     PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginUiDocument,
-    PluginUiNodeDto, PluginUiNodeKind,
+    PluginUiNodeDto, PluginUiNodeKind, SpacingStep,
 };
 use arclain_ui::features::plugins::application::PluginNavigation;
 use arclain_ui::features::plugins::presentation::rendering::{
@@ -315,6 +315,42 @@ fn sibling_nodes_with_identical_labels_stay_individually_addressable() {
             action: PluginActionDto::Activate,
         }]
     );
+}
+
+/// A plugin names a step; the host picks the pixels. The three steps are
+/// asserted against each other rather than against absolute heights, so the
+/// gap the document wrapper adds around any single node cancels out and what
+/// is left is purely the host's scale: 8, 12 and 20.
+#[test]
+fn each_spacing_step_costs_the_height_the_host_assigns_it() {
+    fn consumed(step: SpacingStep) -> f32 {
+        let mut harness = Harness::new_ui_state(
+            |ui, stage: &mut Stage| {
+                let before = ui.cursor().min.y;
+                let ctx = DocumentContext {
+                    colors: &stage.theme.colors,
+                    shared_state: None,
+                    image_owner: None,
+                    extent: stage.extent,
+                };
+                let _ = render_document(ui, &stage.document, ctx);
+                stage.consumed = ui.cursor().min.y - before;
+            },
+            Stage::new(document(vec![node(
+                "gap",
+                PluginUiNodeKind::Space { step },
+            )])),
+        );
+        harness.run();
+        harness.state().consumed
+    }
+
+    let small = consumed(SpacingStep::Small);
+    let medium = consumed(SpacingStep::Medium);
+    let large = consumed(SpacingStep::Large);
+
+    assert_eq!(medium - small, 4.0, "medium is 12 where small is 8");
+    assert_eq!(large - small, 12.0, "large is 20 where small is 8");
 }
 
 /// A `Split` in a stacked host is bounded so it cannot swallow the rest of
