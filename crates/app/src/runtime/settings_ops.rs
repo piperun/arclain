@@ -1450,10 +1450,7 @@ async fn run_flush_all_plugin_settings_after(
     let mut stored = candidate.get_all_plugin_settings();
     let mut changed = false;
     for (plugin_id, settings) in live {
-        if stored.get(&plugin_id) != Some(&settings) {
-            stored.insert(plugin_id, settings);
-            changed = true;
-        }
+        changed |= upsert_canonical_plugin_settings(&mut stored, &plugin_id, settings);
     }
     if !changed {
         return;
@@ -1560,16 +1557,12 @@ pub(super) async fn run_set_plugin_settings(
         .await
         .map_err(internal_join_error)??;
     let mut candidate = original.clone();
-    let canonical_key = wirt::PluginIdentityKey::parse(&canonical_id)
-        .expect("manager-owned plugin IDs have already been validated");
     let mut plugin_settings = candidate.get_all_plugin_settings();
-    plugin_settings.retain(
-        |candidate_id, _| match wirt::PluginIdentityKey::parse(candidate_id) {
-            Ok(candidate_key) => candidate_key != canonical_key,
-            Err(_) => true,
-        },
+    upsert_canonical_plugin_settings(
+        &mut plugin_settings,
+        &canonical_id,
+        HashMap::from_iter(values.clone()),
     );
-    plugin_settings.insert(canonical_id.clone(), HashMap::from_iter(values.clone()));
     candidate.set_all_plugin_settings(&plugin_settings);
 
     let persisted = candidate.clone();
@@ -1635,16 +1628,24 @@ async fn run_flush_plugin_settings_after(
     let Some(manager) = inner.plugin_manager() else {
         return Ok(());
     };
-    let settings = {
+    let (canonical_id, settings) = {
         let manager = manager.lock();
-        manager.get_settings_for(&plugin_id)
+        let settings = manager.get_settings_for(&plugin_id);
+        let canonical_id = settings.as_ref().map(|_| {
+            manager
+                .get_plugin_metadata(&plugin_id)
+                .expect("a loaded plugin with settings has metadata")
+                .id
+        });
+        (canonical_id, settings)
     };
-    let Some(settings) = settings else {
+    let (Some(canonical_id), Some(settings)) = (canonical_id, settings) else {
         return Ok(());
     };
     let already_persisted = {
         let mutable = inner.session.mutable.read();
-        mutable.user_config.get_plugin_settings(&plugin_id) == settings
+        let mut plugin_settings = mutable.user_config.get_all_plugin_settings();
+        !upsert_canonical_plugin_settings(&mut plugin_settings, &canonical_id, settings.clone())
     };
     if already_persisted {
         return Ok(());
@@ -1667,7 +1668,11 @@ async fn run_flush_plugin_settings_after(
         })
         .await
         .map_err(internal_join_error)??;
-    candidate.set_plugin_settings(&plugin_id, settings);
+    let mut plugin_settings = candidate.get_all_plugin_settings();
+    if !upsert_canonical_plugin_settings(&mut plugin_settings, &canonical_id, settings) {
+        return Ok(());
+    }
+    candidate.set_all_plugin_settings(&plugin_settings);
 
     let persisted = candidate.clone();
     handle
@@ -1688,6 +1693,32 @@ async fn run_flush_plugin_settings_after(
 // ============================================================================
 // Shared helpers.
 // ============================================================================
+
+fn upsert_canonical_plugin_settings(
+    stored: &mut HashMap<String, HashMap<String, String>>,
+    canonical_id: &str,
+    settings: HashMap<String, String>,
+) -> bool {
+    let canonical_key = wirt::PluginIdentityKey::parse(canonical_id)
+        .expect("manager-owned plugin IDs have already been validated");
+    let has_equivalent_alias = stored.keys().any(|candidate_id| {
+        candidate_id != canonical_id
+            && wirt::PluginIdentityKey::parse(candidate_id)
+                .is_ok_and(|candidate_key| candidate_key == canonical_key)
+    });
+    if !has_equivalent_alias && stored.get(canonical_id) == Some(&settings) {
+        return false;
+    }
+
+    stored.retain(
+        |candidate_id, _| match wirt::PluginIdentityKey::parse(candidate_id) {
+            Ok(candidate_key) => candidate_key != canonical_key,
+            Err(_) => true,
+        },
+    );
+    stored.insert(canonical_id.to_string(), settings);
+    true
+}
 
 /// Re-applies SOCKS5 proxy routing (and the per-plugin proxy map) to this
 /// instance's `AsyncHttpClient` after a settings save that touched a

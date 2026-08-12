@@ -2061,6 +2061,61 @@ fn a_setting_written_outside_a_ui_event_is_persisted_when_a_session_opens() {
     );
 }
 
+#[test]
+fn case_variant_guest_flush_persists_only_the_manifest_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+    runtime
+        .block_on(app.open_plugin_session(
+            "FACADE-TEST-FIXTURE".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .expect("case-insensitive session open must succeed");
+
+    let persisted = persisted_user_config(&temp).get_all_plugin_settings();
+    assert!(persisted.contains_key("facade-test-fixture"));
+    assert!(!persisted.contains_key("FACADE-TEST-FIXTURE"));
+
+    runtime.block_on(app.shutdown()).unwrap();
+    drop(runtime);
+    drop(app);
+    let restarted = rebootstrap_app(&temp);
+    let restarted_runtime = foreign_runtime();
+    restarted_runtime
+        .block_on(restarted.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .expect("canonical guest settings must keep restart available");
+}
+
+#[test]
+fn shutdown_flush_collapses_a_legacy_case_variant_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_facade_test_fixture(&temp);
+    let runtime = foreign_runtime();
+    update_persisted_user_config(&temp, |config| {
+        config.set_plugin_settings(
+            "FACADE-TEST-FIXTURE",
+            std::collections::HashMap::from([("legacy".to_string(), "value".to_string())]),
+        );
+    });
+
+    runtime.block_on(app.shutdown()).unwrap();
+    drop(runtime);
+    drop(app);
+
+    let restarted = rebootstrap_app(&temp);
+    let restarted_runtime = foreign_runtime();
+    restarted_runtime
+        .block_on(restarted.open_plugin_session(
+            "facade-test-fixture".to_string(),
+            PluginExtensionPointDto::Panel,
+        ))
+        .expect("shutdown flush must not leave duplicate logical identities");
+}
+
 /// A guest can write a setting and *then* fail. The write lands in
 /// host-side instance state, so it outlives the trap -- and losing a
 /// user's setting because the plugin misbehaved afterwards would be the
