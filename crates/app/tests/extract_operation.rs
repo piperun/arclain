@@ -76,6 +76,7 @@ fn bootstrap_app(
         extract_runner_override: Some(runner),
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed")
 }

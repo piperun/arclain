@@ -628,47 +628,7 @@ pub(super) async fn run_probe_network(
 fn proxy_candidate(
     proxy: Socks5Candidate,
 ) -> Result<arclain_network::features::proxy::ProxyConfig, ApplicationError> {
-    let host = proxy.host.trim().to_string();
-    if host.is_empty() {
-        return Err(ApplicationError::new(
-            ApplicationErrorKind::InvalidInput,
-            "a proxy host is required",
-        )
-        .with_recoverability(Recoverability::UserAction)
-        .with_field("host"));
-    }
-    if proxy.port == 0 {
-        return Err(ApplicationError::new(
-            ApplicationErrorKind::InvalidInput,
-            "a proxy port is required",
-        )
-        .with_diagnostic("port 0 is not a connectable destination")
-        .with_recoverability(Recoverability::UserAction)
-        .with_field("port"));
-    }
-    // `enabled: true` is what makes this a *proxy* probe rather than the
-    // direct one above: the candidate values only mean anything routed
-    // through.
-    let candidate = arclain_network::features::proxy::ProxyConfig {
-        enabled: true,
-        address: format!("{host}:{}", proxy.port),
-        username: proxy.username,
-        // The single grep-able point where the candidate password leaves
-        // its zeroizing container, the same way the gameta key does above.
-        password: proxy
-            .password
-            .map(|value| value.expose_secret().to_string()),
-    };
-    if let Err(reason) = candidate.validate() {
-        return Err(ApplicationError::new(
-            ApplicationErrorKind::InvalidInput,
-            "the proxy address is not usable",
-        )
-        .with_diagnostic(reason)
-        .with_recoverability(Recoverability::UserAction)
-        .with_field("host"));
-    }
-    Ok(candidate)
+    proxy.into_proxy_config()
 }
 
 /// Mirrors a probe result into the report a frontend renders.
@@ -1742,6 +1702,9 @@ async fn apply_live_proxy_routing(
     dbs: &arclain_core::ConfigDbs,
     user_config: &arclain_core::UserConfig,
 ) {
+    if inner.core_services().host_owns_plugin_network_routing() {
+        return;
+    }
     let async_http_client = inner.core_services().async_http_client.clone();
     let dbs = dbs.clone();
     let user_config = user_config.clone();
@@ -2452,6 +2415,7 @@ mod tests {
             extract_runner_override: None,
             materialization_lease_ttl_override: None,
             materialization_cleanup_interval_override: None,
+            initial_plugin_network_routing: None,
         })
         .expect("bootstrap facade test fixture")
     }

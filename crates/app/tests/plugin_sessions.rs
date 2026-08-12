@@ -203,6 +203,7 @@ fn bootstrap_app_with_plugins(temp: &tempfile::TempDir, plugin_names: &[&str]) -
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap with the plugin fixture must succeed")
 }
@@ -223,6 +224,7 @@ fn bootstrap_app_with_ui_demo_visibility(temp: &tempfile::TempDir, visibility: &
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap with persisted plugin visibility")
 }
@@ -243,6 +245,7 @@ fn rebootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("re-bootstrapping over an existing profile must succeed")
 }
@@ -262,6 +265,7 @@ fn bootstrap_app_without_plugins(temp: &tempfile::TempDir) -> ArclainApp {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap with no plugins installed must succeed")
 }
@@ -928,6 +932,7 @@ fn uninstall_rollback_failure_aligns_live_state_with_the_durable_candidate() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .unwrap();
     let http_client = app
@@ -1007,6 +1012,7 @@ fn uninstall_plugin_removes_a_package_that_failed_during_startup() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .unwrap();
     let runtime = foreign_runtime();
@@ -2341,6 +2347,7 @@ fn a_plugin_image_blob_lands_under_the_overridden_cache_dir() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap with an overridden profile must succeed");
     let runtime = foreign_runtime();

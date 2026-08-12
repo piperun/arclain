@@ -49,6 +49,7 @@ fn real_bootstrap_config(temp: &Path) -> arclain_app::BootstrapConfig {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     }
 }
 

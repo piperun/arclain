@@ -65,6 +65,23 @@ impl fmt::Debug for ProxyConfig {
 }
 
 impl ProxyConfig {
+    /// Build and validate an enabled SOCKS5 transport before it is used to
+    /// prepare a routing generation.
+    pub fn validated(
+        address: String,
+        username: Option<String>,
+        password: Option<String>,
+    ) -> Result<Self, String> {
+        let config = Self {
+            enabled: true,
+            address,
+            username,
+            password,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
     fn candidate(&self) -> ProxyCandidate<'_> {
         ProxyCandidate {
             enabled: self.enabled,

@@ -457,6 +457,40 @@ impl std::fmt::Debug for ArclainApp {
 }
 
 impl ArclainApp {
+    /// Validate and prepare one complete host-owned plugin-routing generation.
+    pub fn prepare_plugin_network_routing(
+        proxy: Option<crate::settings::Socks5Candidate>,
+        effective_plugin_proxy: std::collections::BTreeMap<String, bool>,
+    ) -> Result<arclain_network::PreparedPluginNetworkRouting, ApplicationError> {
+        let proxy = proxy
+            .map(crate::settings::Socks5Candidate::into_proxy_config)
+            .transpose()?;
+        arclain_network::AsyncHttpClient::prepare_plugin_network_routing(
+            proxy,
+            effective_plugin_proxy,
+        )
+        .map_err(|reason| {
+            ApplicationError::new(
+                ApplicationErrorKind::InvalidInput,
+                "plugin network routing is invalid",
+            )
+            .with_diagnostic(reason)
+            .with_recoverability(Recoverability::UserAction)
+            .with_field("effective_plugin_proxy")
+        })
+    }
+
+    /// Atomically publish an already-prepared host-owned routing generation.
+    pub fn replace_plugin_network_routing(
+        &self,
+        prepared: arclain_network::PreparedPluginNetworkRouting,
+    ) {
+        self.inner
+            .core_services()
+            .async_http_client
+            .replace_plugin_network_routing(prepared);
+    }
+
     /// Synchronously constructs the application: resolves and creates
     /// its on-disk directories, builds the Tokio runtime it will own for
     /// its lifetime, and composes every headless service in the order

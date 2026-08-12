@@ -23,6 +23,7 @@
 
 mod support;
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -31,7 +32,7 @@ use std::time::Duration;
 use arclain_app::challenge::SecretInput;
 use arclain_app::error::ApplicationErrorKind;
 use arclain_app::settings::{NetworkProbeReport, Socks5Candidate};
-use arclain_app::{ArclainApp, BootstrapConfig};
+use arclain_app::{ArclainApp, BootstrapConfig, PreparedPluginNetworkRouting};
 
 /// Captures `tracing` output from **every** thread for the lifetime of
 /// this test binary, so a redaction test can prove a secret reached
@@ -145,8 +146,43 @@ fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed")
+}
+
+fn bootstrap_app_with_host_routing(
+    temp: &tempfile::TempDir,
+    initial_plugin_network_routing: PreparedPluginNetworkRouting,
+) -> ArclainApp {
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
+    ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: Some(initial_plugin_network_routing),
+    })
+    .expect("host-owned bootstrap must succeed")
+}
+
+fn seed_persisted_proxy(temp: &tempfile::TempDir) {
+    let paths = support::temp_paths(temp.path());
+    let db =
+        arclain_core::config::ConfigDb::open(&support::databases_dir(&paths).join("config.sqlite"))
+            .expect("open isolated config database");
+    db.into_sqlite_db()
+        .with_connection(|conn| {
+            let mut config = arclain_core::UserConfig::load(conn)?.unwrap_or_default();
+            config.socks5_enabled = true;
+            config.socks5_address = Some("127.0.0.1:1080".to_string());
+            config.save(conn)?;
+            Ok(())
+        })
+        .expect("seed persisted proxy settings");
 }
 
 // ---------------------------------------------------------------------------
@@ -769,4 +805,126 @@ fn analyze_url_is_usable_without_an_application() {
     let through_module = arclain_app::plugins::analyze_url("https://dlsite.com/product/123")
         .expect("analysis must succeed");
     assert!(through_module.warnings.is_empty());
+}
+
+#[test]
+fn host_owned_none_preserves_standalone_persisted_plugin_routing() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    seed_persisted_proxy(&temp);
+
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
+    })
+    .expect("standalone bootstrap must succeed");
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+
+    assert!(
+        legacy
+            .core_services
+            .async_http_client
+            .should_use_proxy_for_plugin("dlsite"),
+        "standalone bootstrap must keep applying the persisted proxy"
+    );
+}
+
+#[test]
+fn host_owned_direct_overrides_a_legacy_persisted_proxy() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    seed_persisted_proxy(&temp);
+    let prepared = ArclainApp::prepare_plugin_network_routing(
+        None,
+        BTreeMap::from([("dlsite".to_string(), false)]),
+    )
+    .expect("host direct routing must prepare");
+
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: Some(prepared),
+    })
+    .expect("host-owned bootstrap must succeed");
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+
+    assert!(
+        !legacy
+            .core_services
+            .async_http_client
+            .should_use_proxy_for_plugin("dlsite"),
+        "persisted standalone proxy settings must not replace host-owned direct routing"
+    );
+}
+
+#[test]
+fn host_owned_proxy_routes_only_the_selected_plugin() {
+    let temp = tempfile::tempdir().unwrap();
+    let proxy = TcpListener::bind("127.0.0.1:0").expect("bind proxy candidate");
+    let prepared = ArclainApp::prepare_plugin_network_routing(
+        Some(candidate_at(proxy.local_addr().expect("proxy address"))),
+        BTreeMap::from([("host-proxied".to_string(), true)]),
+    )
+    .expect("host proxy routing must prepare");
+    let app = bootstrap_app_with_host_routing(&temp, prepared);
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let client = &legacy.core_services.async_http_client;
+
+    assert!(client.should_use_proxy_for_plugin("host-proxied"));
+    assert!(!client.should_use_proxy_for_plugin("host-direct"));
+}
+
+#[test]
+fn host_owned_proxy_required_without_a_proxy_fails_closed() {
+    const PLUGIN_ID: &str = "host-proxy-required";
+    const PUBLIC_IP: &str = "93.184.216.34";
+    let temp = tempfile::tempdir().unwrap();
+    let prepared = ArclainApp::prepare_plugin_network_routing(
+        None,
+        BTreeMap::from([(PLUGIN_ID.to_string(), true)]),
+    )
+    .expect("a proxy-required policy without a proxy must prepare as fail-closed");
+    let app = bootstrap_app_with_host_routing(&temp, prepared);
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let client = legacy.core_services.async_http_client.clone();
+    client.configure_plugin(
+        PLUGIN_ID,
+        arclain_network::PluginNetworkPolicy {
+            network_enabled: true,
+            requests_per_minute: 60,
+        },
+    );
+    legacy
+        .core_services
+        .domain_whitelist
+        .write()
+        .approve(PLUGIN_ID, PUBLIC_IP);
+
+    let request = client
+        .request_for_plugin(
+            PLUGIN_ID,
+            arclain_network::HttpRequest::get(format!("http://{PUBLIC_IP}:9/unreachable")),
+        )
+        .expect("the configured checked request must start");
+    let status = foreign_runtime().block_on(client.await_complete(&request));
+
+    assert!(
+        matches!(
+            status,
+            Some(arclain_network::RequestStatus::Failed(ref message))
+                if message.contains("configured to use a proxy")
+        ),
+        "proxy-required routing did not fail closed: {status:?}"
+    );
 }

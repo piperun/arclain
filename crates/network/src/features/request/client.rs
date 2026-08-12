@@ -17,9 +17,9 @@ use parking_lot::{Mutex, RwLock};
 use porxi::{
     DefaultRoute, RoutePreference, RoutingController, RoutingPolicy, RoutingSnapshot, WorkloadId,
 };
-use std::collections::HashMap;
 #[cfg(test)]
 use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
@@ -261,6 +261,11 @@ fn prepare_plugin_routing(
     Ok(RoutingSnapshot::prepare(direct, proxied, policy)
         .expect("the Arclain plugin routing default is always direct"))
 }
+
+/// A complete, immutable plugin-routing generation prepared for atomic
+/// publication. Its clients, proxy credentials, and policy remain private.
+#[derive(Clone)]
+pub struct PreparedPluginNetworkRouting(RoutingSnapshot<RoutedHttpClient>);
 
 fn unavailable_plugin_routing() -> RoutingSnapshot<RoutedHttpClient> {
     RoutingSnapshot::prepare(
@@ -654,6 +659,27 @@ pub struct AsyncHttpClient {
 use crate::features::proxy::ProxyConfig;
 
 impl AsyncHttpClient {
+    /// Prepare direct/proxy clients and Porxi policy without publishing them.
+    pub fn prepare_plugin_network_routing(
+        proxy_config: Option<ProxyConfig>,
+        effective_plugin_proxy: BTreeMap<String, bool>,
+    ) -> Result<PreparedPluginNetworkRouting, String> {
+        if let Some(config) = proxy_config.as_ref() {
+            config.validate()?;
+        }
+        let map = effective_plugin_proxy.into_iter().collect();
+        prepare_plugin_routing(proxy_config, &map)
+            .map(PreparedPluginNetworkRouting)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Publish one already-prepared generation with a synchronous atomic swap.
+    pub fn replace_plugin_network_routing(&self, prepared: PreparedPluginNetworkRouting) {
+        let _writer = self.plugin_context.proxy_routing_writer.lock();
+        self.plugin_context.proxy_routing.replace(prepared.0);
+        info!("AsyncHttpClient host-owned plugin routing updated");
+    }
+
     /// Create a new client with the given whitelist
     pub fn new(
         runtime: Handle,
@@ -2007,7 +2033,7 @@ mod proxy_routing_atomicity_tests {
     use crate::features::whitelist::DomainWhitelist;
     use crate::{HttpError, HttpRequest, RequestStatus};
     use parking_lot::RwLock;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -2293,6 +2319,79 @@ mod proxy_routing_atomicity_tests {
             HashMap::from([("routing-race-plugin".to_string(), false)]),
         )
         .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prepared_host_replacement_is_atomic_with_checked_request_routing() {
+        const PLUGIN_ID: &str = "prepared-host-routing-race";
+        const TARGET_HOST: &str = "prepared-host-routing-race.test";
+        let direct_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind direct sentinel");
+        let direct_address = direct_listener
+            .local_addr()
+            .expect("direct sentinel address");
+        let proxy_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind SOCKS5 sentinel");
+        let proxy_address = proxy_listener.local_addr().expect("SOCKS5 address");
+        let proxy_observer = tokio::spawn(observe_one_socks_connect(proxy_listener));
+        let whitelist = Arc::new(RwLock::new(DomainWhitelist::default()));
+        whitelist.write().approve(PLUGIN_ID, TARGET_HOST);
+        let client = Arc::new(AsyncHttpClient::new(Handle::current(), whitelist, None));
+        client.configure_plugin(
+            PLUGIN_ID,
+            PluginNetworkPolicy {
+                network_enabled: true,
+                requests_per_minute: 60,
+            },
+        );
+        client.allow_special_plugin_addresses_for_test();
+        client.set_plugin_dns_answers_for_test(TARGET_HOST, vec![vec![direct_address]]);
+        let prepared = AsyncHttpClient::prepare_plugin_network_routing(
+            Some(ProxyConfig {
+                enabled: true,
+                address: proxy_address.to_string(),
+                username: None,
+                password: None,
+            }),
+            BTreeMap::from([(PLUGIN_ID.to_string(), true)]),
+        )
+        .expect("host routing must prepare");
+
+        let routing_pause = client.pause_next_routing_selection_for_test();
+        let request = client
+            .request_for_plugin(
+                PLUGIN_ID,
+                HttpRequest::get(format!(
+                    "http://{TARGET_HOST}:{}/resource",
+                    direct_address.port()
+                ))
+                .with_timeout(Duration::from_secs(1)),
+            )
+            .expect("checked request should start");
+        tokio::time::timeout(Duration::from_secs(1), routing_pause.wait_until_reached())
+            .await
+            .expect("in-flight request did not reach route selection");
+
+        client.replace_plugin_network_routing(prepared);
+        routing_pause.release();
+
+        let destination = tokio::time::timeout(Duration::from_secs(2), proxy_observer)
+            .await
+            .expect("checked request never reached the new SOCKS5 client")
+            .expect("SOCKS5 observer panicked");
+        assert_eq!(destination, direct_address);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), direct_listener.accept())
+                .await
+                .is_err(),
+            "checked request mixed the old direct policy with the replacement transport"
+        );
+        assert!(matches!(
+            client.await_complete(&request).await,
+            Some(RequestStatus::Failed(_))
+        ));
     }
 
     #[tokio::test]

@@ -87,6 +87,7 @@ fn bootstrap_with_paths(temp: &tempfile::TempDir, paths: AppPaths) -> ArclainApp
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed")
 }

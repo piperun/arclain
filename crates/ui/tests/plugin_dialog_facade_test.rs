@@ -74,6 +74,7 @@ fn shared_state_with_plugin() -> (TempDir, SharedState) {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap the test facade");
     let mut shared = common::create_test_shared_state();

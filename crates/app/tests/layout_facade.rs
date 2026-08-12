@@ -68,6 +68,7 @@ fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap the application")
 }
@@ -554,6 +555,7 @@ fn a_display_option_save_that_fails_midway_lands_none_of_its_keys() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap the application");
     let runtime = foreign_runtime();

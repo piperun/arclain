@@ -147,6 +147,7 @@ fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed")
 }
@@ -181,6 +182,7 @@ fn bootstrap_app_with_ui_demo(temp: &tempfile::TempDir) -> ArclainApp {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap with UI-demo fixture must succeed")
 }
@@ -193,6 +195,7 @@ fn rebootstrap_app_with_ui_demo(temp: &tempfile::TempDir) -> ArclainApp {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("rebootstrap with UI-demo fixture must succeed")
 }
@@ -1169,6 +1172,73 @@ fn update_settings_applies_live_proxy_routing_to_the_shared_http_client() {
 }
 
 #[test]
+fn host_owned_routing_replacement_leaves_settings_bytes_and_revision_unchanged() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let config_path =
+        support::databases_dir(&support::temp_paths(temp.path())).join("config.sqlite");
+    let before_bytes = std::fs::read(&config_path).expect("read settings database bytes");
+    let before = runtime.block_on(app.settings()).expect("read settings");
+    let prepared = ArclainApp::prepare_plugin_network_routing(
+        None,
+        BTreeMap::from([("host-direct".to_string(), false)]),
+    )
+    .expect("host routing must prepare");
+
+    app.replace_plugin_network_routing(prepared);
+
+    let after = runtime.block_on(app.settings()).expect("re-read settings");
+    let after_bytes = std::fs::read(&config_path).expect("re-read settings database bytes");
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(after_bytes, before_bytes);
+}
+
+#[test]
+fn host_owned_routing_is_not_overwritten_by_standalone_network_settings() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    let prepared = ArclainApp::prepare_plugin_network_routing(
+        None,
+        BTreeMap::from([("dlsite".to_string(), false)]),
+    )
+    .expect("host direct routing must prepare");
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: Some(prepared),
+    })
+    .expect("host-owned bootstrap must succeed");
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let client = legacy.core_services.async_http_client.clone();
+
+    runtime
+        .block_on(app.update_settings(SettingsPatch {
+            general: None,
+            expected_revision: 0,
+            archive: None,
+            network: Some(NetworkSettingsPatch {
+                socks5_enabled: PatchValue::Set(true),
+                socks5_address: PatchValue::Set("127.0.0.1:1080".to_string()),
+                ..keep_network_patch()
+            }),
+            security: None,
+        }))
+        .expect("standalone settings may still be persisted for compatibility");
+
+    assert!(
+        !client.should_use_proxy_for_plugin("dlsite"),
+        "standalone settings must not replace host-owned plugin routing"
+    );
+}
+
+#[test]
 fn invalid_enabled_proxy_address_is_rejected_before_any_write() {
     let runtime = foreign_runtime();
     let temp = tempfile::tempdir().unwrap();
@@ -1788,6 +1858,7 @@ fn bootstrap_broadens_a_narrow_auto_saved_password_rule() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed");
 
@@ -1822,6 +1893,7 @@ fn bootstrap_broadens_a_narrow_auto_saved_password_rule() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed");
     assert_eq!(reopened.startup_password_rule_upgrades(), 0);
@@ -1860,6 +1932,7 @@ fn bootstrap_broadens_a_narrow_auto_saved_password_rule() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed");
 
@@ -1905,6 +1978,7 @@ fn bootstrap_leaves_a_hand_written_password_rule_alone() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed");
 
@@ -2371,6 +2445,7 @@ fn secret_writing_methods_fail_cleanly_and_leak_nothing_when_the_vault_never_ope
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("corrupt config.sqlite must not fail bootstrap");
 
@@ -2637,6 +2712,7 @@ fn settings_and_password_rules_survive_shutdown_and_a_fresh_bootstrap() {
             extract_runner_override: None,
             materialization_lease_ttl_override: None,
             materialization_cleanup_interval_override: None,
+            initial_plugin_network_routing: None,
         })
         .expect("first bootstrap must succeed");
 
@@ -2686,6 +2762,7 @@ fn settings_and_password_rules_survive_shutdown_and_a_fresh_bootstrap() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("second bootstrap against the same profile must succeed");
 

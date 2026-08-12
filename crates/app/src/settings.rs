@@ -342,6 +342,45 @@ pub struct Socks5Candidate {
     pub password: Option<SecretInput>,
 }
 
+impl Socks5Candidate {
+    pub(crate) fn into_proxy_config(
+        self,
+    ) -> Result<arclain_network::features::proxy::ProxyConfig, ApplicationError> {
+        let host = self.host.trim().to_string();
+        if host.is_empty() {
+            return Err(ApplicationError::new(
+                ApplicationErrorKind::InvalidInput,
+                "a proxy host is required",
+            )
+            .with_recoverability(Recoverability::UserAction)
+            .with_field("host"));
+        }
+        if self.port == 0 {
+            return Err(ApplicationError::new(
+                ApplicationErrorKind::InvalidInput,
+                "a proxy port is required",
+            )
+            .with_diagnostic("port 0 is not a connectable destination")
+            .with_recoverability(Recoverability::UserAction)
+            .with_field("port"));
+        }
+        arclain_network::features::proxy::ProxyConfig::validated(
+            format!("{host}:{}", self.port),
+            self.username,
+            self.password.map(|value| value.expose_secret().to_string()),
+        )
+        .map_err(|reason| {
+            ApplicationError::new(
+                ApplicationErrorKind::InvalidInput,
+                "the proxy address is not usable",
+            )
+            .with_diagnostic(reason)
+            .with_recoverability(Recoverability::UserAction)
+            .with_field("host")
+        })
+    }
+}
+
 /// One step of a network probe, as the settings page's result panel
 /// renders it: a name, whether it passed, and an optional detail line.
 /// Mirrors `arclain_network`'s own `ConnectionTestStep`.

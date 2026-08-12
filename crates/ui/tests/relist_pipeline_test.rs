@@ -53,6 +53,7 @@ fn bootstrap_real_app(temp: &tempfile::TempDir) -> arclain_app::ArclainApp {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap the test facade")
 }

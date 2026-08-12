@@ -75,6 +75,7 @@ fn shared_state_with_plugins(plugins: &[&str]) -> (tempfile::TempDir, SharedStat
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap with plugin fixtures must succeed");
 

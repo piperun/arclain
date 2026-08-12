@@ -66,6 +66,7 @@ fn bootstrap_override_takes_precedence_without_being_persisted() {
             extract_runner_override: None,
             materialization_lease_ttl_override: None,
             materialization_cleanup_interval_override: None,
+            initial_plugin_network_routing: None,
         },
         BootstrapOverrides {
             sevenzip_path: Some(override_path.clone()),
@@ -125,6 +126,7 @@ fn first_run_creates_directories_and_succeeds() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("first run bootstrap must succeed");
 
@@ -161,6 +163,7 @@ fn existing_data_bootstraps_successfully_on_a_second_run() {
             extract_runner_override: None,
             materialization_lease_ttl_override: None,
             materialization_cleanup_interval_override: None,
+            initial_plugin_network_routing: None,
         })
         .expect("first bootstrap must succeed");
     }
@@ -172,6 +175,7 @@ fn existing_data_bootstraps_successfully_on_a_second_run() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("second bootstrap against existing data must succeed");
     assert_eq!(second.paths().data_dir, paths.data_dir);
@@ -194,6 +198,7 @@ fn corrupt_configuration_database_is_tolerated() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("corrupt config.sqlite must not fail bootstrap");
 
@@ -238,6 +243,7 @@ fn a_missing_sevenzip_degrades_capabilities_instead_of_failing_bootstrap() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("a configured 7-Zip path that does not exist must not fail bootstrap");
 
@@ -303,6 +309,7 @@ fn failed_plugin_load_is_tolerated() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("a broken plugin package must not fail bootstrap");
 
@@ -359,6 +366,7 @@ fn repeated_bootstrap_and_drop_succeeds_every_time() {
             extract_runner_override: None,
             materialization_lease_ttl_override: None,
             materialization_cleanup_interval_override: None,
+            initial_plugin_network_routing: None,
         })
         .unwrap_or_else(|error| panic!("bootstrap iteration {i} failed: {error:?}"));
         drop(app);
@@ -379,6 +387,7 @@ fn capabilities_awaits_correctly_from_a_foreign_multi_thread_runtime() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .unwrap();
 
@@ -405,6 +414,7 @@ fn health_awaits_correctly_from_a_current_thread_runtime() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .unwrap();
 
@@ -430,6 +440,7 @@ fn shutdown_succeeds_from_a_foreign_runtime() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .unwrap();
 
@@ -597,6 +608,7 @@ fn app_runtime_actually_drops_once_every_arclain_app_clone_is_gone() {
         // app below -- so a pass here cannot be a coincidence of the task
         // never having started polling yet.
         materialization_cleanup_interval_override: Some(std::time::Duration::from_millis(5)),
+        initial_plugin_network_routing: None,
     })
     .unwrap();
 
@@ -645,6 +657,7 @@ fn first_run_seeds_ensure_default_rules_payload_not_sync_rules_payload() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("first run bootstrap must succeed");
 
@@ -695,6 +708,7 @@ fn uncreatable_plugins_dir_still_bootstraps_with_plugins_degraded() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("an uncreatable plugins dir must not fail bootstrap");
 
@@ -744,6 +758,7 @@ fn dropping_a_facade_future_mid_flight_then_the_app_does_not_panic() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .unwrap();
 
@@ -791,6 +806,7 @@ fn calling_a_facade_method_after_shutdown_returns_an_error() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .unwrap();
 
@@ -822,6 +838,7 @@ fn shutting_down_twice_is_an_idempotent_no_op() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .unwrap();
 
@@ -852,6 +869,7 @@ fn a_clone_outliving_shutdown_also_gets_the_error() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .unwrap();
     let clone = app.clone();
@@ -897,6 +915,7 @@ fn shutdown_then_dropping_the_app_in_the_same_async_context_does_not_panic() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .unwrap();
 
@@ -935,6 +954,7 @@ fn health_reflects_sevenzip_removed_after_bootstrap() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed with the seeded dummy 7-Zip present");
 
@@ -994,6 +1014,7 @@ fn paths_documented_layout_matches_test_support() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed");
 

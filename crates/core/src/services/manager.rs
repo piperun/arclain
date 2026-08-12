@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use arclain_db::{DbPaths, SqliteDb};
 use arclain_network::features::gameta_client::{GametaClient, ServerConfig};
 use arclain_network::features::whitelist::DomainWhitelist;
-use arclain_network::AsyncHttpClient;
+use arclain_network::{AsyncHttpClient, PreparedPluginNetworkRouting};
 // PluginManager removed to avoid circular dependency
 use parking_lot::RwLock;
 use std::path::PathBuf;
@@ -24,6 +24,7 @@ pub struct Services {
     pub tokio_runtime: Arc<tokio::runtime::Runtime>,
     pub async_http_client: Arc<AsyncHttpClient>,
     pub domain_whitelist: Arc<RwLock<DomainWhitelist>>,
+    host_owns_plugin_network_routing: bool,
 
     // Database Paths and Connection
     pub db_paths: Option<DbPaths>,
@@ -54,6 +55,13 @@ pub struct Services {
 
 impl Services {
     pub fn new(runtime: Arc<tokio::runtime::Runtime>) -> Self {
+        Self::new_with_plugin_network_routing(runtime, None)
+    }
+
+    pub fn new_with_plugin_network_routing(
+        runtime: Arc<tokio::runtime::Runtime>,
+        initial_plugin_network_routing: Option<PreparedPluginNetworkRouting>,
+    ) -> Self {
         let domain_whitelist = Arc::new(RwLock::new(DomainWhitelist::default()));
 
         // Initialize AsyncHttpClient
@@ -62,11 +70,16 @@ impl Services {
             domain_whitelist.clone(),
             None,
         ));
+        let host_owns_plugin_network_routing = initial_plugin_network_routing.is_some();
+        if let Some(prepared) = initial_plugin_network_routing {
+            async_http_client.replace_plugin_network_routing(prepared);
+        }
 
         Self {
             tokio_runtime: runtime,
             async_http_client,
             domain_whitelist,
+            host_owns_plugin_network_routing,
             db_paths: None,
             config_db: None,
             #[cfg(feature = "gameta")]
@@ -81,6 +94,12 @@ impl Services {
             checksum_service: None,
             gameta_client: None,
         }
+    }
+
+    /// Whether the embedding host, rather than persisted standalone
+    /// settings, owns plugin-network routing for this process.
+    pub const fn host_owns_plugin_network_routing(&self) -> bool {
+        self.host_owns_plugin_network_routing
     }
 
     /// Initialize database-dependent services
@@ -112,7 +131,9 @@ impl Services {
         let recovery = match recovery {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.async_http_client.mark_plugin_routing_unavailable();
+                if !self.host_owns_plugin_network_routing {
+                    self.async_http_client.mark_plugin_routing_unavailable();
+                }
                 return Err(error).context("recovering pending proxy settings update");
             }
         };
@@ -147,22 +168,25 @@ impl Services {
         match dbs.config_pool.get() {
             Ok(mut conn) => match arclain_db::UserConfig::load_diesel(&mut conn) {
                 Ok(user_config) => {
-                    let proxy_config = match crate::utilities::proxy::resolve_proxy_config(
-                        &user_config,
-                        &dbs.secrets,
-                    ) {
-                        Ok(config) => config,
-                        Err(error) => {
-                            self.async_http_client.mark_plugin_routing_unavailable();
-                            return Err(error).context("resolving persisted proxy configuration");
-                        }
-                    };
-                    crate::utilities::proxy::apply_proxy_to_client(
-                        &self.async_http_client,
-                        proxy_config,
-                        &user_config,
-                    )
-                    .context("applying persisted proxy routing")?;
+                    if !self.host_owns_plugin_network_routing {
+                        let proxy_config = match crate::utilities::proxy::resolve_proxy_config(
+                            &user_config,
+                            &dbs.secrets,
+                        ) {
+                            Ok(config) => config,
+                            Err(error) => {
+                                self.async_http_client.mark_plugin_routing_unavailable();
+                                return Err(error)
+                                    .context("resolving persisted proxy configuration");
+                            }
+                        };
+                        crate::utilities::proxy::apply_proxy_to_client(
+                            &self.async_http_client,
+                            proxy_config,
+                            &user_config,
+                        )
+                        .context("applying persisted proxy routing")?;
+                    }
 
                     // --- Gameta Server Client ---
                     if user_config.gameta_server_enabled {
@@ -212,12 +236,16 @@ impl Services {
                     }
                 }
                 Err(error) => {
-                    self.async_http_client.mark_plugin_routing_unavailable();
+                    if !self.host_owns_plugin_network_routing {
+                        self.async_http_client.mark_plugin_routing_unavailable();
+                    }
                     return Err(error).context("loading user config for proxy routing");
                 }
             },
             Err(error) => {
-                self.async_http_client.mark_plugin_routing_unavailable();
+                if !self.host_owns_plugin_network_routing {
+                    self.async_http_client.mark_plugin_routing_unavailable();
+                }
                 return Err(error).context("acquiring connection to load user config");
             }
         }

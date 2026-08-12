@@ -98,6 +98,9 @@ pub struct BootstrapConfig {
     /// `crate::materialization::DEFAULT_CLEANUP_INTERVAL`. Always `None`
     /// in `system_default()`.
     pub materialization_cleanup_interval_override: Option<std::time::Duration>,
+    /// An already-prepared plugin-routing generation owned by the embedding
+    /// host. `None` preserves standalone persisted routing behavior.
+    pub initial_plugin_network_routing: Option<arclain_network::PreparedPluginNetworkRouting>,
 }
 
 /// Application-owned fixture overrides that should not require a
@@ -134,6 +137,10 @@ impl std::fmt::Debug for BootstrapConfig {
                 "materialization_cleanup_interval_override",
                 &self.materialization_cleanup_interval_override,
             )
+            .field(
+                "initial_plugin_network_routing_is_set",
+                &self.initial_plugin_network_routing.is_some(),
+            )
             .finish()
     }
 }
@@ -149,6 +156,7 @@ impl BootstrapConfig {
             extract_runner_override: None,
             materialization_lease_ttl_override: None,
             materialization_cleanup_interval_override: None,
+            initial_plugin_network_routing: None,
         }
     }
 }
@@ -369,10 +377,16 @@ pub(crate) fn run(
     let unrar_available = UnrarCli::detect().is_some();
 
     // -- databases --
-    let mut core_services = CoreServices::new(tokio_runtime.clone());
-    core_services
-        .async_http_client
-        .apply_proxy_routing(None, effective_plugin_proxy_map(&user_config));
+    let host_owns_plugin_network_routing = config.initial_plugin_network_routing.is_some();
+    let mut core_services = CoreServices::new_with_plugin_network_routing(
+        tokio_runtime.clone(),
+        config.initial_plugin_network_routing,
+    );
+    if !host_owns_plugin_network_routing {
+        core_services
+            .async_http_client
+            .apply_proxy_routing(None, effective_plugin_proxy_map(&user_config));
+    }
     info!("Initialized HTTP client proxy settings");
 
     let mut pass_rules: Vec<PassRule> = Vec::new();

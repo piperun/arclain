@@ -50,8 +50,8 @@ pub const DEFAULT_MAX_BUFFERED_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
 // Re-export main types at crate root
 pub use features::rate_limiting::RateLimiter;
 pub use features::request::{
-    AsyncHttpClient, HttpRequest, PluginNetworkPolicy, RequestId, RequestStatus, StreamingDownload,
-    StreamingResponseMetadata,
+    AsyncHttpClient, HttpRequest, PluginNetworkPolicy, PreparedPluginNetworkRouting, RequestId,
+    RequestStatus, StreamingDownload, StreamingResponseMetadata,
 };
 pub use features::security::{analyze_url, DomainInfo, DomainWarning};
 pub use features::whitelist::{AccessCheck, DomainWhitelist, WhitelistEntry};

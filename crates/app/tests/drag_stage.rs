@@ -46,6 +46,7 @@ fn bootstrap_app(paths: AppPaths, backend: Arc<dyn arclain_core::ArchiveBackend>
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed")
 }
@@ -64,6 +65,7 @@ fn bootstrap_app_with_short_lease_lifetime(
         extract_runner_override: None,
         materialization_lease_ttl_override: Some(Duration::from_millis(150)),
         materialization_cleanup_interval_override: Some(Duration::from_millis(20)),
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed")
 }

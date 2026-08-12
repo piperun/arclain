@@ -138,6 +138,7 @@ fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed")
 }
@@ -396,6 +397,7 @@ fn an_archive_opens_and_lists_with_no_sevenzip_anywhere() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed with no 7-Zip anywhere");
 
@@ -979,6 +981,7 @@ fn bootstrap_app_with_fake_backend(temp: &tempfile::TempDir, correct_password: &
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed")
 }
@@ -1005,6 +1008,7 @@ fn bootstrap_app_with_content_encrypted_backend(
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed")
 }
@@ -1291,6 +1295,7 @@ fn cancelling_while_the_blocking_list_call_is_still_running_leaves_no_session_be
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed");
     let slow_path = temp.path().join("slow.zip");
@@ -1404,6 +1409,7 @@ fn a_seeded_pass_rule_unlocks_automatically_without_ever_raising_a_challenge() {
         extract_runner_override: None,
         materialization_lease_ttl_override: None,
         materialization_cleanup_interval_override: None,
+        initial_plugin_network_routing: None,
     })
     .expect("bootstrap must succeed");
     let fake_path = temp.path().join("auto-unlock-fixture.zip");
