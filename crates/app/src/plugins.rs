@@ -1788,6 +1788,24 @@ fn plugin_package_error(error: PluginError) -> ApplicationError {
         .with_field("package_path")
 }
 
+pub(crate) fn plugin_uninstall_error(plugin_id: &str, error: PluginError) -> ApplicationError {
+    if matches!(error, PluginError::NotFound(_)) {
+        return plugin_not_found(plugin_id);
+    }
+    let kind = match &error {
+        PluginError::Conflict(_) => ApplicationErrorKind::Conflict,
+        PluginError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            ApplicationErrorKind::PermissionDenied
+        }
+        PluginError::Io(_) => ApplicationErrorKind::Backend,
+        _ => ApplicationErrorKind::Plugin,
+    };
+    ApplicationError::new(kind, "plugin could not be uninstalled")
+        .with_diagnostic(error.to_string())
+        .with_recoverability(Recoverability::UserAction)
+        .with_field("plugin_id")
+}
+
 /// Maps a failed `PluginManager::install_plugin` onto the error envelope.
 ///
 /// Classified by `PluginError` *variant* rather than by its message, so a
@@ -1900,6 +1918,7 @@ fn stale_document_action(expected_revision: u64, actual_revision: u64) -> Applic
 // Session store
 // ============================================================================
 
+#[derive(Clone)]
 struct SessionRecord {
     plugin_id: String,
     extension_point: PluginExtensionPointDto,
@@ -1981,6 +2000,17 @@ pub(crate) struct PluginSessionStore {
     per_plugin_locks: SyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
 }
 
+pub(crate) struct StagedPluginSessionRemoval {
+    sessions: Vec<(PluginSessionId, SessionRecord)>,
+    _dispatch_guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+fn plugin_lock_key(plugin_id: &str) -> String {
+    wirt::PluginIdentityKey::parse(plugin_id)
+        .map(|identity_key| identity_key.as_str().to_string())
+        .unwrap_or_else(|_| plugin_id.to_string())
+}
+
 impl PluginSessionStore {
     pub(crate) fn new() -> Self {
         Self {
@@ -1991,9 +2021,10 @@ impl PluginSessionStore {
     }
 
     fn lock_for_plugin(&self, plugin_id: &str) -> Arc<AsyncMutex<()>> {
+        let lock_key = plugin_lock_key(plugin_id);
         let mut locks = self.per_plugin_locks.lock();
         locks
-            .entry(plugin_id.to_string())
+            .entry(lock_key)
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone()
     }
@@ -2320,6 +2351,47 @@ impl PluginSessionStore {
             .remove(&session_id)
             .map(|_| ())
             .ok_or_else(|| unknown_plugin_session(session_id))
+    }
+
+    pub(crate) async fn stage_plugin_session_removal(
+        &self,
+        plugin_id: &str,
+    ) -> StagedPluginSessionRemoval {
+        let identity_key = wirt::PluginIdentityKey::parse(plugin_id)
+            .expect("manager-owned plugin IDs have already been validated");
+        let dispatch_guard = self.lock_for_plugin(plugin_id).lock_owned().await;
+        let mut sessions = self.sessions.write();
+        let session_ids = sessions
+            .iter()
+            .filter_map(|(session_id, record)| {
+                wirt::PluginIdentityKey::parse(&record.plugin_id)
+                    .is_ok_and(|record_key| record_key == identity_key)
+                    .then_some(*session_id)
+            })
+            .collect::<Vec<_>>();
+        let removed = session_ids
+            .into_iter()
+            .filter_map(|session_id| {
+                sessions
+                    .remove(&session_id)
+                    .map(|record| (session_id, record))
+            })
+            .collect();
+        StagedPluginSessionRemoval {
+            sessions: removed,
+            _dispatch_guard: dispatch_guard,
+        }
+    }
+
+    pub(crate) fn restore_plugin_sessions(&self, staged: StagedPluginSessionRemoval) {
+        self.sessions.write().extend(staged.sessions);
+    }
+
+    pub(crate) fn commit_plugin_session_removal(&self, _staged: StagedPluginSessionRemoval) {
+        // Keep the canonical lock entry. A dispatch may already hold an Arc
+        // clone while waiting for this uninstall guard; removing the map entry
+        // here would let a concurrent reinstall create a second mutex and run
+        // new-generation dispatches on both locks.
     }
 
     /// Dispatches one [`PluginActionRequest`] against its session's
@@ -3103,6 +3175,27 @@ mod tests {
     use std::sync::Mutex as StdMutex;
     use wirt::ui_model::PluginToastLevelDto;
     use wirt::{PluginLayout, PluginUiElement};
+
+    #[test]
+    fn case_folded_plugin_sessions_keep_one_dispatch_lock_across_uninstall() {
+        let store = PluginSessionStore::new();
+        let original_lock = store.lock_for_plugin("UI-DEMO");
+
+        assert!(Arc::ptr_eq(
+            &original_lock,
+            &store.lock_for_plugin("ui-demo")
+        ));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let staged = runtime.block_on(store.stage_plugin_session_removal("Ui-Demo"));
+        store.commit_plugin_session_removal(staged);
+        assert!(Arc::ptr_eq(
+            &original_lock,
+            &store.lock_for_plugin("ui-demo")
+        ));
+    }
 
     /// Minimal in-memory `arclain_data::CacheIndex` -- enough to exercise
     /// `ContentCache::put`/`get_with_limit_for_owner` without a real

@@ -18,7 +18,7 @@ use cap_std::fs::OpenOptionsExt as CapOpenOptionsExt;
 use cap_std::fs::{Dir, OpenOptions};
 use parking_lot::Mutex;
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -139,6 +139,346 @@ pub(super) struct StagedPluginPackage {
     identity_key: PluginIdentityKey,
     staged_files: Vec<OsString>,
     published: bool,
+}
+
+struct StagedPluginRemoval {
+    trusted_root: Arc<TrustedPluginRoot>,
+    original_name: OsString,
+    staging_name: OsString,
+    identity_key: PluginIdentityKey,
+    #[cfg(not(windows))]
+    artifact_dir: Dir,
+    #[cfg(not(windows))]
+    artifact_identity: DirectoryIdentity,
+    #[cfg(windows)]
+    artifact_dir: Option<Dir>,
+    #[cfg(windows)]
+    artifact_identity: WindowsDirectoryIdentity,
+    owned_files: Vec<(OsString, Vec<u8>)>,
+    #[cfg(test)]
+    after_files_removed: Option<Box<dyn FnOnce() -> std::io::Result<()> + Send>>,
+    staged: bool,
+    committed: bool,
+    rollback_safe: bool,
+}
+
+impl StagedPluginRemoval {
+    fn open(trusted_root: Arc<TrustedPluginRoot>, identity_key: PluginIdentityKey) -> Result<Self> {
+        trusted_root.revalidate_current_path()?;
+        let original_name = OsString::from(identity_key.as_str());
+        let artifact_dir = open_removal_directory(trusted_root.dir(), &original_name, true)
+            .map_err(|error| plugin_io_error("Failed to open installed plugin directory", error))?;
+        validate_installed_package_contents(&artifact_dir, &identity_key)?;
+        #[cfg(not(windows))]
+        let artifact_identity = directory_identity(&artifact_dir, "installed plugin directory")?;
+        #[cfg(windows)]
+        let artifact_identity =
+            windows_directory_identity(&artifact_dir, "installed plugin directory")?;
+        let staging_name = unique_removal_name(trusted_root.dir())?;
+        Ok(Self {
+            trusted_root,
+            original_name,
+            staging_name,
+            identity_key,
+            #[cfg(not(windows))]
+            artifact_dir,
+            #[cfg(not(windows))]
+            artifact_identity,
+            #[cfg(windows)]
+            artifact_dir: Some(artifact_dir),
+            #[cfg(windows)]
+            artifact_identity,
+            owned_files: Vec::new(),
+            #[cfg(test)]
+            after_files_removed: None,
+            staged: false,
+            committed: false,
+            rollback_safe: true,
+        })
+    }
+
+    fn stage(&mut self) -> Result<()> {
+        self.trusted_root.revalidate_current_path()?;
+        rename_removal_no_replace(self, &self.original_name, &self.staging_name)?;
+        self.staged = true;
+        #[cfg(not(windows))]
+        {
+            let current =
+                open_removal_directory(self.trusted_root.dir(), &self.staging_name, false)
+                    .map_err(|error| {
+                        plugin_io_error("Failed to reopen staged plugin removal", error)
+                    })?;
+            validate_directory_handle(
+                &current,
+                self.artifact_identity,
+                "staged plugin removal entry",
+            )
+            .map_err(|error| {
+                plugin_io_error("Installed plugin identity changed before removal", error)
+            })?;
+            validate_installed_package_contents(&current, &self.identity_key)?;
+            self.artifact_dir = current;
+        }
+        #[cfg(windows)]
+        {
+            let artifact_dir = self.artifact_dir.as_ref().ok_or_else(|| {
+                PluginError::LoadError(
+                    "Staged plugin removal directory handle is unavailable".to_string(),
+                )
+            })?;
+            validate_windows_directory_handle(
+                artifact_dir,
+                self.artifact_identity,
+                "staged plugin removal entry",
+            )
+            .map_err(|error| {
+                plugin_io_error("Installed plugin identity changed before removal", error)
+            })?;
+            validate_installed_package_contents(artifact_dir, &self.identity_key)?;
+        }
+        Ok(())
+    }
+
+    fn artifact_dir(&self) -> Result<&Dir> {
+        #[cfg(not(windows))]
+        {
+            Ok(&self.artifact_dir)
+        }
+        #[cfg(windows)]
+        {
+            self.artifact_dir.as_ref().ok_or_else(|| {
+                PluginError::LoadError(
+                    "Staged plugin removal directory handle is unavailable".to_string(),
+                )
+            })
+        }
+    }
+
+    fn verify_sidecars(&mut self) -> Result<(PluginManifest, wirt::PackageFingerprint)> {
+        let artifact_dir = self.artifact_dir()?;
+        validate_installed_package_contents(artifact_dir, &self.identity_key)?;
+        let manifest_bytes = read_installed_file_bounded(
+            artifact_dir,
+            format!("{}.toml", self.identity_key.as_str()),
+            wirt::MAX_PLUGIN_MANIFEST_BYTES,
+            "plugin manifest",
+        )?;
+        let manifest_text = std::str::from_utf8(&manifest_bytes).map_err(|_| {
+            PluginError::InvalidManifest("Plugin manifest is not UTF-8".to_string())
+        })?;
+        let manifest: PluginManifest = toml::from_str(manifest_text).map_err(|_| {
+            PluginError::InvalidManifest("Plugin manifest TOML is invalid".to_string())
+        })?;
+        let component = read_installed_file_bounded(
+            artifact_dir,
+            format!("{}.wasm", self.identity_key.as_str()),
+            wirt::MAX_PLUGIN_WASM_BYTES,
+            "plugin WASM",
+        )?;
+        let fingerprint_bytes =
+            read_installed_file_bounded(artifact_dir, "package.sha256", 64, "package fingerprint")?;
+        let fingerprint_text = std::str::from_utf8(&fingerprint_bytes)
+            .map_err(|_| PluginError::LoadError("package fingerprint is not UTF-8".to_string()))?;
+        let fingerprint: wirt::PackageFingerprint = fingerprint_text.parse()?;
+        let canonical = wirt::package_bytes(&manifest_bytes, &component)?;
+        if wirt::PackageFingerprint::sha256(&canonical) != fingerprint {
+            return Err(PluginError::LoadError(
+                "package fingerprint does not match sidecars".to_string(),
+            ));
+        }
+        self.owned_files = vec![
+            (
+                OsString::from(format!("{}.toml", self.identity_key.as_str())),
+                manifest_bytes,
+            ),
+            (
+                OsString::from(format!("{}.wasm", self.identity_key.as_str())),
+                component,
+            ),
+            (OsString::from("package.sha256"), fingerprint_bytes),
+        ];
+        Ok((manifest, fingerprint))
+    }
+
+    #[cfg(test)]
+    fn set_after_files_removed_hook(
+        &mut self,
+        hook: Option<Box<dyn FnOnce() -> std::io::Result<()> + Send>>,
+    ) {
+        self.after_files_removed = hook;
+    }
+
+    fn restore_owned_files(&self) -> Result<()> {
+        let artifact_dir = self.artifact_dir()?;
+        for (file_name, expected) in &self.owned_files {
+            match artifact_dir.symlink_metadata(file_name) {
+                Ok(metadata) => {
+                    #[cfg(windows)]
+                    let invalid = {
+                        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+                        !metadata.is_file()
+                            || OsMetadataExt::file_attributes(&metadata)
+                                & FILE_ATTRIBUTE_REPARSE_POINT
+                                != 0
+                    };
+                    #[cfg(not(windows))]
+                    let invalid = !metadata.is_file() || metadata.file_type().is_symlink();
+                    if invalid {
+                        return Err(PluginError::Conflict(
+                            "installed plugin rollback target is not a regular file".to_string(),
+                        ));
+                    }
+                    let actual = read_installed_file_bounded(
+                        artifact_dir,
+                        file_name,
+                        expected.len(),
+                        "plugin rollback file",
+                    )?;
+                    if actual != *expected {
+                        return Err(PluginError::Conflict(
+                            "installed plugin rollback target changed".to_string(),
+                        ));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    write_restored_file(artifact_dir, file_name, expected)?;
+                }
+                Err(error) => {
+                    return Err(plugin_io_error(
+                        "Failed to inspect plugin rollback target",
+                        error,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn commit(mut self) -> Result<()> {
+        let expected = installed_package_file_names(&self.identity_key);
+        let deletion = (|| -> Result<()> {
+            #[cfg(not(windows))]
+            {
+                validate_directory_handle(
+                    &self.artifact_dir,
+                    self.artifact_identity,
+                    "staged plugin removal",
+                )
+                .map_err(|error| {
+                    plugin_io_error("Failed to validate staged plugin removal", error)
+                })?;
+                validate_installed_package_contents(&self.artifact_dir, &self.identity_key)?;
+                cleanup_staged_files(&self.artifact_dir, &expected).map_err(|error| {
+                    plugin_io_error("Failed to remove installed plugin files", error)
+                })?;
+                #[cfg(test)]
+                if let Some(hook) = self.after_files_removed.take() {
+                    hook().map_err(|error| {
+                        plugin_io_error("Injected failure after plugin file removal", error)
+                    })?;
+                }
+                let current =
+                    open_removal_directory(self.trusted_root.dir(), &self.staging_name, false)
+                        .map_err(|error| {
+                            plugin_io_error("Failed to reopen staged plugin removal", error)
+                        })?;
+                validate_directory_handle(
+                    &current,
+                    self.artifact_identity,
+                    "staged plugin removal entry",
+                )
+                .map_err(|error| {
+                    plugin_io_error("Failed to validate staged plugin removal", error)
+                })?;
+                ensure_directory_empty(&current, "staged plugin removal").map_err(|error| {
+                    plugin_io_error("Failed to validate empty plugin removal", error)
+                })?;
+                drop(current);
+                self.trusted_root
+                    .dir()
+                    .remove_dir(&self.staging_name)
+                    .map_err(|error| {
+                        plugin_io_error("Failed to remove installed plugin directory", error)
+                    })?;
+            }
+            #[cfg(windows)]
+            {
+                let artifact_dir = self.artifact_dir.as_ref().ok_or_else(|| {
+                    PluginError::LoadError(
+                        "Staged plugin removal directory handle is unavailable".to_string(),
+                    )
+                })?;
+                validate_windows_directory_handle(
+                    artifact_dir,
+                    self.artifact_identity,
+                    "staged plugin removal",
+                )
+                .map_err(|error| {
+                    plugin_io_error("Failed to validate staged plugin removal", error)
+                })?;
+                validate_installed_package_contents(artifact_dir, &self.identity_key)?;
+                cleanup_windows_staged_files(artifact_dir, &expected).map_err(|error| {
+                    plugin_io_error("Failed to remove installed plugin files", error)
+                })?;
+                #[cfg(test)]
+                if let Some(hook) = self.after_files_removed.take() {
+                    hook().map_err(|error| {
+                        plugin_io_error("Injected failure after plugin file removal", error)
+                    })?;
+                }
+                mark_windows_handle_for_deletion(artifact_dir).map_err(|error| {
+                    plugin_io_error("Failed to remove installed plugin directory", error)
+                })?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = deletion {
+            if let Err(restore_error) = self.restore_owned_files() {
+                self.rollback_safe = false;
+                let kind = match &restore_error {
+                    PluginError::Io(error) => error.kind(),
+                    _ => std::io::ErrorKind::Other,
+                };
+                return Err(PluginError::Io(std::io::Error::new(
+                    kind,
+                    format!(
+                        "Failed to restore plugin after artifact deletion failed; the installed path was not republished and the incomplete artifact remains under hidden uninstall staging (deletion: {error}; restoration: {restore_error})"
+                    ),
+                )));
+            }
+            return Err(error);
+        }
+        self.committed = true;
+        self.staged = false;
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<()> {
+        if !self.staged {
+            return Ok(());
+        }
+        self.trusted_root.revalidate_current_path()?;
+        rename_removal_no_replace(self, &self.staging_name, &self.original_name)?;
+        self.staged = false;
+        Ok(())
+    }
+}
+
+impl Drop for StagedPluginRemoval {
+    fn drop(&mut self) {
+        if !self.committed && self.staged {
+            if !self.rollback_safe {
+                warn!(
+                    plugin_id = self.identity_key.as_str(),
+                    "Retaining incomplete plugin under hidden uninstall staging rather than republishing it"
+                );
+                return;
+            }
+            if let Err(error) = self.rollback() {
+                warn!(%error, "Failed to roll back staged plugin removal");
+            }
+        }
+    }
 }
 
 impl StagedPluginPackage {
@@ -830,6 +1170,43 @@ fn open_staged_directory(
 }
 
 #[cfg(windows)]
+fn open_removal_directory(
+    parent: &Dir,
+    name: impl AsRef<Path>,
+    delete_access: bool,
+) -> std::io::Result<Dir> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
+    };
+
+    let mut options = OpenOptions::new();
+    let mut access_mode = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    if delete_access {
+        access_mode |= DELETE;
+    }
+    options
+        .access_mode(access_mode)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .follow(FollowSymlinks::No)
+        .maybe_dir(true);
+    let file = parent.open_with(name, &options)?;
+    let directory = Dir::from_std_file(file.into_std());
+    windows_directory_identity(&directory, "plugin removal directory")?;
+    Ok(directory)
+}
+
+#[cfg(not(windows))]
+fn open_removal_directory(
+    parent: &Dir,
+    name: impl AsRef<Path>,
+    _delete_access: bool,
+) -> std::io::Result<Dir> {
+    parent.open_dir_nofollow(name)
+}
+
+#[cfg(windows)]
 fn ensure_windows_directory_empty(directory: &Dir, kind: &str) -> std::io::Result<()> {
     if directory.entries()?.next().transpose()?.is_some() {
         return Err(std::io::Error::other(format!(
@@ -857,11 +1234,32 @@ fn cleanup_windows_staged_files(
         ));
     }
 
+    let mut files = Vec::with_capacity(expected.len());
     for file_name in expected {
-        let file = open_windows_staged_file_for_deletion(artifact_dir, &file_name)?;
-        mark_windows_handle_for_deletion(&file)?;
-        drop(file);
+        files.push(open_windows_staged_file_for_deletion(
+            artifact_dir,
+            &file_name,
+        )?);
     }
+    for (index, file) in files.iter().enumerate() {
+        if let Err(error) = mark_windows_handle_for_deletion(file) {
+            let rollback_errors = files[..index]
+                .iter()
+                .rev()
+                .filter_map(|marked| clear_windows_handle_deletion(marked).err())
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>();
+            if !rollback_errors.is_empty() {
+                return Err(std::io::Error::other(format!(
+                    "failed to mark staged plugin file for deletion: {error}; \
+                     failed to clear earlier delete dispositions: {}",
+                    rollback_errors.join("; ")
+                )));
+            }
+            return Err(error);
+        }
+    }
+    drop(files);
     ensure_windows_directory_empty(artifact_dir, "staged plugin directory")
 }
 
@@ -902,6 +1300,249 @@ fn cleanup_staged_files(artifact_dir: &Dir, staged_files: &[OsString]) -> std::i
     ensure_directory_empty(artifact_dir, "staged plugin directory")
 }
 
+fn installed_package_file_names(identity_key: &PluginIdentityKey) -> Vec<OsString> {
+    vec![
+        OsString::from(format!("{}.toml", identity_key.as_str())),
+        OsString::from(format!("{}.wasm", identity_key.as_str())),
+        OsString::from("package.sha256"),
+    ]
+}
+
+fn validate_installed_package_contents(
+    artifact_dir: &Dir,
+    identity_key: &PluginIdentityKey,
+) -> Result<()> {
+    let mut actual = artifact_dir
+        .entries()
+        .map_err(|error| plugin_io_error("Failed to inspect installed plugin directory", error))?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|error| plugin_io_error("Failed to inspect installed plugin entry", error))?;
+    actual.sort();
+    let mut expected = installed_package_file_names(identity_key);
+    expected.sort();
+    if actual != expected {
+        return Err(PluginError::Conflict(
+            "installed plugin directory contents changed; refusing removal".to_string(),
+        ));
+    }
+
+    for file_name in expected {
+        let metadata = artifact_dir
+            .symlink_metadata(&file_name)
+            .map_err(|error| plugin_io_error("Failed to inspect installed plugin file", error))?;
+        #[cfg(windows)]
+        let invalid = {
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            !metadata.is_file()
+                || OsMetadataExt::file_attributes(&metadata) & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        };
+        #[cfg(not(windows))]
+        let invalid = !metadata.is_file() || metadata.file_type().is_symlink();
+        if invalid {
+            return Err(PluginError::Conflict(
+                "installed plugin file is not a non-link regular file".to_string(),
+            ));
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        let file = artifact_dir
+            .open_with(&file_name, &options)
+            .map_err(|error| {
+                plugin_io_error(
+                    "Failed to open installed plugin file without following links",
+                    error,
+                )
+            })?;
+        let opened_metadata = file.metadata().map_err(|error| {
+            plugin_io_error("Failed to inspect opened installed plugin file", error)
+        })?;
+        #[cfg(windows)]
+        let opened_invalid = {
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            !opened_metadata.is_file()
+                || OsMetadataExt::file_attributes(&opened_metadata) & FILE_ATTRIBUTE_REPARSE_POINT
+                    != 0
+        };
+        #[cfg(not(windows))]
+        let opened_invalid = !opened_metadata.is_file();
+        if opened_invalid {
+            return Err(PluginError::Conflict(
+                "opened installed plugin file is not a non-link regular file".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_installed_file_bounded(
+    artifact_dir: &Dir,
+    file_name: impl AsRef<Path>,
+    max_bytes: usize,
+    kind: &str,
+) -> Result<Vec<u8>> {
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    let file = artifact_dir
+        .open_with(file_name, &options)
+        .map_err(|error| {
+            plugin_io_error(
+                format_args!("Failed to open installed {kind} without following links"),
+                error,
+            )
+        })?;
+    let metadata = file.metadata().map_err(|error| {
+        plugin_io_error(format_args!("Failed to inspect installed {kind}"), error)
+    })?;
+    #[cfg(windows)]
+    let invalid = {
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        !metadata.is_file()
+            || OsMetadataExt::file_attributes(&metadata) & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    };
+    #[cfg(not(windows))]
+    let invalid = !metadata.is_file();
+    if invalid {
+        return Err(PluginError::Conflict(format!(
+            "installed {kind} is not a non-link regular file"
+        )));
+    }
+    if metadata.len() > max_bytes as u64 {
+        return Err(PluginError::LoadError(format!(
+            "installed {kind} exceeds the {max_bytes}-byte limit"
+        )));
+    }
+    let read_limit = u64::try_from(max_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| plugin_io_error(format_args!("Failed to read installed {kind}"), error))?;
+    if bytes.len() > max_bytes {
+        return Err(PluginError::LoadError(format!(
+            "installed {kind} exceeds the {max_bytes}-byte limit"
+        )));
+    }
+    Ok(bytes)
+}
+
+fn write_restored_file(artifact_dir: &Dir, file_name: &OsString, bytes: &[u8]) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create_new(true)
+        .follow(FollowSymlinks::No);
+    let mut file = artifact_dir
+        .open_with(file_name, &options)
+        .map_err(|error| plugin_io_error("Failed to recreate plugin rollback file", error))?;
+    file.write_all(bytes)
+        .map_err(|error| plugin_io_error("Failed to restore plugin rollback file", error))?;
+    file.sync_all()
+        .map_err(|error| plugin_io_error("Failed to flush plugin rollback file", error))
+}
+
+fn unique_removal_name(root: &Dir) -> Result<OsString> {
+    for _ in 0..128 {
+        let sequence = NEXT_STAGING_ID.fetch_add(1, Ordering::Relaxed);
+        let name = OsString::from(format!(
+            ".arclain-plugin-uninstall-{}-{sequence:016x}",
+            std::process::id()
+        ));
+        match root.symlink_metadata(&name) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(name),
+            Ok(_) => continue,
+            Err(error) => {
+                return Err(plugin_io_error(
+                    "Failed to inspect plugin uninstall staging name",
+                    error,
+                ));
+            }
+        }
+    }
+    Err(plugin_io_error(
+        "Failed to allocate a unique plugin uninstall staging name",
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "all uninstall staging names already exist",
+        ),
+    ))
+}
+
+#[cfg(windows)]
+fn rename_removal_no_replace(
+    removal: &StagedPluginRemoval,
+    _source_name: &std::ffi::OsStr,
+    destination_name: &std::ffi::OsStr,
+) -> Result<()> {
+    let artifact_dir = removal.artifact_dir.as_ref().ok_or_else(|| {
+        PluginError::LoadError("Staged plugin removal directory handle is unavailable".to_string())
+    })?;
+    rename_windows_handle_relative_no_replace(
+        artifact_dir,
+        removal.trusted_root.dir(),
+        destination_name,
+    )
+    .map_err(|error| {
+        plugin_io_error(
+            "Failed to atomically stage or restore installed plugin directory",
+            error,
+        )
+    })
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    target_os = "redox"
+))]
+fn rename_removal_no_replace(
+    removal: &StagedPluginRemoval,
+    source_name: &std::ffi::OsStr,
+    destination_name: &std::ffi::OsStr,
+) -> Result<()> {
+    rustix::fs::renameat_with(
+        removal.trusted_root.dir(),
+        source_name,
+        removal.trusted_root.dir(),
+        destination_name,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(std::io::Error::from)
+    .map_err(|error| {
+        plugin_io_error(
+            "Failed to atomically stage or restore installed plugin directory",
+            error,
+        )
+    })
+}
+
+#[cfg(not(any(
+    windows,
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    target_os = "redox"
+)))]
+fn rename_removal_no_replace(
+    removal: &StagedPluginRemoval,
+    source_name: &std::ffi::OsStr,
+    destination_name: &std::ffi::OsStr,
+) -> Result<()> {
+    let source = removal.trusted_root.configured_path().join(source_name);
+    let destination = removal
+        .trusted_root
+        .configured_path()
+        .join(destination_name);
+    arclain_core::utilities::rename_no_replace(&source, &destination).map_err(|error| {
+        plugin_io_error(
+            "Failed to atomically stage or restore installed plugin directory",
+            error,
+        )
+    })
+}
+
 #[cfg(windows)]
 fn open_windows_staged_file_for_deletion(
     parent: &Dir,
@@ -934,13 +1575,32 @@ fn open_windows_staged_file_for_deletion(
 fn mark_windows_handle_for_deletion(
     handle: &impl std::os::windows::io::AsRawHandle,
 ) -> std::io::Result<()> {
+    set_windows_handle_deletion(handle, true)
+}
+
+#[cfg(windows)]
+fn clear_windows_handle_deletion(
+    handle: &impl std::os::windows::io::AsRawHandle,
+) -> std::io::Result<()> {
+    set_windows_handle_deletion(handle, false)
+}
+
+#[cfg(windows)]
+fn set_windows_handle_deletion(
+    handle: &impl std::os::windows::io::AsRawHandle,
+    delete: bool,
+) -> std::io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{
         FileDispositionInfoEx, SetFileInformationByHandle, FILE_DISPOSITION_FLAG_DELETE,
         FILE_DISPOSITION_INFO_EX,
     };
 
     let disposition = FILE_DISPOSITION_INFO_EX {
-        Flags: FILE_DISPOSITION_FLAG_DELETE,
+        Flags: if delete {
+            FILE_DISPOSITION_FLAG_DELETE
+        } else {
+            0
+        },
     };
     // SAFETY: `handle` is live for the call and `disposition` has the exact
     // layout and byte size required by FileDispositionInfoEx.
@@ -1716,6 +2376,158 @@ impl PluginManager {
         } else {
             Err(PluginError::NotFound(plugin_id.to_string()))
         }
+    }
+
+    /// Remove one package-installed plugin after it has been disabled.
+    ///
+    /// The installed directory is first moved, without replacement, to an
+    /// owner-only staging name under the already-open trusted root. Its exact
+    /// directory identity, three package-owned files, manifest, and fingerprint
+    /// are revalidated there before anything durable or in-memory is removed.
+    /// Ordinary failures restore the original name and quarantine state;
+    /// manager registries and caches change only after exact, non-recursive
+    /// deletion succeeds. If deletion has already removed files and exact
+    /// reconstruction itself fails, uninstall fails closed: the installed name
+    /// stays absent, the incomplete directory remains under a hidden staging
+    /// name, and the already-loaded generation remains registered and usable
+    /// for this process. A restart never treats that partial directory as an
+    /// installed package. The caller must surface the backend error because
+    /// durable on-disk rollback is no longer possible in that case.
+    pub fn uninstall_package(&mut self, plugin_id: &str) -> Result<()> {
+        let identity_key = PluginIdentityKey::parse(plugin_id)
+            .map_err(|_| PluginError::NotFound(plugin_id.to_string()))?;
+        let _transition = self.plugin_state_transition.lock();
+        let registered = self
+            .plugins
+            .read()
+            .get(&identity_key)
+            .map(|plugin| {
+                (
+                    plugin.metadata.id.clone(),
+                    plugin.manifest.clone(),
+                    plugin.fingerprint.clone(),
+                )
+            })
+            .or_else(|| {
+                self.quarantined_plugins
+                    .read()
+                    .get(&identity_key)
+                    .map(|plugin| {
+                        (
+                            plugin.manifest.plugin.id.clone(),
+                            plugin.manifest.clone(),
+                            plugin.fingerprint.clone(),
+                        )
+                    })
+            });
+        let discovered = self.discovered_plugin(&identity_key)?;
+        let registered = match registered {
+            Some(registered) => {
+                if discovered.manifest != registered.1 || discovered.fingerprint != registered.2 {
+                    return Err(PluginError::Conflict(
+                        "installed plugin artifact changed after it was loaded".to_string(),
+                    ));
+                }
+                registered
+            }
+            None => {
+                let failed_only = self.failed_plugins.lock().iter().any(|failed| {
+                    PluginIdentityKey::parse(&failed.original_id)
+                        .is_ok_and(|failed_key| failed_key == identity_key)
+                });
+                if !failed_only {
+                    return Err(PluginError::NotFound(plugin_id.to_string()));
+                }
+                (
+                    discovered.manifest.plugin.id.clone(),
+                    discovered.manifest.clone(),
+                    discovered.fingerprint.clone(),
+                )
+            }
+        };
+        if self
+            .enabled_plugins
+            .read()
+            .get(&identity_key)
+            .copied()
+            .unwrap_or(false)
+        {
+            return Err(PluginError::Conflict(format!(
+                "Plugin '{}' must be disabled before uninstall",
+                registered.0
+            )));
+        }
+
+        match &discovered.artifact {
+            crate::loader::PluginArtifact::Sidecars {
+                manifest_path,
+                wasm_path,
+            } if manifest_path.parent() == wasm_path.parent()
+                && manifest_path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|name| name == std::ffi::OsStr::new(identity_key.as_str())) => {}
+            _ => {
+                return Err(PluginError::Conflict(
+                    "only package-installed plugin directories can be uninstalled".to_string(),
+                ));
+            }
+        }
+
+        let mut removal =
+            StagedPluginRemoval::open(self.loader.trusted_root(), identity_key.clone())?;
+        removal.stage()?;
+        let (staged_manifest, staged_fingerprint) = removal.verify_sidecars()?;
+        self.loader.validate_manifest(&staged_manifest)?;
+        if staged_manifest != registered.1 || staged_fingerprint != registered.2 {
+            return Err(PluginError::Conflict(
+                "installed plugin artifact changed while removal was staged".to_string(),
+            ));
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.uninstall_after_validation_hook.lock().take() {
+            hook(removal.artifact_dir()?);
+        }
+        #[cfg(test)]
+        removal.set_after_files_removed_hook(self.uninstall_after_files_removed_hook.lock().take());
+
+        let quarantine_snapshot = self.quarantine.remove(&registered.2)?;
+        if let Err(error) = removal.commit() {
+            self.quarantine
+                .restore(&registered.2, quarantine_snapshot)?;
+            return Err(error);
+        }
+
+        let removed = self.plugins.write().remove(&identity_key);
+        self.quarantined_plugins.write().remove(&identity_key);
+        self.enabled_plugins.write().remove(&identity_key);
+        self.initial_settings.remove(&identity_key);
+        self.settings_cache.lock().remove(&identity_key);
+        self.failed_plugins.lock().retain(|failed| {
+            PluginIdentityKey::parse(&failed.original_id)
+                .map_or(true, |failed_key| failed_key != identity_key)
+        });
+        if let Some(ref client) = self.async_http_client {
+            client.remove_plugin_configuration(&registered.0);
+        }
+        if let Some(removed) = removed {
+            removed.execution_admission.disable_and_wait();
+            if let Err(error) = crate::InProcessWirtExecutor::execute_transient(
+                &mut removed.instance.lock(),
+                wirt::ExecutorRequest::Cleanup,
+            )
+            .and_then(wirt::ExecutorResponse::into_empty)
+            {
+                warn!(
+                    plugin_id = registered.0,
+                    %error,
+                    "Plugin cleanup failed after uninstall committed"
+                );
+            }
+        }
+        self.invalidate_top_tabs_cache();
+        info!(plugin_id = registered.0, "Plugin package uninstalled");
+        Ok(())
     }
 
     /// Install a plugin from a .wasm file

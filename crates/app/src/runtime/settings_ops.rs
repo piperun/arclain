@@ -1083,6 +1083,144 @@ pub(super) async fn run_set_plugin_enabled(
     Ok(())
 }
 
+/// Durably removes one disabled package and its application-owned settings.
+/// The fresh user-config row is published first; if the manager's exact
+/// artifact transaction fails, that row is restored before the error is
+/// returned. Existing sessions are drained under their per-plugin dispatch
+/// lock before artifact removal, restored if the manager fails, and discarded
+/// only after the manager has committed artifact, registry, routing, cache, and
+/// quarantine cleanup. The in-memory settings/proxy mirrors change last.
+/// If destructive artifact cleanup has begun and exact reconstruction also
+/// fails, the manager deliberately leaves the installed path absent and keeps
+/// the incomplete hidden staging directory. This transaction still restores
+/// the persisted row and sessions; the already-loaded generation remains usable
+/// until process exit, while restart discovery ignores the partial staging.
+pub(super) async fn run_uninstall_plugin(
+    inner: &Arc<AppRuntime>,
+    plugin_id: String,
+) -> Result<(), ApplicationError> {
+    let _write_guard = inner.settings_write_lock.lock().await;
+    let manager = crate::plugins::require_manager(inner.plugin_manager())?;
+    let canonical_id = {
+        let manager = manager.lock();
+        let metadata_id = manager
+            .get_plugin_metadata(&plugin_id)
+            .map(|metadata| metadata.id);
+        let requested_key = wirt::PluginIdentityKey::parse(&plugin_id).ok();
+        let canonical_id = metadata_id.or_else(|| {
+            let requested_key = requested_key.as_ref()?;
+            manager.failed_plugins().into_iter().find_map(|failed| {
+                wirt::PluginIdentityKey::parse(&failed.original_id)
+                    .is_ok_and(|failed_key| &failed_key == requested_key)
+                    .then_some(failed.original_id)
+            })
+        });
+        let canonical_id =
+            canonical_id.ok_or_else(|| crate::plugins::plugin_not_found(&plugin_id))?;
+        if manager.is_plugin_enabled(&plugin_id) {
+            return Err(crate::plugins::plugin_uninstall_error(
+                &canonical_id,
+                arclain_plugins::PluginError::Conflict(format!(
+                    "Plugin '{}' must be disabled before uninstall",
+                    canonical_id
+                )),
+            ));
+        }
+        canonical_id
+    };
+
+    let canonical_key = wirt::PluginIdentityKey::parse(&canonical_id)
+        .expect("manager-owned plugin IDs have already been validated");
+    let owns_plugin_id = |candidate: &str| {
+        wirt::PluginIdentityKey::parse(candidate)
+            .is_ok_and(|candidate_key| candidate_key == canonical_key)
+    };
+    let config_service = inner
+        .core_services()
+        .config_service
+        .clone()
+        .ok_or_else(settings_unavailable_error)?;
+    let handle = inner
+        .tokio_handle()
+        .ok_or_else(shutdown_mid_request_error)?;
+    let read_config_service = config_service.clone();
+    let original = handle
+        .spawn_blocking(move || {
+            read_config_service
+                .get_user_config()
+                .map_err(|error| backend_error("reading current settings", error))
+        })
+        .await
+        .map_err(internal_join_error)??;
+    let mut candidate = original.clone();
+    let mut enabled_plugins = candidate.get_enabled_plugins();
+    enabled_plugins.retain(|candidate| !owns_plugin_id(candidate));
+    candidate.set_enabled_plugins(&enabled_plugins);
+    let mut plugin_settings = candidate.get_all_plugin_settings();
+    plugin_settings.retain(|candidate, _| !owns_plugin_id(candidate));
+    candidate.set_all_plugin_settings(&plugin_settings);
+    let mut plugin_proxy_settings = candidate.get_plugin_proxy_settings();
+    plugin_proxy_settings.retain(|candidate, _| !owns_plugin_id(candidate));
+    candidate.set_plugin_proxy_settings(&plugin_proxy_settings);
+
+    let persisted = candidate.clone();
+    let save_config_service = config_service.clone();
+    handle
+        .spawn_blocking(move || {
+            save_config_service
+                .save_user_config(&persisted)
+                .map_err(|error| persistence_error("saving plugin uninstall state", error))
+        })
+        .await
+        .map_err(internal_join_error)??;
+
+    let staged_sessions = inner
+        .plugin_sessions()
+        .stage_plugin_session_removal(&canonical_id)
+        .await;
+    let uninstall_manager = manager.clone();
+    let uninstall_id = canonical_id.clone();
+    let uninstall = handle
+        .spawn_blocking(move || uninstall_manager.lock().uninstall_package(&uninstall_id))
+        .await;
+    let uninstall_error = match uninstall {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(crate::plugins::plugin_uninstall_error(&canonical_id, error)),
+        Err(error) => Some(internal_join_error(error)),
+    };
+    if let Some(uninstall_error) = uninstall_error {
+        inner
+            .plugin_sessions()
+            .restore_plugin_sessions(staged_sessions);
+        let rollback_service = config_service.clone();
+        let rollback = handle
+            .spawn_blocking(move || rollback_service.save_user_config(&original))
+            .await;
+        return match rollback {
+            Ok(Ok(())) => Err(uninstall_error),
+            Ok(Err(error)) => Err(persistence_error(
+                "restoring settings after plugin uninstall failed",
+                error,
+            )),
+            Err(error) => Err(internal_join_error(error)),
+        };
+    }
+
+    inner
+        .plugin_sessions()
+        .commit_plugin_session_removal(staged_sessions);
+    inner
+        .core_services()
+        .async_http_client
+        .apply_plugin_proxy_map(arclain_core::utilities::proxy::effective_plugin_proxy_map(
+            &candidate,
+        ));
+    let mut mutable = inner.session.mutable.write();
+    mutable.user_config = candidate;
+    mutable.revision += 1;
+    Ok(())
+}
+
 /// Persists one plugin-domain approval and only then commits the same
 /// decision to the live whitelist enforced by the HTTP client.
 ///

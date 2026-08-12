@@ -60,6 +60,11 @@ fn bounded_event_channel(
     std::sync::mpsc::sync_channel(capacity)
 }
 
+#[cfg(test)]
+type UninstallAfterValidationHook = Box<dyn FnOnce(&cap_std::fs::Dir) + Send>;
+#[cfg(test)]
+type UninstallAfterFilesRemovedHook = Box<dyn FnOnce() -> std::io::Result<()> + Send>;
+
 /// Manages all loaded plugins and dispatches events
 pub struct PluginManager {
     pub(crate) loader: PluginLoader,
@@ -70,6 +75,12 @@ pub struct PluginManager {
     pub(crate) plugin_state_transition: Arc<parking_lot::Mutex<()>>,
     #[cfg(test)]
     pub(crate) disable_before_admission_hook: parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    pub(crate) uninstall_after_validation_hook:
+        parking_lot::Mutex<Option<UninstallAfterValidationHook>>,
+    #[cfg(test)]
+    pub(crate) uninstall_after_files_removed_hook:
+        parking_lot::Mutex<Option<UninstallAfterFilesRemovedHook>>,
     pub(crate) executor: Arc<crate::InProcessWirtExecutor>,
     #[cfg(feature = "gameta")]
     pub(crate) library_service: Option<Arc<arclain_core::LibraryService>>,
@@ -196,6 +207,10 @@ impl PluginManager {
             plugin_state_transition,
             #[cfg(test)]
             disable_before_admission_hook: parking_lot::Mutex::new(None),
+            #[cfg(test)]
+            uninstall_after_validation_hook: parking_lot::Mutex::new(None),
+            #[cfg(test)]
+            uninstall_after_files_removed_hook: parking_lot::Mutex::new(None),
             executor,
             #[cfg(feature = "gameta")]
             library_service: None,
@@ -229,6 +244,19 @@ impl PluginManager {
     #[cfg(test)]
     pub(crate) fn set_disable_before_admission_hook(&self, hook: Box<dyn FnOnce() + Send>) {
         *self.disable_before_admission_hook.lock() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_uninstall_after_validation_hook(&self, hook: UninstallAfterValidationHook) {
+        *self.uninstall_after_validation_hook.lock() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_uninstall_after_files_removed_hook(
+        &self,
+        hook: UninstallAfterFilesRemovedHook,
+    ) {
+        *self.uninstall_after_files_removed_hook.lock() = Some(hook);
     }
 
     #[cfg(test)]

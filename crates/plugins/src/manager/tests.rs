@@ -2276,6 +2276,250 @@ fn windows_cleanup_fails_closed_when_the_staged_artifact_name_is_swapped() {
 }
 
 #[test]
+fn uninstall_rejects_a_replaced_installed_directory_without_following_it() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let package_path = temp_dir.path().join("ui-demo.wirt");
+    let fingerprint = ui_demo_package(&package_path);
+    let mut manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
+    manager.disable_plugin("ui-demo").unwrap();
+
+    let installed = plugins_dir.join("ui-demo");
+    let moved = temp_dir.path().join("validated-ui-demo");
+    let outside = temp_dir.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("outside-sentinel"), b"preserve").unwrap();
+    std::fs::rename(&installed, &moved).unwrap();
+    create_manager_test_directory_link(&outside, &installed);
+
+    let result = manager.uninstall_package("ui-demo");
+
+    assert!(
+        result.is_err(),
+        "a replaced installed directory was accepted"
+    );
+    assert_eq!(
+        std::fs::read(outside.join("outside-sentinel")).unwrap(),
+        b"preserve"
+    );
+    assert!(moved.join("package.sha256").is_file());
+    assert_eq!(manager.list_plugins().len(), 1);
+    manager.enable_plugin("ui-demo").unwrap();
+    assert_eq!(
+        manager
+            .execute_plugin("ui-demo", wirt::ExecutorRequest::Metadata)
+            .unwrap()
+            .into_metadata()
+            .unwrap()
+            .id,
+        "ui-demo"
+    );
+}
+
+#[test]
+fn uninstall_cleanup_failure_restores_the_staged_generation() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let package_path = temp_dir.path().join("ui-demo.wirt");
+    let fingerprint = ui_demo_package(&package_path);
+    let mut manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
+    manager.disable_plugin("ui-demo").unwrap();
+    manager.set_uninstall_after_validation_hook(Box::new(|staged_dir| {
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        let mut file = staged_dir.open_with("attacker-owned", &options).unwrap();
+        std::io::Write::write_all(&mut file, b"preserve").unwrap();
+    }));
+
+    manager
+        .uninstall_package("ui-demo")
+        .expect_err("staged cleanup must reject unexpected contents");
+
+    let installed = plugins_dir.join("ui-demo");
+    assert_eq!(
+        std::fs::read(installed.join("attacker-owned")).unwrap(),
+        b"preserve"
+    );
+    assert!(installed.join("ui-demo.wasm").is_file());
+    assert!(installed.join("ui-demo.toml").is_file());
+    assert!(installed.join("package.sha256").is_file());
+    assert_eq!(manager.list_plugins().len(), 1);
+    manager.enable_plugin("ui-demo").unwrap();
+    assert_eq!(
+        manager
+            .execute_plugin("ui-demo", wirt::ExecutorRequest::Metadata)
+            .unwrap()
+            .into_metadata()
+            .unwrap()
+            .id,
+        "ui-demo"
+    );
+}
+
+#[test]
+fn uninstall_late_directory_failure_restores_every_owned_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let package_path = temp_dir.path().join("ui-demo.wirt");
+    let fingerprint = ui_demo_package(&package_path);
+    let mut manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
+    manager.disable_plugin("ui-demo").unwrap();
+    manager.set_uninstall_after_files_removed_hook(Box::new(|| {
+        Err(std::io::Error::other("injected directory deletion failure"))
+    }));
+
+    manager
+        .uninstall_package("ui-demo")
+        .expect_err("late directory deletion failure must roll back");
+
+    let installed = plugins_dir.join("ui-demo");
+    assert!(installed.join("ui-demo.wasm").is_file());
+    assert!(installed.join("ui-demo.toml").is_file());
+    assert!(installed.join("package.sha256").is_file());
+    assert_eq!(manager.list_plugins().len(), 1);
+    manager.enable_plugin("ui-demo").unwrap();
+    assert_eq!(
+        manager
+            .execute_plugin("ui-demo", wirt::ExecutorRequest::Metadata)
+            .unwrap()
+            .into_metadata()
+            .unwrap()
+            .id,
+        "ui-demo"
+    );
+}
+
+#[test]
+fn uninstall_failed_reconstruction_never_republishes_a_partial_package() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let package_path = temp_dir.path().join("ui-demo.wirt");
+    let fingerprint = ui_demo_package(&package_path);
+    let mut manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
+    manager.disable_plugin("ui-demo").unwrap();
+    let hook_plugins_dir = plugins_dir.clone();
+    manager.set_uninstall_after_files_removed_hook(Box::new(move || {
+        let staging_dir = std::fs::read_dir(&hook_plugins_dir)?
+            .filter_map(std::result::Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".arclain-plugin-uninstall-")
+            })
+            .ok_or_else(|| std::io::Error::other("uninstall staging directory not found"))?
+            .path();
+        std::fs::create_dir(staging_dir.join("package.sha256"))?;
+        Err(std::io::Error::other("injected directory deletion failure"))
+    }));
+
+    let error = manager
+        .uninstall_package("ui-demo")
+        .expect_err("failed reconstruction must fail closed");
+
+    assert!(matches!(error, PluginError::Io(_)));
+    assert!(
+        !plugins_dir.join("ui-demo").exists(),
+        "an incomplete package must never return to its installed name"
+    );
+    let staged = std::fs::read_dir(&plugins_dir)
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".arclain-plugin-uninstall-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(staged.len(), 1, "failed cleanup must retain one tombstone");
+    assert!(staged[0].path().join("package.sha256").is_dir());
+    assert_eq!(manager.list_plugins().len(), 1);
+    assert!(!manager.is_plugin_enabled("ui-demo"));
+    manager.enable_plugin("ui-demo").unwrap();
+    assert_eq!(
+        manager
+            .execute_plugin("ui-demo", wirt::ExecutorRequest::Metadata)
+            .unwrap()
+            .into_metadata()
+            .unwrap()
+            .id,
+        "ui-demo"
+    );
+
+    drop(manager);
+    let mut restarted = PluginManager::new(plugins_dir, HashMap::new()).unwrap();
+    restarted.init().unwrap();
+    assert!(restarted.list_plugins().is_empty());
+    assert!(restarted
+        .failed_plugins()
+        .iter()
+        .all(|failed| failed.original_id != "ui-demo"));
+}
+
+#[cfg(windows)]
+#[test]
+fn uninstall_file_deletion_failure_does_not_partially_remove_the_generation() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let package_path = temp_dir.path().join("ui-demo.wirt");
+    let fingerprint = ui_demo_package(&package_path);
+    let mut manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
+    manager.disable_plugin("ui-demo").unwrap();
+    manager.set_uninstall_after_validation_hook(Box::new(|staged_dir| {
+        let mut permissions = staged_dir
+            .symlink_metadata("ui-demo.wasm")
+            .unwrap()
+            .permissions();
+        permissions.set_readonly(true);
+        staged_dir
+            .set_permissions("ui-demo.wasm", permissions)
+            .unwrap();
+    }));
+
+    manager
+        .uninstall_package("ui-demo")
+        .expect_err("a read-only sidecar must abort exact-file deletion");
+
+    let installed = plugins_dir.join("ui-demo");
+    assert!(installed.join("ui-demo.wasm").is_file());
+    assert!(installed.join("ui-demo.toml").is_file());
+    assert!(installed.join("package.sha256").is_file());
+    assert_eq!(manager.list_plugins().len(), 1);
+    let mut permissions = std::fs::metadata(installed.join("ui-demo.wasm"))
+        .unwrap()
+        .permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(installed.join("ui-demo.wasm"), permissions).unwrap();
+    manager.enable_plugin("ui-demo").unwrap();
+    assert_eq!(
+        manager
+            .execute_plugin("ui-demo", wirt::ExecutorRequest::Metadata)
+            .unwrap()
+            .into_metadata()
+            .unwrap()
+            .id,
+        "ui-demo"
+    );
+}
+
+#[test]
 fn reload_and_unload_replace_only_manifest_owned_domains() {
     use arclain_network::features::whitelist::{AccessCheck, DomainWhitelist};
     use parking_lot::RwLock;

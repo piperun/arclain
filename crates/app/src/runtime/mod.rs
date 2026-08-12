@@ -2157,6 +2157,23 @@ impl ArclainApp {
         .await?
     }
 
+    /// Remove a package-installed plugin after it has been disabled. The
+    /// package artifact, manager registries/caches/routing, quarantine state,
+    /// persisted settings/proxy entry, and every owned UI session are committed
+    /// as one facade transaction. `Conflict` leaves an enabled plugin untouched.
+    ///
+    /// A rare backend failure can occur after artifact deletion began and while
+    /// reconstructing its exact sidecars. That case fails closed: settings and
+    /// sessions are restored, the loaded generation remains usable for this
+    /// process, and no partial package is republished at its installed path. The
+    /// hidden staging remains for operator recovery and a restart ignores it.
+    pub async fn uninstall_plugin(&self, plugin_id: String) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_uninstall_plugin(&inner, plugin_id).await
+        })
+        .await?
+    }
+
     /// Replace a resource-blocked plugin with a fresh, user-authorized
     /// instance. A later resource violation on that instance counts as a
     /// failed retry in the persistent quarantine ledger.

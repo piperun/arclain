@@ -78,6 +78,12 @@ struct LedgerState {
     runtime_violations: BTreeMap<String, String>,
 }
 
+#[derive(Clone)]
+pub(crate) struct QuarantineSnapshot {
+    persisted: Option<QuarantineRecord>,
+    runtime_reason: Option<String>,
+}
+
 pub struct QuarantineLedger {
     root: Arc<TrustedPluginRoot>,
     state: Mutex<LedgerState>,
@@ -168,12 +174,53 @@ impl QuarantineLedger {
     }
 
     pub fn reset(&self, fingerprint: &PackageFingerprint) -> Result<()> {
+        self.remove(fingerprint).map(|_| ())
+    }
+
+    pub(crate) fn remove(&self, fingerprint: &PackageFingerprint) -> Result<QuarantineSnapshot> {
         let mut state = self.state.lock();
+        let key = fingerprint.as_str();
+        let snapshot = QuarantineSnapshot {
+            persisted: state.persisted.get(key).cloned(),
+            runtime_reason: state.runtime_violations.get(key).cloned(),
+        };
         let mut next = state.persisted.clone();
-        next.remove(fingerprint.as_str());
-        write_ledger(&self.root, &next)?;
-        state.persisted = next;
-        state.runtime_violations.remove(fingerprint.as_str());
+        if next.remove(key).is_some() {
+            write_ledger(&self.root, &next)?;
+            state.persisted = next;
+        }
+        state.runtime_violations.remove(key);
+        Ok(snapshot)
+    }
+
+    pub(crate) fn restore(
+        &self,
+        fingerprint: &PackageFingerprint,
+        snapshot: QuarantineSnapshot,
+    ) -> Result<()> {
+        let mut state = self.state.lock();
+        let key = fingerprint.to_string();
+        let mut next = state.persisted.clone();
+        match snapshot.persisted {
+            Some(record) => {
+                next.insert(key.clone(), record);
+            }
+            None => {
+                next.remove(&key);
+            }
+        }
+        if next != state.persisted {
+            write_ledger(&self.root, &next)?;
+            state.persisted = next;
+        }
+        match snapshot.runtime_reason {
+            Some(reason) => {
+                state.runtime_violations.insert(key, reason);
+            }
+            None => {
+                state.runtime_violations.remove(&key);
+            }
+        }
         Ok(())
     }
 

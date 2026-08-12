@@ -146,6 +146,38 @@ fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
     .expect("copy plugin fixture .toml");
 }
 
+fn install_failing_init_fixture(plugins_dir: &std::path::Path) {
+    const MANIFEST: &[u8] = br#"[wirt]
+abi = "0.2.0"
+
+[plugin]
+id = "failing-init"
+name = "Failing Init Fixture"
+version = "0.1.0"
+author = "Arclain security tests"
+description = "Package-valid guest that traps during initialization"
+
+[capabilities]
+
+[rate_limits]
+http_requests_per_minute = 60
+"#;
+    let component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../plugins/tests/fixtures/failing-init/failing-init.wasm"
+    ));
+    let destination = plugins_dir.join("failing-init");
+    std::fs::create_dir_all(&destination).unwrap();
+    std::fs::write(destination.join("failing-init.toml"), MANIFEST).unwrap();
+    std::fs::write(destination.join("failing-init.wasm"), component).unwrap();
+    let package = wirt::package_bytes(MANIFEST, component).unwrap();
+    std::fs::write(
+        destination.join("package.sha256"),
+        wirt::PackageFingerprint::sha256(&package).as_str(),
+    )
+    .unwrap();
+}
+
 /// Bootstraps an `ArclainApp` against an isolated temp profile with the
 /// named plugin fixture installed and a working (dummy-path) 7-Zip --
 /// see `archive_sessions.rs::bootstrap_app`'s identical rationale for the
@@ -232,6 +264,55 @@ fn bootstrap_app_without_plugins(temp: &tempfile::TempDir) -> ArclainApp {
         materialization_cleanup_interval_override: None,
     })
     .expect("bootstrap with no plugins installed must succeed")
+}
+
+fn update_persisted_user_config(
+    temp: &tempfile::TempDir,
+    update: impl FnOnce(&mut arclain_core::UserConfig),
+) {
+    let paths = support::temp_paths(temp.path());
+    let db =
+        arclain_core::config::ConfigDb::open(&support::databases_dir(&paths).join("config.sqlite"))
+            .expect("open isolated config database");
+    let conn = db.into_sqlite_db();
+    conn.with_connection(|conn| {
+        let mut config = arclain_core::UserConfig::load(conn)?.unwrap_or_default();
+        update(&mut config);
+        Ok(config.save(conn)?)
+    })
+    .expect("update isolated user config");
+}
+
+fn persisted_user_config(temp: &tempfile::TempDir) -> arclain_core::UserConfig {
+    let paths = support::temp_paths(temp.path());
+    let db =
+        arclain_core::config::ConfigDb::open(&support::databases_dir(&paths).join("config.sqlite"))
+            .expect("open isolated config database");
+    let conn = db.into_sqlite_db();
+    conn.with_connection(|conn| Ok(arclain_core::UserConfig::load(conn)?))
+        .expect("read isolated user config")
+        .unwrap_or_default()
+}
+
+fn set_user_config_update_failure(temp: &tempfile::TempDir, enabled: bool) {
+    let paths = support::temp_paths(temp.path());
+    let db =
+        arclain_core::config::ConfigDb::open(&support::databases_dir(&paths).join("config.sqlite"))
+            .expect("open isolated config database");
+    let conn = db.into_sqlite_db();
+    conn.with_connection(|conn| {
+        if enabled {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_plugin_uninstall \
+                 BEFORE UPDATE ON user_config \
+                 BEGIN SELECT RAISE(FAIL, 'injected uninstall persistence failure'); END;",
+            )?;
+        } else {
+            conn.execute_batch("DROP TRIGGER fail_plugin_uninstall;")?;
+        }
+        Ok(())
+    })
+    .expect("toggle isolated config failure trigger");
 }
 
 #[test]
@@ -597,6 +678,244 @@ fn install_plugin_refuses_a_second_install_of_the_same_plugin() {
         diagnostic.contains("already installed"),
         "diagnostic was {diagnostic:?}",
     );
+}
+
+#[test]
+fn uninstall_plugin_removes_owned_state_and_invalidates_open_sessions() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+    let package_path = fixture_package_path(&temp, "facade-test-fixture");
+    let preview = runtime
+        .block_on(app.inspect_plugin_package(package_path.clone()))
+        .unwrap();
+    runtime
+        .block_on(app.install_plugin_package(package_path, preview.fingerprint))
+        .unwrap();
+    let session = runtime
+        .block_on(app.open_plugin_session(
+            "FACADE-TEST-FIXTURE".to_string(),
+            PluginExtensionPointDto::MainPage,
+        ))
+        .expect("open session before disabling the plugin");
+    let settings = runtime
+        .block_on(app.plugin_settings("facade-test-fixture".to_string()))
+        .unwrap();
+    runtime
+        .block_on(app.set_plugin_settings(
+            "facade-test-fixture".to_string(),
+            settings.revision,
+            std::collections::BTreeMap::from([("theme".to_string(), "sepia".to_string())]),
+        ))
+        .unwrap();
+    update_persisted_user_config(&temp, |config| {
+        config.set_plugin_proxy_enabled("facade-test-fixture", true);
+        let mut plugin_settings = config.get_all_plugin_settings();
+        plugin_settings.insert(
+            "FACADE-TEST-FIXTURE".to_string(),
+            std::collections::HashMap::from([("legacy".to_string(), "remove".to_string())]),
+        );
+        config.set_all_plugin_settings(&plugin_settings);
+        config.set_plugin_proxy_enabled("FACADE-TEST-FIXTURE", true);
+    });
+    runtime
+        .block_on(app.set_plugin_enabled("facade-test-fixture".to_string(), false))
+        .unwrap();
+
+    runtime
+        .block_on(app.uninstall_plugin("facade-test-fixture".to_string()))
+        .expect("disabled plugin should uninstall");
+
+    let session_error = runtime
+        .block_on(app.plugin_ui_document(session.session_id))
+        .expect_err("uninstall must invalidate sessions owned by the plugin");
+    assert_eq!(session_error.kind, ApplicationErrorKind::NotFound);
+    let close_error = runtime
+        .block_on(app.close_plugin_session(session.session_id))
+        .expect_err("an invalidated case-folded session must no longer be closable");
+    assert_eq!(close_error.kind, ApplicationErrorKind::NotFound);
+    assert!(runtime.block_on(app.plugins()).unwrap().is_empty());
+    assert!(!paths.plugins_dir.join("facade-test-fixture").exists());
+    let persisted = persisted_user_config(&temp);
+    assert!(!persisted
+        .get_all_plugin_settings()
+        .contains_key("facade-test-fixture"));
+    assert!(!persisted
+        .get_all_plugin_settings()
+        .contains_key("FACADE-TEST-FIXTURE"));
+    assert!(!persisted
+        .get_plugin_proxy_settings()
+        .contains_key("facade-test-fixture"));
+    assert!(!persisted
+        .get_plugin_proxy_settings()
+        .contains_key("FACADE-TEST-FIXTURE"));
+    assert!(!persisted
+        .get_enabled_plugins()
+        .iter()
+        .any(|plugin_id| plugin_id == "facade-test-fixture"));
+}
+
+#[test]
+fn uninstall_plugin_rejects_an_enabled_generation_without_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+    let package_path = fixture_package_path(&temp, "ui-demo");
+    let preview = runtime
+        .block_on(app.inspect_plugin_package(package_path.clone()))
+        .unwrap();
+    runtime
+        .block_on(app.install_plugin_package(package_path, preview.fingerprint))
+        .unwrap();
+    let session = runtime
+        .block_on(app.open_plugin_session("ui-demo".to_string(), PluginExtensionPointDto::MainPage))
+        .unwrap();
+
+    let error = runtime
+        .block_on(app.uninstall_plugin("ui-demo".to_string()))
+        .expect_err("enabled plugin must conflict");
+
+    assert_eq!(error.kind, ApplicationErrorKind::Conflict);
+    assert!(paths.plugins_dir.join("ui-demo/package.sha256").is_file());
+    assert!(runtime
+        .block_on(app.plugin_ui_document(session.session_id))
+        .is_ok());
+    assert!(runtime
+        .block_on(app.plugins())
+        .unwrap()
+        .into_iter()
+        .any(|plugin| plugin.id == "ui-demo" && plugin.enabled));
+}
+
+#[test]
+fn uninstall_persistence_failure_leaves_the_generation_registered_and_usable() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+    let package_path = fixture_package_path(&temp, "ui-demo");
+    let preview = runtime
+        .block_on(app.inspect_plugin_package(package_path.clone()))
+        .unwrap();
+    runtime
+        .block_on(app.install_plugin_package(package_path, preview.fingerprint))
+        .unwrap();
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), false))
+        .unwrap();
+    set_user_config_update_failure(&temp, true);
+
+    let error = runtime
+        .block_on(app.uninstall_plugin("ui-demo".to_string()))
+        .expect_err("failed settings publication must abort uninstall");
+
+    assert_eq!(error.kind, ApplicationErrorKind::Persistence);
+    assert!(paths.plugins_dir.join("ui-demo/package.sha256").is_file());
+    assert!(runtime
+        .block_on(app.plugins())
+        .unwrap()
+        .into_iter()
+        .any(|plugin| plugin.id == "ui-demo" && !plugin.enabled));
+
+    set_user_config_update_failure(&temp, false);
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), true))
+        .expect("the retained generation must remain enableable");
+    runtime
+        .block_on(app.open_plugin_session("ui-demo".to_string(), PluginExtensionPointDto::MainPage))
+        .expect("the retained generation must remain usable");
+}
+
+#[test]
+fn uninstall_artifact_failure_restores_the_open_sessions_and_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    let app = bootstrap_app_without_plugins(&temp);
+    let runtime = foreign_runtime();
+    let package_path = fixture_package_path(&temp, "ui-demo");
+    let preview = runtime
+        .block_on(app.inspect_plugin_package(package_path.clone()))
+        .unwrap();
+    runtime
+        .block_on(app.install_plugin_package(package_path, preview.fingerprint))
+        .unwrap();
+    let session = runtime
+        .block_on(app.open_plugin_session("ui-demo".to_string(), PluginExtensionPointDto::MainPage))
+        .unwrap();
+    let settings = runtime
+        .block_on(app.plugin_settings("ui-demo".to_string()))
+        .unwrap();
+    runtime
+        .block_on(app.set_plugin_settings(
+            "ui-demo".to_string(),
+            settings.revision,
+            std::collections::BTreeMap::from([("theme".to_string(), "sepia".to_string())]),
+        ))
+        .unwrap();
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), false))
+        .unwrap();
+    std::fs::write(
+        paths.plugins_dir.join("ui-demo/attacker-owned"),
+        b"preserve",
+    )
+    .unwrap();
+
+    runtime
+        .block_on(app.uninstall_plugin("ui-demo".to_string()))
+        .expect_err("unexpected artifact contents must abort uninstall");
+
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), true))
+        .unwrap();
+    assert!(runtime
+        .block_on(app.plugin_ui_document(session.session_id))
+        .is_ok());
+    assert_eq!(
+        runtime
+            .block_on(app.plugin_settings("ui-demo".to_string()))
+            .unwrap()
+            .values
+            .get("theme")
+            .map(String::as_str),
+        Some("sepia")
+    );
+    assert_eq!(
+        std::fs::read(paths.plugins_dir.join("ui-demo/attacker-owned")).unwrap(),
+        b"preserve"
+    );
+}
+
+#[test]
+fn uninstall_plugin_removes_a_package_that_failed_during_startup() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    std::fs::create_dir_all(&paths.plugins_dir).unwrap();
+    install_failing_init_fixture(&paths.plugins_dir);
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths.clone()),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .unwrap();
+    let runtime = foreign_runtime();
+    let failed = runtime.block_on(app.plugins()).unwrap();
+    assert!(failed
+        .iter()
+        .any(|plugin| plugin.id == "failing-init" && plugin.load_error.is_some()));
+
+    runtime
+        .block_on(app.uninstall_plugin("failing-init".to_string()))
+        .expect("failed-at-startup package should still be uninstallable");
+
+    assert!(!paths.plugins_dir.join("failing-init").exists());
+    assert!(runtime.block_on(app.plugins()).unwrap().is_empty());
 }
 
 #[test]
