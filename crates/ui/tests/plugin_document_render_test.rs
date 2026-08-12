@@ -459,3 +459,59 @@ fn every_text_role_renders_differently() {
         );
     }
 }
+
+/// The scale above is only worth pinning if the renderer reads it. The
+/// retired code decided "this is a heading" from the declared size and then
+/// drew every heading through a widget that sized itself, so a title and a
+/// subtitle came out identical on screen while any table would have called
+/// them distinct. Measuring real consumed height is what separates "the
+/// numbers differ" from "the numbers reach the user".
+///
+/// Only the four roles with distinct sizes are ordered here. Emphasis and
+/// body share a size and differ by weight, which does not move the line
+/// box; `every_text_role_renders_differently` is what covers that pair.
+#[test]
+fn a_larger_role_takes_more_room_on_screen_than_a_smaller_one() {
+    fn consumed(role: TextRole) -> f32 {
+        let mut harness = Harness::new_ui_state(
+            |ui, stage: &mut Stage| {
+                let before = ui.cursor().min.y;
+                let ctx = DocumentContext {
+                    colors: &stage.theme.colors,
+                    shared_state: None,
+                    image_owner: None,
+                    extent: stage.extent,
+                };
+                let _ = render_document(ui, &stage.document, ctx);
+                stage.consumed = ui.cursor().min.y - before;
+            },
+            Stage::new(document(vec![node(
+                "text",
+                PluginUiNodeKind::Label {
+                    text: "Ay".to_string(),
+                    role,
+                },
+            )])),
+        );
+        harness.run();
+        harness.state().consumed
+    }
+
+    let title = consumed(TextRole::Title);
+    let subtitle = consumed(TextRole::Subtitle);
+    let body = consumed(TextRole::Body);
+    let caption = consumed(TextRole::Caption);
+
+    assert!(
+        title > subtitle,
+        "a title must outgrow a subtitle, got {title} and {subtitle}"
+    );
+    assert!(
+        subtitle > body,
+        "a subtitle must outgrow body text, got {subtitle} and {body}"
+    );
+    assert!(
+        body > caption,
+        "body text must outgrow a caption, got {body} and {caption}"
+    );
+}
