@@ -87,6 +87,8 @@ pub(crate) struct QuarantineSnapshot {
 pub struct QuarantineLedger {
     root: Arc<TrustedPluginRoot>,
     state: Mutex<LedgerState>,
+    #[cfg(test)]
+    next_write_failure: Mutex<Option<std::io::ErrorKind>>,
 }
 
 impl std::fmt::Debug for QuarantineLedger {
@@ -101,7 +103,7 @@ impl std::fmt::Debug for QuarantineLedger {
 impl QuarantineLedger {
     pub fn open(root: Arc<TrustedPluginRoot>) -> Result<Self> {
         root.revalidate_current_path()
-            .map_err(|_| ledger_io_error("opened"))?;
+            .map_err(|error| ledger_root_error("opened", error))?;
         let persisted = read_ledger(&root)?;
         Ok(Self {
             root,
@@ -109,7 +111,14 @@ impl QuarantineLedger {
                 persisted,
                 runtime_violations: BTreeMap::new(),
             }),
+            #[cfg(test)]
+            next_write_failure: Mutex::new(None),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_write_with(&self, kind: std::io::ErrorKind) {
+        *self.next_write_failure.lock() = Some(kind);
     }
 
     pub fn state(&self, fingerprint: &PackageFingerprint) -> QuarantineState {
@@ -167,7 +176,7 @@ impl QuarantineLedger {
             last_reason: reason.to_owned(),
         };
         next.insert(key.clone(), record.clone());
-        write_ledger(&self.root, &next)?;
+        self.write_records(&next)?;
         state.persisted = next;
         state.runtime_violations.insert(key, reason.to_owned());
         Ok(record)
@@ -186,7 +195,7 @@ impl QuarantineLedger {
         };
         let mut next = state.persisted.clone();
         if next.remove(key).is_some() {
-            write_ledger(&self.root, &next)?;
+            self.write_records(&next)?;
             state.persisted = next;
         }
         state.runtime_violations.remove(key);
@@ -209,19 +218,30 @@ impl QuarantineLedger {
                 next.remove(&key);
             }
         }
-        if next != state.persisted {
-            write_ledger(&self.root, &next)?;
-            state.persisted = next;
-        }
         match snapshot.runtime_reason {
             Some(reason) => {
-                state.runtime_violations.insert(key, reason);
+                state.runtime_violations.insert(key.clone(), reason);
             }
             None => {
                 state.runtime_violations.remove(&key);
             }
         }
+        if next != state.persisted {
+            // Restore the in-process quarantine before touching durable state.
+            // If the write fails, callers keep the artifact hidden and this
+            // process must still reject attempts to enable the generation.
+            state.persisted = next.clone();
+            self.write_records(&next)?;
+        }
         Ok(())
+    }
+
+    fn write_records(&self, records: &BTreeMap<String, QuarantineRecord>) -> Result<()> {
+        #[cfg(test)]
+        if let Some(kind) = self.next_write_failure.lock().take() {
+            return Err(ledger_io_error("written", std::io::Error::from(kind)));
+        }
+        write_ledger(&self.root, records)
     }
 
     pub fn clear_runtime_violation(&self, fingerprint: &PackageFingerprint) {
@@ -266,7 +286,7 @@ fn read_ledger(root: &TrustedPluginRoot) -> Result<BTreeMap<String, QuarantineRe
     let metadata = match root.dir().symlink_metadata(LEDGER_FILE) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(_) => return Err(ledger_io_error("inspected")),
+        Err(error) => return Err(ledger_io_error("inspected", error)),
     };
     if !metadata.is_file()
         || metadata.file_type().is_symlink()
@@ -280,11 +300,11 @@ fn read_ledger(root: &TrustedPluginRoot) -> Result<BTreeMap<String, QuarantineRe
     let file = root
         .dir()
         .open_with(LEDGER_FILE, &options)
-        .map_err(|_| ledger_io_error("opened"))?;
+        .map_err(|error| ledger_io_error("opened", error))?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take((MAX_LEDGER_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|_| ledger_io_error("read"))?;
+        .map_err(|error| ledger_io_error("read", error))?;
     if bytes.len() > MAX_LEDGER_BYTES {
         return Err(invalid_ledger());
     }
@@ -310,7 +330,7 @@ fn write_ledger(
         return Err(invalid_ledger());
     }
     root.revalidate_current_path()
-        .map_err(|_| ledger_io_error("written"))?;
+        .map_err(|error| ledger_root_error("written", error))?;
 
     let temp_name = create_temp_name();
     let result = (|| {
@@ -322,16 +342,17 @@ fn write_ledger(
         let mut file = root
             .dir()
             .open_with(&temp_name, &options)
-            .map_err(|_| ledger_io_error("created"))?;
+            .map_err(|error| ledger_io_error("created", error))?;
         file.write_all(&bytes)
-            .map_err(|_| ledger_io_error("written"))?;
-        file.sync_all().map_err(|_| ledger_io_error("flushed"))?;
+            .map_err(|error| ledger_io_error("written", error))?;
+        file.sync_all()
+            .map_err(|error| ledger_io_error("flushed", error))?;
         drop(file);
         root.revalidate_current_path()
-            .map_err(|_| ledger_io_error("replaced"))?;
+            .map_err(|error| ledger_root_error("replaced", error))?;
         root.dir()
             .rename(&temp_name, root.dir(), LEDGER_FILE)
-            .map_err(|_| ledger_io_error("replaced"))
+            .map_err(|error| ledger_io_error("replaced", error))
     })();
     if result.is_err() {
         let _ = root.dir().remove_file(&temp_name);
@@ -351,6 +372,16 @@ fn invalid_ledger() -> PluginError {
     PluginError::LoadError("plugin quarantine ledger is invalid".to_string())
 }
 
-fn ledger_io_error(action: &str) -> PluginError {
-    PluginError::LoadError(format!("plugin quarantine ledger could not be {action}"))
+fn ledger_io_error(action: &str, source: std::io::Error) -> PluginError {
+    PluginError::Io(std::io::Error::new(
+        source.kind(),
+        format!("plugin quarantine ledger could not be {action}"),
+    ))
+}
+
+fn ledger_root_error(action: &str, source: PluginError) -> PluginError {
+    match source {
+        PluginError::Io(source) => ledger_io_error(action, source),
+        _ => PluginError::LoadError(format!("plugin quarantine ledger could not be {action}")),
+    }
 }

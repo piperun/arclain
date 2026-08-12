@@ -2399,6 +2399,90 @@ fn uninstall_late_directory_failure_restores_every_owned_file() {
 }
 
 #[test]
+fn uninstall_quarantine_restore_failure_keeps_the_package_hidden_and_blocked() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let package_path = temp_dir.path().join("ui-demo.wirt");
+    let fingerprint = ui_demo_package(&package_path);
+    let mut manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
+    manager.disable_plugin("ui-demo").unwrap();
+    manager
+        .quarantine
+        .record_failed_retry(&fingerprint, "resource limit")
+        .unwrap();
+    let quarantine = manager.quarantine.clone();
+    manager.set_uninstall_after_files_removed_hook(Box::new(move || {
+        quarantine.fail_next_write_with(std::io::ErrorKind::PermissionDenied);
+        Err(std::io::Error::other("injected directory deletion failure"))
+    }));
+
+    let error = manager
+        .uninstall_package("ui-demo")
+        .expect_err("failed quarantine restoration must fail closed");
+
+    assert!(matches!(
+        error,
+        PluginError::Io(ref source)
+            if source.kind() == std::io::ErrorKind::PermissionDenied
+    ));
+    let message = error.to_string();
+    assert!(message.contains("artifact deletion"));
+    assert!(message.contains("quarantine restoration"));
+    assert!(
+        !plugins_dir.join("ui-demo").exists(),
+        "a package without restored quarantine must remain hidden"
+    );
+    let staged = std::fs::read_dir(&plugins_dir)
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".arclain-plugin-uninstall-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(staged.len(), 1, "failed cleanup must retain one tombstone");
+    assert!(matches!(
+        manager.quarantine.state(&fingerprint),
+        crate::QuarantineState::Retryable(ref record)
+            if record.failed_retries == 1 && record.last_reason == "resource limit"
+    ));
+    assert!(matches!(
+        manager.enable_plugin("ui-demo"),
+        Err(PluginError::Unavailable(_))
+    ));
+}
+
+#[test]
+fn quarantine_write_failure_preserves_the_io_error_kind_without_paths() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    let fingerprint = wirt::PackageFingerprint::sha256(b"quarantine-test");
+    manager
+        .quarantine
+        .fail_next_write_with(std::io::ErrorKind::PermissionDenied);
+
+    let error = manager
+        .quarantine
+        .record_failed_retry(&fingerprint, "resource limit")
+        .expect_err("the injected ledger write must fail");
+
+    assert!(matches!(
+        error,
+        PluginError::Io(ref source)
+            if source.kind() == std::io::ErrorKind::PermissionDenied
+    ));
+    let diagnostic = error.to_string();
+    assert!(diagnostic.contains("plugin quarantine ledger could not be written"));
+    assert!(!diagnostic.contains(&plugins_dir.display().to_string()));
+}
+
+#[test]
 fn uninstall_failed_reconstruction_never_republishes_a_partial_package() {
     let temp_dir = TempDir::new().unwrap();
     let plugins_dir = temp_dir.path().join("plugins");

@@ -62,6 +62,22 @@ fn publish_error(destination: &Path, error: std::io::Error) -> PluginError {
     }
 }
 
+fn quarantine_rollback_error(
+    deletion_error: PluginError,
+    restoration_error: PluginError,
+) -> PluginError {
+    let kind = match &restoration_error {
+        PluginError::Io(error) => error.kind(),
+        _ => std::io::ErrorKind::Other,
+    };
+    PluginError::Io(std::io::Error::new(
+        kind,
+        format!(
+            "Artifact deletion failed and quarantine restoration failed; the installed path was not republished and the package remains under hidden uninstall staging (artifact deletion: {deletion_error}; quarantine restoration: {restoration_error})"
+        ),
+    ))
+}
+
 fn validate_guest_metadata(manifest: &PluginManifest, metadata: &PluginMetadata) -> Result<()> {
     let expected = &manifest.plugin;
     let mismatch = if metadata.id != expected.id {
@@ -354,7 +370,7 @@ impl StagedPluginRemoval {
         Ok(())
     }
 
-    fn commit(mut self) -> Result<()> {
+    fn commit(&mut self) -> Result<()> {
         let expected = installed_package_file_names(&self.identity_key);
         let deletion = (|| -> Result<()> {
             #[cfg(not(windows))]
@@ -2493,8 +2509,12 @@ impl PluginManager {
 
         let quarantine_snapshot = self.quarantine.remove(&registered.2)?;
         if let Err(error) = removal.commit() {
-            self.quarantine
-                .restore(&registered.2, quarantine_snapshot)?;
+            if let Err(restoration_error) =
+                self.quarantine.restore(&registered.2, quarantine_snapshot)
+            {
+                removal.rollback_safe = false;
+                return Err(quarantine_rollback_error(error, restoration_error));
+            }
             return Err(error);
         }
 
