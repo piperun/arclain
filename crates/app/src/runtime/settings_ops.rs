@@ -1465,18 +1465,23 @@ pub(super) async fn run_plugin_settings(
 ) -> Result<PluginSettingsSnapshot, ApplicationError> {
     let _write_guard = inner.settings_write_lock.lock().await;
     let manager = crate::plugins::require_manager(inner.plugin_manager())?;
-    let values = {
+    let (canonical_id, values) = {
         let manager = manager.lock();
         if manager.get_plugin_instance(&plugin_id).is_none() {
             return Err(crate::plugins::plugin_not_found(&plugin_id));
         }
-        manager
+        let canonical_id = manager
+            .get_plugin_metadata(&plugin_id)
+            .expect("a loaded plugin has metadata")
+            .id;
+        let values = manager
             .get_settings_for(&plugin_id)
-            .ok_or_else(|| crate::plugins::plugin_not_found(&plugin_id))?
+            .ok_or_else(|| crate::plugins::plugin_not_found(&plugin_id))?;
+        (canonical_id, values)
     };
     let revision = inner.session.mutable.read().revision;
     Ok(PluginSettingsSnapshot {
-        plugin_id,
+        plugin_id: canonical_id,
         revision,
         values: values.into_iter().collect(),
     })
@@ -1500,14 +1505,19 @@ pub(super) async fn run_set_plugin_settings(
     let validated = arclain_plugins::validate_plugin_settings(values.clone())
         .map_err(plugin_settings_validation_error)?;
     let manager = crate::plugins::require_manager(inner.plugin_manager())?;
-    let replacement = {
+    let (canonical_id, replacement) = {
         let manager = manager.lock();
         if manager.get_plugin_instance(&plugin_id).is_none() {
             return Err(crate::plugins::plugin_not_found(&plugin_id));
         }
-        manager
-            .prepare_plugin_settings_replacement(&plugin_id)
-            .map_err(|error| plugin_settings_activation_error(&plugin_id, error))?
+        let canonical_id = manager
+            .get_plugin_metadata(&plugin_id)
+            .expect("a loaded plugin has metadata")
+            .id;
+        let replacement = manager
+            .prepare_plugin_settings_replacement(&canonical_id)
+            .map_err(|error| plugin_settings_activation_error(&canonical_id, error))?;
+        (canonical_id, replacement)
     };
     let config_service = inner
         .core_services()
@@ -1528,7 +1538,7 @@ pub(super) async fn run_set_plugin_settings(
         .await
         .map_err(internal_join_error)??;
     let mut candidate = original.clone();
-    candidate.set_plugin_settings(&plugin_id, HashMap::from_iter(values.clone()));
+    candidate.set_plugin_settings(&canonical_id, HashMap::from_iter(values.clone()));
 
     let persisted = candidate.clone();
     let save_config_service = config_service.clone();
@@ -1551,7 +1561,7 @@ pub(super) async fn run_set_plugin_settings(
             .spawn_blocking(move || rollback_service.save_user_config(&original))
             .await;
         match rollback {
-            Ok(Ok(())) => return Err(plugin_settings_activation_error(&plugin_id, error)),
+            Ok(Ok(())) => return Err(plugin_settings_activation_error(&canonical_id, error)),
             Ok(Err(rollback_error)) => {
                 return Err(persistence_error(
                     "restoring plugin settings after live activation failed",
@@ -1566,7 +1576,7 @@ pub(super) async fn run_set_plugin_settings(
     mutable.user_config = candidate;
     mutable.revision += 1;
     Ok(PluginSettingsSnapshot {
-        plugin_id,
+        plugin_id: canonical_id,
         revision: mutable.revision,
         values,
     })

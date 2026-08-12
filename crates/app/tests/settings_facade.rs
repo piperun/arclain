@@ -298,6 +298,48 @@ fn plugin_settings_reads_the_live_bounded_map_and_a_successful_cas_returns_a_fre
     );
 }
 
+#[test]
+fn case_variant_plugin_settings_use_one_canonical_persisted_identity() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app_with_ui_demo(&temp);
+
+    let initial = runtime
+        .block_on(app.plugin_settings("ui-demo".to_string()))
+        .unwrap();
+    let canonical = runtime
+        .block_on(app.set_plugin_settings(
+            "ui-demo".to_string(),
+            initial.revision,
+            BTreeMap::from([("source".to_string(), "canonical".to_string())]),
+        ))
+        .unwrap();
+    let case_variant = runtime
+        .block_on(app.plugin_settings("UI-DEMO".to_string()))
+        .expect("identity lookup is case-insensitive");
+    assert_eq!(case_variant.plugin_id, "ui-demo");
+    let updated = runtime
+        .block_on(app.set_plugin_settings(
+            case_variant.plugin_id,
+            canonical.revision,
+            BTreeMap::from([("source".to_string(), "variant".to_string())]),
+        ))
+        .unwrap();
+    assert_eq!(updated.plugin_id, "ui-demo");
+
+    runtime.block_on(app.shutdown()).unwrap();
+    drop(app);
+    let restarted = rebootstrap_app_with_ui_demo(&temp);
+    let persisted = runtime
+        .block_on(restarted.plugin_settings("ui-demo".to_string()))
+        .expect("canonical identity must leave the plugin manager available after restart");
+    assert_eq!(persisted.plugin_id, "ui-demo");
+    assert_eq!(
+        persisted.values.get("source").map(String::as_str),
+        Some("variant")
+    );
+}
+
 /// Catches a stale writer that overwrites the accepted settings either on disk
 /// or in the running guest instance.
 #[test]
