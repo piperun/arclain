@@ -94,7 +94,7 @@ manifest before initialization.
 The component is parsed and type-validated without Wasmtime compilation. Its
 top-level contract is restricted to:
 
-- Wirt `host`, `meta`, `rules`, and `ui` interfaces at `0.2.0`; a component
+- Wirt `host`, `meta`, `rules`, and `ui` interfaces at `0.3.0`; a component
   may import only the canonical members it uses.
 - The fixed WASI Preview 2 adapter interfaces required by Rust components:
   `io/poll`, `clocks/monotonic-clock`, `io/error`, `io/streams`, the CLI
