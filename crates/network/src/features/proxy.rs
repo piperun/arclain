@@ -682,6 +682,29 @@ mod tests {
     }
 
     #[test]
+    fn proxy_authority_matrix_keeps_ipv4_strict_without_rewriting_it() {
+        let cases = [
+            ("127.0.0.1:9050", Some("127.0.0.1:9050")),
+            (" 127.0.0.1:9050", None),
+            ("127.0.0.1:9050 ", None),
+            ("127.0.0.1:0", None),
+            ("127.0.0.1", None),
+            ("127.0.0.1:9050/path", None),
+            ("127.0.0.1:9050?query", None),
+            ("user:password@127.0.0.1:9050", None),
+        ];
+
+        for (address, expected_authority) in cases {
+            let parsed = parse_proxy_authority(address).map(|parsed| parsed.authority);
+            assert_eq!(
+                parsed.as_deref().ok(),
+                expected_authority,
+                "proxy authority classification changed for {address:?}"
+            );
+        }
+    }
+
+    #[test]
     fn failed_socks_handshake_and_invalid_address_never_expose_credentials() {
         fn accept_before(listener: &TcpListener, deadline: Instant) -> TcpStream {
             loop {

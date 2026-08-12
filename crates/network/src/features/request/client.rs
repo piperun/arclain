@@ -1894,7 +1894,7 @@ mod proxy_routing_atomicity_tests {
     use crate::features::proxy::ProxyConfig;
     use crate::features::request::PluginNetworkPolicy;
     use crate::features::whitelist::DomainWhitelist;
-    use crate::{HttpRequest, RequestStatus};
+    use crate::{HttpError, HttpRequest, RequestStatus};
     use parking_lot::RwLock;
     use std::collections::HashMap;
     use std::sync::{mpsc, Arc};
@@ -2243,5 +2243,129 @@ mod proxy_routing_atomicity_tests {
             HashMap::from([("routing-race-plugin".to_string(), false)]),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn composed_default_routes_and_sparse_overrides_remain_exact() {
+        let client = AsyncHttpClient::new(
+            Handle::current(),
+            Arc::new(RwLock::new(DomainWhitelist::default())),
+            None,
+        );
+        client.apply_proxy_routing(
+            Some(ProxyConfig {
+                enabled: true,
+                address: "127.0.0.1:9050".to_string(),
+                username: None,
+                password: None,
+            }),
+            HashMap::from([
+                ("dlsite".to_string(), true),
+                ("dlsite-api".to_string(), false),
+                ("custom".to_string(), true),
+            ]),
+        );
+
+        assert!(
+            client.should_use_proxy_for_plugin("dlsite"),
+            "the caller-composed global default route must remain enabled"
+        );
+        assert!(
+            !client.should_use_proxy_for_plugin("dlsite-api"),
+            "an explicit sparse opt-out must override the caller-composed default"
+        );
+        assert!(
+            client.should_use_proxy_for_plugin("custom"),
+            "a sparse opt-in must remain enabled"
+        );
+        assert!(
+            !client.should_use_proxy_for_plugin("unknown"),
+            "plugins absent from the effective route map must remain direct"
+        );
+    }
+
+    #[tokio::test]
+    async fn checked_wirt_plugin_guards_remain_enforced_with_proxy_routing_enabled() {
+        const PLUGIN_ID: &str = "wirt-characterization-plugin";
+        const HOST: &str = "pinned.test";
+        const PORT: u16 = 8443;
+        let whitelist = Arc::new(RwLock::new(DomainWhitelist::default()));
+        let client = AsyncHttpClient::new(Handle::current(), whitelist.clone(), None);
+        client.apply_proxy_routing(
+            Some(ProxyConfig {
+                enabled: true,
+                address: "127.0.0.1:9050".to_string(),
+                username: None,
+                password: None,
+            }),
+            HashMap::from([(PLUGIN_ID.to_string(), true)]),
+        );
+        client.configure_plugin(
+            PLUGIN_ID,
+            PluginNetworkPolicy {
+                network_enabled: false,
+                requests_per_minute: 1,
+            },
+        );
+        assert!(matches!(
+            client.request_for_plugin(
+                PLUGIN_ID,
+                HttpRequest::get(format!("https://{HOST}:{PORT}/"))
+            ),
+            Err(HttpError::PluginNetworkDisabled { .. })
+        ));
+
+        client.configure_plugin(
+            PLUGIN_ID,
+            PluginNetworkPolicy {
+                network_enabled: true,
+                requests_per_minute: 1,
+            },
+        );
+        client.set_plugin_dns_answers_for_test(
+            HOST,
+            vec![vec!["8.8.8.8:1"
+                .parse()
+                .expect("parse pinned public address")]],
+        );
+        assert!(matches!(
+            client
+                .authorize_plugin_target_for_test(
+                    PLUGIN_ID,
+                    url::Url::parse("http://127.0.0.1/").expect("parse private literal URL"),
+                )
+                .await,
+            Err(HttpError::UnsafeResolvedAddress { .. })
+        ));
+        let url = url::Url::parse(&format!("https://{HOST}:{PORT}/resource"))
+            .expect("parse checked plugin URL");
+        assert!(matches!(
+            client
+                .authorize_plugin_target_for_test(PLUGIN_ID, url.clone())
+                .await,
+            Err(HttpError::DomainNotWhitelisted { .. })
+        ));
+
+        whitelist.write().approve(PLUGIN_ID, HOST);
+        let target = client
+            .authorize_plugin_target_for_test(PLUGIN_ID, url)
+            .await
+            .expect("approved checked target should retain its pinned DNS answer");
+        assert_eq!(
+            target.resolved,
+            vec!["8.8.8.8:8443"
+                .parse()
+                .expect("parse expected pinned address")]
+        );
+        assert!(matches!(
+            client
+                .authorize_plugin_target_for_test(
+                    PLUGIN_ID,
+                    url::Url::parse(&format!("https://{HOST}:{PORT}/second"))
+                        .expect("parse second checked plugin URL"),
+                )
+                .await,
+            Err(HttpError::RateLimited { .. })
+        ));
     }
 }
