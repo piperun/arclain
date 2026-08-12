@@ -1560,7 +1560,17 @@ pub(super) async fn run_set_plugin_settings(
         .await
         .map_err(internal_join_error)??;
     let mut candidate = original.clone();
-    candidate.set_plugin_settings(&canonical_id, HashMap::from_iter(values.clone()));
+    let canonical_key = wirt::PluginIdentityKey::parse(&canonical_id)
+        .expect("manager-owned plugin IDs have already been validated");
+    let mut plugin_settings = candidate.get_all_plugin_settings();
+    plugin_settings.retain(
+        |candidate_id, _| match wirt::PluginIdentityKey::parse(candidate_id) {
+            Ok(candidate_key) => candidate_key != canonical_key,
+            Err(_) => true,
+        },
+    );
+    plugin_settings.insert(canonical_id.clone(), HashMap::from_iter(values.clone()));
+    candidate.set_all_plugin_settings(&plugin_settings);
 
     let persisted = candidate.clone();
     let save_config_service = config_service.clone();

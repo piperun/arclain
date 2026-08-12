@@ -197,6 +197,23 @@ fn rebootstrap_app_with_ui_demo(temp: &tempfile::TempDir) -> ArclainApp {
     .expect("rebootstrap with UI-demo fixture must succeed")
 }
 
+fn update_persisted_user_config(
+    temp: &tempfile::TempDir,
+    update: impl FnOnce(&mut arclain_core::UserConfig),
+) {
+    let paths = support::temp_paths(temp.path());
+    let db =
+        arclain_core::config::ConfigDb::open(&support::databases_dir(&paths).join("config.sqlite"))
+            .expect("open isolated config database");
+    let conn = db.into_sqlite_db();
+    conn.with_connection(|conn| {
+        let mut config = arclain_core::UserConfig::load(conn)?.unwrap_or_default();
+        update(&mut config);
+        Ok(config.save(conn)?)
+    })
+    .expect("update isolated user config");
+}
+
 fn keep_archive_patch() -> ArchiveSettingsPatch {
     ArchiveSettingsPatch {
         backend_mode: PatchValue::Keep,
@@ -314,6 +331,12 @@ fn case_variant_plugin_settings_use_one_canonical_persisted_identity() {
             BTreeMap::from([("source".to_string(), "canonical".to_string())]),
         ))
         .unwrap();
+    update_persisted_user_config(&temp, |config| {
+        config.set_plugin_settings(
+            "UI-DEMO",
+            std::collections::HashMap::from([("source".to_string(), "legacy".to_string())]),
+        );
+    });
     let case_variant = runtime
         .block_on(app.plugin_settings("UI-DEMO".to_string()))
         .expect("identity lookup is case-insensitive");
