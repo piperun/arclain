@@ -2285,7 +2285,7 @@ mod proxy_routing_atomicity_tests {
     }
 
     #[tokio::test]
-    async fn checked_wirt_plugin_guards_remain_enforced_with_proxy_routing_enabled() {
+    async fn checked_wirt_plugin_guard_layer_remains_enforced_with_configured_proxy_route() {
         const PLUGIN_ID: &str = "wirt-characterization-plugin";
         const HOST: &str = "pinned.test";
         const PORT: u16 = 8443;
@@ -2300,6 +2300,15 @@ mod proxy_routing_atomicity_tests {
             }),
             HashMap::from([(PLUGIN_ID.to_string(), true)]),
         );
+        assert!(
+            client.should_use_proxy_for_plugin(PLUGIN_ID),
+            "the Wirt guard characterization requires a configured proxy route"
+        );
+
+        // This deliberately characterizes authorization rather than proxy
+        // traversal, so the Wirt guard layer can remain stable while the
+        // transport implementation is replaced. The atomic checked-request
+        // tests above cover real SOCKS routing and activation.
         client.configure_plugin(
             PLUGIN_ID,
             PluginNetworkPolicy {
