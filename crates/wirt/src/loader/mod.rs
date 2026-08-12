@@ -375,7 +375,7 @@ fn is_canonical_hostname(domain: &str) -> bool {
 pub(crate) fn validate_manifest(manifest: &PluginManifest) -> Result<()> {
     if manifest.wirt.abi != WIRT_ABI_VERSION {
         return Err(PluginError::Unsupported(format!(
-            "this plugin declares Wirt ABI {found:?}; this host speaks {WIRT_ABI_VERSION}. \
+            "this plugin declares Wirt ABI {found}; this host speaks {WIRT_ABI_VERSION}. \
              Rebuild it against the current wirt-sdk/template and republish.",
             found = bounded_name(&manifest.wirt.abi),
         )));

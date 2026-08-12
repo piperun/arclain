@@ -97,10 +97,16 @@ pub fn package_bytes(manifest: &[u8], component: &[u8]) -> Result<Vec<u8>> {
     validate_manifest(&parsed)?;
     let contract =
         inspect_component_contract(component).map_err(|error| package_error(error.to_string()))?;
+    // Unreachable today: `validate_manifest` above forces `parsed.wirt.abi` to
+    // equal `WIRT_ABI_VERSION`, and `ComponentContract::abi` is stamped with
+    // that same constant rather than read out of the component, so the two
+    // sides cannot differ. Kept as a guard for the day the contract's ABI is
+    // derived from the component's own imports; the message says the contract
+    // "reports" a version for the same reason — nothing parses one yet.
     if contract.abi != parsed.wirt.abi {
         return Err(package_error(format!(
-            "plugin.toml declares Wirt ABI {manifest_abi:?} but the component imports \
-             {component_abi:?}; the package is inconsistent with itself",
+            "plugin.toml declares Wirt ABI {manifest_abi} but the component's contract \
+             reports {component_abi}; the package is inconsistent with itself",
             manifest_abi = bounded_name(&parsed.wirt.abi),
             component_abi = bounded_name(&contract.abi),
         )));
@@ -174,17 +180,25 @@ pub fn read_package_bytes(bytes: &[u8]) -> Result<ValidatedPackage> {
     }
     let contract =
         inspect_component_contract(&component).map_err(|error| package_error(error.to_string()))?;
+    // Unreachable today, for the same two reasons as the check in
+    // `package_bytes`: `validate_manifest` at the top of this function forces
+    // `manifest.wirt.abi` to equal `WIRT_ABI_VERSION`, and
+    // `ComponentContract::abi` is stamped with that constant rather than
+    // parsed from the component.
     if contract.abi != manifest.wirt.abi {
         return Err(package_error(format!(
-            "plugin.toml declares Wirt ABI {manifest_abi:?} but the component imports \
-             {component_abi:?}; the package is inconsistent with itself",
+            "plugin.toml declares Wirt ABI {manifest_abi} but the component's contract \
+             reports {component_abi}; the package is inconsistent with itself",
             manifest_abi = bounded_name(&manifest.wirt.abi),
             component_abi = bounded_name(&contract.abi),
         )));
     }
+    // Unreachable today: `validate_manifest` above already refused any
+    // manifest whose ABI is not `WIRT_ABI_VERSION`, and it is the loader's
+    // refusal — not this one — that a stale package actually meets.
     if manifest.wirt.abi != WIRT_ABI_VERSION {
         return Err(package_error(format!(
-            "this plugin is built for Wirt ABI {found:?}; this host speaks {WIRT_ABI_VERSION}. \
+            "this plugin declares Wirt ABI {found}; this host speaks {WIRT_ABI_VERSION}. \
              Rebuild it against the current wirt-sdk/template and republish.",
             found = bounded_name(&manifest.wirt.abi),
         )));
