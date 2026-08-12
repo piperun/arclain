@@ -180,14 +180,15 @@ fn starter_round_trip_is_deterministic_and_failures_leave_no_output() {
     assert_success(run(&["new", project.to_str().unwrap()]));
     assert_success(run_in(&project, &["build"]));
 
+    let reported_abi = format!("ABI: {}", wirt::WIRT_ABI_VERSION);
     let project_validation = assert_success(run_in(&project, &["validate", "."]));
-    assert!(String::from_utf8_lossy(&project_validation.stdout).contains("ABI: 0.2.0"));
+    assert!(String::from_utf8_lossy(&project_validation.stdout).contains(&reported_abi));
 
     assert_success(run_in(&project, &["package"]));
     let default_package = project.join("wirt-starter-0.1.0.wirt");
     assert!(default_package.is_file());
     let package_validation = assert_success(run(&["validate", default_package.to_str().unwrap()]));
-    assert!(String::from_utf8_lossy(&package_validation.stdout).contains("ABI: 0.2.0"));
+    assert!(String::from_utf8_lossy(&package_validation.stdout).contains(&reported_abi));
 
     let custom_package = project.join("custom-output.wirt");
     assert_success(run_in(
@@ -201,11 +202,15 @@ fn starter_round_trip_is_deterministic_and_failures_leave_no_output() {
 
     let manifest_path = project.join("plugin.toml");
     let valid_manifest = fs::read_to_string(&manifest_path).unwrap();
-    fs::write(
-        &manifest_path,
-        valid_manifest.replace("abi = \"0.1.0\"", "abi = \"0.2.0\""),
-    )
-    .unwrap();
+    let stale_manifest = valid_manifest.replace(
+        &format!("abi = \"{}\"", wirt::WIRT_ABI_VERSION),
+        "abi = \"0.1.0\"",
+    );
+    assert_ne!(
+        stale_manifest, valid_manifest,
+        "the starter manifest no longer declares the host ABI"
+    );
+    fs::write(&manifest_path, &stale_manifest).unwrap();
     let mismatch = assert_failure(run_in(&project, &["validate", "."]));
     assert!(String::from_utf8_lossy(&mismatch.stderr).contains("unsupported Wirt ABI"));
 
