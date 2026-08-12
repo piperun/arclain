@@ -1161,11 +1161,19 @@ fn committed_wal_and_sidecars_are_read_without_creation_or_mutation() {
     let sqlite_before = sqlite_source_hashes(&profile);
     assert!(sqlite_before.values().all(Option::is_some));
 
-    let inspected = inspect_legacy_network_settings(&profile)
-        .expect("read committed WAL state")
-        .expect("valid user_config row exists");
-
-    assert_eq!(inspected.socks5_address.as_deref(), Some("wal-proxy:1080"));
+    #[cfg(windows)]
+    {
+        let inspected = inspect_legacy_network_settings(&profile)
+            .expect("read committed WAL state")
+            .expect("valid user_config row exists");
+        assert_eq!(inspected.socks5_address.as_deref(), Some("wal-proxy:1080"));
+    }
+    #[cfg(not(windows))]
+    {
+        let error = inspect_legacy_network_settings(&profile)
+            .expect_err("uncoordinated read-only WAL inspection must fail closed");
+        assert_eq!(error.kind, ApplicationErrorKind::Backend);
+    }
     assert_eq!(profile_hashes(&profile), before);
     assert_eq!(sqlite_source_hashes(&profile), sqlite_before);
 

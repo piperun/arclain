@@ -258,6 +258,32 @@ struct HashedFileRead {
     captured: Option<Zeroizing<Vec<u8>>>,
 }
 
+fn zeroizing_extend(bytes: &mut Zeroizing<Vec<u8>>, data: &[u8]) {
+    let new_len = bytes
+        .len()
+        .checked_add(data.len())
+        .expect("the bounded source length fits usize");
+    if new_len <= bytes.capacity() {
+        bytes.extend_from_slice(data);
+        return;
+    }
+
+    let new_capacity = next_zeroizing_capacity(bytes.capacity(), new_len, SOURCE_LIMIT as usize);
+    let mut replacement = Zeroizing::new(Vec::with_capacity(new_capacity));
+    replacement.extend_from_slice(bytes);
+    replacement.extend_from_slice(data);
+    bytes.zeroize();
+    std::mem::swap(bytes, &mut replacement);
+}
+
+fn next_zeroizing_capacity(current: usize, required: usize, limit: usize) -> usize {
+    current
+        .max(COPY_CHUNK)
+        .saturating_mul(2)
+        .max(required)
+        .min(limit)
+}
+
 fn read_and_hash(file: &File, capture: bool) -> Result<HashedFileRead, LegacyInspectionError> {
     let mut reader = file
         .try_clone()
@@ -267,7 +293,20 @@ fn read_and_hash(file: &File, capture: bool) -> Result<HashedFileRead, LegacyIns
         .map_err(|error| io_error(error, "legacy storage could not be read"))?;
     let mut hasher = Sha256::new();
     let mut total = 0_u64;
-    let mut captured = capture.then(|| Zeroizing::new(Vec::new()));
+    let mut captured = if capture {
+        let source_len = file
+            .metadata()
+            .map_err(|error| io_error(error, "legacy storage metadata could not be read"))?
+            .len();
+        if source_len > SOURCE_LIMIT {
+            return Err(backend_error(
+                "legacy storage source exceeds the 64 MiB size limit",
+            ));
+        }
+        Some(Zeroizing::new(Vec::with_capacity(source_len as usize)))
+    } else {
+        None
+    };
     let mut chunk = Zeroizing::new(vec![0_u8; COPY_CHUNK]);
     loop {
         let read = reader
@@ -286,7 +325,7 @@ fn read_and_hash(file: &File, capture: bool) -> Result<HashedFileRead, LegacyIns
         }
         hasher.update(&chunk[..read]);
         if let Some(bytes) = captured.as_mut() {
-            bytes.extend_from_slice(&chunk[..read]);
+            zeroizing_extend(bytes, &chunk[..read]);
         }
     }
     Ok(HashedFileRead {
@@ -369,8 +408,11 @@ impl StorageBackend for CappedZeroizingMemoryBackend {
         if new_len < bytes.len() {
             bytes[new_len..].zeroize();
             bytes.truncate(new_len);
-        } else {
-            bytes.resize(new_len, 0);
+        } else if new_len > bytes.len() {
+            let mut replacement = Zeroizing::new(vec![0; new_len]);
+            replacement[..bytes.len()].copy_from_slice(&bytes);
+            bytes.zeroize();
+            std::mem::swap(&mut *bytes, &mut replacement);
         }
         Ok(())
     }
@@ -560,6 +602,7 @@ pub struct LegacyNetworkRow {
 
 struct FileSnapshot {
     path: PathBuf,
+    file: File,
     identity: FileIdentity,
     size: u64,
     hash: [u8; 32],
@@ -574,6 +617,7 @@ impl FileSnapshot {
         let snapshot = read_and_hash(&file, false)?;
         Ok(Some(Self {
             path: path.to_path_buf(),
+            file,
             identity,
             size: snapshot.size,
             hash: snapshot.hash,
@@ -581,6 +625,13 @@ impl FileSnapshot {
     }
 
     fn unchanged(&self) -> Result<bool, LegacyInspectionError> {
+        let retained = read_and_hash(&self.file, false)?;
+        if file_identity(&self.file)? != self.identity
+            || retained.size != self.size
+            || retained.hash != self.hash
+        {
+            return Ok(false);
+        }
         let Some(file) = open_regular_read_only(&self.path)? else {
             return Ok(false);
         };
@@ -588,6 +639,47 @@ impl FileSnapshot {
         Ok(file_identity(&file)? == self.identity
             && snapshot.size == self.size
             && snapshot.hash == self.hash)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_SQLITE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static AFTER_SQLITE_QUERY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn run_before_sqlite_open_hook() {
+    BEFORE_SQLITE_OPEN_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn run_after_sqlite_query_hook() {
+    AFTER_SQLITE_QUERY_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+struct SqliteInspectionHookCleanup;
+
+#[cfg(test)]
+impl Drop for SqliteInspectionHookCleanup {
+    fn drop(&mut self) {
+        BEFORE_SQLITE_OPEN_HOOK.with(|hook| {
+            hook.borrow_mut().take();
+        });
+        AFTER_SQLITE_QUERY_HOOK.with(|hook| {
+            hook.borrow_mut().take();
+        });
     }
 }
 
@@ -656,6 +748,25 @@ fn immutable_sqlite_uri(path: &Path) -> Result<String, LegacyInspectionError> {
     Ok(uri)
 }
 
+#[cfg(all(unix, not(target_os = "wasi")))]
+fn retained_file_path(snapshot: &FileSnapshot) -> Result<PathBuf, LegacyInspectionError> {
+    use std::os::fd::AsRawFd;
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let path = PathBuf::from(format!("/proc/self/fd/{}", snapshot.file.as_raw_fd()));
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let path = PathBuf::from(format!("/dev/fd/{}", snapshot.file.as_raw_fd()));
+
+    let rebound = File::open(&path)
+        .map_err(|_| backend_error("descriptor-bound legacy SQLite inspection is unsupported"))?;
+    if file_identity(&rebound)? != snapshot.identity {
+        return Err(busy_error(
+            "legacy configuration source changed during inspection",
+        ));
+    }
+    Ok(path)
+}
+
 #[cfg(windows)]
 struct SqliteSourceWriteGuard {
     _files: Vec<File>,
@@ -663,20 +774,25 @@ struct SqliteSourceWriteGuard {
 
 #[cfg(windows)]
 impl SqliteSourceWriteGuard {
-    fn acquire(paths: &[&Path]) -> Result<Self, LegacyInspectionError> {
+    fn acquire(snapshots: &[&FileSnapshot]) -> Result<Self, LegacyInspectionError> {
         use std::os::windows::fs::OpenOptionsExt;
 
         const FILE_SHARE_READ: u32 = 0x0000_0001;
-        let mut files = Vec::with_capacity(paths.len());
-        for path in paths {
+        let mut files = Vec::with_capacity(snapshots.len());
+        for snapshot in snapshots {
             let mut opened = None;
             for attempt in 0..LOCK_ATTEMPTS {
                 match OpenOptions::new()
                     .read(true)
                     .share_mode(FILE_SHARE_READ)
-                    .open(path)
+                    .open(&snapshot.path)
                 {
                     Ok(file) => {
+                        if file_identity(&file)? != snapshot.identity {
+                            return Err(busy_error(
+                                "legacy configuration source changed during inspection",
+                            ));
+                        }
                         opened = Some(file);
                         break;
                     }
@@ -716,6 +832,8 @@ pub fn inspect_legacy_network_row(
     let shm_path = sqlite_sidecar(path, "-shm");
     let wal_snapshot = FileSnapshot::capture(&wal_path)?;
     let shm_snapshot = FileSnapshot::capture(&shm_path)?;
+    #[cfg(test)]
+    run_before_sqlite_open_hook();
     if wal_snapshot.is_some() && shm_snapshot.is_none() {
         return Err(backend_error(
             "legacy configuration WAL has no existing shared-memory sidecar",
@@ -723,21 +841,36 @@ pub fn inspect_legacy_network_row(
     }
 
     #[cfg(windows)]
-    let source_guard = wal_snapshot
-        .as_ref()
-        .map(|_| SqliteSourceWriteGuard::acquire(&[path, &wal_path, &shm_path]))
-        .transpose()?;
+    let source_guard = {
+        let mut snapshots = vec![&config_snapshot];
+        if let Some(snapshot) = wal_snapshot.as_ref() {
+            snapshots.push(snapshot);
+        }
+        if let Some(snapshot) = shm_snapshot.as_ref() {
+            snapshots.push(snapshot);
+        }
+        SqliteSourceWriteGuard::acquire(&snapshots)?
+    };
 
     // A cleanly closed WAL-mode database may have no sidecars, and SQLite's
     // normal read-only opener can recreate them. Immutable mode is sufficient
     // when there is no WAL to replay. On Windows, a WAL set is guarded against
     // writes first; SQLite then opens its SHM read-only and builds a private
-    // heap WAL index rather than persisting reader marks. Unix's documented
-    // `unix-excl` VFS obtains an exclusive database lock and always keeps its
-    // WAL index in heap. Other platforms fail closed for WAL-backed sources.
+    // heap WAL index rather than persisting reader marks. Unix opens the
+    // already-captured file descriptor rather than the mutable pathname.
+    // WAL-backed inspection fails closed off Windows: pinned
+    // SQLite's read-only `unix-excl` path does not obtain its special exclusive
+    // process lock, so its heap WAL index cannot be proven isolated from a
+    // concurrent writer.
     let connection = if wal_snapshot.is_none() {
+        #[cfg(windows)]
+        let immutable_path = path.to_path_buf();
+        #[cfg(all(unix, not(target_os = "wasi")))]
+        let immutable_path = retained_file_path(&config_snapshot)?;
+        #[cfg(not(any(windows, all(unix, not(target_os = "wasi")))))]
+        let immutable_path = path.to_path_buf();
         Connection::open_with_flags(
-            immutable_sqlite_uri(path)?,
+            immutable_sqlite_uri(&immutable_path)?,
             OpenFlags::SQLITE_OPEN_READ_ONLY
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_URI,
@@ -750,15 +883,7 @@ pub fn inspect_legacy_network_row(
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )
         }
-        #[cfg(all(unix, not(target_os = "wasi")))]
-        {
-            Connection::open_with_flags_and_vfs(
-                path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-                "unix-excl",
-            )
-        }
-        #[cfg(not(any(windows, all(unix, not(target_os = "wasi")))))]
+        #[cfg(not(windows))]
         {
             return Err(backend_error(
                 "read-only legacy WAL inspection is unsupported on this platform",
@@ -796,16 +921,11 @@ pub fn inspect_legacy_network_row(
     } else {
         None
     };
-    // Verify once while the platform lock/deny-write handles are live, then
-    // again after SQLite closes so close-time behavior is covered too.
-    verify_sqlite_sources(
-        &config_snapshot,
-        &wal_path,
-        &wal_snapshot,
-        &shm_path,
-        &shm_snapshot,
-    )?;
     drop(connection);
+    #[cfg(test)]
+    run_after_sqlite_query_hook();
+    // Verify once after SQLite closes while the platform protection is still
+    // live, then again after releasing it so close/release behavior is covered.
     verify_sqlite_sources(
         &config_snapshot,
         &wal_path,
@@ -815,12 +935,36 @@ pub fn inspect_legacy_network_row(
     )?;
     #[cfg(windows)]
     drop(source_guard);
+    verify_sqlite_sources(
+        &config_snapshot,
+        &wal_path,
+        &wal_snapshot,
+        &shm_path,
+        &shm_snapshot,
+    )?;
     Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seed_network_row(path: &Path, address: &str) {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE user_config (\
+                   id INTEGER PRIMARY KEY,\
+                   socks5_enabled INTEGER NOT NULL,\
+                   socks5_address TEXT,\
+                   socks5_username TEXT,\
+                   plugin_proxy_settings TEXT\
+                 );\
+                 INSERT INTO user_config VALUES \
+                   (1, 1, '{address}', 'user', '{{}}');"
+            ))
+            .unwrap();
+    }
 
     #[test]
     fn capped_memory_backend_rejects_growth_beyond_128_mib() {
@@ -838,5 +982,73 @@ mod tests {
         let rendered = format!("{backend:?}");
         assert_eq!(rendered, "CappedZeroizingMemoryBackend([redacted])");
         assert!(!rendered.contains("never-print-these-bytes"));
+    }
+
+    #[test]
+    fn memory_backend_growth_uses_controlled_zeroizing_replacement() {
+        let backend =
+            CappedZeroizingMemoryBackend::from_bytes(Zeroizing::new(b"sensitive-page".to_vec()));
+        backend.set_len(4096).unwrap();
+        assert_eq!(backend.read(0, 14).unwrap(), b"sensitive-page");
+        assert_eq!(backend.read(14, 4082).unwrap(), vec![0; 4082]);
+    }
+
+    #[test]
+    fn snapshot_growth_is_geometric_and_bounded() {
+        assert_eq!(
+            next_zeroizing_capacity(0, 1, SOURCE_LIMIT as usize),
+            2 * COPY_CHUNK
+        );
+        assert_eq!(
+            next_zeroizing_capacity(2 * COPY_CHUNK, 2 * COPY_CHUNK + 1, SOURCE_LIMIT as usize),
+            4 * COPY_CHUNK
+        );
+        assert_eq!(
+            next_zeroizing_capacity(
+                SOURCE_LIMIT as usize / 2,
+                SOURCE_LIMIT as usize,
+                SOURCE_LIMIT as usize
+            ),
+            SOURCE_LIMIT as usize
+        );
+    }
+
+    #[cfg(any(windows, all(unix, not(target_os = "wasi"))))]
+    #[test]
+    fn pathname_replacement_after_capture_is_rejected() {
+        let _hook_cleanup = SqliteInspectionHookCleanup;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.sqlite");
+        let replacement = temp.path().join("replacement.sqlite");
+        let parked = temp.path().join("captured.sqlite");
+        seed_network_row(&path, "captured:1080");
+        seed_network_row(&replacement, "replacement:1080");
+
+        let hook_path = path.clone();
+        BEFORE_SQLITE_OPEN_HOOK.with(|hook| {
+            let replacement_for_open = replacement.clone();
+            let path_for_open = hook_path.clone();
+            let parked_for_open = parked.clone();
+            *hook.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&path_for_open, &parked_for_open).unwrap();
+                fs::rename(&replacement_for_open, &path_for_open).unwrap();
+            }));
+        });
+        AFTER_SQLITE_QUERY_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&hook_path, &replacement).unwrap();
+                fs::rename(&parked, &hook_path).unwrap();
+            }));
+        });
+
+        let inspected = inspect_legacy_network_row(&path);
+        // An identity guard may fail closed before SQLite opens. Consume the
+        // pending restore hook so no thread-local state reaches another test.
+        run_after_sqlite_query_hook();
+        match inspected {
+            Err(error) => assert_eq!(error.kind(), LegacyInspectionErrorKind::Busy),
+            Ok(Some(row)) => assert_eq!(row.socks5_address.as_deref(), Some("captured:1080")),
+            Ok(None) => panic!("the captured configuration row must not disappear"),
+        }
     }
 }
