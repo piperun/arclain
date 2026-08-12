@@ -4,7 +4,7 @@ use std::io::{Cursor, Write};
 use support::{manifest_toml, UI_DEMO_COMPONENT};
 use wirt::{
     package_bytes, read_package_bytes, MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_WASM_BYTES,
-    MAX_WIRT_PACKAGE_BYTES,
+    MAX_WIRT_PACKAGE_BYTES, WIRT_ABI_VERSION,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -440,4 +440,40 @@ fn hostile_manifest_values_and_parser_diagnostics_are_bounded() {
             "{label} error reflected hostile input"
         );
     }
+}
+
+#[test]
+fn package_refusal_distinguishes_manifest_from_host_mismatch() {
+    // A package a version behind the host. The refusal must be the host
+    // mismatch alone — with the remedy — not the string that used to
+    // report the manifest, the component, and the host as one failure.
+    let current = format!("abi = \"{WIRT_ABI_VERSION}\"");
+    let stale = manifest_toml().replace(&current, "abi = \"0.1.0\"");
+    assert_ne!(
+        stale,
+        manifest_toml(),
+        "the fixture manifest no longer declares {current:?}"
+    );
+    let bytes = archive(&[
+        ("plugin.toml", stale.as_bytes(), canonical_options()),
+        ("plugin.wasm", UI_DEMO_COMPONENT, canonical_options()),
+    ]);
+
+    let message = read_package_bytes(&bytes).unwrap_err().to_string();
+    assert!(
+        message.contains("0.1.0"),
+        "names the version found: {message}"
+    );
+    assert!(
+        message.contains(WIRT_ABI_VERSION),
+        "names the version required: {message}"
+    );
+    assert!(
+        message.contains("wirt-sdk/template"),
+        "says where to rebuild: {message}"
+    );
+    assert!(
+        !message.contains("manifest, component, and host"),
+        "the three cases are no longer one message: {message}"
+    );
 }

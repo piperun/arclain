@@ -646,15 +646,41 @@ fn structural_preflight_rejects_nonallowlisted_interface_names() {
 }
 
 #[test]
-fn structural_preflight_rejects_wrong_wirt_interface_version() {
-    let error = inspect_component_contract(&component_with_empty_interface_import(
-        "wirt:plugin/host@0.1.0",
-    ))
-    .unwrap_err()
-    .to_string();
+fn structural_preflight_import_version_refusal_names_found_and_required() {
+    for name in ["wirt:plugin/host@0.1.0", "wirt:plugin/ui@0.1.0"] {
+        let error = inspect_component_contract(&component_with_empty_interface_import(name))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("component-preflight"),
+            "keeps the preflight classification: {error}"
+        );
+        assert!(error.contains(name), "names the import found: {error}");
+        assert!(
+            error.contains(WIRT_ABI_VERSION),
+            "names the version required: {error}"
+        );
+        assert!(
+            error.contains("wirt-sdk/template"),
+            "says where to rebuild: {error}"
+        );
+    }
+}
+
+#[test]
+fn structural_preflight_bounds_hostile_wirt_interface_names() {
+    let name = format!("wirt:plugin/{}@1.0.0", "ui".repeat(2_000));
+    let error = inspect_component_contract(&component_with_empty_interface_import(&name))
+        .unwrap_err()
+        .to_string();
     assert!(
-        error.contains("component-preflight: unsupported Wirt interface version"),
-        "unexpected classification: {error}"
+        error.len() <= 320,
+        "interface-version error was unbounded: {} bytes",
+        error.len()
+    );
+    assert!(
+        !error.contains(&name),
+        "interface-version error reflected the full hostile name"
     );
 }
 

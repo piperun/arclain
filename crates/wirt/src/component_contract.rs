@@ -90,7 +90,7 @@ fn contract_error(classification: &str) -> PluginError {
     ))
 }
 
-fn bounded_name(name: &str) -> String {
+pub(crate) fn bounded_name(name: &str) -> String {
     const MAX: usize = 80;
     if name.len() <= MAX {
         return name.to_owned();
@@ -1073,13 +1073,16 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
         } else {
             match item.ty {
                 ComponentEntityType::Instance(_) => {
-                    let classification = if name.starts_with("wirt:plugin/") {
-                        "unsupported Wirt interface version"
-                    } else {
-                        "unsupported import"
-                    };
+                    if name.starts_with("wirt:plugin/") {
+                        return Err(contract_error(&format!(
+                            "the component imports {:?}, which this host does not speak; \
+                             it speaks Wirt ABI {WIRT_ABI_VERSION}. Rebuild against the \
+                             current wirt-sdk/template.",
+                            bounded_name(name)
+                        )));
+                    }
                     return Err(contract_error(&format!(
-                        "{classification} {:?}",
+                        "unsupported import {:?}",
                         bounded_name(name)
                     )));
                 }

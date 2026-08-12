@@ -212,14 +212,35 @@ fn starter_round_trip_is_deterministic_and_failures_leave_no_output() {
     );
     fs::write(&manifest_path, &stale_manifest).unwrap();
     let mismatch = assert_failure(run_in(&project, &["validate", "."]));
-    assert!(String::from_utf8_lossy(&mismatch.stderr).contains("unsupported Wirt ABI"));
+    let mismatch_message = String::from_utf8_lossy(&mismatch.stderr);
+    assert!(mismatch_message.contains("0.1.0"), "{mismatch_message}");
+    assert!(
+        mismatch_message.contains(wirt::WIRT_ABI_VERSION),
+        "{mismatch_message}"
+    );
+    assert!(
+        mismatch_message.contains("wirt-sdk/template"),
+        "{mismatch_message}"
+    );
 
     let absent = project.join("must-not-exist.wirt");
     let package_error = assert_failure(run_in(
         &project,
         &["package", "--output", absent.to_str().unwrap()],
     ));
-    assert!(String::from_utf8_lossy(&package_error.stderr).contains("unsupported Wirt ABI"));
+    let package_error_message = String::from_utf8_lossy(&package_error.stderr);
+    assert!(
+        package_error_message.contains("0.1.0"),
+        "{package_error_message}"
+    );
+    assert!(
+        package_error_message.contains(wirt::WIRT_ABI_VERSION),
+        "{package_error_message}"
+    );
+    assert!(
+        package_error_message.contains("wirt-sdk/template"),
+        "{package_error_message}"
+    );
     assert!(!absent.exists());
     fs::write(&manifest_path, valid_manifest).unwrap();
 

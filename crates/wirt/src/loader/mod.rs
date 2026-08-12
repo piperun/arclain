@@ -1,5 +1,6 @@
 //! Plugin discovery and loading
 
+use crate::component_contract::bounded_name;
 use crate::runtime::{LoadedComponent, WasmRuntime};
 use crate::{PluginError, PluginId, PluginInfo, PluginManifest, Result, WIRT_ABI_VERSION};
 use crate::{ValidatedPackage, MAX_WIRT_PACKAGE_BYTES};
@@ -374,7 +375,9 @@ fn is_canonical_hostname(domain: &str) -> bool {
 pub(crate) fn validate_manifest(manifest: &PluginManifest) -> Result<()> {
     if manifest.wirt.abi != WIRT_ABI_VERSION {
         return Err(PluginError::Unsupported(format!(
-            "unsupported Wirt ABI; expected {WIRT_ABI_VERSION}"
+            "this plugin declares Wirt ABI {found:?}; this host speaks {WIRT_ABI_VERSION}. \
+             Rebuild it against the current wirt-sdk/template and republish.",
+            found = bounded_name(&manifest.wirt.abi),
         )));
     }
 

@@ -1,4 +1,4 @@
-use crate::component_contract::inspect_component_contract;
+use crate::component_contract::{bounded_name, inspect_component_contract};
 use crate::loader::validate_manifest;
 use crate::{PluginError, PluginManifest, Result, WIRT_ABI_VERSION};
 use serde::{Deserialize, Serialize};
@@ -98,7 +98,12 @@ pub fn package_bytes(manifest: &[u8], component: &[u8]) -> Result<Vec<u8>> {
     let contract =
         inspect_component_contract(component).map_err(|error| package_error(error.to_string()))?;
     if contract.abi != parsed.wirt.abi {
-        return Err(package_error("manifest and component ABI differ"));
+        return Err(package_error(format!(
+            "plugin.toml declares Wirt ABI {manifest_abi:?} but the component imports \
+             {component_abi:?}; the package is inconsistent with itself",
+            manifest_abi = bounded_name(&parsed.wirt.abi),
+            component_abi = bounded_name(&contract.abi),
+        )));
     }
 
     write_package_bytes(manifest, component)
@@ -169,8 +174,20 @@ pub fn read_package_bytes(bytes: &[u8]) -> Result<ValidatedPackage> {
     }
     let contract =
         inspect_component_contract(&component).map_err(|error| package_error(error.to_string()))?;
-    if contract.abi != manifest.wirt.abi || manifest.wirt.abi != WIRT_ABI_VERSION {
-        return Err(package_error("manifest, component, and host ABI differ"));
+    if contract.abi != manifest.wirt.abi {
+        return Err(package_error(format!(
+            "plugin.toml declares Wirt ABI {manifest_abi:?} but the component imports \
+             {component_abi:?}; the package is inconsistent with itself",
+            manifest_abi = bounded_name(&manifest.wirt.abi),
+            component_abi = bounded_name(&contract.abi),
+        )));
+    }
+    if manifest.wirt.abi != WIRT_ABI_VERSION {
+        return Err(package_error(format!(
+            "this plugin is built for Wirt ABI {found:?}; this host speaks {WIRT_ABI_VERSION}. \
+             Rebuild it against the current wirt-sdk/template and republish.",
+            found = bounded_name(&manifest.wirt.abi),
+        )));
     }
     Ok(ValidatedPackage {
         manifest,
