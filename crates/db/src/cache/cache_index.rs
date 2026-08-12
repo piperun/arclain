@@ -112,8 +112,10 @@ pub fn upsert_cache_entry(
         .on_conflict(dsl::key)
         .do_update()
         .set((
+            dsl::product_id.eq(product_id),
             dsl::content_hash.eq(content_hash),
             dsl::source_url.eq(source_url),
+            dsl::cache_type.eq(cache_type.as_str()),
             dsl::last_accessed.eq(diesel::dsl::sql("CURRENT_TIMESTAMP")),
             dsl::size_bytes.eq(size_bytes),
         ))

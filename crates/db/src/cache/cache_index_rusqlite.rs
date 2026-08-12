@@ -57,8 +57,10 @@ pub fn upsert_cache_entry(
         INSERT INTO cache_index (key, product_id, content_hash, source_url, cache_type, size_bytes)
         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ON CONFLICT(key) DO UPDATE SET
+            product_id = excluded.product_id,
             content_hash = excluded.content_hash,
             source_url = excluded.source_url,
+            cache_type = excluded.cache_type,
             last_accessed = CURRENT_TIMESTAMP,
             size_bytes = excluded.size_bytes
         "#,

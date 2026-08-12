@@ -69,6 +69,41 @@ fn test_has_entry() {
     assert!(has_cache_entry(&conn, "test_key").unwrap());
 }
 
+#[test]
+fn upsert_reclassifies_existing_entry_and_product() {
+    let conn = setup_test_db();
+    conn.execute(
+        "INSERT INTO dlsite_metadata_cache (product_id) VALUES (?1), (?2)",
+        ["product-a", "product-b"],
+    )
+    .unwrap();
+    upsert_cache_entry(
+        &conn,
+        "shared-key",
+        Some("product-a"),
+        "hash-v1",
+        None,
+        CacheType::Other,
+        Some(100),
+    )
+    .unwrap();
+
+    upsert_cache_entry(
+        &conn,
+        "shared-key",
+        Some("product-b"),
+        "hash-v2",
+        None,
+        CacheType::PluginData,
+        Some(200),
+    )
+    .unwrap();
+
+    let entry = get_cache_entry(&conn, "shared-key").unwrap().unwrap();
+    assert_eq!(entry.cache_type, CacheType::PluginData);
+    assert_eq!(entry.product_id.as_deref(), Some("product-b"));
+}
+
 /// Regression test for C6 from `docs/AUDIT_2026-05-03.md`.
 ///
 /// Pre-fix, `CacheDb::open`'s recovery path used `let _ =` to discard

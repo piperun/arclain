@@ -237,6 +237,36 @@ mod diesel_crud {
     }
 
     #[test]
+    fn upsert_reclassifies_existing_entry_and_product() {
+        let mut conn = setup_diesel();
+        upsert_cache_entry(
+            &mut conn,
+            "shared-key",
+            Some("product-a"),
+            "hash-v1",
+            None,
+            CacheType::Other,
+            Some(100),
+        )
+        .unwrap();
+
+        upsert_cache_entry(
+            &mut conn,
+            "shared-key",
+            Some("product-b"),
+            "hash-v2",
+            None,
+            CacheType::PluginData,
+            Some(200),
+        )
+        .unwrap();
+
+        let entry = get_cache_entry(&mut conn, "shared-key").unwrap().unwrap();
+        assert_eq!(entry.cache_type, CacheType::PluginData);
+        assert_eq!(entry.product_id.as_deref(), Some("product-b"));
+    }
+
+    #[test]
     fn test_get_nonexistent() {
         let mut conn = setup_diesel();
         assert!(get_cache_entry(&mut conn, "nope").unwrap().is_none());
