@@ -220,6 +220,18 @@ pub struct NetworkSettingsDto {
     pub gameta_api_key_configured: bool,
 }
 
+/// The legacy embedded-Arclain network policy a host may migrate before it
+/// bootstraps a new application instance. Secret material is represented only
+/// by presence; the stored password is never read through this surface.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacyNetworkSettings {
+    pub socks5_enabled: bool,
+    pub socks5_address: Option<String>,
+    pub socks5_username: Option<String>,
+    pub socks5_password_configured: bool,
+    pub plugin_proxy_enabled: BTreeMap<String, bool>,
+}
+
 impl NetworkSettingsDto {
     /// The routing map actually in effect: which plugins' traffic goes
     /// through the SOCKS5 proxy right now.

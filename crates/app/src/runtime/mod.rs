@@ -40,6 +40,7 @@ mod settings_ops;
 
 pub use bootstrap::{BootstrapConfig, BootstrapOverrides};
 pub use paths::AppPaths;
+pub(crate) use paths::{legacy_config_database, legacy_secrets_database};
 pub use session_store::{
     AppCapabilities, BackendCapabilityDto, ExternalToolStatusDto, HealthSnapshot, LegacyComposition,
 };

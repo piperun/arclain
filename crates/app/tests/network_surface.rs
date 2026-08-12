@@ -24,15 +24,19 @@
 mod support;
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use arclain_app::challenge::SecretInput;
 use arclain_app::error::ApplicationErrorKind;
 use arclain_app::settings::{NetworkProbeReport, Socks5Candidate};
-use arclain_app::{ArclainApp, BootstrapConfig, PreparedPluginNetworkRouting};
+use arclain_app::{
+    inspect_legacy_network_settings, ArclainApp, BootstrapConfig, PreparedPluginNetworkRouting,
+};
 
 /// Captures `tracing` output from **every** thread for the lifetime of
 /// this test binary, so a redaction test can prove a secret reached
@@ -926,5 +930,264 @@ fn host_owned_proxy_required_without_a_proxy_fails_closed() {
                 if message.contains("configured to use a proxy")
         ),
         "proxy-required routing did not fail closed: {status:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Static legacy-network inspection
+// ---------------------------------------------------------------------------
+
+fn legacy_config_path(profile: &Path) -> PathBuf {
+    profile.join("databases").join("config.sqlite")
+}
+
+fn legacy_secrets_path(profile: &Path) -> PathBuf {
+    profile.join("secrets").join("pass.redb")
+}
+
+fn seed_legacy_network_config(profile: &Path, plugin_proxy_settings: &str) {
+    let path = legacy_config_path(profile);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let db = arclain_core::config::ConfigDb::open(&path).expect("create config database");
+    db.into_sqlite_db()
+        .with_connection(|conn| {
+            arclain_core::UserConfig::ensure_table(conn)?;
+            let mut config = arclain_core::UserConfig::new();
+            config.socks5_enabled = true;
+            config.socks5_address = Some("127.0.0.1:1080".to_string());
+            config.socks5_username = Some("legacy-user".to_string());
+            config.plugin_proxy_settings = Some(plugin_proxy_settings.to_string());
+            config.save(conn)?;
+            Ok(())
+        })
+        .expect("seed legacy network settings");
+}
+
+fn seed_legacy_socks5_password(profile: &Path) {
+    let path = legacy_secrets_path(profile);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let db = arclain_core::SecretsDb::open(&path, &[0x55; 32]).expect("create secrets database");
+    db.set_secret("proxy:socks5", "never expose this password")
+        .expect("seed fixed SOCKS5 secret");
+    db.close();
+}
+
+fn profile_hashes(root: &Path) -> BTreeMap<PathBuf, u32> {
+    fn visit(root: &Path, dir: &Path, hashes: &mut BTreeMap<PathBuf, u32>) {
+        let mut entries = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                visit(root, &path, hashes);
+            } else {
+                hashes.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    crc32fast::hash(&fs::read(&path).unwrap()),
+                );
+            }
+        }
+    }
+
+    let mut hashes = BTreeMap::new();
+    if root.is_dir() {
+        visit(root, root, &mut hashes);
+    }
+    hashes
+}
+
+fn sqlite_source_hashes(profile: &Path) -> BTreeMap<&'static str, Option<(u64, u32)>> {
+    let config = legacy_config_path(profile);
+    [
+        ("config.sqlite", config.clone()),
+        (
+            "config.sqlite-wal",
+            config.with_file_name("config.sqlite-wal"),
+        ),
+        (
+            "config.sqlite-shm",
+            config.with_file_name("config.sqlite-shm"),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, path)| {
+        let fingerprint = fs::read(path)
+            .ok()
+            .map(|bytes| (bytes.len() as u64, crc32fast::hash(&bytes)));
+        (name, fingerprint)
+    })
+    .collect()
+}
+
+#[test]
+fn static_legacy_inspection_is_pure_for_missing_and_valid_profiles() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("missing-profile");
+    assert!(inspect_legacy_network_settings(&missing)
+        .expect("missing profile is absence")
+        .is_none());
+    assert!(!missing.exists());
+
+    let profile = temp.path().join("valid-profile");
+    seed_legacy_network_config(&profile, r#"{"dlsite":false,"custom":true}"#);
+    seed_legacy_socks5_password(&profile);
+    let before = profile_hashes(&profile);
+    let sqlite_before = sqlite_source_hashes(&profile);
+    assert!(sqlite_before["config.sqlite"].is_some());
+    assert_eq!(sqlite_before["config.sqlite-wal"], None);
+    assert_eq!(sqlite_before["config.sqlite-shm"], None);
+
+    let inspected = inspect_legacy_network_settings(&profile)
+        .expect("inspect valid legacy profile")
+        .expect("valid user_config row exists");
+
+    assert!(inspected.socks5_enabled);
+    assert_eq!(inspected.socks5_address.as_deref(), Some("127.0.0.1:1080"));
+    assert_eq!(inspected.socks5_username.as_deref(), Some("legacy-user"));
+    assert!(inspected.socks5_password_configured);
+    assert!(!format!("{inspected:?}").contains("never expose this password"));
+    assert_eq!(
+        inspected.plugin_proxy_enabled,
+        BTreeMap::from([("custom".to_string(), true), ("dlsite".to_string(), false)])
+    );
+    assert_eq!(profile_hashes(&profile), before);
+    assert_eq!(sqlite_source_hashes(&profile), sqlite_before);
+}
+
+#[test]
+fn malformed_plugin_proxy_and_corrupt_config_are_bounded_backend_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let malformed = temp.path().join("malformed-profile");
+    seed_legacy_network_config(&malformed, "not-json");
+    let malformed_error = inspect_legacy_network_settings(&malformed)
+        .expect_err("malformed plugin proxy JSON must not be defaulted away");
+    assert_eq!(malformed_error.kind, ApplicationErrorKind::Backend);
+    assert!(malformed_error.diagnostic.unwrap().len() <= 4096);
+
+    let corrupt = temp.path().join("corrupt-profile");
+    let corrupt_path = legacy_config_path(&corrupt);
+    fs::create_dir_all(corrupt_path.parent().unwrap()).unwrap();
+    fs::write(&corrupt_path, b"not sqlite").unwrap();
+    let before = profile_hashes(&corrupt);
+    let corrupt_error =
+        inspect_legacy_network_settings(&corrupt).expect_err("corrupt config database must fail");
+    assert_eq!(corrupt_error.kind, ApplicationErrorKind::Backend);
+    assert_eq!(profile_hashes(&corrupt), before);
+}
+
+#[test]
+fn absent_secret_storage_keeps_otherwise_valid_legacy_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("profile");
+    seed_legacy_network_config(&profile, "{}");
+
+    let inspected = inspect_legacy_network_settings(&profile)
+        .expect("inspect without secrets database")
+        .expect("valid config row exists");
+
+    assert!(inspected.socks5_enabled);
+    assert!(!inspected.socks5_password_configured);
+    assert!(!profile.join("secrets").exists());
+}
+
+#[test]
+fn missing_user_config_table_or_row_is_absence_without_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let no_table = temp.path().join("no-table-profile");
+    let no_table_path = legacy_config_path(&no_table);
+    fs::create_dir_all(no_table_path.parent().unwrap()).unwrap();
+    let database = arclain_db::DbConnection::open(&no_table_path).expect("create SQLite database");
+    drop(database);
+    let before = sqlite_source_hashes(&no_table);
+    assert!(inspect_legacy_network_settings(&no_table)
+        .expect("missing user_config table is absence")
+        .is_none());
+    assert_eq!(sqlite_source_hashes(&no_table), before);
+
+    let no_row = temp.path().join("no-row-profile");
+    seed_legacy_network_config(&no_row, "{}");
+    let no_row_path = legacy_config_path(&no_row);
+    let database = arclain_db::DbConnection::open(&no_row_path).expect("open SQLite database");
+    database
+        .execute("DELETE FROM user_config WHERE id=1", [])
+        .expect("remove singleton row");
+    drop(database);
+    let before = sqlite_source_hashes(&no_row);
+    assert!(inspect_legacy_network_settings(&no_row)
+        .expect("missing user_config row is absence")
+        .is_none());
+    assert_eq!(sqlite_source_hashes(&no_row), before);
+}
+
+#[test]
+fn committed_wal_and_sidecars_are_read_without_creation_or_mutation() {
+    const CRASH_FIXTURE_PROFILE: &str = "ARCLAIN_CRASH_WAL_FIXTURE_PROFILE";
+    if let Some(profile) = std::env::var_os(CRASH_FIXTURE_PROFILE) {
+        let profile = PathBuf::from(profile);
+        seed_legacy_network_config(&profile, "{}");
+        let config_path = legacy_config_path(&profile);
+        let writer = arclain_db::DbConnection::open(&config_path).expect("open WAL writer");
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;\
+                 PRAGMA wal_autocheckpoint=0;\
+                 UPDATE user_config SET socks5_address='wal-proxy:1080' WHERE id=1;",
+            )
+            .expect("commit network setting into WAL");
+        std::process::exit(0);
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("wal-profile");
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "committed_wal_and_sidecars_are_read_without_creation_or_mutation",
+            "--nocapture",
+        ])
+        .env(CRASH_FIXTURE_PROFILE, &profile)
+        .status()
+        .expect("launch crash-style committed-WAL fixture writer");
+    assert!(status.success(), "fixture writer failed: {status}");
+    let config_path = legacy_config_path(&profile);
+    let wal_path = config_path.with_file_name("config.sqlite-wal");
+    let shm_path = config_path.with_file_name("config.sqlite-shm");
+    assert!(wal_path.is_file() && fs::metadata(&wal_path).unwrap().len() > 0);
+    assert!(shm_path.is_file());
+    let before = profile_hashes(&profile);
+    let sqlite_before = sqlite_source_hashes(&profile);
+    assert!(sqlite_before.values().all(Option::is_some));
+
+    let inspected = inspect_legacy_network_settings(&profile)
+        .expect("read committed WAL state")
+        .expect("valid user_config row exists");
+
+    assert_eq!(inspected.socks5_address.as_deref(), Some("wal-proxy:1080"));
+    assert_eq!(profile_hashes(&profile), before);
+    assert_eq!(sqlite_source_hashes(&profile), sqlite_before);
+
+    let missing_shm_profile = temp.path().join("wal-without-shm-profile");
+    let missing_shm_config = legacy_config_path(&missing_shm_profile);
+    fs::create_dir_all(missing_shm_config.parent().unwrap()).unwrap();
+    fs::copy(&config_path, &missing_shm_config).expect("copy SQLite source");
+    fs::copy(
+        &wal_path,
+        missing_shm_config.with_file_name("config.sqlite-wal"),
+    )
+    .expect("copy committed WAL without SHM");
+    let missing_shm_before = sqlite_source_hashes(&missing_shm_profile);
+    assert!(missing_shm_before["config.sqlite"].is_some());
+    assert!(missing_shm_before["config.sqlite-wal"].is_some());
+    assert_eq!(missing_shm_before["config.sqlite-shm"], None);
+
+    let error = inspect_legacy_network_settings(&missing_shm_profile)
+        .expect_err("WAL without an existing SHM must fail closed");
+    assert_eq!(error.kind, ApplicationErrorKind::Backend);
+    assert_eq!(
+        sqlite_source_hashes(&missing_shm_profile),
+        missing_shm_before
     );
 }

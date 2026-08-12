@@ -22,6 +22,14 @@ const PLUGINS_DIR_ENV: &str = "ARCLAIN_PLUGINS_DIR";
 /// only the *directory* half is resolved differently.
 const PRESETS_FILE_NAME: &str = "pipeline_presets.json";
 
+pub(crate) fn legacy_config_database(profile_data_dir: &Path) -> PathBuf {
+    profile_data_dir.join("databases").join("config.sqlite")
+}
+
+pub(crate) fn legacy_secrets_database(profile_data_dir: &Path) -> PathBuf {
+    profile_data_dir.join("secrets").join("pass.redb")
+}
+
 /// The five on-disk directories `ArclainApp::bootstrap` resolves and
 /// creates before anything else. All frontends read this back via
 /// [`crate::ArclainApp::paths`] -- for example, a Settings page showing

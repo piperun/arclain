@@ -86,6 +86,7 @@ pub use domain_whitelist::{
 
 pub mod library;
 
+mod legacy_inspection;
 /// Pipeline execution history — records each pipeline run against its input
 /// and pipeline-config hashes, enabling idempotent re-runs and crash recovery.
 pub mod pipeline_runs;
@@ -112,6 +113,10 @@ mod bootstrap;
 mod secrets_key;
 
 pub use bootstrap::{open_databases, ConfigDbs, DbPaths};
+pub use legacy_inspection::{
+    inspect_legacy_network_row, lock_and_inspect_legacy_socks5_password, LegacyInspectionError,
+    LegacyInspectionErrorKind, LegacyNetworkRow, LegacySecretsInspectionLease,
+};
 pub use secrets_key::SecretsKey;
 
 /// Simple K/V config helpers (stored in plain `app_config` table).

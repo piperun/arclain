@@ -124,6 +124,7 @@ pub mod error;
 pub mod event;
 pub mod ids;
 pub mod layout;
+mod legacy_network;
 pub mod logging;
 pub mod materialization;
 pub mod operations;
@@ -134,7 +135,9 @@ pub mod runtime;
 pub mod settings;
 
 pub use arclain_network::PreparedPluginNetworkRouting;
+pub use legacy_network::inspect_legacy_network_settings;
 pub use runtime::{AppPaths, ArclainApp, BootstrapConfig, BootstrapOverrides};
+pub use settings::LegacyNetworkSettings;
 
 /// Re-exported at the crate root because it is not an application method
 /// at all: [`analyze_url`] needs no `ArclainApp`, no runtime, and no I/O

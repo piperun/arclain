@@ -43,6 +43,15 @@ arclain-network = { path = "../network" }
 # through `arclain_data::CacheOwner`, which `arclain_core` does not
 # re-export.
 arclain_data = { path = "../data", default-features = false }
+# Static legacy-network inspection delegates both genuinely read-only storage
+# paths to their owning crate. This keeps raw rusqlite/redb APIs out of the app
+# facade and prevents the migration reader from calling schema/open-create
+# helpers accidentally.
+# App tests also build a real `arclain_data::ContentCache` against an in-memory
+# `CacheIndex`, which needs `arclain_db`'s `CacheEntry`/`CacheType` directly.
+# This edge requests no default features: with Gameta enabled,
+# `arclain_core/gameta` turns `arclain_db/gameta` on through the normal graph.
+arclain_db = { path = "../db", default-features = false }
 # Re-exported (`Signal`/`Computed`, see `lib.rs`) so `arclain_ui` can stop
 # depending on `arclain_signals` directly -- headless-to-headless, so
 # this adds no frontend_boundary violation. Default features only: the
@@ -73,16 +82,6 @@ trybuild = "1.0.118"
 # would assert against an empty buffer and could never fail. See
 # `tests/network_surface.rs::tracing_capture`.
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
-# `crates/src/plugins.rs`'s own tests build a real `arclain_data::
-# ContentCache` against an in-memory `CacheIndex`, which needs
-# `arclain_db`'s `CacheEntry`/`CacheType` directly -- `arclain_data`
-# does not re-export either from its own crate root. Neither is a
-# metadata type, so this edge requests no default features: asking for
-# them would put the whole gameta stack back into a lean build's *test*
-# graph through the back door, which is exactly what `gameta = false`
-# is meant to keep out. With the feature on, `arclain_core/gameta`
-# turns `arclain_db/gameta` on anyway.
-arclain_db = { path = "../db", default-features = false }
 # Builds real ZIP fixtures in temp dirs for the archive-session tests
 # (`tests/archive_sessions.rs`) -- same crate/version `arclain_core`
 # already depends on, so this adds no new crate to the dependency tree.
