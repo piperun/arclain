@@ -1995,14 +1995,47 @@ impl SessionRecord {
 ///   call, so the session resumes on its last document; the next dispatch
 ///   refreshes it if the plugin asks.
 pub(crate) struct PluginSessionStore {
-    sessions: SyncRwLock<HashMap<PluginSessionId, SessionRecord>>,
+    sessions: Arc<SyncRwLock<HashMap<PluginSessionId, SessionRecord>>>,
+    staged_sessions: Arc<SyncRwLock<HashMap<PluginSessionId, SessionRecord>>>,
     next_id: AtomicU64,
     per_plugin_locks: SyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
 }
 
 pub(crate) struct StagedPluginSessionRemoval {
-    sessions: Vec<(PluginSessionId, SessionRecord)>,
+    session_ids: Vec<PluginSessionId>,
+    sessions: Arc<SyncRwLock<HashMap<PluginSessionId, SessionRecord>>>,
+    staged_sessions: Arc<SyncRwLock<HashMap<PluginSessionId, SessionRecord>>>,
+    finalized: bool,
     _dispatch_guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl StagedPluginSessionRemoval {
+    fn restore(&mut self) {
+        let mut sessions = self.sessions.write();
+        let mut staged_sessions = self.staged_sessions.write();
+        for session_id in &self.session_ids {
+            if let Some(record) = staged_sessions.remove(session_id) {
+                sessions.insert(*session_id, record);
+            }
+        }
+        self.finalized = true;
+    }
+
+    fn commit(&mut self) {
+        let mut staged_sessions = self.staged_sessions.write();
+        for session_id in &self.session_ids {
+            staged_sessions.remove(session_id);
+        }
+        self.finalized = true;
+    }
+}
+
+impl Drop for StagedPluginSessionRemoval {
+    fn drop(&mut self) {
+        if !self.finalized {
+            self.restore();
+        }
+    }
 }
 
 fn plugin_lock_key(plugin_id: &str) -> String {
@@ -2014,7 +2047,8 @@ fn plugin_lock_key(plugin_id: &str) -> String {
 impl PluginSessionStore {
     pub(crate) fn new() -> Self {
         Self {
-            sessions: SyncRwLock::new(HashMap::new()),
+            sessions: Arc::new(SyncRwLock::new(HashMap::new())),
+            staged_sessions: Arc::new(SyncRwLock::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             per_plugin_locks: SyncMutex::new(HashMap::new()),
         }
@@ -2346,9 +2380,12 @@ impl PluginSessionStore {
     }
 
     pub(crate) fn close(&self, session_id: PluginSessionId) -> Result<(), ApplicationError> {
-        self.sessions
+        let removed = self
+            .sessions
             .write()
             .remove(&session_id)
+            .or_else(|| self.staged_sessions.write().remove(&session_id));
+        removed
             .map(|_| ())
             .ok_or_else(|| unknown_plugin_session(session_id))
     }
@@ -2361,6 +2398,7 @@ impl PluginSessionStore {
             .expect("manager-owned plugin IDs have already been validated");
         let dispatch_guard = self.lock_for_plugin(plugin_id).lock_owned().await;
         let mut sessions = self.sessions.write();
+        let mut staged_sessions = self.staged_sessions.write();
         let session_ids = sessions
             .iter()
             .filter_map(|(session_id, record)| {
@@ -2369,25 +2407,26 @@ impl PluginSessionStore {
                     .then_some(*session_id)
             })
             .collect::<Vec<_>>();
-        let removed = session_ids
-            .into_iter()
-            .filter_map(|session_id| {
-                sessions
-                    .remove(&session_id)
-                    .map(|record| (session_id, record))
-            })
-            .collect();
+        for session_id in &session_ids {
+            if let Some(record) = sessions.remove(session_id) {
+                staged_sessions.insert(*session_id, record);
+            }
+        }
         StagedPluginSessionRemoval {
-            sessions: removed,
+            session_ids,
+            sessions: self.sessions.clone(),
+            staged_sessions: self.staged_sessions.clone(),
+            finalized: false,
             _dispatch_guard: dispatch_guard,
         }
     }
 
-    pub(crate) fn restore_plugin_sessions(&self, staged: StagedPluginSessionRemoval) {
-        self.sessions.write().extend(staged.sessions);
+    pub(crate) fn restore_plugin_sessions(&self, mut staged: StagedPluginSessionRemoval) {
+        staged.restore();
     }
 
-    pub(crate) fn commit_plugin_session_removal(&self, _staged: StagedPluginSessionRemoval) {
+    pub(crate) fn commit_plugin_session_removal(&self, mut staged: StagedPluginSessionRemoval) {
+        staged.commit();
         // Keep the canonical lock entry. A dispatch may already hold an Arc
         // clone while waiting for this uninstall guard; removing the map entry
         // here would let a concurrent reinstall create a second mutex and run
@@ -3195,6 +3234,40 @@ mod tests {
             &original_lock,
             &store.lock_for_plugin("ui-demo")
         ));
+    }
+
+    #[test]
+    fn close_during_failed_uninstall_prevents_session_restoration() {
+        let store = PluginSessionStore::new();
+        let session_id = PluginSessionId::from_raw(7);
+        store.sessions.write().insert(
+            session_id,
+            SessionRecord {
+                plugin_id: "ui-demo".to_string(),
+                extension_point: PluginExtensionPointDto::MainPage,
+                region_id: "main-page".to_string(),
+                revision: 1,
+                root: PluginUiNodeDto {
+                    id: "#root".to_string(),
+                    kind: PluginUiNodeKind::Single { children: vec![] },
+                    visible: true,
+                    enabled: true,
+                },
+                pinned_archive_session: None,
+            },
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let staged = runtime.block_on(store.stage_plugin_session_removal("ui-demo"));
+        store
+            .close(session_id)
+            .expect("close must remain effective while uninstall owns the session");
+        store.restore_plugin_sessions(staged);
+
+        assert!(store.close(session_id).is_err());
     }
 
     /// Minimal in-memory `arclain_data::CacheIndex` -- enough to exercise
