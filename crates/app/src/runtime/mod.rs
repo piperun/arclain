@@ -458,6 +458,11 @@ impl std::fmt::Debug for ArclainApp {
 
 impl ArclainApp {
     /// Validate and prepare one complete host-owned plugin-routing generation.
+    ///
+    /// The facade contract returns [`ApplicationError`] by value, matching the
+    /// rest of this public API; changing it to a boxed error would break the
+    /// embedding-host boundary this method exists to provide.
+    #[allow(clippy::result_large_err)]
     pub fn prepare_plugin_network_routing(
         proxy: Option<crate::settings::Socks5Candidate>,
         effective_plugin_proxy: std::collections::BTreeMap<String, bool>,
