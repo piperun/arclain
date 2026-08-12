@@ -118,7 +118,7 @@ use wirt::ui_model::{self, PluginUiNormalizeError};
 pub use wirt::ui_model::{
     PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginHostIntentDto,
     PluginImageDto, PluginKeyValueDto, PluginToastLevelDto, PluginToolbarButtonDto,
-    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SpacingStep,
+    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SpacingStep, TextRole,
 };
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};

@@ -17,8 +17,8 @@ use wirt::ui_model::{
     PluginWarningIconDto, MAX_UI_ASSETS, MAX_UI_NODES, MAX_UI_TEXT_BYTES, MAX_UI_TREE_DEPTH,
 };
 use wirt::{
-    ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, SpacingStep, ToolbarButton,
-    WarningIcon,
+    ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, SpacingStep, TextRole,
+    ToolbarButton, WarningIcon,
 };
 
 fn single(elements: Vec<PluginUiElement>) -> PluginLayout {
@@ -41,8 +41,7 @@ fn root_children(layout: &PluginLayout) -> Vec<wirt::ui_model::PluginUiNodeDto> 
 fn label_normalizes_to_a_display_only_node_with_a_structural_id() {
     let layout = single(vec![PluginUiElement::Label {
         text: "hello".to_string(),
-        bold: true,
-        size: Some(18.0),
+        role: TextRole::Title,
     }]);
     let children = root_children(&layout);
     assert_eq!(children[0].id, "#root/0");
@@ -50,8 +49,7 @@ fn label_normalizes_to_a_display_only_node_with_a_structural_id() {
         children[0].kind,
         PluginUiNodeKind::Label {
             text: "hello".to_string(),
-            bold: true,
-            size: Some(18.0),
+            role: TextRole::Title,
         }
     );
 }
@@ -452,13 +450,11 @@ fn split_layout_normalizes_sidebar_and_content_into_separate_subtrees() {
     let layout = PluginLayout::Split {
         sidebar: vec![PluginUiElement::Label {
             text: "sidebar".to_string(),
-            bold: false,
-            size: None,
+            role: TextRole::Body,
         }],
         content: vec![PluginUiElement::Label {
             text: "content".to_string(),
-            bold: false,
-            size: None,
+            role: TextRole::Body,
         }],
         sidebar_width: Some(220.0),
     };
@@ -601,8 +597,7 @@ fn tree_depth_node_text_and_asset_budgets_are_enforced_end_to_end() {
     // Text budget.
     let over_text = single(vec![PluginUiElement::Label {
         text: "x".repeat(MAX_UI_TEXT_BYTES + 1),
-        bold: false,
-        size: None,
+        role: TextRole::Body,
     }]);
     assert_eq!(
         normalize_layout(&over_text).unwrap_err(),

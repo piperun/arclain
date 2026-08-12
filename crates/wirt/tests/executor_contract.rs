@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use wirt::{
     ExecutorRequest, ExecutorResponse, PluginAction, PluginExtensionPoint, PluginId, PluginLayout,
     PluginMetadata, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger, PluginUiElement,
-    Result, TopTabConfig, ValidatedExecutorRequest, WirtExecutor, WirtExecutorBackend,
+    Result, TextRole, TopTabConfig, ValidatedExecutorRequest, WirtExecutor, WirtExecutorBackend,
     MAX_EXECUTOR_MESSAGE_BYTES,
 };
 
@@ -72,8 +72,7 @@ fn every_executor_message_round_trips_as_neutral_json() {
         ExecutorResponse::Layout(PluginLayout::Single {
             elements: vec![PluginUiElement::Label {
                 text: "ready".to_string(),
-                bold: false,
-                size: None,
+                role: TextRole::Body,
             }],
         }),
         ExecutorResponse::Actions(vec![PluginAction::None]),
@@ -129,8 +128,7 @@ fn oversized_responses_fail_before_crossing_the_executor_boundary() {
     let response = ExecutorResponse::Layout(PluginLayout::Single {
         elements: vec![PluginUiElement::Label {
             text: "x".repeat(MAX_EXECUTOR_MESSAGE_BYTES),
-            bold: false,
-            size: None,
+            role: TextRole::Body,
         }],
     });
 
@@ -151,8 +149,7 @@ impl WirtExecutorBackend for OversizedResponseExecutor {
         Ok(ExecutorResponse::Layout(PluginLayout::Single {
             elements: vec![PluginUiElement::Label {
                 text: "x".repeat(MAX_EXECUTOR_MESSAGE_BYTES),
-                bold: false,
-                size: None,
+                role: TextRole::Body,
             }],
         }))
     }
@@ -179,8 +176,7 @@ fn response_limit_includes_the_serialized_message_envelope() {
         let layout = PluginLayout::Single {
             elements: vec![PluginUiElement::Label {
                 text: "x".repeat(middle),
-                bold: false,
-                size: None,
+                role: TextRole::Body,
             }],
         };
         if serde_json::to_vec(&layout).unwrap().len() <= MAX_EXECUTOR_MESSAGE_BYTES {
@@ -193,8 +189,7 @@ fn response_limit_includes_the_serialized_message_envelope() {
     let response = ExecutorResponse::Layout(PluginLayout::Single {
         elements: vec![PluginUiElement::Label {
             text: "x".repeat(low),
-            bold: false,
-            size: None,
+            role: TextRole::Body,
         }],
     });
     assert!(serde_json::to_vec(&response).unwrap().len() > MAX_EXECUTOR_MESSAGE_BYTES);

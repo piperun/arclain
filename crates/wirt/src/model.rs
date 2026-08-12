@@ -31,9 +31,7 @@ pub enum PluginUiElement {
     Label {
         text: String,
         #[serde(default)]
-        bold: bool,
-        #[serde(default)]
-        size: Option<f32>,
+        role: TextRole,
     },
     SectionHeader {
         title: String,
@@ -193,6 +191,19 @@ pub enum SpacingStep {
     #[default]
     Medium,
     Large,
+}
+
+/// What a piece of text IS, not how large it is. The host owns the type
+/// scale, so restyling moves every label at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TextRole {
+    Title,
+    Subtitle,
+    #[default]
+    Body,
+    Caption,
+    Emphasis,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

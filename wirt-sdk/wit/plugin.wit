@@ -217,11 +217,20 @@ interface ui {
         custom(string),
     }
 
+    // What a piece of text IS, not how large it is. The host owns the type
+    // scale, so restyling moves every label at once.
+    enum text-role {
+        title,
+        subtitle,
+        body,
+        caption,
+        emphasis,
+    }
+
     // UI Element configs
     record label-config {
         text: string,
-        bold: bool,
-        size: option<f32>,
+        role: text-role,
     }
 
     // Section header for semantic title hierarchy (like h1-h4)

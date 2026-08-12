@@ -38,7 +38,7 @@ use arclain_app::ids::{ArchiveSessionId, PluginSessionId};
 use arclain_app::plugins::{
     is_plugin_disabled_refusal, PluginActionDto, PluginActionRequest, PluginBadgeDto,
     PluginCapabilityDto, PluginExtensionPointDto, PluginHostIntentDto, PluginToastLevelDto,
-    PluginTopTabDto, PluginUiDocument,
+    PluginTopTabDto, PluginUiDocument, TextRole,
 };
 use arclain_app::{ArclainApp, BootstrapConfig};
 
@@ -2456,8 +2456,7 @@ fn plugin_ui_updated_operation_result_round_trips_through_serde() {
     let layout = wirt::PluginLayout::Single {
         elements: vec![wirt::PluginUiElement::Label {
             text: "hello".to_string(),
-            bold: false,
-            size: None,
+            role: TextRole::Body,
         }],
     };
     let root = wirt::ui_model::normalize_layout(&layout).unwrap();

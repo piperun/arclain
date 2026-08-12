@@ -48,7 +48,7 @@
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
     PluginActionDto, PluginImageDto, PluginKeyValueDto, PluginToolbarButtonDto, PluginUiDocument,
-    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SpacingStep,
+    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SpacingStep, TextRole,
 };
 use eframe::egui;
 
@@ -60,6 +60,32 @@ use crate::shared::image_assets::{ImageAssetState, ImageOwner};
 use crate::shared::theme::ThemeColors;
 use crate::shared::SharedState;
 use arclain_widgets::{Chips, TextInput, ThemedDropdown, ThemedSlider, ToggleSwitch};
+
+/// One row of arclain's type scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextStyle {
+    pub size: f32,
+    pub bold: bool,
+    /// Opens a section, and is given room above and below to do it.
+    pub heading: bool,
+}
+
+/// arclain's own type scale. A plugin names a role; this is where the role
+/// becomes a number, and changing these values restyles every plugin at once.
+pub fn text_style_for_role(role: TextRole) -> TextStyle {
+    let (size, bold, heading) = match role {
+        TextRole::Title => (18.0, true, true),
+        TextRole::Subtitle => (16.0, true, true),
+        TextRole::Emphasis => (14.0, true, false),
+        TextRole::Body => (14.0, false, false),
+        TextRole::Caption => (12.0, false, false),
+    };
+    TextStyle {
+        size,
+        bold,
+        heading,
+    }
+}
 
 /// One thing the user did to a document this frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -326,17 +352,21 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                         });
                 });
         }
-        PluginUiNodeKind::Label { text, bold, size } => {
-            if *bold && size.unwrap_or(14.0) >= 14.0 {
-                SectionHeader::new(text).show(ui, colors);
+        PluginUiNodeKind::Label { text, role } => {
+            let style = text_style_for_role(*role);
+            let mut rich = egui::RichText::new(text)
+                .size(style.size)
+                .color(colors.on_surface);
+            if style.bold {
+                rich = rich.strong();
+            }
+            if style.heading {
+                // A title or subtitle opens a section, so it gets the room
+                // one needs above and below it.
+                ui.add_space(8.0);
+                ui.label(rich);
+                ui.add_space(4.0);
             } else {
-                let mut rich = egui::RichText::new(text).color(colors.on_surface);
-                if *bold {
-                    rich = rich.strong();
-                }
-                if let Some(size) = size {
-                    rich = rich.size(*size);
-                }
                 ui.label(rich);
             }
         }

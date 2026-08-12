@@ -4,7 +4,7 @@
 use arclain_app::event::OperationResult;
 use arclain_app::plugins::{
     PluginActionDto, PluginActionRequest, PluginExtensionPointDto, PluginHostIntentDto,
-    PluginUiNodeDto, PluginUiNodeKind, PluginUiUpdate,
+    PluginUiNodeDto, PluginUiNodeKind, PluginUiUpdate, TextRole,
 };
 use arclain_app::ArclainApp;
 use clap::{Args, Subcommand};
@@ -683,8 +683,7 @@ mod tests {
             "title",
             PluginUiNodeKind::Label {
                 text: "Hello".to_string(),
-                bold: false,
-                size: None,
+                role: TextRole::Body,
             },
         )]);
         let error = build_action(&root, "title", None).unwrap_err();

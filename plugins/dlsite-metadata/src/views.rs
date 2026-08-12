@@ -26,8 +26,8 @@ pub(crate) fn dispatch(
         ButtonAction, ButtonConfig, CarouselConfig, CheckboxConfig, DropdownConfig, ImageConfig,
         KeyValueListConfig, KeyValuePair, LabelConfig, ListContainerConfig, ListItemConfig,
         LoadingConfig, MetadataGridConfig, PluginLayout, SectionHeaderConfig, SettingsGroupHeader,
-        SpacingStep, SplitConfig, TabsConfig, TagChipsConfig, TextInputConfig, ToolbarButtonConfig,
-        ToolbarConfig, UiElement, WarningConfig, WarningIcon,
+        SpacingStep, SplitConfig, TabsConfig, TagChipsConfig, TextInputConfig, TextRole,
+        ToolbarButtonConfig, ToolbarConfig, UiElement, WarningConfig, WarningIcon,
     };
 
     match extension_point {
@@ -182,13 +182,11 @@ pub(crate) fn dispatch(
                 return PluginLayout::Single(vec![
                     UiElement::Label(LabelConfig {
                         text: "DLSite Metadata".to_string(),
-                        bold: true,
-                        size: Some(16.0),
+                        role: TextRole::Subtitle,
                     }),
                     UiElement::Label(LabelConfig {
                         text: "No archive open".to_string(),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     }),
                 ]);
             }
@@ -285,8 +283,7 @@ pub(crate) fn dispatch(
                     if let Some(t) = title {
                         elements.push(UiElement::Label(LabelConfig {
                             text: t.to_string(),
-                            bold: true,
-                            size: Some(14.0),
+                            role: TextRole::Subtitle,
                         }));
                     }
 
@@ -359,8 +356,7 @@ pub(crate) fn dispatch(
                         // Code detected - show fetch button
                         elements.push(UiElement::Label(LabelConfig {
                             text: format!("Detected: {}", code),
-                            bold: false,
-                            size: None,
+                            role: TextRole::Body,
                         }));
 
                         elements.push(UiElement::Button(ButtonConfig {
@@ -372,8 +368,7 @@ pub(crate) fn dispatch(
                         // No code detected - show manual search
                         elements.push(UiElement::Label(LabelConfig {
                             text: "No DLSite code detected".to_string(),
-                            bold: false,
-                            size: None,
+                            role: TextRole::Body,
                         }));
 
                         elements.push(UiElement::Button(ButtonConfig {
@@ -390,8 +385,7 @@ pub(crate) fn dispatch(
 
         "InfoPanel" => PluginLayout::Single(vec![UiElement::Label(LabelConfig {
             text: "DLSite Info".to_string(),
-            bold: true,
-            size: None,
+            role: TextRole::Emphasis,
         })]),
 
         // Dialog for full DLSite info
@@ -413,8 +407,7 @@ pub(crate) fn dispatch(
                         if let Some(t) = title {
                             elements.push(UiElement::Label(LabelConfig {
                                 text: t.to_string(),
-                                bold: true,
-                                size: Some(18.0),
+                                role: TextRole::Title,
                             }));
                         }
 
@@ -428,24 +421,21 @@ pub(crate) fn dispatch(
                         if let Some(m) = maker {
                             elements.push(UiElement::Label(LabelConfig {
                                 text: format!("Circle: {}", m),
-                                bold: false,
-                                size: None,
+                                role: TextRole::Body,
                             }));
                         }
 
                         // Product ID
                         elements.push(UiElement::Label(LabelConfig {
                             text: format!("Product ID: {}", id),
-                            bold: false,
-                            size: None,
+                            role: TextRole::Body,
                         }));
 
                         // Release date
                         if let Some(date) = data["regist_date"].as_str() {
                             elements.push(UiElement::Label(LabelConfig {
                                 text: format!("Release Date: {}", date),
-                                bold: false,
-                                size: None,
+                                role: TextRole::Body,
                             }));
                         }
 
@@ -453,8 +443,7 @@ pub(crate) fn dispatch(
                         if let Some(price) = data["price"].as_u64() {
                             elements.push(UiElement::Label(LabelConfig {
                                 text: format!("Price: ¥{}", price),
-                                bold: false,
-                                size: None,
+                                role: TextRole::Body,
                             }));
                         }
 
@@ -462,8 +451,7 @@ pub(crate) fn dispatch(
                         if let Some(rating) = data["age_category_string"].as_str() {
                             elements.push(UiElement::Label(LabelConfig {
                                 text: format!("Age Rating: {}", rating),
-                                bold: false,
-                                size: None,
+                                role: TextRole::Body,
                             }));
                         }
 
@@ -471,8 +459,7 @@ pub(crate) fn dispatch(
                         if let Some(count) = data["file_count"].as_str() {
                             elements.push(UiElement::Label(LabelConfig {
                                 text: format!("File Count: {}", count),
-                                bold: false,
-                                size: None,
+                                role: TextRole::Body,
                             }));
                         }
 
@@ -480,8 +467,7 @@ pub(crate) fn dispatch(
                         if let Some(size) = data["file_size"].as_str() {
                             elements.push(UiElement::Label(LabelConfig {
                                 text: format!("File Size: {}", size),
-                                bold: false,
-                                size: None,
+                                role: TextRole::Body,
                             }));
                         }
 
@@ -492,8 +478,7 @@ pub(crate) fn dispatch(
                             if !scraped_data.tags.is_empty() {
                                 elements.push(UiElement::Label(LabelConfig {
                                     text: "Tags:".to_string(),
-                                    bold: true,
-                                    size: None,
+                                    role: TextRole::Emphasis,
                                 }));
                                 elements.push(UiElement::TagChips(TagChipsConfig {
                                     tags: scraped_data.tags.clone(),
@@ -507,8 +492,7 @@ pub(crate) fn dispatch(
                                     elements.push(UiElement::Separator);
                                     elements.push(UiElement::Label(LabelConfig {
                                         text: "Description:".to_string(),
-                                        bold: true,
-                                        size: None,
+                                        role: TextRole::Emphasis,
                                     }));
                                     // Truncate long descriptions
                                     let desc_text = if desc.len() > 500 {
@@ -518,8 +502,7 @@ pub(crate) fn dispatch(
                                     };
                                     elements.push(UiElement::Label(LabelConfig {
                                         text: desc_text,
-                                        bold: false,
-                                        size: None,
+                                        role: TextRole::Body,
                                     }));
                                 }
                             }
@@ -536,8 +519,7 @@ pub(crate) fn dispatch(
                     } else {
                         elements.push(UiElement::Label(LabelConfig {
                             text: "No metadata available".to_string(),
-                            bold: false,
-                            size: None,
+                            role: TextRole::Body,
                         }));
                         elements.push(UiElement::Button(ButtonConfig {
                             id: "close_dialog".to_string(),
@@ -554,8 +536,7 @@ pub(crate) fn dispatch(
 
                 elements.push(UiElement::Label(LabelConfig {
                     text: "Search DLSite".to_string(),
-                    bold: true,
-                    size: Some(16.0),
+                    role: TextRole::Subtitle,
                 }));
 
                 elements.push(UiElement::Separator);
@@ -585,8 +566,7 @@ pub(crate) fn dispatch(
                         elements.push(UiElement::Separator);
                         elements.push(UiElement::Label(LabelConfig {
                             text: format!("{} results:", state.search_results.len()),
-                            bold: true,
-                            size: None,
+                            role: TextRole::Emphasis,
                         }));
 
                         for (code, title, maker, _thumb_url) in &state.search_results {
@@ -624,14 +604,12 @@ pub(crate) fn dispatch(
                 PluginLayout::Single(vec![
                     UiElement::Label(LabelConfig {
                         text: "Confirm Deletion".to_string(),
-                        bold: true,
-                        size: Some(18.0),
+                        role: TextRole::Title,
                     }),
                     UiElement::Separator,
                     UiElement::Label(LabelConfig {
                         text: "Are you sure you want to clear ALL DLSite cache?".to_string(),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     }),
                     UiElement::Warning(WarningConfig {
                         icon: WarningIcon::Warning,
@@ -671,8 +649,7 @@ pub(crate) fn dispatch(
                     elements.push(UiElement::Separator);
                     elements.push(UiElement::Label(LabelConfig {
                         text: format!("Details: {}", entry_id),
-                        bold: true,
-                        size: Some(18.0),
+                        role: TextRole::Title,
                     }));
 
                     // Read the data from cache to display (no network fetch!)
@@ -709,8 +686,7 @@ pub(crate) fn dispatch(
                         let title = json["work_name"].as_str().unwrap_or("Unknown Title");
                         elements.push(UiElement::Label(LabelConfig {
                             text: title.to_string(),
-                            bold: false,
-                            size: None,
+                            role: TextRole::Body,
                         }));
 
                         if let Some(scraped_data) = scraped {
@@ -729,24 +705,21 @@ pub(crate) fn dispatch(
                                 elements.push(UiElement::Separator);
                                 elements.push(UiElement::Label(LabelConfig {
                                     text: desc.clone(),
-                                    bold: false,
-                                    size: None,
+                                    role: TextRole::Body,
                                 }));
                             }
                         }
                     } else {
                         elements.push(UiElement::Label(LabelConfig {
                             text: "Failed to load details".to_string(),
-                            bold: false,
-                            size: None,
+                            role: TextRole::Body,
                         }));
                     }
                 } else {
                     // === LIST VIEW ===
                     elements.push(UiElement::Label(LabelConfig {
                         text: "DLSite Metadata Cache".to_string(),
-                        bold: true,
-                        size: Some(16.0),
+                        role: TextRole::Subtitle,
                     }));
 
                     elements.push(UiElement::Separator);
@@ -788,14 +761,12 @@ pub(crate) fn dispatch(
                     if filtered_entries.is_empty() {
                         elements.push(UiElement::Label(LabelConfig {
                             text: "No matching entries".to_string(),
-                            bold: false,
-                            size: None,
+                            role: TextRole::Body,
                         }));
                     } else {
                         elements.push(UiElement::Label(LabelConfig {
                             text: format!("{} entries", filtered_entries.len()),
-                            bold: false,
-                            size: None,
+                            role: TextRole::Body,
                         }));
 
                         // Limit to top 50 for performance
@@ -895,8 +866,7 @@ pub(crate) fn dispatch(
                     sidebar_elements.push(UiElement::Space(SpacingStep::Small));
                     sidebar_elements.push(UiElement::Label(LabelConfig {
                         text: "Current Archive:".to_string(),
-                        bold: false,
-                        size: Some(12.0),
+                        role: TextRole::Caption,
                     }));
                     // Truncate long filenames for display
                     let filename = &archive_info.filename;
@@ -907,8 +877,7 @@ pub(crate) fn dispatch(
                     };
                     sidebar_elements.push(UiElement::Label(LabelConfig {
                         text: display_name,
-                        bold: false,
-                        size: Some(11.0),
+                        role: TextRole::Caption,
                     }));
                     sidebar_elements.push(UiElement::Button(ButtonConfig {
                         id: "copy_archive_filename".to_string(),
@@ -1239,8 +1208,7 @@ pub(crate) fn dispatch(
                         // Show placeholder if no images
                         content_elements.push(UiElement::Label(LabelConfig {
                             text: "[No images available]".to_string(),
-                            bold: false,
-                            size: Some(12.0),
+                            role: TextRole::Caption,
                         }));
                     } else {
                         // Convert current_image_index to carousel index
@@ -1304,8 +1272,7 @@ pub(crate) fn dispatch(
                     if !tags.is_empty() {
                         content_elements.push(UiElement::Label(LabelConfig {
                             text: "Tags".to_string(),
-                            bold: true,
-                            size: Some(14.0),
+                            role: TextRole::Subtitle,
                         }));
                         content_elements.push(UiElement::TagChips(TagChipsConfig {
                             tags: tags.clone(),
@@ -1323,8 +1290,7 @@ pub(crate) fn dispatch(
                     if let Some(desc) = description {
                         content_elements.push(UiElement::Label(LabelConfig {
                             text: "Description".to_string(),
-                            bold: true,
-                            size: Some(14.0),
+                            role: TextRole::Subtitle,
                         }));
                         // Truncate long descriptions for readability (respecting UTF-8 char boundaries)
                         // Format description to restore structure
@@ -1343,8 +1309,7 @@ pub(crate) fn dispatch(
                         };
                         content_elements.push(UiElement::Label(LabelConfig {
                             text: desc_display,
-                            bold: false,
-                            size: None,
+                            role: TextRole::Body,
                         }));
                     }
 
@@ -1355,8 +1320,7 @@ pub(crate) fn dispatch(
                         if !samples.is_empty() {
                             content_elements.push(UiElement::Label(LabelConfig {
                                 text: "Sample Images".to_string(),
-                                bold: true,
-                                size: Some(14.0),
+                                role: TextRole::Subtitle,
                             }));
                             content_elements.push(UiElement::Space(SpacingStep::Small));
 
@@ -1388,8 +1352,7 @@ pub(crate) fn dispatch(
                 content_elements.push(UiElement::Space(SpacingStep::Large));
                 content_elements.push(UiElement::Label(LabelConfig {
                     text: "Select an item to view details".to_string(),
-                    bold: true,
-                    size: Some(18.0),
+                    role: TextRole::Title,
                 }));
             }
 

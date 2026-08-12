@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
-    PluginExtensionPointDto, PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind,
+    PluginExtensionPointDto, PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind, TextRole,
 };
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 use arclain_ui::features::plugins::application::{PluginSlot, SlotView};
@@ -204,8 +204,7 @@ fn label(id: &str, text: &str) -> PluginUiNodeDto {
         id,
         PluginUiNodeKind::Label {
             text: text.to_string(),
-            bold: false,
-            size: None,
+            role: TextRole::Body,
         },
     )
 }

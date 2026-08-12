@@ -2,7 +2,7 @@
 
 use crate::{
     BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginLayout, PluginUiElement,
-    SpacingStep, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
+    SpacingStep, TextRole, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
 };
 use crate::{MoveFileRule, MoveRule, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger};
 
@@ -47,8 +47,7 @@ pub fn convert_ui_element(
     match element {
         UiElement::Label(config) => PluginUiElement::Label {
             text: config.text,
-            bold: config.bold,
-            size: config.size,
+            role: convert_text_role(config.role),
         },
         UiElement::SectionHeader(config) => PluginUiElement::SectionHeader {
             title: config.title,
@@ -189,6 +188,18 @@ pub fn convert_ui_element(
             description: header.description,
         },
         UiElement::GroupEnd => PluginUiElement::GroupEnd,
+    }
+}
+
+fn convert_text_role(role: crate::bindings::wirt::plugin::ui::TextRole) -> TextRole {
+    use crate::bindings::wirt::plugin::ui::TextRole as WitRole;
+
+    match role {
+        WitRole::Title => TextRole::Title,
+        WitRole::Subtitle => TextRole::Subtitle,
+        WitRole::Body => TextRole::Body,
+        WitRole::Caption => TextRole::Caption,
+        WitRole::Emphasis => TextRole::Emphasis,
     }
 }
 

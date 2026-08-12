@@ -10,11 +10,11 @@
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
     PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginUiDocument,
-    PluginUiNodeDto, PluginUiNodeKind, SpacingStep,
+    PluginUiNodeDto, PluginUiNodeKind, SpacingStep, TextRole,
 };
 use arclain_ui::features::plugins::application::PluginNavigation;
 use arclain_ui::features::plugins::presentation::rendering::{
-    render_document, DocumentContext, DocumentEvent, DocumentExtent,
+    render_document, text_style_for_role, DocumentContext, DocumentEvent, DocumentExtent, TextStyle,
 };
 use arclain_ui::shared::theme::AppTheme;
 use egui_kittest::kittest::Queryable as _;
@@ -219,8 +219,7 @@ fn a_hidden_node_is_not_drawn_at_all() {
             "visible_label",
             PluginUiNodeKind::Label {
                 text: "Still here".to_string(),
-                bold: false,
-                size: None,
+                role: TextRole::Body,
             },
         ),
     ]));
@@ -366,16 +365,14 @@ fn a_split_is_height_bounded_only_when_the_host_asks_for_it() {
                     "s",
                     PluginUiNodeKind::Label {
                         text: "Sidebar".to_string(),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     },
                 )],
                 content: vec![node(
                     "c",
                     PluginUiNodeKind::Label {
                         text: "Content".to_string(),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     },
                 )],
                 sidebar_width: Some(120.0),
@@ -436,4 +433,29 @@ fn a_split_is_height_bounded_only_when_the_host_asks_for_it() {
         full.state().consumed > bounded_height,
         "an unbounded split must be free to take more room than a bounded one"
     );
+}
+
+/// A plugin names a role; this pins the host's answer. Every role has to
+/// land on its own row of the type scale, or two of them say different
+/// things and render as the same thing -- which is the failure a plugin
+/// author cannot see and cannot work around.
+#[test]
+fn every_text_role_renders_differently() {
+    let styles: Vec<TextStyle> = [
+        TextRole::Title,
+        TextRole::Subtitle,
+        TextRole::Body,
+        TextRole::Caption,
+        TextRole::Emphasis,
+    ]
+    .into_iter()
+    .map(text_style_for_role)
+    .collect();
+
+    for (index, style) in styles.iter().enumerate() {
+        assert!(
+            !styles[index + 1..].contains(style),
+            "two roles render identically: {style:?}"
+        );
+    }
 }

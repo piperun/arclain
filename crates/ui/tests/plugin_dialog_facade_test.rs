@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use arclain_app::event::OperationKind;
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
-    PluginExtensionPointDto, PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind,
+    PluginExtensionPointDto, PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind, TextRole,
 };
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 use arclain_ui::core::app_lifecycle;
@@ -614,8 +614,7 @@ fn split_document(session_id: PluginSessionId) -> PluginUiDocument {
             id: id.to_string(),
             kind: PluginUiNodeKind::Label {
                 text: text.to_string(),
-                bold: false,
-                size: None,
+                role: TextRole::Body,
             },
             visible: true,
             enabled: true,

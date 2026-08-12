@@ -71,11 +71,11 @@ use crate::model::{
     WarningIcon,
 };
 
-/// Re-exported because a node kind names it directly. Steps are host
-/// vocabulary rather than plugin-supplied data, so there is nothing for a
-/// DTO twin to normalize -- the enum a plugin picks from is the enum a
+/// Re-exported because a node kind names them directly. Steps and roles are
+/// host vocabulary rather than plugin-supplied data, so there is nothing for
+/// a DTO twin to normalize -- the enum a plugin picks from is the enum a
 /// frontend matches on.
-pub use crate::model::SpacingStep;
+pub use crate::model::{SpacingStep, TextRole};
 
 /// Maximum nesting depth (containers within containers within the root)
 /// a normalized tree may reach.
@@ -181,8 +181,7 @@ pub enum PluginUiNodeKind {
     },
     Label {
         text: String,
-        bold: bool,
-        size: Option<f32>,
+        role: TextRole,
     },
     SectionHeader {
         title: String,
@@ -658,14 +657,13 @@ fn normalize_element(
     ctx.charge_node()?;
 
     let (id, kind) = match element {
-        PluginUiElement::Label { text, bold, size } => {
+        PluginUiElement::Label { text, role } => {
             ctx.charge_text(text.len())?;
             (
                 ctx.register_id(structural_path.to_string())?,
                 PluginUiNodeKind::Label {
                     text: text.clone(),
-                    bold: *bold,
-                    size: *size,
+                    role: *role,
                 },
             )
         }
@@ -984,9 +982,31 @@ fn normalize_element(
 mod tests {
     use super::*;
     use crate::bindings::wirt::plugin::ui::{
-        SpacingStep as WitSpacingStep, UiElement as WitUiElement,
+        LabelConfig as WitLabelConfig, SpacingStep as WitSpacingStep, TextRole as WitTextRole,
+        UiElement as WitUiElement,
     };
     use crate::conversions::convert_ui_element;
+
+    #[test]
+    fn text_role_survives_the_conversion() {
+        for (wit, expected) in [
+            (WitTextRole::Title, TextRole::Title),
+            (WitTextRole::Subtitle, TextRole::Subtitle),
+            (WitTextRole::Body, TextRole::Body),
+            (WitTextRole::Caption, TextRole::Caption),
+            (WitTextRole::Emphasis, TextRole::Emphasis),
+        ] {
+            let element = convert_ui_element(WitUiElement::Label(WitLabelConfig {
+                text: "x".to_string(),
+                role: wit,
+            }));
+            let PluginUiElement::Label { text, role } = element else {
+                panic!("a label converts to a label");
+            };
+            assert_eq!(text, "x");
+            assert_eq!(role, expected);
+        }
+    }
 
     #[test]
     fn spacing_step_survives_the_conversion() {
@@ -1006,8 +1026,7 @@ mod tests {
     fn label(text: &str) -> PluginUiElement {
         PluginUiElement::Label {
             text: text.to_string(),
-            bold: false,
-            size: None,
+            role: TextRole::Body,
         }
     }
 

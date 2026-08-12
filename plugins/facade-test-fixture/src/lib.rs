@@ -172,8 +172,7 @@ impl wirt_sdk::Guest for Component {
                 PluginLayout::Single(vec![
                     UiElement::Label(LabelConfig {
                         text: format!("layout-call-{call_number}"),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     }),
                     UiElement::Button(ButtonConfig {
                         id: "trigger-trap".to_string(),
@@ -211,8 +210,7 @@ impl wirt_sdk::Guest for Component {
                         wirt_sdk::wirt::plugin::host::get_setting(REMEMBERED_SETTING_KEY)
                             .unwrap_or_else(|| "unset".to_string()),
                     ),
-                    bold: false,
-                    size: None,
+                    role: TextRole::Body,
                 }),
                 UiElement::Label(LabelConfig {
                     text: format!(
@@ -220,8 +218,7 @@ impl wirt_sdk::Guest for Component {
                         wirt_sdk::wirt::plugin::host::get_setting(LOAD_COUNT_SETTING_KEY)
                             .unwrap_or_else(|| "0".to_string()),
                     ),
-                    bold: false,
-                    size: None,
+                    role: TextRole::Body,
                 }),
                 UiElement::Button(ButtonConfig {
                     id: "remember".to_string(),
@@ -234,8 +231,7 @@ impl wirt_sdk::Guest for Component {
                 PluginLayout::Single(vec![
                     UiElement::Label(LabelConfig {
                         text: format!("dialog-layout-call-{call_number}"),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     }),
                     // Reuses `on-ui-event`'s `"multi-action"` handler, so a
                     // press from a dialog is observable through the same
@@ -267,16 +263,14 @@ impl wirt_sdk::Guest for Component {
                 PluginLayout::Single(vec![
                     UiElement::Label(LabelConfig {
                         text: format!("page-layout-call-{call_number}"),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     }),
                     UiElement::Label(LabelConfig {
                         text: extension_point
                             .strip_prefix("Page:")
                             .unwrap_or_default()
                             .to_string(),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     }),
                     UiElement::Button(ButtonConfig {
                         id: "multi-action".to_string(),

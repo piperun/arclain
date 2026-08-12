@@ -43,7 +43,7 @@ pub use manifest::{
 };
 pub use model::{
     BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginExtensionPoint, PluginLayout,
-    PluginUiElement, SpacingStep, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
+    PluginUiElement, SpacingStep, TextRole, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
 };
 pub use package::{
     package_bytes, read_package, read_package_bytes, PackageFingerprint, ValidatedPackage,
