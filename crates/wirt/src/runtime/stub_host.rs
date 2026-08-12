@@ -100,6 +100,23 @@ impl Host for StubHost {
         false
     }
 
+    fn put_data(&mut self, _key: String, _data: Vec<u8>) -> std::result::Result<(), String> {
+        Err("unsupported by stub host".to_string())
+    }
+
+    fn data_key_count(&mut self, _prefix: String) -> std::result::Result<u64, String> {
+        Err("unsupported by stub host".to_string())
+    }
+
+    fn list_data_keys_page(
+        &mut self,
+        _prefix: String,
+        _offset: u32,
+        _limit: u32,
+    ) -> std::result::Result<Vec<String>, String> {
+        Err("unsupported by stub host".to_string())
+    }
+
     fn current_archive_info(&mut self) -> Option<ArchiveInfo> {
         None
     }

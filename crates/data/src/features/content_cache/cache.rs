@@ -676,6 +676,41 @@ impl ContentCache {
         Ok(false)
     }
 
+    /// Count entries under one raw-key prefix inside exactly one owner.
+    pub fn count_keys_with_prefix_for_owner(
+        &self,
+        owner: &CacheOwner,
+        prefix: &str,
+        cache_type: CacheType,
+    ) -> Result<u64> {
+        self.service
+            .count_keys_with_prefix(&owner.scoped_key(prefix), cache_type)
+    }
+
+    /// Return one deterministic raw-key page from exactly one owner.
+    pub fn list_keys_with_prefix_page_for_owner(
+        &self,
+        owner: &CacheOwner,
+        prefix: &str,
+        cache_type: CacheType,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let scoped_prefix = owner.scoped_key(prefix);
+        self.service
+            .list_keys_with_prefix_page(&scoped_prefix, cache_type, offset, limit)?
+            .into_iter()
+            .map(|scoped_key| {
+                let (actual_owner, raw_key) = super::quota::parse_scoped_key(&scoped_key)
+                    .context("cache index returned an invalid scoped key")?;
+                if actual_owner != *owner || !raw_key.starts_with(prefix) {
+                    bail!("cache index returned a key outside the requested owner prefix");
+                }
+                Ok(raw_key.to_string())
+            })
+            .collect()
+    }
+
     pub fn base_dir(&self) -> &PathBuf {
         &self.base_dir
     }
@@ -1067,6 +1102,41 @@ mod quota_api_tests {
             Ok(entries)
         }
 
+        fn count_keys_with_prefix(
+            &self,
+            scoped_prefix: &str,
+            cache_type: CacheType,
+        ) -> Result<u64> {
+            Ok(self
+                .entries
+                .lock()
+                .values()
+                .filter(|entry| {
+                    entry.key.starts_with(scoped_prefix) && entry.cache_type == cache_type
+                })
+                .count() as u64)
+        }
+
+        fn list_keys_with_prefix_page(
+            &self,
+            scoped_prefix: &str,
+            cache_type: CacheType,
+            offset: usize,
+            limit: usize,
+        ) -> Result<Vec<String>> {
+            let mut keys: Vec<_> = self
+                .entries
+                .lock()
+                .values()
+                .filter(|entry| {
+                    entry.key.starts_with(scoped_prefix) && entry.cache_type == cache_type
+                })
+                .map(|entry| entry.key.clone())
+                .collect();
+            keys.sort();
+            Ok(keys.into_iter().skip(offset).take(limit).collect())
+        }
+
         fn has_complete_lru_view(&self) -> bool {
             true
         }
@@ -1177,6 +1247,66 @@ mod quota_api_tests {
         );
         assert!(cache.get_for_owner(&plugin_b, "shared").unwrap().is_none());
         assert!(cache.get("shared").unwrap().is_none());
+    }
+
+    #[test]
+    fn owner_prefix_queries_return_only_raw_keys_for_the_exact_owner() {
+        let (_dir, cache, _index) = owner_cache();
+        let host = CacheOwner::host();
+        let plugin_a = CacheOwner::plugin("plugin-a");
+        let plugin_b = CacheOwner::plugin("plugin-b");
+        for (owner, key) in [
+            (&host, "state:host"),
+            (&plugin_a, "state:two"),
+            (&plugin_a, "state:one"),
+            (&plugin_a, "other:key"),
+            (&plugin_b, "state:other"),
+        ] {
+            cache
+                .put_for_owner(owner, key, b"x", CacheType::PluginData, None, None)
+                .unwrap();
+        }
+        cache
+            .put_for_owner(
+                &plugin_a,
+                "state:reserved",
+                b"x",
+                CacheType::Metadata,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            cache
+                .count_keys_with_prefix_for_owner(&plugin_a, "state:", CacheType::PluginData)
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            cache
+                .list_keys_with_prefix_page_for_owner(
+                    &plugin_a,
+                    "state:",
+                    CacheType::PluginData,
+                    0,
+                    1,
+                )
+                .unwrap(),
+            vec!["state:one".to_string()]
+        );
+        assert_eq!(
+            cache
+                .list_keys_with_prefix_page_for_owner(
+                    &plugin_a,
+                    "state:",
+                    CacheType::PluginData,
+                    1,
+                    1,
+                )
+                .unwrap(),
+            vec!["state:two".to_string()]
+        );
     }
 
     #[test]

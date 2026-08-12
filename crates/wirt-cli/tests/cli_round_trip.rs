@@ -181,13 +181,13 @@ fn starter_round_trip_is_deterministic_and_failures_leave_no_output() {
     assert_success(run_in(&project, &["build"]));
 
     let project_validation = assert_success(run_in(&project, &["validate", "."]));
-    assert!(String::from_utf8_lossy(&project_validation.stdout).contains("ABI: 0.1.0"));
+    assert!(String::from_utf8_lossy(&project_validation.stdout).contains("ABI: 0.2.0"));
 
     assert_success(run_in(&project, &["package"]));
     let default_package = project.join("wirt-starter-0.1.0.wirt");
     assert!(default_package.is_file());
     let package_validation = assert_success(run(&["validate", default_package.to_str().unwrap()]));
-    assert!(String::from_utf8_lossy(&package_validation.stdout).contains("ABI: 0.1.0"));
+    assert!(String::from_utf8_lossy(&package_validation.stdout).contains("ABI: 0.2.0"));
 
     let custom_package = project.join("custom-output.wirt");
     assert_success(run_in(

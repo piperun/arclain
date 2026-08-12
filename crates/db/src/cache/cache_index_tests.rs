@@ -22,6 +22,7 @@ fn test_cache_type_roundtrip() {
         CacheType::Metadata,
         CacheType::Html,
         CacheType::Cover,
+        CacheType::PluginData,
         CacheType::Other,
     ];
     for ct in &types {
@@ -406,6 +407,79 @@ mod diesel_crud {
 
         assert_eq!(delete_by_pattern(&mut conn, "bang!literal").unwrap(), 1);
         assert_eq!(delete_by_pattern(&mut conn, "wild:*").unwrap(), 2);
+    }
+
+    #[test]
+    fn owner_prefix_count_and_page_are_exact_bounded_sql_projections() {
+        let mut conn = setup_diesel();
+        let owner_prefix = "\u{1}arclain-cache:v1:p:8:plugin-a:";
+        for (cache_key, entry_type) in [
+            (
+                format!("{owner_prefix}state:%literal"),
+                CacheType::PluginData,
+            ),
+            (
+                format!("{owner_prefix}state:_literal"),
+                CacheType::PluginData,
+            ),
+            (format!("{owner_prefix}state:one"), CacheType::PluginData),
+            (format!("{owner_prefix}state:two"), CacheType::PluginData),
+            (
+                format!("{owner_prefix}state:reserved-metadata"),
+                CacheType::Metadata,
+            ),
+            (
+                format!("{owner_prefix}State:case-sensitive"),
+                CacheType::PluginData,
+            ),
+            (
+                format!("{owner_prefix}status:outside-prefix"),
+                CacheType::PluginData,
+            ),
+            (
+                "\u{1}arclain-cache:v1:h:0::state:host".to_string(),
+                CacheType::PluginData,
+            ),
+            (
+                "\u{1}arclain-cache:v1:p:8:plugin-b:state:other".to_string(),
+                CacheType::PluginData,
+            ),
+        ] {
+            upsert_cache_entry(&mut conn, &cache_key, None, "h", None, entry_type, Some(1))
+                .unwrap();
+        }
+
+        let state_prefix = format!("{owner_prefix}state:");
+        assert_eq!(
+            count_keys_with_prefix(&mut conn, &state_prefix, CacheType::PluginData).unwrap(),
+            4
+        );
+        assert_eq!(
+            list_keys_with_prefix_page(&mut conn, &state_prefix, CacheType::PluginData, 1, 2,)
+                .unwrap(),
+            vec![
+                format!("{owner_prefix}state:_literal"),
+                format!("{owner_prefix}state:one"),
+            ]
+        );
+
+        let percent_prefix = format!("{owner_prefix}state:%");
+        assert_eq!(
+            count_keys_with_prefix(&mut conn, &percent_prefix, CacheType::PluginData).unwrap(),
+            1
+        );
+        let underscore_prefix = format!("{owner_prefix}state:_");
+        assert_eq!(
+            list_keys_with_prefix_page(
+                &mut conn,
+                &underscore_prefix,
+                CacheType::PluginData,
+                0,
+                256,
+            )
+            .unwrap(),
+            vec![format!("{owner_prefix}state:_literal")]
+        );
     }
 
     #[test]

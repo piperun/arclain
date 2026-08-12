@@ -16,4 +16,4 @@ Copy-Item target/plugin-fixture/wasm32-wasip2/release/failing_init.wasm crates/p
 The generated `.wasm` is intentionally force-tracked despite the repository's
 global `*.wasm` ignore rule. Its SHA-256 is updated here whenever the fixture
 is regenerated:
-`34463363283BF4D8D60E55C677CC73843942D5328D8A62A89A4053E9174F5EE4`.
+`0B79D586BF962ABA0518DDC96AE27B755A5D8B7A9043714FD6A5000BD6E94E70`.

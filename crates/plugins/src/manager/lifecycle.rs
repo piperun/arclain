@@ -1346,6 +1346,12 @@ impl PluginManager {
         if let Some(ref lib_svc) = self.library_service {
             instance.set_library_service(Some(lib_svc.clone()));
         }
+        if let Some(ref cache) = self.content_cache {
+            instance.set_content_cache(Some(cache.clone()));
+        }
+        if let Some(ref manager) = self.resource_manager {
+            instance.set_resource_manager(Some(manager.clone()));
+        }
         if let Some(ref client) = self.gameta_client {
             instance.set_gameta_client(Some(client.clone()));
         }

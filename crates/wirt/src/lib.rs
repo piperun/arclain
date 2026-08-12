@@ -56,4 +56,4 @@ pub use runtime::{
     sandboxed_wasi_ctx, LoadedComponent, PluginInstance, WasmRuntime, WirtStoreState,
 };
 
-pub const WIRT_ABI_VERSION: &str = "0.1.0";
+pub const WIRT_ABI_VERSION: &str = "0.2.0";

@@ -3,10 +3,10 @@ use wasmtime::component::Component;
 use wasmtime::{Config, Engine};
 
 const EXPECTED_PLUGIN_IMPORTS: [&str; 4] = [
-    "wirt:plugin/host@0.1.0",
-    "wirt:plugin/meta@0.1.0",
-    "wirt:plugin/rules@0.1.0",
-    "wirt:plugin/ui@0.1.0",
+    "wirt:plugin/host@0.2.0",
+    "wirt:plugin/meta@0.2.0",
+    "wirt:plugin/rules@0.2.0",
+    "wirt:plugin/ui@0.2.0",
 ];
 
 fn non_wasi_component_imports(component: &[u8]) -> BTreeSet<String> {
@@ -31,10 +31,10 @@ fn arbitrary_payload_strings_do_not_spoof_component_imports() {
             (core module
                 (memory 1)
                 (data (i32.const 0)
-                    "wirt:plugin/host@0.1.0"
-                    "wirt:plugin/meta@0.1.0"
-                    "wirt:plugin/rules@0.1.0"
-                    "wirt:plugin/ui@0.1.0")))
+                    "wirt:plugin/host@0.2.0"
+                    "wirt:plugin/meta@0.2.0"
+                    "wirt:plugin/rules@0.2.0"
+                    "wirt:plugin/ui@0.2.0")))
     "#;
 
     assert_eq!(

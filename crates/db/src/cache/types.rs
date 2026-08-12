@@ -19,6 +19,8 @@ pub enum CacheType {
     Html,
     /// Cover/main images
     Cover,
+    /// Persistent data written through the bounded Wirt host API
+    PluginData,
     /// Other/unknown content
     Other,
 }
@@ -31,6 +33,7 @@ impl CacheType {
             CacheType::Metadata => "metadata",
             CacheType::Html => "html",
             CacheType::Cover => "cover",
+            CacheType::PluginData => "plugin_data",
             CacheType::Other => "other",
         }
     }
@@ -42,6 +45,7 @@ impl CacheType {
             "metadata" => CacheType::Metadata,
             "html" => CacheType::Html,
             "cover" => CacheType::Cover,
+            "plugin_data" => CacheType::PluginData,
             _ => CacheType::Other,
         }
     }

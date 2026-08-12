@@ -510,6 +510,98 @@ fn facade_fixture_package(path: &std::path::Path) -> wirt::PackageFingerprint {
     fingerprint
 }
 
+fn persistent_content_cache(
+    profile_root: &std::path::Path,
+) -> (
+    Arc<arclain_data::ContentCache>,
+    Arc<arclain_data::ResourceManager>,
+) {
+    let database_path = profile_root.join("cache.sqlite");
+    drop(arclain_db::CacheDb::open(&database_path).unwrap());
+    let pool = arclain_db::DieselPool::new(&database_path).unwrap();
+    let service = Arc::new(arclain_core::CacheService::new(pool));
+    let limits = arclain_data::CacheLimits {
+        min_free_space_bytes: 0,
+        ..Default::default()
+    };
+    let cache = Arc::new(
+        arclain_data::ContentCache::new_with_limits(profile_root.join("cache"), service, limits)
+            .unwrap(),
+    );
+    let resources = Arc::new(arclain_data::ResourceManager::new(
+        cache.clone(),
+        arclain_data::ResourceConfig::default(),
+    ));
+    (cache, resources)
+}
+
+#[test]
+fn persistent_plugin_data_survives_manager_restart_in_the_same_profile() {
+    let profile = TempDir::new().unwrap();
+    let package_path = profile.path().join("facade-test-fixture.wirt");
+    let fingerprint = facade_fixture_package(&package_path);
+    let plugins_dir = profile.path().join("plugins");
+
+    let owner = arclain_data::CacheOwner::plugin("facade-test-fixture");
+    let (cache, resources) = persistent_content_cache(profile.path());
+    let mut manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    manager.set_content_cache(cache.clone());
+    manager.set_resource_manager(resources);
+    manager
+        .install_plugin_package(&package_path, &fingerprint)
+        .unwrap();
+    assert_eq!(
+        manager
+            .execute_plugin(
+                "facade-test-fixture",
+                wirt::ExecutorRequest::UiEvent {
+                    id: "persistent-data-write".to_string(),
+                    value: Some("survives-manager-restart".to_string()),
+                },
+            )
+            .unwrap(),
+        wirt::ExecutorResponse::Actions(vec![wirt::PluginAction::SetPageDisplayName {
+            name: "persistent-data-written".to_string(),
+        }])
+    );
+    assert_eq!(
+        cache
+            .get_for_owner(&owner, "fixture:restart-state")
+            .unwrap()
+            .as_deref(),
+        Some(b"survives-manager-restart".as_slice())
+    );
+    drop(manager);
+    drop(cache);
+
+    let (reopened_cache, reopened_resources) = persistent_content_cache(profile.path());
+    assert_eq!(
+        reopened_cache
+            .get_for_owner(&owner, "fixture:restart-state")
+            .unwrap()
+            .as_deref(),
+        Some(b"survives-manager-restart".as_slice())
+    );
+    let mut restarted = PluginManager::new(plugins_dir, HashMap::new()).unwrap();
+    restarted.set_content_cache(reopened_cache);
+    restarted.set_resource_manager(reopened_resources);
+    restarted.init().unwrap();
+    assert_eq!(
+        restarted
+            .execute_plugin(
+                "facade-test-fixture",
+                wirt::ExecutorRequest::UiEvent {
+                    id: "persistent-data-read".to_string(),
+                    value: None,
+                },
+            )
+            .unwrap(),
+        wirt::ExecutorResponse::Actions(vec![wirt::PluginAction::SetPageDisplayName {
+            name: "survives-manager-restart".to_string(),
+        }])
+    );
+}
+
 fn facade_fixture_package_with_manifest(
     path: &std::path::Path,
     mutate: impl FnOnce(&mut crate::types::PluginManifest),
@@ -961,7 +1053,7 @@ fn package_preview_rejects_a_link_or_non_file_final_component() {
 #[test]
 fn package_init_failure_rolls_back_sidecars_staging_and_live_state() {
     const MANIFEST: &[u8] = br#"[wirt]
-abi = "0.1.0"
+abi = "0.2.0"
 
 [plugin]
 id = "failing-init"
@@ -1063,7 +1155,7 @@ fn init_records_a_discovered_but_uninstantiable_plugin_as_a_failed_plugin() {
         plugin_dir.join("broken-plugin.toml"),
         r#"
 [wirt]
-abi = "0.1.0"
+abi = "0.2.0"
 
 [plugin]
 id = "broken-plugin"

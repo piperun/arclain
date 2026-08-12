@@ -252,14 +252,14 @@ fn manifest_requires_the_current_wirt_abi() {
     let temp_dir = TempDir::new().unwrap();
     let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
 
-    let manifest = valid_manifest_with_abi("0.1.0");
+    let manifest = valid_manifest_with_abi("0.2.0");
     loader.validate_manifest(&manifest).unwrap();
 
     let missing = manifest_toml_without_wirt_table();
     assert!(toml::from_str::<PluginManifest>(missing).is_err());
 
     let error = loader
-        .validate_manifest(&valid_manifest_with_abi("0.2.0"))
+        .validate_manifest(&valid_manifest_with_abi("0.1.0"))
         .unwrap_err();
     assert!(matches!(error, PluginError::Unsupported(_)));
     assert!(error.to_string().contains("unsupported Wirt ABI"));

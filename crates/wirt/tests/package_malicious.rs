@@ -411,14 +411,14 @@ fn manifest_network_authority_requires_exact_domains() {
 #[test]
 fn hostile_manifest_values_and_parser_diagnostics_are_bounded() {
     let marker = "HOSTILE-MANIFEST-VALUE".repeat(400);
-    let invalid_abi = manifest_toml().replace("abi = \"0.1.0\"", &format!("abi = \"{marker}\""));
+    let invalid_abi = manifest_toml().replace("abi = \"0.2.0\"", &format!("abi = \"{marker}\""));
     let invalid_domain = manifest_toml()
         .replace("network = false", "network = true")
         .replace(
             "network_domains = []",
             &format!("network_domains = [\"{marker}\"]"),
         );
-    let malformed = format!("[wirt]\nabi = \"0.1.0\"\n{marker}");
+    let malformed = format!("[wirt]\nabi = \"0.2.0\"\n{marker}");
 
     for (label, manifest) in [
         ("ABI", invalid_abi),

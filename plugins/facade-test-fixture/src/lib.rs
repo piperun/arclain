@@ -64,6 +64,11 @@
 //!   `"schema-create-file"` event calls the canonical `create-file` host
 //!   member. Bundled guests do not use that member, so the fixture proves a
 //!   valid external SDK plugin may import more of an interface than they do.
+//! - **Persistent plugin data**: `"persistent-data-write"` stores the event
+//!   value through the bounded owner-scoped API, while
+//!   `"persistent-data-read"` reports it through the existing cache read.
+//!   A host test recreates both manager and cache against the same profile to
+//!   prove the value is durable rather than instance-local.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use wirt_sdk::{info, log_network_activity};
@@ -92,6 +97,9 @@ const LOAD_COUNT_SETTING_KEY: &str = "load-count";
 /// guest trap from another resource-limit failure without changing the
 /// component fingerprint between retries.
 const FAIL_INIT_SETTING_KEY: &str = "fail-init";
+
+/// Owner-scoped cache key shared by the persistent write/read fixture events.
+const PERSISTENT_DATA_KEY: &str = "fixture:restart-state";
 
 /// Incremented on every `get-ui-layout` call for `"MainPage"`. Backed by
 /// this WASM instance's own linear memory, so it persists across calls
@@ -364,6 +372,28 @@ impl wirt_sdk::Guest for Component {
             "schema-create-file" => {
                 let _ = wirt_sdk::create_file("schema-projection-probe", &[]);
                 vec![]
+            }
+            "persistent-data-write" => {
+                let result = wirt_sdk::put_data(
+                    PERSISTENT_DATA_KEY,
+                    value.as_deref().unwrap_or_default().as_bytes(),
+                );
+                vec![PluginAction::SetPageDisplayName(match result {
+                    Ok(()) => "persistent-data-written".to_string(),
+                    Err(_) => "persistent-data-write-failed".to_string(),
+                })]
+            }
+            "persistent-data-read" => {
+                let count = wirt_sdk::data_key_count("fixture:");
+                let page = wirt_sdk::list_data_keys_page("fixture:", 0, 256);
+                let indexed = count == Ok(1)
+                    && page == Ok(vec![PERSISTENT_DATA_KEY.to_string()]);
+                let value = indexed
+                    .then(|| wirt_sdk::wirt::plugin::host::get_data(PERSISTENT_DATA_KEY))
+                    .flatten()
+                    .and_then(|data| String::from_utf8(data).ok())
+                    .unwrap_or_else(|| "persistent-data-missing".to_string());
+                vec![PluginAction::SetPageDisplayName(value)]
             }
             _ => vec![],
         }

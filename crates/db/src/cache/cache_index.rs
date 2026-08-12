@@ -238,6 +238,72 @@ pub fn touch_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) -
     Ok(())
 }
 
+fn prefix_exclusive_upper_bound(prefix: &str) -> Option<String> {
+    let mut characters: Vec<char> = prefix.chars().collect();
+    for index in (0..characters.len()).rev() {
+        let value = characters[index] as u32;
+        let next = match value {
+            0x10ffff => continue,
+            0xd7ff => 0xe000,
+            value => value + 1,
+        };
+        characters.truncate(index);
+        characters.push(char::from_u32(next).expect("next scalar value must be valid"));
+        return Some(characters.into_iter().collect());
+    }
+    None
+}
+
+/// Count entries under one literal key prefix using the key index.
+pub fn count_keys_with_prefix(
+    conn: &mut diesel::SqliteConnection,
+    prefix: &str,
+    required_cache_type: CacheType,
+) -> Result<u64> {
+    use crate::diesel_schema::cache_index::dsl::*;
+    use diesel::dsl::count;
+
+    let upper = prefix_exclusive_upper_bound(prefix)
+        .ok_or_else(|| anyhow::anyhow!("cache key prefix has no finite upper bound"))?;
+    let value: i64 = cache_index
+        .filter(key.ge(prefix).and(key.lt(upper)))
+        .filter(cache_type.eq(required_cache_type.as_str()))
+        .select(count(id))
+        .first(conn)
+        .map_err(diesel_err("count_keys_with_prefix"))?;
+    u64::try_from(value).map_err(|_| anyhow::anyhow!("cache key count is negative"))
+}
+
+/// Project one deterministic key-only page under one literal prefix.
+pub fn list_keys_with_prefix_page(
+    conn: &mut diesel::SqliteConnection,
+    prefix: &str,
+    required_cache_type: CacheType,
+    offset_param: usize,
+    limit_param: usize,
+) -> Result<Vec<String>> {
+    use crate::diesel_schema::cache_index::dsl::*;
+
+    if limit_param == 0 {
+        return Ok(Vec::new());
+    }
+    let sql_offset = i64::try_from(offset_param)
+        .map_err(|_| anyhow::anyhow!("cache key page offset does not fit SQLite"))?;
+    let sql_limit = i64::try_from(limit_param)
+        .map_err(|_| anyhow::anyhow!("cache key page limit does not fit SQLite"))?;
+    let upper = prefix_exclusive_upper_bound(prefix)
+        .ok_or_else(|| anyhow::anyhow!("cache key prefix has no finite upper bound"))?;
+    cache_index
+        .filter(key.ge(prefix).and(key.lt(upper)))
+        .filter(cache_type.eq(required_cache_type.as_str()))
+        .order(key.asc())
+        .offset(sql_offset)
+        .limit(sql_limit)
+        .select(key)
+        .load::<String>(conn)
+        .map_err(diesel_err("list_keys_with_prefix_page"))
+}
+
 /// List indexed entries from least to most recently used.
 ///
 /// Entries that have never been read use their creation time. The stable ID

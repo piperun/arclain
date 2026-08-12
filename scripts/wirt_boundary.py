@@ -1188,9 +1188,9 @@ def wirt_wit_violations(workspace_root: Path) -> list[str]:
     }
     if canonical not in plugin_wit_files:
         violations.append("wirt-sdk/wit/plugin.wit: missing canonical Wirt plugin WIT")
-    elif package_declarations[canonical] != ([("wirt", "plugin", "0.1.0")], False):
+    elif package_declarations[canonical] != ([("wirt", "plugin", "0.2.0")], False):
         violations.append(
-            "wirt-sdk/wit/plugin.wit: must declare package wirt:plugin@0.1.0"
+            "wirt-sdk/wit/plugin.wit: must declare package wirt:plugin@0.2.0"
         )
 
     for path, (_, malformed) in package_declarations.items():

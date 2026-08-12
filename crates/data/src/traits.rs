@@ -58,6 +58,28 @@ pub trait CacheIndex: Send + Sync {
     fn delete_by_pattern(&self, pattern: &str) -> Result<usize>;
     fn update_last_accessed(&self, key: &str) -> Result<()>;
 
+    /// Count keys beginning with one already-owner-scoped prefix.
+    ///
+    /// Production indexes must implement this as a targeted index query.
+    /// The default refuses to synthesize a potentially unbounded scan from
+    /// `entries_lru`.
+    fn count_keys_with_prefix(&self, _scoped_prefix: &str, _cache_type: CacheType) -> Result<u64> {
+        anyhow::bail!("cache index does not support prefix counts")
+    }
+
+    /// Return one deterministic key-only page for an already-owner-scoped
+    /// prefix. Production indexes must project only the key column and apply
+    /// offset/limit in the database.
+    fn list_keys_with_prefix_page(
+        &self,
+        _scoped_prefix: &str,
+        _cache_type: CacheType,
+        _offset: usize,
+        _limit: usize,
+    ) -> Result<Vec<String>> {
+        anyhow::bail!("cache index does not support prefix key pages")
+    }
+
     /// Removes every index row. Complete production indexes should
     /// override this with one transactional statement; the compatibility
     /// implementation is deliberately conservative and refuses an

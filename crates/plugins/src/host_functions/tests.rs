@@ -484,6 +484,136 @@ impl CacheIndex for OwnerMapCacheIndex {
         entries.sort_by_key(|entry| entry.id);
         Ok(entries)
     }
+
+    fn count_keys_with_prefix(
+        &self,
+        scoped_prefix: &str,
+        cache_type: CacheType,
+    ) -> anyhow::Result<u64> {
+        Ok(self
+            .entries
+            .lock()
+            .values()
+            .filter(|entry| entry.key.starts_with(scoped_prefix) && entry.cache_type == cache_type)
+            .count() as u64)
+    }
+
+    fn list_keys_with_prefix_page(
+        &self,
+        scoped_prefix: &str,
+        cache_type: CacheType,
+        offset: usize,
+        limit: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut keys: Vec<_> = self
+            .entries
+            .lock()
+            .values()
+            .filter(|entry| entry.key.starts_with(scoped_prefix) && entry.cache_type == cache_type)
+            .map(|entry| entry.key.clone())
+            .collect();
+        keys.sort();
+        Ok(keys.into_iter().skip(offset).take(limit).collect())
+    }
+}
+
+#[derive(Default)]
+struct OversizedPageCacheIndex;
+
+impl CacheIndex for OversizedPageCacheIndex {
+    fn upsert(
+        &self,
+        _key: &str,
+        _product_id: Option<&str>,
+        _content_hash: &str,
+        _source_url: Option<&str>,
+        _cache_type: CacheType,
+        _size_bytes: Option<i64>,
+    ) -> anyhow::Result<i64> {
+        Ok(1)
+    }
+
+    fn get(&self, _key: &str) -> anyhow::Result<Option<CacheEntry>> {
+        Ok(None)
+    }
+
+    fn has(&self, _key: &str) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    fn delete(&self, _key: &str) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    fn delete_by_pattern(&self, _pattern: &str) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+
+    fn update_last_accessed(&self, _key: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn list_keys_with_prefix_page(
+        &self,
+        scoped_prefix: &str,
+        _cache_type: CacheType,
+        _offset: usize,
+        limit: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok((limit > 0)
+            .then(|| format!("{scoped_prefix}{}", "x".repeat(1024 * 1024 + 1)))
+            .into_iter()
+            .collect())
+    }
+}
+
+#[derive(Default)]
+struct OverdeliveringPageCacheIndex;
+
+impl CacheIndex for OverdeliveringPageCacheIndex {
+    fn upsert(
+        &self,
+        _key: &str,
+        _product_id: Option<&str>,
+        _content_hash: &str,
+        _source_url: Option<&str>,
+        _cache_type: CacheType,
+        _size_bytes: Option<i64>,
+    ) -> anyhow::Result<i64> {
+        Ok(1)
+    }
+
+    fn get(&self, _key: &str) -> anyhow::Result<Option<CacheEntry>> {
+        Ok(None)
+    }
+
+    fn has(&self, _key: &str) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    fn delete(&self, _key: &str) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    fn delete_by_pattern(&self, _pattern: &str) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+
+    fn update_last_accessed(&self, _key: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn list_keys_with_prefix_page(
+        &self,
+        scoped_prefix: &str,
+        _cache_type: CacheType,
+        _offset: usize,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok((0..257)
+            .map(|index| format!("{scoped_prefix}key-{index:03}"))
+            .collect())
+    }
 }
 
 // Tempdirs may sit on a small ramdisk; tests must not depend on the
@@ -562,6 +692,223 @@ fn host_cache_calls_are_confined_to_the_calling_plugin_owner() {
     assert!(!cache.has_for_owner(&plugin_a, "group:item").unwrap());
     assert!(cache.has_for_owner(&host_owner, "group:item").unwrap());
     assert!(cache.has_for_owner(&plugin_b, "group:item").unwrap());
+}
+
+#[test]
+fn host_cache_calls_require_file_write_for_persistent_data() {
+    let mut host = host_functions("persistent-data-denied", Default::default(), 0);
+
+    assert!(Host::put_data(&mut host, "state".to_string(), b"value".to_vec()).is_err());
+    assert!(Host::data_key_count(&mut host, String::new()).is_err());
+    assert!(Host::list_data_keys_page(&mut host, String::new(), 0, 1).is_err());
+}
+
+#[test]
+fn host_cache_calls_write_and_page_only_the_calling_plugin_owner() {
+    let (_root, cache, manager) = owner_cache_fixture();
+    let host_owner = arclain_data::CacheOwner::host();
+    let plugin_a = arclain_data::CacheOwner::plugin("plugin-a");
+    let plugin_b = arclain_data::CacheOwner::plugin("plugin-b");
+    cache
+        .put_for_owner(
+            &host_owner,
+            "state:host",
+            b"host",
+            CacheType::Other,
+            None,
+            None,
+        )
+        .unwrap();
+    cache
+        .put_for_owner(
+            &plugin_a,
+            "dlsite:json:RJ000001",
+            b"reserved",
+            CacheType::Metadata,
+            None,
+            None,
+        )
+        .unwrap();
+    cache
+        .put_for_owner(
+            &plugin_b,
+            "state:other",
+            b"other",
+            CacheType::Other,
+            None,
+            None,
+        )
+        .unwrap();
+
+    let capabilities = [PluginCapability::FileWrite, PluginCapability::FileRead]
+        .into_iter()
+        .collect();
+    let mut host = host_functions("plugin-a", capabilities, 0);
+    host.set_content_cache(cache);
+    host.set_resource_manager(manager);
+
+    Host::put_data(&mut host, "state:two".to_string(), b"two".to_vec()).unwrap();
+    Host::put_data(&mut host, "state:one".to_string(), b"one".to_vec()).unwrap();
+    Host::put_data(&mut host, "other:key".to_string(), b"other".to_vec()).unwrap();
+
+    assert_eq!(Host::data_key_count(&mut host, String::new()), Ok(3));
+    assert_eq!(
+        Host::list_data_keys_page(&mut host, String::new(), 0, 256),
+        Ok(vec![
+            "other:key".to_string(),
+            "state:one".to_string(),
+            "state:two".to_string(),
+        ])
+    );
+    assert_eq!(Host::data_key_count(&mut host, "state:".to_string()), Ok(2));
+    assert_eq!(
+        Host::list_data_keys_page(&mut host, "state:".to_string(), 0, 1),
+        Ok(vec!["state:one".to_string()])
+    );
+    assert_eq!(
+        Host::list_data_keys_page(&mut host, "state:".to_string(), 1, 1),
+        Ok(vec!["state:two".to_string()])
+    );
+    assert_eq!(
+        Host::get_data(&mut host, "state:one".to_string()),
+        Some(b"one".to_vec())
+    );
+}
+
+#[test]
+fn host_cache_calls_reject_invalid_inputs_before_persistent_data_access() {
+    let (_root, cache, manager) = owner_cache_fixture();
+    let capabilities = [PluginCapability::FileWrite].into_iter().collect();
+    let mut host = host_functions("bounded-data", capabilities, 0);
+    host.set_content_cache(cache);
+    host.set_resource_manager(manager);
+
+    for key in [
+        "",
+        ".",
+        "..",
+        "../outside",
+        "directory/entry",
+        "directory\\entry",
+        "wild*card",
+        "dlsite:json:RJ000001",
+        "dlsite:HTML:RJ000001",
+        "dlsite:metadata:RJ000001",
+    ] {
+        assert!(
+            Host::put_data(&mut host, key.to_string(), b"value".to_vec()).is_err(),
+            "key={key:?}"
+        );
+    }
+    assert!(Host::put_data(&mut host, "k".repeat(513), b"value".to_vec()).is_err());
+    assert!(Host::put_data(
+        &mut host,
+        "oversized-value".to_string(),
+        vec![0; 4 * 1024 * 1024 + 1],
+    )
+    .is_err());
+
+    for prefix in [
+        "../outside",
+        "directory/",
+        "directory\\",
+        "wild*",
+        "dlsite:json:",
+        "dlsite:HTML:",
+        "dlsite:metadata:",
+    ] {
+        assert!(
+            Host::data_key_count(&mut host, prefix.to_string()).is_err(),
+            "prefix={prefix:?}"
+        );
+        assert!(
+            Host::list_data_keys_page(&mut host, prefix.to_string(), 0, 1).is_err(),
+            "prefix={prefix:?}"
+        );
+    }
+    assert!(Host::data_key_count(&mut host, "p".repeat(513)).is_err());
+    assert!(Host::list_data_keys_page(&mut host, "p".repeat(513), 0, 1).is_err());
+    assert!(Host::list_data_keys_page(&mut host, String::new(), 0, 257).is_err());
+}
+
+#[test]
+fn host_cache_calls_accept_exact_persistent_data_bounds_and_enforce_owner_quota() {
+    let (_root, cache, manager) = owner_cache_fixture();
+    let capabilities = [PluginCapability::FileWrite].into_iter().collect();
+    let mut host = host_functions("exact-data-bounds", capabilities, 0);
+    host.set_content_cache(cache);
+    host.set_resource_manager(manager);
+
+    let boundary_key = "k".repeat(512);
+    Host::put_data(&mut host, boundary_key.clone(), vec![0; 4 * 1024 * 1024]).unwrap();
+    assert_eq!(Host::data_key_count(&mut host, String::new()), Ok(1));
+    assert_eq!(
+        Host::list_data_keys_page(&mut host, String::new(), 0, 256),
+        Ok(vec![boundary_key])
+    );
+
+    let quota_root = tempfile::tempdir().unwrap();
+    let quota_cache = Arc::new(
+        arclain_data::ContentCache::new_with_limits(
+            quota_root.path().join("cache"),
+            Arc::new(OwnerMapCacheIndex::default()),
+            arclain_data::CacheLimits {
+                max_owner_committed_bytes: 3,
+                min_free_space_bytes: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    let mut quota_host = host_functions(
+        "quota-data",
+        [PluginCapability::FileWrite].into_iter().collect(),
+        0,
+    );
+    quota_host.set_content_cache(quota_cache);
+    assert!(Host::put_data(&mut quota_host, "state".to_string(), b"four".to_vec()).is_err());
+}
+
+#[test]
+fn host_cache_calls_reject_oversized_returned_key_text() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = Arc::new(
+        arclain_data::ContentCache::new_with_limits(
+            root.path().join("cache"),
+            Arc::new(OversizedPageCacheIndex),
+            test_cache_limits(),
+        )
+        .unwrap(),
+    );
+    let mut host = host_functions(
+        "bounded-page-text",
+        [PluginCapability::FileWrite].into_iter().collect(),
+        0,
+    );
+    host.set_content_cache(cache);
+
+    assert!(Host::list_data_keys_page(&mut host, String::new(), 0, 1).is_err());
+}
+
+#[test]
+fn host_cache_calls_reject_an_overdelivering_page_backend() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = Arc::new(
+        arclain_data::ContentCache::new_with_limits(
+            root.path().join("cache"),
+            Arc::new(OverdeliveringPageCacheIndex),
+            test_cache_limits(),
+        )
+        .unwrap(),
+    );
+    let mut host = host_functions(
+        "bounded-page-count",
+        [PluginCapability::FileWrite].into_iter().collect(),
+        0,
+    );
+    host.set_content_cache(cache);
+
+    assert!(Host::list_data_keys_page(&mut host, String::new(), 0, 256).is_err());
 }
 
 #[test]

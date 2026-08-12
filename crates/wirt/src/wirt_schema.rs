@@ -2,12 +2,13 @@
 // Do not edit by hand; a stale projection fails the Wirt build.
 
 const CANONICAL_WIRT_INTERFACES: &[CanonicalInterface] = &[
-    CanonicalInterface { name: "wirt:plugin/host@0.1.0", members: &[
+    CanonicalInterface { name: "wirt:plugin/host@0.2.0", members: &[
         CanonicalMember { name: "archive-file-count", signature: "func:sync()->result(u64,string)" },
         CanonicalMember { name: "archive-info", signature: "type:record(path=string,filename=string)" },
         CanonicalMember { name: "cached-metadata-count", signature: "func:sync(source=string)->result(u64,string)" },
         CanonicalMember { name: "create-file", signature: "func:sync(filename=string,content=list(u8))->result(string,string)" },
         CanonicalMember { name: "current-archive-info", signature: "func:sync()->option(record(path=string,filename=string))" },
+        CanonicalMember { name: "data-key-count", signature: "func:sync(prefix=string)->result(u64,string)" },
         CanonicalMember { name: "data-request", signature: "type:record(key=string,url=option(string),resource-type=enum(image,json,binary),product-id=option(string),sources=list(enum(metadata-cache,content-cache,local-file,memory,network)))" },
         CanonicalMember { name: "data-result", signature: "type:record(status=enum(pending,fetching,ready,failed,cached),data=option(list(u8)),error=option(string))" },
         CanonicalMember { name: "data-source", signature: "type:enum(metadata-cache,content-cache,local-file,memory,network)" },
@@ -26,12 +27,14 @@ const CANONICAL_WIRT_INTERFACES: &[CanonicalInterface] = &[
         CanonicalMember { name: "list-archive-files-page", signature: "func:sync(offset=u32,limit=u32)->result(list(string),string)" },
         CanonicalMember { name: "list-cached-entries", signature: "func:sync()->list(string)" },
         CanonicalMember { name: "list-cached-metadata", signature: "func:sync(source=string,offset=u32,limit=u32)->result(list(string),string)" },
+        CanonicalMember { name: "list-data-keys-page", signature: "func:sync(prefix=string,offset=u32,limit=u32)->result(list(string),string)" },
         CanonicalMember { name: "log", signature: "func:sync(level=enum(trace,debug,info,warn,error),message=string)->none" },
         CanonicalMember { name: "log-level", signature: "type:enum(trace,debug,info,warn,error)" },
         CanonicalMember { name: "log-network-activity", signature: "func:sync(message=string)->none" },
         CanonicalMember { name: "metadata-summary", signature: "type:record(id=string,title=option(string),geo-blocked=bool)" },
         CanonicalMember { name: "play-cached-blob", signature: "func:sync(key=string,extension=string)->result(none,string)" },
         CanonicalMember { name: "poll-data", signature: "func:sync(request-id=string)->record(status=enum(pending,fetching,ready,failed,cached),data=option(list(u8)),error=option(string))" },
+        CanonicalMember { name: "put-data", signature: "func:sync(key=string,data=list(u8))->result(none,string)" },
         CanonicalMember { name: "rename-archive", signature: "func:sync(new-name=string)->result(string,string)" },
         CanonicalMember { name: "request-data", signature: "func:sync(request=record(key=string,url=option(string),resource-type=enum(image,json,binary),product-id=option(string),sources=list(enum(metadata-cache,content-cache,local-file,memory,network))))->string" },
         CanonicalMember { name: "resource-type", signature: "type:enum(image,json,binary)" },
@@ -39,17 +42,17 @@ const CANONICAL_WIRT_INTERFACES: &[CanonicalInterface] = &[
         CanonicalMember { name: "set-status-message", signature: "func:sync(message=string)->none" },
         CanonicalMember { name: "show-message", signature: "func:sync(title=string,message=string)->none" },
     ] },
-    CanonicalInterface { name: "wirt:plugin/meta@0.1.0", members: &[
+    CanonicalInterface { name: "wirt:plugin/meta@0.2.0", members: &[
         CanonicalMember { name: "plugin-metadata", signature: "type:record(id=string,name=string,version=string,author=string,description=string)" },
     ] },
-    CanonicalInterface { name: "wirt:plugin/rules@0.1.0", members: &[
+    CanonicalInterface { name: "wirt:plugin/rules@0.2.0", members: &[
         CanonicalMember { name: "move-file-rule", signature: "type:record(pattern=string,target=string)" },
         CanonicalMember { name: "move-rule", signature: "type:record(target-dir=string,use-date=bool,use-category=bool)" },
         CanonicalMember { name: "plugin-rule-actions", signature: "type:record(root-folder=option(string),move-files=list(record(pattern=string,target=string)),move-to=option(record(target-dir=string,use-date=bool,use-category=bool)),rename-pattern=option(string),organize-content=bool,delete-original=bool,use-standard-layout=bool)" },
         CanonicalMember { name: "plugin-rule-definition", signature: "type:record(name=string,category=string,description=option(string),trigger=record(filename-pattern=option(string),has-file=option(string),extensions=option(list(string)),min-size=option(u64),max-size=option(u64),metadata-source=option(string)),actions=record(root-folder=option(string),move-files=list(record(pattern=string,target=string)),move-to=option(record(target-dir=string,use-date=bool,use-category=bool)),rename-pattern=option(string),organize-content=bool,delete-original=bool,use-standard-layout=bool))" },
         CanonicalMember { name: "plugin-rule-trigger", signature: "type:record(filename-pattern=option(string),has-file=option(string),extensions=option(list(string)),min-size=option(u64),max-size=option(u64),metadata-source=option(string))" },
     ] },
-    CanonicalInterface { name: "wirt:plugin/ui@0.1.0", members: &[
+    CanonicalInterface { name: "wirt:plugin/ui@0.2.0", members: &[
         CanonicalMember { name: "badge-config", signature: "type:record(count=option(u32),dot=bool,color=string)" },
         CanonicalMember { name: "button-action", signature: "type:variant(none=none,show-dialog=string,close-dialog=none,open-page=string,close-page=none,custom=string)" },
         CanonicalMember { name: "button-config", signature: "type:record(id=string,label=string,action=option(variant(none=none,show-dialog=string,close-dialog=none,open-page=string,close-page=none,custom=string)))" },

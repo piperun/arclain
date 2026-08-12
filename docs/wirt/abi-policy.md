@@ -1,20 +1,20 @@
 # Wirt ABI policy
 
 Wirt is a product-neutral plugin API, SDK, and ABI. The current ABI is
-`0.1.0`, declared by the sole source file at
+`0.2.0`, declared by the sole source file at
 [`wirt-sdk/wit/plugin.wit`](../../wirt-sdk/wit/plugin.wit).
 
 ## Exact compatibility while Wirt is 0.x
 
 The host accepts an exact ABI string, not a semver range. A package declaring
-`0.1.0` must contain a component implementing the `0.1.0` Wirt world, and the
-host itself must be built for `0.1.0`. Any mismatch is rejected before plugin
+`0.2.0` must contain a component implementing the `0.2.0` Wirt world, and the
+host itself must be built for `0.2.0`. Any mismatch is rejected before plugin
 initialization.
 
 In particular:
 
-- `0.1.1` is not assumed compatible with `0.1.0`.
-- `0.2.0` is not assumed compatible with `0.1.0`.
+- `0.2.1` is not assumed compatible with `0.2.0`.
+- `0.3.0` is not assumed compatible with `0.2.0`.
 - An omitted `[wirt]` table or malformed version is invalid.
 - Renaming a package or changing its filename does not change its ABI.
 

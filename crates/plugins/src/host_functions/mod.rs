@@ -59,6 +59,9 @@ use temp_storage::PluginTempStorage;
 const METADATA_VALIDATION_DENIED: &str = "metadata-validation-denied";
 const EXTERNAL_LAUNCH_DENIED: &str = "external launch disabled: host UI authorization required";
 const DATA_REQUEST_CAPABILITY_DENIED: &str = "host-data-request-capability-denied";
+const MAX_PERSISTENT_DATA_KEY_BYTES: usize = 512;
+const MAX_PERSISTENT_DATA_PAGE_KEYS: u32 = 256;
+const MAX_PERSISTENT_DATA_PAGE_TEXT_BYTES: usize = 1024 * 1024;
 
 fn is_raw_metadata_cache_key(key: &str) -> bool {
     let Some((namespace, remainder)) = key.split_once(':') else {
@@ -72,6 +75,37 @@ fn is_raw_metadata_cache_key(key: &str) -> bool {
         && ["json", "html", "metadata"]
             .iter()
             .any(|candidate| kind.eq_ignore_ascii_case(candidate))
+}
+
+fn is_raw_metadata_cache_key_or_prefix(key: &str) -> bool {
+    let mut segments = key.splitn(3, ':');
+    let namespace = segments.next().unwrap_or_default();
+    let kind = segments.next().unwrap_or_default();
+    !namespace.is_empty()
+        && ["json", "html", "metadata"]
+            .iter()
+            .any(|candidate| kind.eq_ignore_ascii_case(candidate))
+}
+
+fn validate_persistent_data_key(value: &str, allow_empty: bool) -> Result<(), String> {
+    if (!allow_empty && value.is_empty()) || value.len() > MAX_PERSISTENT_DATA_KEY_BYTES {
+        return Err("persistent data key is empty or exceeds 512 bytes".to_string());
+    }
+    if value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains('\0')
+    {
+        return Err("persistent data key must not be path-like".to_string());
+    }
+    if value.contains('*') {
+        return Err("persistent data key must not contain wildcards".to_string());
+    }
+    if is_raw_metadata_cache_key_or_prefix(value) {
+        return Err("persistent data key uses a reserved metadata namespace".to_string());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1029,6 +1063,92 @@ impl Host for HostFunctions {
         invalidated
     }
 
+    fn put_data(&mut self, key: String, data: Vec<u8>) -> Result<(), String> {
+        if self.is_metadata_validation() {
+            return Err(METADATA_VALIDATION_DENIED.to_string());
+        }
+        self.require_capability(PluginCapability::FileWrite, "put_data")?;
+        validate_persistent_data_key(&key, false)?;
+        if data.len() > crate::types::MAX_PLUGIN_GUEST_DATA_BYTES {
+            return Err("persistent data value exceeds 4 MiB".to_string());
+        }
+        let cache = self
+            .content_cache
+            .as_ref()
+            .ok_or_else(|| "persistent data cache is unavailable".to_string())?;
+        let owner = arclain_data::CacheOwner::plugin(self.plugin_id.as_str());
+        cache
+            .put_for_owner(
+                &owner,
+                &key,
+                &data,
+                arclain_db::CacheType::PluginData,
+                None,
+                None,
+            )
+            .map(|_| ())
+            .map_err(|_| "persistent data write failed".to_string())
+    }
+
+    fn data_key_count(&mut self, prefix: String) -> Result<u64, String> {
+        if self.is_metadata_validation() {
+            return Err(METADATA_VALIDATION_DENIED.to_string());
+        }
+        self.require_capability(PluginCapability::FileWrite, "data_key_count")?;
+        validate_persistent_data_key(&prefix, true)?;
+        let cache = self
+            .content_cache
+            .as_ref()
+            .ok_or_else(|| "persistent data cache is unavailable".to_string())?;
+        let owner = arclain_data::CacheOwner::plugin(self.plugin_id.as_str());
+        cache
+            .count_keys_with_prefix_for_owner(&owner, &prefix, arclain_db::CacheType::PluginData)
+            .map_err(|_| "persistent data key count failed".to_string())
+    }
+
+    fn list_data_keys_page(
+        &mut self,
+        prefix: String,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<String>, String> {
+        if self.is_metadata_validation() {
+            return Err(METADATA_VALIDATION_DENIED.to_string());
+        }
+        self.require_capability(PluginCapability::FileWrite, "list_data_keys_page")?;
+        validate_persistent_data_key(&prefix, true)?;
+        if limit > MAX_PERSISTENT_DATA_PAGE_KEYS {
+            return Err("persistent data key page exceeds 256 entries".to_string());
+        }
+        let cache = self
+            .content_cache
+            .as_ref()
+            .ok_or_else(|| "persistent data cache is unavailable".to_string())?;
+        let owner = arclain_data::CacheOwner::plugin(self.plugin_id.as_str());
+        let keys = cache
+            .list_keys_with_prefix_page_for_owner(
+                &owner,
+                &prefix,
+                arclain_db::CacheType::PluginData,
+                offset as usize,
+                limit as usize,
+            )
+            .map_err(|_| "persistent data key page failed".to_string())?;
+        if keys.len() > limit as usize {
+            return Err("persistent data key page exceeds requested limit".to_string());
+        }
+        let text_bytes = keys.iter().try_fold(0_usize, |total, key| {
+            total
+                .checked_add(key.len())
+                .filter(|total| *total <= MAX_PERSISTENT_DATA_PAGE_TEXT_BYTES)
+                .ok_or(())
+        });
+        if text_bytes.is_err() {
+            return Err("persistent data key page exceeds 1 MiB of text".to_string());
+        }
+        Ok(keys)
+    }
+
     fn create_file(&mut self, filename: String, content: Vec<u8>) -> Result<String, String> {
         if self.is_metadata_validation() {
             return Err(METADATA_VALIDATION_DENIED.to_string());
@@ -1116,6 +1236,9 @@ mod validation_mode_tests {
         assert!(!Host::has_data(&mut host, "key".to_string()));
         assert_eq!(Host::get_data(&mut host, "key".to_string()), None);
         assert!(!Host::invalidate_cache(&mut host, "key".to_string()));
+        assert!(Host::put_data(&mut host, "key".to_string(), vec![]).is_err());
+        assert!(Host::data_key_count(&mut host, String::new()).is_err());
+        assert!(Host::list_data_keys_page(&mut host, String::new(), 0, 1).is_err());
         assert!(
             Host::create_file(&mut host, FILE_SENTINEL.to_string(), b"owned".to_vec()).is_err()
         );

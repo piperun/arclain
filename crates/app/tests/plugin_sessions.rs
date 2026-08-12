@@ -460,6 +460,7 @@ fn plugins_reports_the_manifest_author_description_and_capabilities() {
         vec![
             PluginCapabilityDto::ArchiveMetadataRead,
             PluginCapabilityDto::FileRead,
+            PluginCapabilityDto::FileWrite,
         ],
     );
 }
@@ -516,6 +517,7 @@ fn install_plugin_loads_a_wirt_package_and_reports_it_immediately() {
         vec![
             PluginCapabilityDto::ArchiveMetadataRead,
             PluginCapabilityDto::FileRead,
+            PluginCapabilityDto::FileWrite,
         ]
     );
 }

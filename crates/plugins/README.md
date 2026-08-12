@@ -94,7 +94,7 @@ A plugin consists of two files:
 
 ```toml
 [wirt]
-abi = "0.1.0"
+abi = "0.2.0"
 
 [plugin]
 id = "my-plugin"

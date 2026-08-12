@@ -58,6 +58,34 @@ impl CacheService {
             .with_conn(|conn| cache_index::touch_cache_entry(conn, key))
     }
 
+    pub fn count_keys_with_prefix(
+        &self,
+        scoped_prefix: &str,
+        required_cache_type: CacheType,
+    ) -> Result<u64> {
+        self.pool.with_conn(|conn| {
+            cache_index::count_keys_with_prefix(conn, scoped_prefix, required_cache_type)
+        })
+    }
+
+    pub fn list_keys_with_prefix_page(
+        &self,
+        scoped_prefix: &str,
+        required_cache_type: CacheType,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        self.pool.with_conn(|conn| {
+            cache_index::list_keys_with_prefix_page(
+                conn,
+                scoped_prefix,
+                required_cache_type,
+                offset,
+                limit,
+            )
+        })
+    }
+
     pub fn entries_lru(&self) -> Result<Vec<CacheEntry>> {
         self.pool.with_conn(cache_index::list_entries_lru)
     }
@@ -124,6 +152,20 @@ impl arclain_data::CacheIndex for CacheService {
 
     fn update_last_accessed(&self, key: &str) -> Result<()> {
         CacheService::update_last_accessed(self, key)
+    }
+
+    fn count_keys_with_prefix(&self, scoped_prefix: &str, cache_type: CacheType) -> Result<u64> {
+        CacheService::count_keys_with_prefix(self, scoped_prefix, cache_type)
+    }
+
+    fn list_keys_with_prefix_page(
+        &self,
+        scoped_prefix: &str,
+        cache_type: CacheType,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        CacheService::list_keys_with_prefix_page(self, scoped_prefix, cache_type, offset, limit)
     }
 
     fn clear_all(&self) -> Result<()> {

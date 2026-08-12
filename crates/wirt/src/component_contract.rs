@@ -11,10 +11,10 @@ use wasmparser::types::Types;
 use wasmparser::{Encoding, Parser, Payload, PrimitiveValType, Validator};
 
 const WIRT_IMPORTS: [&str; 4] = [
-    "wirt:plugin/host@0.1.0",
-    "wirt:plugin/meta@0.1.0",
-    "wirt:plugin/rules@0.1.0",
-    "wirt:plugin/ui@0.1.0",
+    "wirt:plugin/host@0.2.0",
+    "wirt:plugin/meta@0.2.0",
+    "wirt:plugin/rules@0.2.0",
+    "wirt:plugin/ui@0.2.0",
 ];
 
 const WASI_IMPORTS: [&str; 14] = [

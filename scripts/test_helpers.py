@@ -1033,7 +1033,7 @@ class TestWirtAbi(unittest.TestCase):
         self.assertFalse(legacy.exists())
         self.assertEqual(
             canonical.read_text(encoding="utf-8").splitlines()[0],
-            "package wirt:plugin@0.1.0;",
+            "package wirt:plugin@0.2.0;",
         )
         self.assertRegex(
             sdk,

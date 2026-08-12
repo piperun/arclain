@@ -20,7 +20,7 @@ where
 fn neutral_model_preserves_all_fields_across_json_round_trips() {
     assert_json_round_trip(PluginManifest {
         wirt: WirtConfig {
-            abi: "0.1.0".to_string(),
+            abi: "0.2.0".to_string(),
         },
         plugin: PluginInfoConfig {
             id: "sample_plugin".to_string(),

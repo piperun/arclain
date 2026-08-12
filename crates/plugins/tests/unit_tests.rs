@@ -108,7 +108,7 @@ mod loader_tests {
 
         let manifest = r#"
 [wirt]
-abi = "0.1.0"
+abi = "0.2.0"
 
 [plugin]
 id = "test-plugin"

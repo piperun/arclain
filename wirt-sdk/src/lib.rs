@@ -96,6 +96,28 @@ pub fn invalidate_cache(key: &str) -> bool {
     wirt::plugin::host::invalidate_cache(key)
 }
 
+/// Persist at most 4 MiB under one bounded ordinary cache key owned by this
+/// plugin. Requires `file_write` and shares the host's content-cache quota.
+pub fn put_data(key: &str, data: &[u8]) -> Result<(), String> {
+    wirt::plugin::host::put_data(key, data)
+}
+
+/// Count persistent keys beginning with `prefix` in this plugin's namespace.
+/// Requires `file_write`.
+pub fn data_key_count(prefix: &str) -> Result<u64, String> {
+    wirt::plugin::host::data_key_count(prefix)
+}
+
+/// List one deterministic page of persistent keys owned by this plugin.
+/// Requires `file_write`; `limit` is capped at 256 and returned text at 1 MiB.
+pub fn list_data_keys_page(
+    prefix: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<String>, String> {
+    wirt::plugin::host::list_data_keys_page(prefix, offset, limit)
+}
+
 // === Data API Helpers ===
 
 // Only expose what plugins need - NOT cache internals

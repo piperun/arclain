@@ -1,4 +1,4 @@
-package wirt:plugin@0.1.0;
+package wirt:plugin@0.2.0;
 
 interface host {
     // Logging
@@ -115,6 +115,17 @@ interface host {
     // false. Host-owned and other-plugin entries, and product metadata
     // records, are unaffected.
     invalidate-cache: func(key: string) -> bool;
+
+    // Persist one ordinary content-cache value in the calling plugin's
+    // private owner namespace. All three methods require `file_write`.
+    // Keys/prefixes are UTF-8, at most 512 bytes, and may not be path-like,
+    // wildcarded, or address the reserved raw metadata key families. Values
+    // are capped at 4 MiB. The existing owner cache quota remains the total
+    // storage ceiling.
+    put-data: func(key: string, data: list<u8>) -> result<_, string>;
+    data-key-count: func(prefix: string) -> result<u64, string>;
+    // `limit` must be at most 256; returned key text is capped at 1 MiB.
+    list-data-keys-page: func(prefix: string, offset: u32, limit: u32) -> result<list<string>, string>;
 
 
 

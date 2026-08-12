@@ -9,15 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "wirt-sdk"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "wit-bindgen",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -563,6 +554,15 @@ dependencies = [
  "hashbrown 0.15.5",
  "indexmap",
  "semver",
+]
+
+[[package]]
+name = "wirt-sdk"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wit-bindgen",
 ]
 
 [[package]]
