@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::shared::safe_log_fingerprint;
+use porxi::{ProxyCandidate, ValidatedProxyEndpoint};
 
 /// Result of a single test step
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,7 +23,6 @@ pub struct ConnectionTestResult {
 const INVALID_PROXY_AUTHORITY: &str = "address must contain only a host and a non-zero port";
 
 struct ParsedProxyAuthority {
-    url: url::Url,
     authority: String,
 }
 
@@ -33,40 +33,13 @@ enum ProxyDnsResolution {
 }
 
 fn parse_proxy_authority(address: &str) -> Result<ParsedProxyAuthority, &'static str> {
-    if address.is_empty()
-        || address.trim() != address
-        || address
-            .chars()
-            .any(|character| matches!(character, '@' | '/' | '\\' | '?' | '#'))
-    {
-        return Err(INVALID_PROXY_AUTHORITY);
-    }
+    let endpoint = ValidatedProxyEndpoint::parse(address).map_err(|_| INVALID_PROXY_AUTHORITY)?;
+    let authority = endpoint
+        .authority()
+        .ok_or(INVALID_PROXY_AUTHORITY)?
+        .to_string();
 
-    let url =
-        url::Url::parse(&format!("socks5h://{address}")).map_err(|_| INVALID_PROXY_AUTHORITY)?;
-    if !url.username().is_empty()
-        || url.password().is_some()
-        || !matches!(url.path(), "" | "/")
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(INVALID_PROXY_AUTHORITY);
-    }
-
-    let host = match url.host().ok_or(INVALID_PROXY_AUTHORITY)? {
-        url::Host::Domain(domain) => domain.to_string(),
-        url::Host::Ipv4(address) => address.to_string(),
-        url::Host::Ipv6(address) => format!("[{address}]"),
-    };
-    let port = url
-        .port()
-        .filter(|port| *port != 0)
-        .ok_or(INVALID_PROXY_AUTHORITY)?;
-
-    Ok(ParsedProxyAuthority {
-        url,
-        authority: format!("{host}:{port}"),
-    })
+    Ok(ParsedProxyAuthority { authority })
 }
 
 /// Proxy configuration
@@ -92,6 +65,15 @@ impl fmt::Debug for ProxyConfig {
 }
 
 impl ProxyConfig {
+    fn candidate(&self) -> ProxyCandidate<'_> {
+        ProxyCandidate {
+            enabled: self.enabled,
+            address: (!self.address.is_empty()).then_some(self.address.as_str()),
+            username: self.username.as_deref(),
+            password: self.password.as_deref(),
+        }
+    }
+
     fn parsed_authority(&self) -> Result<ParsedProxyAuthority, &'static str> {
         parse_proxy_authority(&self.address)
     }
@@ -114,11 +96,10 @@ impl ProxyConfig {
         format!("{enabled} SOCKS5 proxy at {address} ({authentication})")
     }
 
-    /// Construct the authenticated proxy URL without exposing it to any
-    /// diagnostic surface. The returned string must only be passed to
-    /// `reqwest`.
+    /// Construct the credential-free proxy URL consumed by `reqwest`.
+    /// Authentication is applied separately through the proxy builder.
     fn proxy_url(&self, dns_resolution: ProxyDnsResolution) -> Result<String, String> {
-        let mut url = self
+        let authority = self
             .parsed_authority()
             .map_err(|reason| {
                 format!(
@@ -126,21 +107,12 @@ impl ProxyConfig {
                     self.log_summary()
                 )
             })?
-            .url;
-
-        if matches!(dns_resolution, ProxyDnsResolution::Local) {
-            url.set_scheme("socks5")
-                .map_err(|_| format!("Invalid proxy scheme for {}", self.log_summary()))?;
-        }
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            url.set_username(username)
-                .map_err(|_| format!("Invalid credentials for {}", self.log_summary()))?;
-            url.set_password(Some(password))
-                .map_err(|_| format!("Invalid credentials for {}", self.log_summary()))?;
-        }
-
-        Ok(url.into())
+            .authority;
+        let scheme = match dns_resolution {
+            ProxyDnsResolution::Remote => "socks5h",
+            ProxyDnsResolution::Local => "socks5",
+        };
+        Ok(format!("{scheme}://{authority}"))
     }
 
     fn create_proxy_with_resolution(
@@ -148,8 +120,12 @@ impl ProxyConfig {
         dns_resolution: ProxyDnsResolution,
     ) -> Result<reqwest::Proxy, String> {
         let proxy_url = self.proxy_url(dns_resolution)?;
-        reqwest::Proxy::all(&proxy_url)
-            .map_err(|_| format!("Failed to create {}", self.log_summary()))
+        let mut proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|_| format!("Failed to create {}", self.log_summary()))?;
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            proxy = proxy.basic_auth(username, password);
+        }
+        Ok(proxy)
     }
 
     fn create_proxy(&self) -> Result<reqwest::Proxy, String> {
@@ -411,6 +387,12 @@ impl ProxyConfig {
         result.ip = Some(ip.to_string());
         result.country = Some(country.to_string());
         result
+    }
+}
+
+impl<'a> From<&'a ProxyConfig> for ProxyCandidate<'a> {
+    fn from(config: &'a ProxyConfig) -> Self {
+        config.candidate()
     }
 }
 
@@ -679,6 +661,18 @@ mod tests {
                 "supported proxy authority was rejected: {address:?}"
             );
         }
+    }
+
+    #[test]
+    fn proxy_config_converts_to_a_borrowed_porxi_candidate() {
+        let config = authenticated_config("proxy.example:1080");
+
+        let candidate = ProxyCandidate::from(&config);
+
+        assert!(candidate.enabled);
+        assert_eq!(candidate.address, Some("proxy.example:1080"));
+        assert_eq!(candidate.username, Some(USERNAME_SECRET));
+        assert_eq!(candidate.password, Some(PASSWORD_SECRET));
     }
 
     #[test]

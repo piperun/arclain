@@ -10,6 +10,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 
 # HTTP client
 reqwest = { workspace = true, features = ["rustls-tls", "socks", "gzip", "deflate", "brotli", "json", "blocking"] }
+porxi = { git = "https://codeberg.org/0xdev/crateyard.git", rev = "e79e4e8a3ca8616c4989f0a49c7acad8c3332105", default-features = false }
 urlencoding = "2"
 
 # URL parsing

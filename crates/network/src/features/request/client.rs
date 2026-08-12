@@ -14,6 +14,9 @@ use crate::features::whitelist::{AccessCheck, DomainWhitelist};
 use crate::shared::{safe_log_fingerprint, HttpError, HttpMethod, HttpResponse};
 
 use parking_lot::{Mutex, RwLock};
+use porxi::{
+    DefaultRoute, RoutePreference, RoutingController, RoutingPolicy, RoutingSnapshot, WorkloadId,
+};
 use std::collections::HashMap;
 #[cfg(test)]
 use std::collections::VecDeque;
@@ -25,6 +28,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
+#[cfg(test)]
+use tokio::sync::Notify;
 use tracing::{debug, info, warn};
 
 /// Maximum response body retained in memory for a checked plugin request.
@@ -209,36 +214,129 @@ pub(crate) struct PendingEntry {
     completion: RequestCompletion,
 }
 
-struct ProxyRuntimeState {
+#[derive(Clone)]
+struct RoutedHttpClient {
+    client: reqwest::Client,
     proxy_config: Option<ProxyConfig>,
-    plugin_proxy_map: HashMap<String, bool>,
-    client_proxied: reqwest::Client,
     plugin_routing_available: bool,
 }
 
-impl ProxyRuntimeState {
-    fn new(proxy_config: Option<ProxyConfig>, plugin_proxy_map: HashMap<String, bool>) -> Self {
-        let client_proxied = AsyncHttpClient::build_client(proxy_config.clone());
+fn plugin_routing_policy(
+    plugin_proxy_map: &HashMap<String, bool>,
+) -> Result<RoutingPolicy, porxi::RoutingPolicyError> {
+    RoutingPolicy::from_workload_strings(
+        DefaultRoute::Direct,
+        plugin_proxy_map.iter().map(|(plugin_id, use_proxy)| {
+            (
+                plugin_id.as_str(),
+                if *use_proxy {
+                    RoutePreference::RequireProxy
+                } else {
+                    RoutePreference::Direct
+                },
+            )
+        }),
+    )
+}
+
+fn prepare_plugin_routing(
+    proxy_config: Option<ProxyConfig>,
+    plugin_proxy_map: &HashMap<String, bool>,
+) -> Result<RoutingSnapshot<RoutedHttpClient>, porxi::RoutingPolicyError> {
+    let direct = RoutedHttpClient {
+        client: AsyncHttpClient::build_client(None),
+        proxy_config: None,
+        plugin_routing_available: true,
+    };
+    let proxied = proxy_config
+        .filter(|config| config.enabled)
+        .and_then(|config| {
+            AsyncHttpClient::build_proxied_client(&config).map(|client| RoutedHttpClient {
+                client,
+                proxy_config: Some(config),
+                plugin_routing_available: true,
+            })
+        });
+    let policy = plugin_routing_policy(plugin_proxy_map)?;
+    Ok(RoutingSnapshot::prepare(direct, proxied, policy)
+        .expect("the Arclain plugin routing default is always direct"))
+}
+
+fn unavailable_plugin_routing() -> RoutingSnapshot<RoutedHttpClient> {
+    RoutingSnapshot::prepare(
+        RoutedHttpClient {
+            client: AsyncHttpClient::build_client(None),
+            proxy_config: None,
+            plugin_routing_available: false,
+        },
+        None,
+        RoutingPolicy::new(DefaultRoute::Direct),
+    )
+    .expect("the unavailable Arclain routing snapshot defaults to direct")
+}
+
+fn workload_id(plugin_id: &str) -> Result<WorkloadId, HttpError> {
+    WorkloadId::parse(plugin_id).map_err(|_| HttpError::RequestFailed {
+        message: "plugin network routing identity is invalid".to_string(),
+    })
+}
+
+fn selected_plugin_route(
+    routing: &RoutingController<RoutedHttpClient>,
+    plugin_id: &str,
+) -> Result<RoutedHttpClient, HttpError> {
+    let workload = workload_id(plugin_id)?;
+    let snapshot = routing.snapshot();
+    let route = snapshot
+        .client_for(&workload)
+        .map_err(|_| HttpError::RequestFailed {
+            message: "plugin is configured to use a proxy, but no enabled proxy is configured"
+                .to_string(),
+        })?;
+    if !route.plugin_routing_available {
+        return Err(HttpError::RequestFailed {
+            message: "plugin network routing is unavailable".to_string(),
+        });
+    }
+    Ok(route.clone())
+}
+
+#[cfg(test)]
+struct RoutingSelectionPause {
+    armed: AtomicBool,
+    reached: Notify,
+    release: Notify,
+}
+
+#[cfg(test)]
+impl RoutingSelectionPause {
+    fn new() -> Self {
         Self {
-            proxy_config,
-            plugin_proxy_map,
-            client_proxied,
-            plugin_routing_available: true,
+            armed: AtomicBool::new(true),
+            reached: Notify::new(),
+            release: Notify::new(),
         }
     }
 
-    fn unavailable() -> Self {
-        Self {
-            proxy_config: None,
-            plugin_proxy_map: HashMap::new(),
-            client_proxied: AsyncHttpClient::build_client(None),
-            plugin_routing_available: false,
+    async fn pause_once(&self) {
+        if self.armed.swap(false, Ordering::AcqRel) {
+            self.reached.notify_one();
+            self.release.notified().await;
         }
+    }
+
+    async fn wait_until_reached(&self) {
+        self.reached.notified().await;
+    }
+
+    fn release(&self) {
+        self.release.notify_one();
     }
 }
 
 struct PluginRequestContext {
-    proxy_runtime: RwLock<ProxyRuntimeState>,
+    proxy_routing: RoutingController<RoutedHttpClient>,
+    proxy_routing_writer: Mutex<()>,
     plugin_policies: RwLock<HashMap<String, PluginNetworkPolicy>>,
     rate_limiter: RwLock<RateLimiter>,
     whitelist: Arc<RwLock<DomainWhitelist>>,
@@ -248,6 +346,8 @@ struct PluginRequestContext {
     dns_answers: RwLock<HashMap<String, VecDeque<Vec<SocketAddr>>>>,
     #[cfg(test)]
     dns_lookup_counts: Mutex<HashMap<String, usize>>,
+    #[cfg(test)]
+    routing_selection_pause: Mutex<Option<Arc<RoutingSelectionPause>>>,
 }
 
 impl PluginRequestContext {
@@ -269,10 +369,11 @@ impl PluginRequestContext {
     }
 
     fn registered_policy(&self, plugin_id: &str) -> Result<PluginNetworkPolicy, HttpError> {
-        if self
-            .proxy_runtime
-            .try_read()
-            .is_some_and(|runtime| !runtime.plugin_routing_available)
+        if !self
+            .proxy_routing
+            .snapshot()
+            .direct()
+            .plugin_routing_available
         {
             return Err(HttpError::RequestFailed {
                 message: "plugin network routing is unavailable".to_string(),
@@ -389,32 +490,18 @@ impl PluginRequestContext {
             });
         }
 
-        let proxy_config = {
-            let runtime = self.proxy_runtime.read();
-            if !runtime.plugin_routing_available {
-                return Err(HttpError::RequestFailed {
-                    message: "plugin network routing is unavailable".to_string(),
-                });
+        #[cfg(test)]
+        {
+            let pause = self.routing_selection_pause.lock().clone();
+            if let Some(pause) = pause {
+                pause.pause_once().await;
             }
-            if *runtime.plugin_proxy_map.get(plugin_id).unwrap_or(&false) {
-                Some(
-                    runtime
-                        .proxy_config
-                        .as_ref()
-                        .filter(|config| config.enabled)
-                        .cloned()
-                        .ok_or_else(|| HttpError::RequestFailed {
-                            message: "plugin is configured to use a proxy, but no enabled proxy is configured"
-                                .to_string(),
-                        })?,
-                )
-            } else {
-                None
-            }
-        };
+        }
+
+        let route = selected_plugin_route(&self.proxy_routing, plugin_id)?;
         Ok(AuthorizedPluginTarget {
             url,
-            proxy_config,
+            proxy_config: route.proxy_config,
             resolved,
         })
     }
@@ -574,11 +661,14 @@ impl AsyncHttpClient {
         proxy_config: Option<ProxyConfig>,
     ) -> Self {
         let client_direct = Self::build_client(None);
+        let proxy_routing = prepare_plugin_routing(proxy_config, &HashMap::new())
+            .unwrap_or_else(|_| unavailable_plugin_routing());
 
         Self {
             client_direct,
             plugin_context: Arc::new(PluginRequestContext {
-                proxy_runtime: RwLock::new(ProxyRuntimeState::new(proxy_config, HashMap::new())),
+                proxy_routing: RoutingController::new(proxy_routing),
+                proxy_routing_writer: Mutex::new(()),
                 plugin_policies: RwLock::new(HashMap::new()),
                 rate_limiter: RwLock::new(RateLimiter::default()),
                 whitelist,
@@ -588,6 +678,8 @@ impl AsyncHttpClient {
                 dns_answers: RwLock::new(HashMap::new()),
                 #[cfg(test)]
                 dns_lookup_counts: Mutex::new(HashMap::new()),
+                #[cfg(test)]
+                routing_selection_pause: Mutex::new(None),
             }),
             pending: Arc::new(Mutex::new(HashMap::new())),
             runtime,
@@ -596,25 +688,38 @@ impl AsyncHttpClient {
 
     /// Atomically replace the proxy transport and effective plugin routing.
     ///
-    /// Building the derived host client happens before the write lock is
-    /// acquired. Readers therefore observe either the complete previous state
-    /// or the complete replacement, never a new transport with an old route
-    /// map (or vice versa).
+    /// Writer serialization covers preparation and publication, preventing a
+    /// map-only update from restoring stale transport. Readers do not take the
+    /// writer lock and observe either the complete previous snapshot or the
+    /// complete replacement.
     pub fn apply_proxy_routing(
         &self,
         proxy_config: Option<ProxyConfig>,
         plugin_proxy_map: HashMap<String, bool>,
     ) {
-        let replacement = ProxyRuntimeState::new(proxy_config, plugin_proxy_map);
-        *self.plugin_context.proxy_runtime.write() = replacement;
-        info!("AsyncHttpClient proxy routing updated");
+        let _writer = self.plugin_context.proxy_routing_writer.lock();
+        match prepare_plugin_routing(proxy_config, &plugin_proxy_map) {
+            Ok(replacement) => {
+                self.plugin_context.proxy_routing.replace(replacement);
+                info!("AsyncHttpClient proxy routing updated");
+            }
+            Err(error) => {
+                self.plugin_context
+                    .proxy_routing
+                    .replace(unavailable_plugin_routing());
+                warn!("AsyncHttpClient proxy routing rejected: {error}");
+            }
+        }
     }
 
     /// Atomically deny checked plugin requests when persisted proxy routing
     /// cannot be resolved safely. Host-owned direct requests remain usable,
     /// and a later successful [`Self::apply_proxy_routing`] clears this state.
     pub fn mark_plugin_routing_unavailable(&self) {
-        *self.plugin_context.proxy_runtime.write() = ProxyRuntimeState::unavailable();
+        let _writer = self.plugin_context.proxy_routing_writer.lock();
+        self.plugin_context
+            .proxy_routing
+            .replace(unavailable_plugin_routing());
         warn!("AsyncHttpClient plugin routing marked unavailable");
     }
 
@@ -671,6 +776,13 @@ impl AsyncHttpClient {
     }
 
     #[cfg(test)]
+    fn pause_next_routing_selection_for_test(&self) -> Arc<RoutingSelectionPause> {
+        let pause = Arc::new(RoutingSelectionPause::new());
+        *self.plugin_context.routing_selection_pause.lock() = Some(pause.clone());
+        pause
+    }
+
+    #[cfg(test)]
     pub(super) fn set_plugin_dns_answers_for_test(
         &self,
         host: &str,
@@ -694,28 +806,59 @@ impl AsyncHttpClient {
 
     /// Atomically replace only per-plugin routing while retaining transport.
     pub fn apply_plugin_proxy_map(&self, map: HashMap<String, bool>) {
-        self.plugin_context.proxy_runtime.write().plugin_proxy_map = map;
+        let _writer = self.plugin_context.proxy_routing_writer.lock();
+        let policy = match plugin_routing_policy(&map) {
+            Ok(policy) => policy,
+            Err(error) => {
+                self.plugin_context
+                    .proxy_routing
+                    .replace(unavailable_plugin_routing());
+                warn!("AsyncHttpClient plugin routing rejected: {error}");
+                return;
+            }
+        };
+        let current = self.plugin_context.proxy_routing.snapshot();
+        let replacement =
+            RoutingSnapshot::prepare(current.direct().clone(), current.proxied().cloned(), policy)
+                .expect("the Arclain plugin routing default is always direct");
+        self.plugin_context.proxy_routing.replace(replacement);
     }
 
     /// Check if a plugin should use the proxy
     pub fn should_use_proxy_for_plugin(&self, plugin_id: &str) -> bool {
-        *self
-            .plugin_context
-            .proxy_runtime
-            .read()
-            .plugin_proxy_map
-            .get(plugin_id)
-            .unwrap_or(&false)
+        selected_plugin_route(&self.plugin_context.proxy_routing, plugin_id)
+            .is_ok_and(|route| route.proxy_config.is_some())
     }
 
     fn build_client(proxy_config: Option<ProxyConfig>) -> reqwest::Client {
-        let mut builder = Self::client_builder();
-
-        if let Some(proxy) = proxy_config.and_then(|c| c.to_proxy()) {
-            builder = builder.proxy(proxy);
+        if let Some(client) = proxy_config.as_ref().and_then(Self::build_proxied_client) {
+            return client;
         }
+        Self::client_builder()
+            .build()
+            .expect("Failed to create HTTP client")
+    }
 
-        builder.build().expect("Failed to create HTTP client")
+    fn build_proxied_client(proxy_config: &ProxyConfig) -> Option<reqwest::Client> {
+        let proxy = proxy_config.to_proxy()?;
+        Some(
+            Self::client_builder()
+                .proxy(proxy)
+                .build()
+                .expect("Failed to create proxied HTTP client"),
+        )
+    }
+
+    fn host_client(&self, use_proxy: bool) -> reqwest::Client {
+        if !use_proxy {
+            return self.client_direct.clone();
+        }
+        let snapshot = self.plugin_context.proxy_routing.snapshot();
+        snapshot
+            .proxied()
+            .unwrap_or_else(|| snapshot.direct())
+            .client
+            .clone()
     }
 
     fn client_builder() -> reqwest::ClientBuilder {
@@ -855,15 +998,7 @@ impl AsyncHttpClient {
         );
 
         // Clone what we need for the async task
-        let client = if use_proxy {
-            self.plugin_context
-                .proxy_runtime
-                .read()
-                .client_proxied
-                .clone()
-        } else {
-            self.client_direct.clone()
-        };
+        let client = self.host_client(use_proxy);
 
         let request_id = id.clone();
 
@@ -1118,15 +1253,7 @@ impl AsyncHttpClient {
         W: std::io::Write,
         F: FnOnce(&StreamingResponseMetadata) -> Result<(), String>,
     {
-        let client = if use_proxy {
-            self.plugin_context
-                .proxy_runtime
-                .read()
-                .client_proxied
-                .clone()
-        } else {
-            self.client_direct.clone()
-        };
+        let client = self.host_client(use_proxy);
         let url_owned = url.to_string();
         let start = start_byte;
         let if_match_owned: Option<String> = if_match.map(|s| s.to_string());
@@ -1251,15 +1378,7 @@ impl AsyncHttpClient {
         use_proxy: bool,
         limit: usize,
     ) -> Result<Vec<u8>, String> {
-        let client = if use_proxy {
-            self.plugin_context
-                .proxy_runtime
-                .read()
-                .client_proxied
-                .clone()
-        } else {
-            self.client_direct.clone()
-        };
+        let client = self.host_client(use_proxy);
         let url = url.to_string();
 
         // Use the runtime handle to block on the async request
@@ -1329,15 +1448,7 @@ impl AsyncHttpClient {
         use_proxy: bool,
         limit: usize,
     ) -> Result<HttpResponse, HttpError> {
-        let client = if use_proxy {
-            self.plugin_context
-                .proxy_runtime
-                .read()
-                .client_proxied
-                .clone()
-        } else {
-            self.client_direct.clone()
-        };
+        let client = self.host_client(use_proxy);
         let url = url.to_string();
 
         self.runtime.block_on(async {
@@ -1890,14 +2001,14 @@ mod dlsite_url_tests {
 
 #[cfg(test)]
 mod proxy_routing_atomicity_tests {
-    use super::{AsyncHttpClient, ProxyRuntimeState};
+    use super::AsyncHttpClient;
     use crate::features::proxy::ProxyConfig;
     use crate::features::request::PluginNetworkPolicy;
     use crate::features::whitelist::DomainWhitelist;
     use crate::{HttpError, HttpRequest, RequestStatus};
     use parking_lot::RwLock;
     use std::collections::HashMap;
-    use std::sync::{mpsc, Arc};
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -2038,63 +2149,23 @@ mod proxy_routing_atomicity_tests {
             HashMap::from([(PLUGIN_ID.to_string(), true)]),
         );
 
-        let (installed_sender, installed_receiver) = mpsc::sync_channel(0);
-        let (release_sender, release_receiver) = mpsc::sync_channel(0);
-        let transition_client = client.clone();
-        let transition = std::thread::spawn(move || {
-            let replacement = ProxyRuntimeState::unavailable();
-            let mut runtime = transition_client.plugin_context.proxy_runtime.write();
-            *runtime = replacement;
-            installed_sender
-                .send(())
-                .expect("announce unavailable routing state");
-            release_receiver
-                .recv()
-                .expect("receive routing-state release");
-        });
-        installed_receiver
-            .recv()
-            .expect("routing transition did not install unavailable state");
+        let routing_pause = client.pause_next_routing_selection_for_test();
+        let request = client
+            .request_for_plugin(
+                PLUGIN_ID,
+                HttpRequest::get(format!(
+                    "http://{TARGET_HOST}:{}/resource",
+                    direct_address.port()
+                ))
+                .with_timeout(Duration::from_secs(1)),
+            )
+            .expect("checked request should start before routing becomes unavailable");
+        tokio::time::timeout(Duration::from_secs(1), routing_pause.wait_until_reached())
+            .await
+            .expect("in-flight request did not reach route selection");
 
-        let (request_sender, request_receiver) = mpsc::channel();
-        let request_client = client.clone();
-        let request_thread = std::thread::spawn(move || {
-            request_sender
-                .send(
-                    request_client.request_for_plugin(
-                        PLUGIN_ID,
-                        HttpRequest::get(format!(
-                            "http://{TARGET_HOST}:{}/resource",
-                            direct_address.port()
-                        ))
-                        .with_timeout(Duration::from_secs(1)),
-                    ),
-                )
-                .expect("report synchronous request preflight");
-        });
-        let request = match request_receiver.recv_timeout(Duration::from_secs(1)) {
-            Ok(result) => result.expect("checked request should start while routing is locked"),
-            Err(error) => {
-                release_sender
-                    .send(())
-                    .expect("release routing transition after blocked preflight");
-                transition.join().expect("routing transition panicked");
-                request_thread.join().expect("request preflight panicked");
-                panic!("synchronous request preflight blocked on routing: {error}");
-            }
-        };
-        request_thread.join().expect("request preflight panicked");
-
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while client.plugin_dns_lookup_count_for_test(TARGET_HOST) == 0 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("checked request did not reach post-DNS authorization");
-
-        release_sender.send(()).expect("release routing transition");
-        transition.join().expect("routing transition panicked");
+        client.mark_plugin_routing_unavailable();
+        routing_pause.release();
 
         let (direct_connection, proxy_connection) = tokio::join!(
             tokio::time::timeout(Duration::from_millis(250), direct_listener.accept()),
@@ -2114,7 +2185,7 @@ mod proxy_routing_atomicity_tests {
                 Some(RequestStatus::Failed(message))
                     if message.contains("routing is unavailable")
             ),
-            "checked request must fail with the unavailable-routing error"
+            "in-flight checked request must observe the unavailable snapshot"
         );
     }
 
@@ -2162,24 +2233,7 @@ mod proxy_routing_atomicity_tests {
             password: None,
         };
         let enabled_map = HashMap::from([(PLUGIN_ID.to_string(), true)]);
-        let (installed_sender, installed_receiver) = mpsc::sync_channel(0);
-        let (release_sender, release_receiver) = mpsc::sync_channel(0);
-        let transition_client = client.clone();
-        let transition = std::thread::spawn(move || {
-            let replacement = ProxyRuntimeState::new(Some(enabled_proxy), enabled_map);
-            let mut runtime = transition_client.plugin_context.proxy_runtime.write();
-            *runtime = replacement;
-            installed_sender
-                .send(())
-                .expect("announce installed routing state");
-            release_receiver
-                .recv()
-                .expect("receive routing-state release");
-        });
-        installed_receiver
-            .recv()
-            .expect("routing transition did not install state");
-
+        let routing_pause = client.pause_next_routing_selection_for_test();
         let request = client
             .request_for_plugin(
                 PLUGIN_ID,
@@ -2190,22 +2244,18 @@ mod proxy_routing_atomicity_tests {
                 .with_timeout(Duration::from_secs(1)),
             )
             .expect("checked request should start");
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while client.plugin_dns_lookup_count_for_test(TARGET_HOST) == 0 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("checked request did not reach authorization");
+        tokio::time::timeout(Duration::from_secs(1), routing_pause.wait_until_reached())
+            .await
+            .expect("in-flight request did not reach route selection");
         assert!(
             tokio::time::timeout(Duration::from_millis(50), direct_listener.accept())
                 .await
                 .is_err(),
-            "checked request escaped directly while routing activation was locked"
+            "checked request escaped directly before routing activation"
         );
 
-        release_sender.send(()).expect("release routing transition");
-        transition.join().expect("routing transition panicked");
+        client.apply_proxy_routing(Some(enabled_proxy), enabled_map);
+        routing_pause.release();
         let destination = tokio::time::timeout(Duration::from_secs(2), proxy_observer)
             .await
             .expect("checked request never reached SOCKS5")

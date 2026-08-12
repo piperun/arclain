@@ -356,6 +356,7 @@ name = "arclain-network"
 version = "2.3.2"
 dependencies = [
  "parking_lot",
+ "porxi",
  "reqwest",
  "serde",
  "serde_json",
@@ -5072,6 +5073,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
 dependencies = [
  "portable-atomic",
+]
+
+[[package]]
+name = "porxi"
+version = "0.1.0"
+source = "git+https://codeberg.org/0xdev/crateyard.git?rev=e79e4e8a3ca8616c4989f0a49c7acad8c3332105#e79e4e8a3ca8616c4989f0a49c7acad8c3332105"
+dependencies = [
+ "parking_lot",
+ "url",
 ]
 
 [[package]]
