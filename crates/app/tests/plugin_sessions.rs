@@ -315,6 +315,24 @@ fn set_user_config_update_failure(temp: &tempfile::TempDir, enabled: bool) {
     .expect("toggle isolated config failure trigger");
 }
 
+fn fail_only_plugin_uninstall_rollback(temp: &tempfile::TempDir) {
+    let paths = support::temp_paths(temp.path());
+    let db =
+        arclain_core::config::ConfigDb::open(&support::databases_dir(&paths).join("config.sqlite"))
+            .expect("open isolated config database");
+    let conn = db.into_sqlite_db();
+    conn.with_connection(|conn| {
+        conn.execute_batch(
+            "CREATE TRIGGER fail_plugin_uninstall_rollback \
+             BEFORE UPDATE ON user_config \
+             WHEN NEW.plugin_settings LIKE '%\"ui-demo\"%' \
+             BEGIN SELECT RAISE(FAIL, 'injected uninstall rollback failure'); END;",
+        )?;
+        Ok(())
+    })
+    .expect("install isolated rollback failure trigger");
+}
+
 #[test]
 fn installing_the_active_tab_bridge_wires_existing_plugin_instances() {
     let temp = tempfile::tempdir().unwrap();
@@ -886,6 +904,93 @@ fn uninstall_artifact_failure_restores_the_open_sessions_and_settings() {
         std::fs::read(paths.plugins_dir.join("ui-demo/attacker-owned")).unwrap(),
         b"preserve"
     );
+}
+
+#[test]
+fn uninstall_rollback_failure_aligns_live_state_with_the_durable_candidate() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    update_persisted_user_config(&temp, |config| {
+        config.set_plugin_settings(
+            "ui-demo",
+            std::collections::HashMap::from([("theme".to_string(), "sepia".to_string())]),
+        );
+        config.socks5_enabled = true;
+        config.socks5_address = Some("127.0.0.1:1080".to_string());
+        config.set_plugin_proxy_enabled("ui-demo", true);
+    });
+    std::fs::create_dir_all(&paths.plugins_dir).unwrap();
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths.clone()),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
+    })
+    .unwrap();
+    let http_client = app
+        .take_legacy_composition()
+        .expect("legacy composition")
+        .core_services
+        .async_http_client
+        .clone();
+    let runtime = foreign_runtime();
+    let package_path = fixture_package_path(&temp, "ui-demo");
+    let preview = runtime
+        .block_on(app.inspect_plugin_package(package_path.clone()))
+        .unwrap();
+    runtime
+        .block_on(app.install_plugin_package(package_path, preview.fingerprint))
+        .unwrap();
+    let session = runtime
+        .block_on(app.open_plugin_session("ui-demo".to_string(), PluginExtensionPointDto::MainPage))
+        .unwrap();
+    assert!(http_client.should_use_proxy_for_plugin("ui-demo"));
+    runtime
+        .block_on(app.set_plugin_enabled("ui-demo".to_string(), false))
+        .unwrap();
+    std::fs::write(
+        paths.plugins_dir.join("ui-demo/attacker-owned"),
+        b"preserve",
+    )
+    .unwrap();
+    fail_only_plugin_uninstall_rollback(&temp);
+
+    let error = runtime
+        .block_on(app.uninstall_plugin("ui-demo".to_string()))
+        .expect_err("artifact failure and failed settings rollback must be reported");
+
+    assert_eq!(error.kind, ApplicationErrorKind::Persistence);
+    assert!(persisted_user_config(&temp)
+        .get_all_plugin_settings()
+        .is_empty());
+    assert!(runtime
+        .block_on(app.settings())
+        .unwrap()
+        .network
+        .plugin_proxy_enabled
+        .is_empty());
+    assert!(!http_client.should_use_proxy_for_plugin("ui-demo"));
+    assert!(runtime
+        .block_on(app.plugin_settings("ui-demo".to_string()))
+        .unwrap()
+        .values
+        .is_empty());
+    assert_eq!(
+        runtime
+            .block_on(app.plugin_ui_document(session.session_id))
+            .unwrap_err()
+            .kind,
+        ApplicationErrorKind::NotFound
+    );
+    assert!(runtime
+        .block_on(app.plugins())
+        .unwrap()
+        .into_iter()
+        .any(|plugin| plugin.id == "ui-demo" && !plugin.enabled));
+    assert!(paths.plugins_dir.join("ui-demo/package.sha256").is_file());
 }
 
 #[test]

@@ -466,4 +466,20 @@ impl PluginManager {
         );
         Ok(())
     }
+
+    /// Clear settings from a disabled generation retained after its package
+    /// uninstall failed. The durable application row is authoritative in this
+    /// recovery path, so both a loaded instance and later retry/reload seeds
+    /// must observe the same empty map.
+    pub fn clear_retained_plugin_settings(&mut self, identity_key: &PluginIdentityKey) {
+        if let Some(plugin) = self.plugins.read().get(identity_key) {
+            plugin.instance.lock().replace_settings(HashMap::new());
+            self.settings_cache
+                .lock()
+                .insert(identity_key.clone(), HashMap::new());
+        } else {
+            self.settings_cache.lock().remove(identity_key);
+        }
+        self.initial_settings.remove(identity_key);
+    }
 }

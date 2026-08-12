@@ -1189,21 +1189,43 @@ pub(super) async fn run_uninstall_plugin(
         Err(error) => Some(internal_join_error(error)),
     };
     if let Some(uninstall_error) = uninstall_error {
-        inner
-            .plugin_sessions()
-            .restore_plugin_sessions(staged_sessions);
         let rollback_service = config_service.clone();
         let rollback = handle
             .spawn_blocking(move || rollback_service.save_user_config(&original))
             .await;
-        return match rollback {
-            Ok(Ok(())) => Err(uninstall_error),
-            Ok(Err(error)) => Err(persistence_error(
-                "restoring settings after plugin uninstall failed",
-                error,
-            )),
-            Err(error) => Err(internal_join_error(error)),
+        let rollback_error = match rollback {
+            Ok(Ok(())) => {
+                inner
+                    .plugin_sessions()
+                    .restore_plugin_sessions(staged_sessions);
+                return Err(uninstall_error);
+            }
+            Ok(Err(error)) => {
+                persistence_error("restoring settings after plugin uninstall failed", error)
+            }
+            Err(error) => internal_join_error(error),
         };
+
+        // The candidate row is already durable and restoring the original row
+        // failed. Treat that durable state as authoritative: retain the package
+        // disabled, but do not resurrect sessions, settings, or proxy routing
+        // that a restart would no longer possess.
+        manager
+            .lock()
+            .clear_retained_plugin_settings(&canonical_key);
+        inner
+            .plugin_sessions()
+            .commit_plugin_session_removal(staged_sessions);
+        inner
+            .core_services()
+            .async_http_client
+            .apply_plugin_proxy_map(arclain_core::utilities::proxy::effective_plugin_proxy_map(
+                &candidate,
+            ));
+        let mut mutable = inner.session.mutable.write();
+        mutable.user_config = candidate;
+        mutable.revision += 1;
+        return Err(rollback_error);
     }
 
     inner

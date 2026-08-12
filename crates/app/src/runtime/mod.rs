@@ -2167,6 +2167,10 @@ impl ArclainApp {
     /// sessions are restored, the loaded generation remains usable for this
     /// process, and no partial package is republished at its installed path. The
     /// hidden staging remains for operator recovery and a restart ignores it.
+    /// If artifact removal fails and restoring the original settings row also
+    /// fails, the already-durable removal row wins instead: the package remains
+    /// installed but disabled, while its sessions, live settings, and proxy
+    /// route stay cleared so this process agrees with the next restart.
     pub async fn uninstall_plugin(&self, plugin_id: String) -> Result<(), ApplicationError> {
         self.dispatch_async(move |inner| async move {
             settings_ops::run_uninstall_plugin(&inner, plugin_id).await
