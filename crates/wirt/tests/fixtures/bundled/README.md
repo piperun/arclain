@@ -8,9 +8,9 @@ The fixtures were built from the matching projects with the repository's
 `wasm32-wasip2` release profile:
 
 - `dlsite-metadata.wasm`: SHA-256
-  `6bbf0862e779541486e0d04dde4d4ba946943fbf4e208b7ecf786c75cccf460c`
+  `ada8048bf36b3edcefc1605756a5bdb1887106b19128c16e58916507e9f2c5cc`
 - `ui-demo.wasm`: SHA-256
-  `538514b87cdaf977ad586b04b3de225973178eae8d348d44c3814ada972313f8`
+  `83ca758c6e2ee75b808d950880fc69cabae9e0bb0b6f64ab44cd0e470a8eea47`
 
 When either maintained guest changes, rebuild all plugin projects with
 `just plugins`, copy the corresponding release component from the isolated

@@ -383,10 +383,13 @@ pub(crate) fn dispatch(
             PluginLayout::Single(elements)
         }
 
-        "InfoPanel" => PluginLayout::Single(vec![UiElement::Label(LabelConfig {
-            text: "DLSite Info".to_string(),
-            role: TextRole::Emphasis,
-        })]),
+        "InfoPanel" => PluginLayout::Single(vec![
+            UiElement::Space(SpacingStep::Small),
+            UiElement::Label(LabelConfig {
+                text: "DLSite Info".to_string(),
+                role: TextRole::Emphasis,
+            }),
+        ]),
 
         // Dialog for full DLSite info
         ext if ext.starts_with("Dialog:") => {
@@ -476,6 +479,7 @@ pub(crate) fn dispatch(
                         // Tags from scraped data (use TagChips for pill-style display)
                         if let Some(scraped_data) = scraped {
                             if !scraped_data.tags.is_empty() {
+                                elements.push(UiElement::Space(SpacingStep::Small));
                                 elements.push(UiElement::Label(LabelConfig {
                                     text: "Tags:".to_string(),
                                     role: TextRole::Emphasis,
@@ -490,6 +494,7 @@ pub(crate) fn dispatch(
                             if let Some(desc) = &scraped_data.description {
                                 if !desc.is_empty() {
                                     elements.push(UiElement::Separator);
+                                    elements.push(UiElement::Space(SpacingStep::Small));
                                     elements.push(UiElement::Label(LabelConfig {
                                         text: "Description:".to_string(),
                                         role: TextRole::Emphasis,
@@ -564,6 +569,7 @@ pub(crate) fn dispatch(
 
                     if !state.search_results.is_empty() {
                         elements.push(UiElement::Separator);
+                        elements.push(UiElement::Space(SpacingStep::Small));
                         elements.push(UiElement::Label(LabelConfig {
                             text: format!("{} results:", state.search_results.len()),
                             role: TextRole::Emphasis,

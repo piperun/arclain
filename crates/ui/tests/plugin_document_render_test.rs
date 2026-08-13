@@ -14,7 +14,7 @@ use arclain_app::plugins::{
 };
 use arclain_ui::features::plugins::application::PluginNavigation;
 use arclain_ui::features::plugins::presentation::rendering::{
-    render_document, text_style_for_role, DocumentContext, DocumentEvent, DocumentExtent, TextStyle,
+    render_document, text_style_for_role, DocumentContext, DocumentEvent, DocumentExtent, RoleStyle,
 };
 use arclain_ui::shared::theme::AppTheme;
 use egui_kittest::kittest::Queryable as _;
@@ -441,7 +441,7 @@ fn a_split_is_height_bounded_only_when_the_host_asks_for_it() {
 /// author cannot see and cannot work around.
 #[test]
 fn every_text_role_renders_differently() {
-    let styles: Vec<TextStyle> = [
+    let styles: Vec<RoleStyle> = [
         TextRole::Title,
         TextRole::Subtitle,
         TextRole::Body,

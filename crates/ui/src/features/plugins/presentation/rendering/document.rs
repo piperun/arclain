@@ -61,9 +61,11 @@ use crate::shared::theme::ThemeColors;
 use crate::shared::SharedState;
 use arclain_widgets::{Chips, TextInput, ThemedDropdown, ThemedSlider, ToggleSwitch};
 
-/// One row of arclain's type scale.
+/// One row of arclain's type scale: the numbers a [`TextRole`] resolves
+/// to. Not to be confused with [`egui::TextStyle`], which is a role key
+/// rather than the resolved values.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TextStyle {
+pub struct RoleStyle {
     pub size: f32,
     pub bold: bool,
     /// Opens a section, and is given room above and below to do it.
@@ -72,7 +74,7 @@ pub struct TextStyle {
 
 /// arclain's own type scale. A plugin names a role; this is where the role
 /// becomes a number, and changing these values restyles every plugin at once.
-pub fn text_style_for_role(role: TextRole) -> TextStyle {
+pub fn text_style_for_role(role: TextRole) -> RoleStyle {
     let (size, bold, heading) = match role {
         TextRole::Title => (18.0, true, true),
         TextRole::Subtitle => (16.0, true, true),
@@ -80,7 +82,7 @@ pub fn text_style_for_role(role: TextRole) -> TextStyle {
         TextRole::Body => (14.0, false, false),
         TextRole::Caption => (12.0, false, false),
     };
-    TextStyle {
+    RoleStyle {
         size,
         bold,
         heading,

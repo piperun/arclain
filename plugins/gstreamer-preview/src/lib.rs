@@ -63,10 +63,13 @@ impl wirt_sdk::Guest for Component {
                 label: "Play Preview".to_string(),
                 action: None,
             })]),
-            "Panel" => PluginLayout::Single(vec![UiElement::Label(LabelConfig {
-                text: "Video Stats".to_string(),
-                role: TextRole::Emphasis,
-            })]),
+            "Panel" => PluginLayout::Single(vec![
+                UiElement::Space(SpacingStep::Small),
+                UiElement::Label(LabelConfig {
+                    text: "Video Stats".to_string(),
+                    role: TextRole::Emphasis,
+                }),
+            ]),
             _ => PluginLayout::Single(vec![]),
         }
     }

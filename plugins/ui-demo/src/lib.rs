@@ -50,6 +50,7 @@ impl wirt_sdk::Guest for Component {
                     checked: false,
                 }),
                 UiElement::Separator,
+                UiElement::Space(SpacingStep::Small),
                 UiElement::Label(LabelConfig {
                     text: "New Elements".to_string(),
                     role: TextRole::Emphasis,
@@ -81,6 +82,7 @@ impl wirt_sdk::Guest for Component {
                 action: None,
             })]),
             "Panel" => PluginLayout::Single(vec![
+                UiElement::Space(SpacingStep::Small),
                 UiElement::Label(LabelConfig {
                     text: "Plugin Info".to_string(),
                     role: TextRole::Emphasis,

@@ -1313,7 +1313,21 @@ fn open_plugin_session_opens_the_panel_extension_point_with_real_content() {
     else {
         panic!("expected a Single root");
     };
-    assert_eq!(children.len(), 2, "ui-demo's Panel layout has two labels");
+    // Assert the labels the guest actually emitted rather than a child
+    // count: the count is a proxy for "real content arrived", and it breaks
+    // whenever the guest adds a display-only node such as a spacer.
+    let labels: Vec<&str> = children
+        .iter()
+        .filter_map(|child| match &child.kind {
+            arclain_app::plugins::PluginUiNodeKind::Label { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        labels,
+        ["Plugin Info", "Status: Active"],
+        "ui-demo's Panel layout carries its two labels"
+    );
 }
 
 #[test]
