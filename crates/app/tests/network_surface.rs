@@ -1078,6 +1078,77 @@ fn malformed_plugin_proxy_and_corrupt_config_are_bounded_backend_errors() {
     assert_eq!(profile_hashes(&corrupt), before);
 }
 
+fn assert_legacy_plugin_proxy_bounds_fail_closed(
+    profile: &Path,
+    plugin_proxy_enabled: BTreeMap<String, bool>,
+) {
+    let stored = serde_json::to_string(&plugin_proxy_enabled).unwrap();
+    assert_legacy_plugin_proxy_json_fails_closed(profile, &stored);
+}
+
+fn assert_legacy_plugin_proxy_json_fails_closed(profile: &Path, stored: &str) {
+    seed_legacy_network_config(profile, &stored);
+    let before = profile_hashes(profile);
+    let sqlite_before = sqlite_source_hashes(profile);
+
+    let error = inspect_legacy_network_settings(profile)
+        .expect_err("over-bound valid plugin proxy JSON must fail closed");
+
+    assert_eq!(error.kind, ApplicationErrorKind::Backend);
+    assert!(error.diagnostic.unwrap_or_default().len() <= 4096);
+    assert_eq!(profile_hashes(profile), before);
+    assert_eq!(sqlite_source_hashes(profile), sqlite_before);
+}
+
+#[test]
+fn legacy_plugin_proxy_bounds_accept_exactly_512_normal_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("entry-boundary");
+    let entries: BTreeMap<_, _> = (0..512)
+        .map(|index| (format!("plugin-{index:03}"), index % 2 == 0))
+        .collect();
+    seed_legacy_network_config(&profile, &serde_json::to_string(&entries).unwrap());
+
+    let inspected = inspect_legacy_network_settings(&profile)
+        .expect("the exact entry limit must remain compatible")
+        .expect("the seeded legacy row must exist");
+
+    assert_eq!(inspected.plugin_proxy_enabled, entries);
+}
+
+#[test]
+fn legacy_plugin_proxy_bounds_reject_more_than_512_valid_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let entries = (0..513)
+        .map(|index| (format!("plugin-{index:03}"), index % 2 == 0))
+        .collect();
+
+    assert_legacy_plugin_proxy_bounds_fail_closed(&temp.path().join("entry-cap"), entries);
+}
+
+#[test]
+fn legacy_plugin_proxy_bounds_reject_more_than_64_kib_of_keys() {
+    let temp = tempfile::tempdir().unwrap();
+    let entries = (0..512)
+        .map(|index| {
+            (
+                format!("plugin-{index:03}-{}", "x".repeat(120)),
+                index % 2 == 0,
+            )
+        })
+        .collect();
+
+    assert_legacy_plugin_proxy_bounds_fail_closed(&temp.path().join("key-cap"), entries);
+}
+
+#[test]
+fn legacy_plugin_proxy_bounds_reject_more_than_128_kib_of_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let stored = format!("{}{{}}", " ".repeat(128 * 1024 + 1));
+
+    assert_legacy_plugin_proxy_json_fails_closed(&temp.path().join("json-cap"), &stored);
+}
+
 #[test]
 fn absent_secret_storage_keeps_otherwise_valid_legacy_settings() {
     let temp = tempfile::tempdir().unwrap();

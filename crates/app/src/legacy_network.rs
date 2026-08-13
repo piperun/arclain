@@ -4,13 +4,68 @@
 //! runtime, initialize plugins, ensure schemas, or create profile directories.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::Path;
 
 use arclain_db::{LegacyInspectionError, LegacyInspectionErrorKind};
+use serde::de::{self, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::runtime::{legacy_config_database, legacy_secrets_database};
 use crate::settings::LegacyNetworkSettings;
+
+const MAX_LEGACY_PLUGIN_PROXY_ENTRIES: usize = 512;
+const MAX_LEGACY_PLUGIN_PROXY_KEY_BYTES: usize = 64 * 1024;
+const MAX_LEGACY_PLUGIN_PROXY_JSON_BYTES: usize = 128 * 1024;
+
+struct BoundedPluginProxySettings(BTreeMap<String, bool>);
+
+impl<'de> Deserialize<'de> for BoundedPluginProxySettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct BoundedPluginProxyVisitor;
+
+        impl<'de> Visitor<'de> for BoundedPluginProxyVisitor {
+            type Value = BoundedPluginProxySettings;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a bounded map of plugin IDs to proxy booleans")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut entries = BTreeMap::new();
+                let mut entry_count = 0usize;
+                let mut key_bytes = 0usize;
+                while let Some(key) = map.next_key::<String>()? {
+                    entry_count = entry_count.checked_add(1).ok_or_else(|| {
+                        de::Error::custom("legacy plugin proxy entry limit exceeded")
+                    })?;
+                    if entry_count > MAX_LEGACY_PLUGIN_PROXY_ENTRIES {
+                        return Err(de::Error::custom(
+                            "legacy plugin proxy entry limit exceeded",
+                        ));
+                    }
+                    key_bytes = key_bytes.checked_add(key.len()).ok_or_else(|| {
+                        de::Error::custom("legacy plugin proxy key limit exceeded")
+                    })?;
+                    if key_bytes > MAX_LEGACY_PLUGIN_PROXY_KEY_BYTES {
+                        return Err(de::Error::custom("legacy plugin proxy key limit exceeded"));
+                    }
+                    entries.insert(key, map.next_value::<bool>()?);
+                }
+                Ok(BoundedPluginProxySettings(entries))
+            }
+        }
+
+        deserializer.deserialize_map(BoundedPluginProxyVisitor)
+    }
+}
 
 fn inspection_error(error: LegacyInspectionError) -> ApplicationError {
     match error.kind() {
@@ -42,15 +97,27 @@ fn parse_plugin_proxy_settings(
 ) -> Result<BTreeMap<String, bool>, ApplicationError> {
     match stored {
         None => Ok(BTreeMap::new()),
-        Some(stored) => serde_json::from_str(&stored).map_err(|_| {
-            ApplicationError::new(
-                ApplicationErrorKind::Backend,
-                "legacy plugin proxy settings are malformed",
-            )
-            .with_diagnostic("plugin_proxy_settings is not a boolean map")
-            .with_recoverability(Recoverability::Fatal)
-        }),
+        Some(stored) => {
+            if stored.len() > MAX_LEGACY_PLUGIN_PROXY_JSON_BYTES {
+                return Err(invalid_plugin_proxy_settings());
+            }
+            serde_json::from_str::<BoundedPluginProxySettings>(&stored)
+                .map(|settings| settings.0)
+                .map_err(|_| invalid_plugin_proxy_settings())
+        }
     }
+}
+
+fn invalid_plugin_proxy_settings() -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::Backend,
+        "legacy plugin proxy settings are malformed or exceed safety limits",
+    )
+    .with_diagnostic(
+        "plugin_proxy_settings must be a boolean map with at most 512 entries, \
+         65536 key bytes, and 131072 JSON bytes",
+    )
+    .with_recoverability(Recoverability::Fatal)
 }
 
 /// Reads an existing legacy profile without creating or mutating any part of
