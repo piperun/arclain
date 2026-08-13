@@ -126,24 +126,24 @@ impl Services {
             dbs.config_pool.clone(),
             arclain_db::DbConnection::open(&paths.config_db)?,
         ));
-        let recovery =
-            NetworkProxyPersistenceService::new(&config_svc, &dbs.secrets).recover_pending();
-        let recovery = match recovery {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                if !self.host_owns_plugin_network_routing {
+        if !self.host_owns_plugin_network_routing {
+            let recovery =
+                NetworkProxyPersistenceService::new(&config_svc, &dbs.secrets).recover_pending();
+            let recovery = match recovery {
+                Ok(outcome) => outcome,
+                Err(error) => {
                     self.async_http_client.mark_plugin_routing_unavailable();
+                    return Err(error).context("recovering pending proxy settings update");
                 }
-                return Err(error).context("recovering pending proxy settings update");
-            }
-        };
-        match recovery {
-            ProxyRecoveryOutcome::NoPendingUpdate => {}
-            ProxyRecoveryOutcome::RolledBack => {
-                tracing::warn!("[services] Rolled back an interrupted proxy settings update");
-            }
-            ProxyRecoveryOutcome::Finalized => {
-                tracing::info!("[services] Finalized an interrupted proxy settings update");
+            };
+            match recovery {
+                ProxyRecoveryOutcome::NoPendingUpdate => {}
+                ProxyRecoveryOutcome::RolledBack => {
+                    tracing::warn!("[services] Rolled back an interrupted proxy settings update");
+                }
+                ProxyRecoveryOutcome::Finalized => {
+                    tracing::info!("[services] Finalized an interrupted proxy settings update");
+                }
             }
         }
 
@@ -273,6 +273,7 @@ mod tests {
     use crate::services::ConfigService;
     use arclain_db::{open_databases, DbConnection, SecretsKey, UserConfig};
     use arclain_network::{HttpRequest, PluginNetworkPolicy};
+    use std::{collections::BTreeMap, fs};
 
     const CHECKED_PLUGIN_ID: &str = "dlsite-metadata";
 
@@ -298,6 +299,112 @@ mod tests {
             error.to_string().contains("routing is unavailable"),
             "unexpected unavailable-routing error: {error}"
         );
+    }
+
+    fn proxy_recovery_sqlite_fingerprints(
+        paths: &DbPaths,
+    ) -> BTreeMap<&'static str, Option<(u64, u32)>> {
+        [
+            ("config.sqlite", paths.config_db.clone()),
+            (
+                "config.sqlite-wal",
+                paths.config_db.with_file_name("config.sqlite-wal"),
+            ),
+            (
+                "config.sqlite-shm",
+                paths.config_db.with_file_name("config.sqlite-shm"),
+            ),
+        ]
+        .into_iter()
+        .map(|(name, path)| {
+            let fingerprint = fs::read(path)
+                .ok()
+                .map(|bytes| (bytes.len() as u64, crc32fast::hash(&bytes)));
+            (name, fingerprint)
+        })
+        .collect()
+    }
+
+    fn proxy_recovery_secret_bytes(
+        db: &arclain_db::SecretsDb,
+    ) -> BTreeMap<&'static str, Option<Vec<u8>>> {
+        ["proxy:socks5", "journal:proxy-settings"]
+            .into_iter()
+            .map(|key| {
+                let value = db
+                    .get_secret(key)
+                    .unwrap()
+                    .map(|value| value.as_bytes().to_vec());
+                (key, value)
+            })
+            .collect()
+    }
+
+    fn assert_host_owned_services_skip_proxy_recovery(marker: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = DbPaths {
+            config_db: temp.path().join("config.sqlite"),
+            cache_db: temp.path().join("metadata.sqlite"),
+            secrets_db: temp.path().join("secrets.redb"),
+            key_file: None,
+        };
+        let key = SecretsKey::generate();
+        {
+            let dbs = open_databases(&paths, &key).unwrap();
+            let connection = DbConnection::open(&paths.config_db).unwrap();
+            UserConfig::ensure_table(&connection).unwrap();
+            let config_service =
+                ConfigService::from_connection(dbs.config_pool.clone(), connection);
+            config_service.save_user_config(&UserConfig::new()).unwrap();
+            dbs.secrets
+                .set_secret("proxy:socks5", "candidate-password")
+                .unwrap();
+            dbs.secrets
+                .set_secret("journal:proxy-settings", marker)
+                .unwrap();
+            dbs.secrets.close();
+        }
+        let sqlite_before = proxy_recovery_sqlite_fingerprints(&paths);
+
+        let (result, uses_proxy, secrets_unchanged) = {
+            let dbs = open_databases(&paths, &key).unwrap();
+            let secrets_before = proxy_recovery_secret_bytes(&dbs.secrets);
+            let prepared = AsyncHttpClient::prepare_plugin_network_routing(
+                None,
+                BTreeMap::from([("host-direct".to_string(), false)]),
+            )
+            .unwrap();
+            let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+            let mut services = Services::new_with_plugin_network_routing(runtime, Some(prepared));
+            let result = services.init_db_services(&dbs, &paths);
+            let uses_proxy = services
+                .async_http_client
+                .should_use_proxy_for_plugin("host-direct");
+            let secrets_unchanged = proxy_recovery_secret_bytes(&dbs.secrets) == secrets_before;
+            drop(services);
+            dbs.secrets.close();
+            (result, uses_proxy, secrets_unchanged)
+        };
+
+        result.expect("host-owned DB services must ignore standalone proxy recovery");
+        assert!(!uses_proxy);
+        assert!(
+            secrets_unchanged,
+            "proxy recovery secrets changed byte-for-byte"
+        );
+        assert_eq!(proxy_recovery_sqlite_fingerprints(&paths), sqlite_before);
+    }
+
+    #[test]
+    fn host_owned_services_leave_valid_proxy_recovery_sources_byte_exact() {
+        assert_host_owned_services_skip_proxy_recovery(
+            r#"{"version":1,"previous":{"enabled":true,"address":"old:1080","username":"old-user"},"candidate":{"enabled":false,"address":null,"username":null},"previous_password":"old-password"}"#,
+        );
+    }
+
+    #[test]
+    fn host_owned_services_ignore_corrupt_proxy_recovery_marker() {
+        assert_host_owned_services_skip_proxy_recovery("not-valid-json");
     }
 
     #[test]
