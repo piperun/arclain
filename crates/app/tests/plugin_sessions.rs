@@ -36,7 +36,7 @@ use arclain_app::ids::{ArchiveSessionId, PluginSessionId};
 // real facade never returns, only useful here to hand-build a sample
 // document for one serde round-trip test.
 use arclain_app::plugins::{
-    is_plugin_disabled_refusal, PluginActionDto, PluginActionRequest, PluginBadgeDto,
+    is_plugin_disabled_refusal, BadgeLevel, PluginActionDto, PluginActionRequest, PluginBadgeDto,
     PluginCapabilityDto, PluginExtensionPointDto, PluginHostIntentDto, PluginToastLevelDto,
     PluginTopTabDto, PluginUiDocument, TextRole,
 };
@@ -1143,7 +1143,7 @@ fn plugin_chrome_reports_the_counts_and_the_fixtures_declared_top_tab() {
             badge: Some(PluginBadgeDto {
                 count: Some(7),
                 dot: true,
-                color: "orange".to_string(),
+                level: BadgeLevel::Warning,
             }),
             priority: 250,
         }],

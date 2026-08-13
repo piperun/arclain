@@ -66,8 +66,8 @@ pub use manager::{
 pub use quarantine::{QuarantineLedger, QuarantineRecord, QuarantineState};
 pub use runtime::{LoadedPlugin, PluginInstance, WasmRuntime};
 pub use types::{
-    BadgeConfig, PluginCapability, PluginError, PluginEvent, PluginInfo, PluginManifest,
-    PluginMetadata, PluginResponse, Result,
+    BadgeConfig, BadgeLevel, PluginCapability, PluginError, PluginEvent, PluginInfo,
+    PluginManifest, PluginMetadata, PluginResponse, Result,
 };
 // `types::TopTabConfig` is intentionally not re-exported — all
 // internal users access it via `crate::types::TopTabConfig` and no

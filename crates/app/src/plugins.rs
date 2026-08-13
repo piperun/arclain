@@ -121,6 +121,11 @@ pub use wirt::ui_model::{
     PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SidebarWidth, SizeHint, SpacingStep,
     TextRole,
 };
+// Re-exported for the same reason, but from the model root rather than
+// `ui_model`: a badge is chrome on a top tab, not a node in a plugin's
+// document, so it never passes through the UI-node normalizer. This
+// facade's own `PluginBadgeDto` names it.
+pub use wirt::BadgeLevel;
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::ids::{ArchiveSessionId, PluginSessionId};
@@ -1367,18 +1372,16 @@ pub struct PluginBadgeDto {
     pub count: Option<u32>,
     /// Render a plain dot instead of a number.
     pub dot: bool,
-    /// The plugin's semantic color name (`"red"`, `"green"`, `"blue"`,
-    /// `"orange"`, or anything else). Plugin-authored and therefore
-    /// untrusted: a renderer maps known names onto its own theme and
-    /// falls back for the rest, and must never treat this as a color
-    /// literal.
-    pub color: String,
+    /// What the badge means. One of five host-defined levels, so there is
+    /// no plugin-authored text here for a renderer to parse: it maps each
+    /// level onto its own theme and every level has an answer.
+    pub level: BadgeLevel,
 }
 
 impl From<arclain_plugins::types::BadgeConfig> for PluginBadgeDto {
     fn from(badge: arclain_plugins::types::BadgeConfig) -> Self {
-        let arclain_plugins::types::BadgeConfig { count, dot, color } = badge;
-        Self { count, dot, color }
+        let arclain_plugins::types::BadgeConfig { count, dot, level } = badge;
+        Self { count, dot, level }
     }
 }
 
@@ -4968,7 +4971,7 @@ mod chrome_and_network_log_tests {
         let dto = PluginBadgeDto::from(BadgeConfig {
             count: Some(12),
             dot: true,
-            color: "red".to_string(),
+            level: BadgeLevel::Error,
         });
 
         assert_eq!(
@@ -4976,7 +4979,7 @@ mod chrome_and_network_log_tests {
             PluginBadgeDto {
                 count: Some(12),
                 dot: true,
-                color: "red".to_string(),
+                level: BadgeLevel::Error,
             }
         );
     }
@@ -4989,12 +4992,12 @@ mod chrome_and_network_log_tests {
         let dto = PluginBadgeDto::from(BadgeConfig {
             count: None,
             dot: false,
-            color: String::new(),
+            level: BadgeLevel::Neutral,
         });
 
         assert_eq!(dto.count, None);
         assert!(!dto.dot);
-        assert!(dto.color.is_empty());
+        assert_eq!(dto.level, BadgeLevel::Neutral);
     }
 
     fn sample_top_tab() -> TopTabConfig {
@@ -5005,7 +5008,7 @@ mod chrome_and_network_log_tests {
             badge: Some(BadgeConfig {
                 count: Some(4),
                 dot: false,
-                color: "blue".to_string(),
+                level: BadgeLevel::Info,
             }),
             priority: 10,
         }
@@ -5025,7 +5028,7 @@ mod chrome_and_network_log_tests {
                 badge: Some(PluginBadgeDto {
                     count: Some(4),
                     dot: false,
-                    color: "blue".to_string(),
+                    level: BadgeLevel::Info,
                 }),
                 priority: 10,
             }

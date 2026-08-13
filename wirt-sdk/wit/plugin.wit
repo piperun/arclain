@@ -456,11 +456,21 @@ interface ui {
     // === Top Tab Registration ===
     // Plugins can register top-level tabs in the app
 
+    // What a badge MEANS, in the same vocabulary as toast-level. The host
+    // owns the colour, so restyling moves every plugin's badge at once.
+    enum badge-level {
+        neutral,
+        info,
+        success,
+        warning,
+        error,
+    }
+
     // Badge configuration for tabs
     record badge-config {
         count: option<u32>,      // Numeric badge (e.g., "3")
         dot: bool,               // Just a dot indicator
-        color: string,           // "red", "green", "blue"
+        level: badge-level,      // What the badge means
     }
 
     // Top-level tab configuration

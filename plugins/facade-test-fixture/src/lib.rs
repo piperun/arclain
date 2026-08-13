@@ -294,12 +294,12 @@ impl wirt_sdk::Guest for Component {
     }
 
     fn get_top_tabs() -> Vec<wirt_sdk::wirt::plugin::ui::TopTabConfig> {
-        use wirt_sdk::wirt::plugin::ui::{BadgeConfig, TopTabConfig};
+        use wirt_sdk::wirt::plugin::ui::{BadgeConfig, BadgeLevel, TopTabConfig};
 
         // Every field distinct and constant: a count that is not the
-        // priority, a `dot` that is not the default, and a colour the
-        // renderer maps rather than passes through -- so a mirror test
-        // that transposed two fields would fail rather than pass by
+        // priority, a `dot` that is not the default, and a level the
+        // renderer resolves rather than passes through -- so a mirror
+        // test that transposed two fields would fail rather than pass by
         // coincidence.
         vec![TopTabConfig {
             id: "fixture-tab".to_string(),
@@ -308,7 +308,7 @@ impl wirt_sdk::Guest for Component {
             badge: Some(BadgeConfig {
                 count: Some(7),
                 dot: true,
-                color: "orange".to_string(),
+                level: BadgeLevel::Warning,
             }),
             priority: 250,
         }]

@@ -1,9 +1,9 @@
 //! Pure conversions from generated WIT values into Wirt's neutral model.
 
 use crate::{
-    BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginLayout, PluginUiElement,
-    SidebarWidth, SizeHint, SpacingStep, TextRole, ToastLevel, ToolbarButton, TopTabConfig,
-    WarningIcon,
+    BadgeConfig, BadgeLevel, ButtonAction, KeyValuePair, PluginAction, PluginLayout,
+    PluginUiElement, SidebarWidth, SizeHint, SpacingStep, TextRole, ToastLevel, ToolbarButton,
+    TopTabConfig, WarningIcon,
 };
 use crate::{MoveFileRule, MoveRule, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger};
 
@@ -34,7 +34,7 @@ pub fn convert_top_tab_config(
         badge: config.badge.map(|badge| BadgeConfig {
             count: badge.count,
             dot: badge.dot,
-            color: badge.color,
+            level: convert_badge_level(badge.level),
         }),
         priority: config.priority,
     }
@@ -223,6 +223,18 @@ fn convert_sidebar_width(width: crate::bindings::wirt::plugin::ui::SidebarWidth)
     }
 }
 
+fn convert_badge_level(level: crate::bindings::wirt::plugin::ui::BadgeLevel) -> BadgeLevel {
+    use crate::bindings::wirt::plugin::ui::BadgeLevel as WitLevel;
+
+    match level {
+        WitLevel::Neutral => BadgeLevel::Neutral,
+        WitLevel::Info => BadgeLevel::Info,
+        WitLevel::Success => BadgeLevel::Success,
+        WitLevel::Warning => BadgeLevel::Warning,
+        WitLevel::Error => BadgeLevel::Error,
+    }
+}
+
 fn convert_spacing_step(step: crate::bindings::wirt::plugin::ui::SpacingStep) -> SpacingStep {
     use crate::bindings::wirt::plugin::ui::SpacingStep as WitStep;
 
@@ -324,5 +336,62 @@ fn convert_plugin_rule_actions(
         organize_content: actions.organize_content,
         delete_original: actions.delete_original,
         use_standard_layout: actions.use_standard_layout,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bindings::wirt::plugin::ui::{
+        BadgeConfig as WitBadgeConfig, BadgeLevel as WitBadgeLevel, TopTabConfig as WitTopTabConfig,
+    };
+    use crate::BadgeLevel;
+
+    /// A tab's badge crosses the boundary outside the UI element tree
+    /// entirely -- it is chrome, reached from `get-top-tabs` rather than
+    /// from a layout -- so this is the one styling vocabulary neither
+    /// `convert_ui_element` nor `convert_plugin_layout` ever sees. Every
+    /// field is destructured with no `..` so that a field surviving here
+    /// that should no longer exist fails to compile.
+    #[test]
+    fn badge_level_survives_the_conversion() {
+        for (wit, expected) in [
+            (WitBadgeLevel::Neutral, BadgeLevel::Neutral),
+            (WitBadgeLevel::Info, BadgeLevel::Info),
+            (WitBadgeLevel::Success, BadgeLevel::Success),
+            (WitBadgeLevel::Warning, BadgeLevel::Warning),
+            (WitBadgeLevel::Error, BadgeLevel::Error),
+        ] {
+            let config = convert_top_tab_config(WitTopTabConfig {
+                id: "t".to_string(),
+                label: "T".to_string(),
+                icon: "*".to_string(),
+                badge: Some(WitBadgeConfig {
+                    count: Some(3),
+                    dot: false,
+                    level: wit,
+                }),
+                priority: 5,
+            });
+            let BadgeConfig { count, dot, level } = config.badge.expect("the badge survives");
+            assert_eq!(count, Some(3));
+            assert!(!dot);
+            assert_eq!(level, expected);
+        }
+    }
+
+    /// A tab without a badge is the common case -- three of the four
+    /// bundled guests register no badge at all -- and it must stay absent
+    /// rather than acquiring a level nobody asked for.
+    #[test]
+    fn a_tab_without_a_badge_converts_without_one() {
+        let config = convert_top_tab_config(WitTopTabConfig {
+            id: "t".to_string(),
+            label: "T".to_string(),
+            icon: "*".to_string(),
+            badge: None,
+            priority: 5,
+        });
+        assert_eq!(config.badge, None);
     }
 }

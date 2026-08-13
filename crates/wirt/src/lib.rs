@@ -42,9 +42,9 @@ pub use manifest::{
     REQUEST_FETCH_CAPABILITIES,
 };
 pub use model::{
-    BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginExtensionPoint, PluginLayout,
-    PluginUiElement, SidebarWidth, SizeHint, SpacingStep, TextRole, ToastLevel, ToolbarButton,
-    TopTabConfig, WarningIcon,
+    BadgeConfig, BadgeLevel, ButtonAction, KeyValuePair, PluginAction, PluginExtensionPoint,
+    PluginLayout, PluginUiElement, SidebarWidth, SizeHint, SpacingStep, TextRole, ToastLevel,
+    ToolbarButton, TopTabConfig, WarningIcon,
 };
 pub use package::{
     package_bytes, read_package, read_package_bytes, PackageFingerprint, ValidatedPackage,

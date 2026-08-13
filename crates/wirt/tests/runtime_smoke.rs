@@ -153,7 +153,7 @@ fn generated_guest_call_wrappers_preserve_neutral_results() {
     let badge = tabs[0].badge.as_ref().unwrap();
     assert_eq!(badge.count, Some(7));
     assert!(badge.dot);
-    assert_eq!(badge.color, "orange");
+    assert_eq!(badge.level, wirt::BadgeLevel::Warning);
 
     instance.cleanup().unwrap();
     assert_eq!(instance.unavailable_reason(), None);

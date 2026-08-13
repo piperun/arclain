@@ -281,11 +281,29 @@ fn default_true() -> bool {
     true
 }
 
+/// What a badge MEANS, in the same vocabulary as [`ToastLevel`] plus a
+/// `Neutral` for a badge that reports no status at all. The host owns the
+/// colour, so restyling moves every plugin's badge at once.
+///
+/// Deliberately not [`Default`]: a badge always states its level, so there
+/// is no absent case for a default to answer, and a defaulted level would
+/// let a test that asserts the default pass against a level dropped on the
+/// floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BadgeLevel {
+    Neutral,
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BadgeConfig {
     pub count: Option<u32>,
     pub dot: bool,
-    pub color: String,
+    pub level: BadgeLevel,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
