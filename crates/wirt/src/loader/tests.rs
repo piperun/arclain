@@ -47,6 +47,20 @@ fn write_plugin_pair(directory: &std::path::Path, file_id: &str, manifest_id: &s
     std::fs::write(directory.join(format!("{file_id}.wasm")), b"component").unwrap();
 }
 
+fn write_network_plugin_folder(root: &std::path::Path, id: &str) {
+    let directory = root.join(id);
+    let mut manifest = valid_manifest(id);
+    manifest.capabilities.network = true;
+    manifest.capabilities.network_domains = vec!["example.com".to_string()];
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join(format!("{id}.toml")),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(directory.join(format!("{id}.wasm")), b"component").unwrap();
+}
+
 fn write_ui_demo_sidecars(directory: &std::path::Path, with_fingerprint: bool) {
     std::fs::create_dir_all(directory).unwrap();
     let manifest = include_bytes!(concat!(
@@ -176,6 +190,62 @@ fn discovery_rejects_case_folded_identity_duplicates_across_artifact_kinds() {
 
     let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
     assert!(loader.discover_plugins().is_err());
+}
+
+#[test]
+fn discovery_accepts_256_network_plugins_with_bounded_junk() {
+    let temp_dir = TempDir::new().unwrap();
+    for index in 0..256 {
+        write_network_plugin_folder(temp_dir.path(), &format!("network-{index:03}"));
+    }
+    for index in 0..32 {
+        std::fs::write(temp_dir.path().join(format!("junk-{index:03}")), b"junk").unwrap();
+    }
+
+    let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
+    let discovered = loader
+        .discover_plugins()
+        .expect("the exact plugin limit must remain compatible");
+
+    assert_eq!(discovered.len(), 256);
+    assert!(discovered
+        .iter()
+        .all(|plugin| plugin.manifest.capabilities.network));
+}
+
+#[test]
+fn discovery_rejects_the_257th_network_plugin_without_a_partial_result() {
+    let temp_dir = TempDir::new().unwrap();
+    for index in 0..257 {
+        write_network_plugin_folder(temp_dir.path(), &format!("network-{index:03}"));
+    }
+    for index in 0..32 {
+        std::fs::write(temp_dir.path().join(format!("junk-{index:03}")), b"junk").unwrap();
+    }
+
+    let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
+    let error = loader
+        .discover_plugins()
+        .expect_err("the 257th plugin must reject the whole discovery result");
+
+    assert!(matches!(error, PluginError::ResourceLimit { .. }));
+    assert!(error.to_string().len() <= 256);
+}
+
+#[test]
+fn discovery_rejects_more_than_1024_root_entries_before_collection() {
+    let temp_dir = TempDir::new().unwrap();
+    for index in 0..1025 {
+        std::fs::write(temp_dir.path().join(format!("junk-{index:04}")), b"junk").unwrap();
+    }
+
+    let loader = PluginLoader::new(temp_dir.path().to_path_buf()).unwrap();
+    let error = loader
+        .discover_plugins()
+        .expect_err("an over-cap junk root must fail discovery");
+
+    assert!(matches!(error, PluginError::ResourceLimit { .. }));
+    assert!(error.to_string().len() <= 256);
 }
 
 #[test]

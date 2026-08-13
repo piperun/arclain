@@ -22,6 +22,8 @@ const MAX_PLUGIN_DESCRIPTION_BYTES: usize = 16 * 1024;
 const MAX_PLUGIN_NETWORK_DOMAINS: usize = 64;
 const MAX_PLUGIN_DOMAIN_BYTES: usize = 253;
 const MAX_PLUGIN_HTTP_REQUESTS_PER_MINUTE: u32 = 600;
+const MAX_PLUGIN_ROOT_ENTRIES: usize = 1024;
+const MAX_DISCOVERED_PLUGINS: usize = 256;
 
 fn load_error(message: impl Into<String>) -> PluginError {
     PluginError::LoadError(message.into())
@@ -43,6 +45,34 @@ fn package_read_error(error: PluginError) -> PluginError {
         PluginError::LoadError(message) => PluginError::InvalidPackage(message),
         error => error,
     }
+}
+
+fn resource_limit(reason: impl Into<String>) -> PluginError {
+    PluginError::ResourceLimit {
+        reason: reason.into(),
+    }
+}
+
+fn push_discovered_plugin(
+    discovered: &mut Vec<DiscoveredPlugin>,
+    discovered_ids: &mut HashSet<crate::PluginIdentityKey>,
+    plugin: DiscoveredPlugin,
+) -> Result<()> {
+    let plugin_id = PluginId::parse(plugin.manifest.plugin.id.clone())?;
+    let identity_key = plugin_id.identity_key();
+    if discovered_ids.contains(&identity_key) {
+        return Err(PluginError::InvalidManifest(format!(
+            "Duplicate discovered plugin ID: {identity_key}"
+        )));
+    }
+    if discovered.len() == MAX_DISCOVERED_PLUGINS {
+        return Err(resource_limit(format!(
+            "plugin discovery exceeds the {MAX_DISCOVERED_PLUGINS}-plugin limit"
+        )));
+    }
+    discovered_ids.insert(identity_key);
+    discovered.push(plugin);
+    Ok(())
 }
 
 fn read_opened_file_bounded(mut file: File, max_bytes: usize, kind: &str) -> Result<Vec<u8>> {
@@ -476,12 +506,20 @@ impl PluginLoader {
 
         let mut discovered = Vec::new();
         let mut discovered_ids = HashSet::new();
-        let mut entries = self
+        let root_entries = self
             .trusted_root
             .dir()
             .entries()
-            .map_err(|error| io_error("Failed to scan plugin root", error))?
-            .collect::<std::io::Result<Vec<_>>>()?;
+            .map_err(|error| io_error("Failed to scan plugin root", error))?;
+        let mut entries = Vec::with_capacity(MAX_PLUGIN_ROOT_ENTRIES);
+        for entry in root_entries {
+            if entries.len() == MAX_PLUGIN_ROOT_ENTRIES {
+                return Err(resource_limit(format!(
+                    "plugin root exceeds the {MAX_PLUGIN_ROOT_ENTRIES}-entry discovery limit"
+                )));
+            }
+            entries.push(entry?);
+        }
         entries.sort_by_key(cap_std::fs::DirEntry::file_name);
 
         for entry in entries {
@@ -515,18 +553,15 @@ impl PluginLoader {
                     {
                         match self.discover_plugin_from_folder(&manifest_path) {
                             Ok(plugin) => {
-                                let plugin_id = PluginId::parse(plugin.manifest.plugin.id.clone())?;
-                                let identity_key = plugin_id.identity_key();
-                                if !discovered_ids.insert(identity_key.clone()) {
-                                    return Err(PluginError::InvalidManifest(format!(
-                                        "Duplicate discovered plugin ID: {identity_key}"
-                                    )));
-                                }
                                 debug!(
                                     "Discovered plugin (folder): {} v{}",
                                     plugin.manifest.plugin.name, plugin.manifest.plugin.version
                                 );
-                                discovered.push(plugin);
+                                push_discovered_plugin(
+                                    &mut discovered,
+                                    &mut discovered_ids,
+                                    plugin,
+                                )?;
                             }
                             Err(e) => {
                                 warn!(
@@ -546,18 +581,15 @@ impl PluginLoader {
             {
                 match self.read_trusted_package(&path) {
                     Ok(package) => {
-                        let plugin_id = PluginId::parse(package.manifest.plugin.id.clone())?;
-                        let identity_key = plugin_id.identity_key();
-                        if !discovered_ids.insert(identity_key.clone()) {
-                            return Err(PluginError::InvalidManifest(format!(
-                                "Duplicate discovered plugin ID: {identity_key}"
-                            )));
-                        }
-                        discovered.push(DiscoveredPlugin {
-                            manifest: package.manifest,
-                            fingerprint: package.fingerprint,
-                            artifact: PluginArtifact::Package { package_path: path },
-                        });
+                        push_discovered_plugin(
+                            &mut discovered,
+                            &mut discovered_ids,
+                            DiscoveredPlugin {
+                                manifest: package.manifest,
+                                fingerprint: package.fingerprint,
+                                artifact: PluginArtifact::Package { package_path: path },
+                            },
+                        )?;
                     }
                     Err(error) => warn!("Rejected Wirt package {}: {}", path.display(), error),
                 }
@@ -567,18 +599,11 @@ impl PluginLoader {
                 // Flat mode: Look for .toml manifest files in plugins root
                 match self.discover_plugin_flat(&path) {
                     Ok(plugin) => {
-                        let plugin_id = PluginId::parse(plugin.manifest.plugin.id.clone())?;
-                        let identity_key = plugin_id.identity_key();
-                        if !discovered_ids.insert(identity_key.clone()) {
-                            return Err(PluginError::InvalidManifest(format!(
-                                "Duplicate discovered plugin ID: {identity_key}"
-                            )));
-                        }
                         debug!(
                             "Discovered plugin (flat): {} v{}",
                             plugin.manifest.plugin.name, plugin.manifest.plugin.version
                         );
-                        discovered.push(plugin);
+                        push_discovered_plugin(&mut discovered, &mut discovered_ids, plugin)?;
                     }
                     Err(e) => {
                         warn!("Failed to discover plugin at {}: {}", path.display(), e);
