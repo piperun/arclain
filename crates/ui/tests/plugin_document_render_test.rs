@@ -619,44 +619,52 @@ fn a_sidebar_step_is_a_width_the_host_owns() {
     assert_eq!(sidebar_width_for_step(None), 250.0);
 }
 
+/// Renders a split and reports where the content pane's own label starts.
+/// The content pane begins where the sidebar ends, so this is the resolved
+/// sidebar width arriving on screen.
+fn split_content_left(width: Option<SidebarWidth>, sidebar: Vec<PluginUiNodeDto>) -> f32 {
+    let mut document = document(Vec::new());
+    document.root = node(
+        "#root",
+        PluginUiNodeKind::Split {
+            sidebar,
+            content: vec![node(
+                "c",
+                PluginUiNodeKind::Label {
+                    text: "Content".to_string(),
+                    role: TextRole::Body,
+                },
+            )],
+            width,
+        },
+    );
+    let mut stage = harness(document);
+    stage.run();
+    stage.get_by_label("Content").rect().left()
+}
+
+/// One short label: the sparsest sidebar a plugin can write, and the one
+/// that stopped holding its width.
+fn sparse_sidebar() -> Vec<PluginUiNodeDto> {
+    vec![node(
+        "s",
+        PluginUiNodeKind::Label {
+            text: "Sidebar".to_string(),
+            role: TextRole::Body,
+        },
+    )]
+}
+
 /// The scale above is only worth pinning if the renderer reads it. A table
 /// test compares the host's numbers to themselves and would pass just as
 /// green against a renderer that pinned one width and ignored the step,
 /// which is the shape of bug this vocabulary exists to prevent.
-///
-/// The content pane starts where the sidebar ends, so the left edge of a
-/// label in the content pane is the resolved width arriving on screen.
 #[test]
 fn a_wider_sidebar_step_pushes_the_content_pane_further_right() {
-    fn content_left(width: Option<SidebarWidth>) -> f32 {
-        let mut document = document(Vec::new());
-        document.root = node(
-            "#root",
-            PluginUiNodeKind::Split {
-                // A rule spans whatever room it is given, so the sidebar
-                // holds the width the host handed it instead of shrinking
-                // to fit one short label -- the same thing a real plugin's
-                // sidebar content does.
-                sidebar: vec![node("rule", PluginUiNodeKind::Separator)],
-                content: vec![node(
-                    "c",
-                    PluginUiNodeKind::Label {
-                        text: "Content".to_string(),
-                        role: TextRole::Body,
-                    },
-                )],
-                width,
-            },
-        );
-        let mut stage = harness(document);
-        stage.run();
-        stage.get_by_label("Content").rect().left()
-    }
-
-    let narrow = content_left(Some(SidebarWidth::Narrow));
-    let medium = content_left(Some(SidebarWidth::Medium));
-    let wide = content_left(Some(SidebarWidth::Wide));
-    let absent = content_left(None);
+    let narrow = split_content_left(Some(SidebarWidth::Narrow), sparse_sidebar());
+    let medium = split_content_left(Some(SidebarWidth::Medium), sparse_sidebar());
+    let wide = split_content_left(Some(SidebarWidth::Wide), sparse_sidebar());
+    let absent = split_content_left(None, sparse_sidebar());
 
     // 200, 250 and 300: the gaps are the host's scale, and every other
     // margin cancels because all four documents are otherwise identical.
@@ -673,5 +681,32 @@ fn a_wider_sidebar_step_pushes_the_content_pane_further_right() {
     assert_eq!(
         absent, medium,
         "a split with no step gets the width a medium one gets"
+    );
+}
+
+/// What a plugin puts in its sidebar must not decide how wide the sidebar
+/// is -- the step decides, and the host answers the step. A `SidePanel`
+/// remembers the rect its contents occupied and reuses it as its width from
+/// the next frame on, so a sidebar holding one short label used to collapse
+/// to a 96px floor a frame after being drawn at the width it asked for. A
+/// plugin author would see a `Wide` sidebar come out narrower than a
+/// `Narrow` one whose content happened to be wide, with nothing in their own
+/// code to explain it.
+///
+/// A rule spans whatever room it is given, so the filled sidebar is the case
+/// that never collapsed; the sparse one has to land in exactly the same
+/// place.
+#[test]
+fn a_sparse_sidebar_keeps_the_width_the_host_assigned() {
+    let filled = split_content_left(
+        Some(SidebarWidth::Wide),
+        vec![node("rule", PluginUiNodeKind::Separator)],
+    );
+    let sparse = split_content_left(Some(SidebarWidth::Wide), sparse_sidebar());
+
+    assert_eq!(
+        sparse, filled,
+        "a sidebar holding one short label must be as wide as one holding a full-width rule, \
+         got {sparse} and {filled}"
     );
 }

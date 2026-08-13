@@ -250,6 +250,16 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                     .show_inside(ui, |ui| {
                         egui::ScrollArea::vertical()
                             .id_salt("split_sidebar_scroll")
+                            // A `SidePanel` remembers the rect its *contents*
+                            // occupied and uses that as its width from the
+                            // next frame on, so a sidebar holding nothing
+                            // wide shrinks to a 96px floor and the width the
+                            // host assigned survives exactly one frame. Not
+                            // shrinking horizontally is what makes the
+                            // assigned width stick. Kept resizable: this
+                            // fixes the starting width, it does not pin it,
+                            // so a user's drag still persists both ways.
+                            .auto_shrink([false, true])
                             .show(ui, |ui| render_children(ui, sidebar, sink));
                     });
                 egui::CentralPanel::default().show_inside(ui, |ui| {
