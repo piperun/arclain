@@ -48,14 +48,14 @@
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
     PluginActionDto, PluginImageDto, PluginKeyValueDto, PluginToolbarButtonDto, PluginUiDocument,
-    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SpacingStep,
+    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto,
 };
 use eframe::egui;
 
 use super::image::ImageContext;
 use super::scale::{
     carousel_height_for_hint, image_height_for_hint, list_height_for_hint, sidebar_width_for_step,
-    text_style_for_role, CAROUSEL_THUMBNAIL_HEIGHT,
+    space_height_for_step, text_style_for_role, CAROUSEL_THUMBNAIL_HEIGHT,
 };
 use crate::features::plugins::application::PluginNavigation;
 use crate::shared::components::carousel::{Carousel, CarouselEvent};
@@ -369,11 +369,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
             ui.separator();
             ui.add_space(8.0);
         }
-        PluginUiNodeKind::Space { step } => ui.add_space(match step {
-            SpacingStep::Small => 8.0,
-            SpacingStep::Medium => 12.0,
-            SpacingStep::Large => 20.0,
-        }),
+        PluginUiNodeKind::Space { step } => ui.add_space(space_height_for_step(*step)),
         PluginUiNodeKind::Button { label, action } => {
             if ui
                 .add(

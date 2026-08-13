@@ -10,7 +10,7 @@
 //! this is rendering: no `Ui`, no widget, no event. The renderer reads these
 //! tables; the tests read them too, which is what makes them worth naming.
 
-use arclain_app::plugins::{SidebarWidth, SizeHint, TextRole};
+use arclain_app::plugins::{SidebarWidth, SizeHint, SpacingStep, TextRole};
 
 /// One row of arclain's type scale: the numbers a [`TextRole`] resolves
 /// to. Not to be confused with [`eframe::egui::TextStyle`], which is a role
@@ -92,11 +92,22 @@ pub fn sidebar_width_for_step(step: Option<SidebarWidth>) -> f32 {
     }
 }
 
+/// arclain's own spacing scale, for the gap a plugin asks for between two
+/// elements. A step is never absent here -- the vocabulary makes a plugin
+/// name one -- so this takes the step itself rather than an option.
+pub fn space_height_for_step(step: SpacingStep) -> f32 {
+    match step {
+        SpacingStep::Small => 8.0,
+        SpacingStep::Medium => 12.0,
+        SpacingStep::Large => 20.0,
+    }
+}
+
 /// The carousel's thumbnail strip is the host's decision entirely, not
 /// something a plugin can ask about. Stated here rather than left to
 /// `CarouselConfig`'s own default so that changing how a bare carousel
 /// looks elsewhere in the app cannot silently move a plugin's.
-pub(crate) const CAROUSEL_THUMBNAIL_HEIGHT: f32 = 60.0;
+pub(super) const CAROUSEL_THUMBNAIL_HEIGHT: f32 = 60.0;
 
 /// Default cap for a document hosted in the archive browser's properties
 /// panel. Sized to show a usable two-pane layout without dominating a
