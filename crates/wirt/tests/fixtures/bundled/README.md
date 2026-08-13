@@ -8,7 +8,7 @@ The fixtures were built from the matching projects with the repository's
 `wasm32-wasip2` release profile:
 
 - `dlsite-metadata.wasm`: SHA-256
-  `382e669fa1316ab97449d70cffda22c2473592215ccaf00a52ad3933016a274f`
+  `4fe02a41bd63ba68191e17c0b825042acb01a36c178e555707889fbac018b556`
 - `ui-demo.wasm`: SHA-256
   `315a7663100cd4500b206fcfabad548269add3076c58d2d7a5e057cd36e237d4`
 
