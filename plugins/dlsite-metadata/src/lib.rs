@@ -266,7 +266,9 @@ impl wirt_sdk::Guest for Component {
             badge: cache_count.map(|count| BadgeConfig {
                 count: if count > 0 { Some(count) } else { None },
                 dot: count == 0, // Show dot if no count but tab is active
-                level: BadgeLevel::Info,
+                // How many products are cached, which reports no status at
+                // all -- nothing here is informational, healthy or wrong.
+                level: BadgeLevel::Neutral,
             }),
             priority: 100, // After host tabs (0-99 reserved for host)
         }]
