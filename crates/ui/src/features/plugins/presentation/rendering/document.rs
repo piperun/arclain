@@ -48,7 +48,7 @@
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
     PluginActionDto, PluginImageDto, PluginKeyValueDto, PluginToolbarButtonDto, PluginUiDocument,
-    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SpacingStep, TextRole,
+    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SizeHint, SpacingStep, TextRole,
 };
 use eframe::egui;
 
@@ -88,6 +88,53 @@ pub fn text_style_for_role(role: TextRole) -> RoleStyle {
         heading,
     }
 }
+
+/// arclain's own vertical scale, for an image. A plugin names a step; this
+/// is where the step becomes a number. `None` keeps its meaning of "the
+/// host decides", which for an image is [`super::image::render_texture`]'s
+/// own cap.
+///
+/// The three `*_for_hint` functions are deliberately separate rather than
+/// one function taking a kind: the same step is a different number for each
+/// of them, and only the image has an answer for the absent case that the
+/// renderer below it can act on.
+pub fn image_height_for_hint(hint: Option<SizeHint>) -> Option<f32> {
+    hint.map(|hint| match hint {
+        SizeHint::Compact => 150.0,
+        SizeHint::Regular => 200.0,
+        SizeHint::Tall => 400.0,
+    })
+}
+
+/// arclain's own vertical scale, for a scrolling list container. A list
+/// always has a height, so an absent hint resolves to the middle of the
+/// scale rather than to nothing.
+pub fn list_height_for_hint(hint: Option<SizeHint>) -> f32 {
+    match hint {
+        Some(SizeHint::Compact) => 200.0,
+        Some(SizeHint::Regular) | None => 300.0,
+        Some(SizeHint::Tall) => 700.0,
+    }
+}
+
+/// arclain's own vertical scale, for a carousel's main image area. A
+/// carousel always has a height. Note that `Regular` is 400 here and 200
+/// for an image -- that difference is the whole reason a plugin names the
+/// step instead of the number.
+pub fn carousel_height_for_hint(hint: Option<SizeHint>) -> f32 {
+    match hint {
+        Some(SizeHint::Compact) => 200.0,
+        Some(SizeHint::Regular) => 400.0,
+        Some(SizeHint::Tall) => 700.0,
+        None => 300.0,
+    }
+}
+
+/// The carousel's thumbnail strip is the host's decision entirely, not
+/// something a plugin can ask about. Stated here rather than left to
+/// `CarouselConfig`'s own default so that changing how a bare carousel
+/// looks elsewhere in the app cannot silently move a plugin's.
+const CAROUSEL_THUMBNAIL_HEIGHT: f32 = 60.0;
 
 /// One thing the user did to a document this frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -324,7 +371,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
         }
         PluginUiNodeKind::ListContainer {
             children,
-            max_height,
+            height,
             empty_message,
         } => {
             egui::Frame::NONE
@@ -333,7 +380,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                 .inner_margin(4.0)
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
-                        .max_height(max_height.unwrap_or(300.0))
+                        .max_height(list_height_for_hint(*height))
                         .show(ui, |ui| {
                             if children.is_empty() {
                                 let message = empty_message.as_deref().unwrap_or("No items");
@@ -656,8 +703,14 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
         PluginUiNodeKind::Image {
             cache_key,
             url,
-            max_height,
-        } => render_image(ui, sink, cache_key.as_deref(), url.as_deref(), *max_height),
+            height,
+        } => render_image(
+            ui,
+            sink,
+            cache_key.as_deref(),
+            url.as_deref(),
+            image_height_for_hint(*height),
+        ),
         PluginUiNodeKind::ListItem {
             title,
             subtitle,
@@ -697,8 +750,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
         PluginUiNodeKind::Carousel {
             images,
             current_index,
-            max_height,
-            thumbnail_height,
+            height,
             enable_lightbox,
         } => render_carousel(
             ui,
@@ -706,8 +758,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
             id,
             images,
             *current_index,
-            *max_height,
-            *thumbnail_height,
+            carousel_height_for_hint(*height),
             *enable_lightbox,
         ),
         PluginUiNodeKind::KeyValueList { items, columns } => {
@@ -942,15 +993,13 @@ fn render_image(
     ui.label(egui::RichText::new(message).color(color).italics());
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_carousel(
     ui: &mut egui::Ui,
     sink: &mut Sink<'_>,
     id: &str,
     images: &[PluginImageDto],
     current_index: u64,
-    max_height: Option<f32>,
-    thumbnail_height: Option<f32>,
+    main_height: f32,
     enable_lightbox: bool,
 ) {
     let pairs: Vec<(String, Option<String>)> = images
@@ -958,8 +1007,8 @@ fn render_carousel(
         .map(|image| (image.cache_key.clone(), image.url.clone()))
         .collect();
     let carousel = Carousel::new(id, &pairs, current_index as usize)
-        .main_height(max_height.unwrap_or(300.0))
-        .thumbnail_height(thumbnail_height.unwrap_or(60.0))
+        .main_height(main_height)
+        .thumbnail_height(CAROUSEL_THUMBNAIL_HEIGHT)
         .enable_lightbox(enable_lightbox)
         .colors(sink.colors())
         .shared_state(sink.ctx.shared_state)

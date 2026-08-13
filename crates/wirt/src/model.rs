@@ -83,7 +83,7 @@ pub enum PluginUiElement {
         #[serde(default)]
         url: Option<String>,
         #[serde(default)]
-        max_height: Option<f32>,
+        height: Option<SizeHint>,
     },
     Separator,
     Space {
@@ -115,7 +115,7 @@ pub enum PluginUiElement {
         id: String,
         items: Vec<PluginUiElement>,
         #[serde(default)]
-        max_height: Option<f32>,
+        height: Option<SizeHint>,
         #[serde(default)]
         empty_message: Option<String>,
     },
@@ -146,9 +146,7 @@ pub enum PluginUiElement {
         images: Vec<(String, Option<String>)>,
         current_index: usize,
         #[serde(default)]
-        max_height: Option<f32>,
-        #[serde(default)]
-        thumbnail_height: Option<f32>,
+        height: Option<SizeHint>,
         #[serde(default = "default_true")]
         enable_lightbox: bool,
     },
@@ -204,6 +202,21 @@ pub enum TextRole {
     Body,
     Caption,
     Emphasis,
+}
+
+/// How much vertical room an element wants. The host owns the pixel value
+/// per element kind, so `Tall` means one thing for an image and another for
+/// a list.
+///
+/// Deliberately not [`Default`]: the absent hint is a real case that means
+/// "the host decides", and what the host decides differs per kind, so there
+/// is no one variant an absent hint could stand for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SizeHint {
+    Compact,
+    Regular,
+    Tall,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

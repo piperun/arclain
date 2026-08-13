@@ -282,11 +282,20 @@ interface ui {
         selected: string,
     }
 
+    // How much vertical room an element wants. The host owns the pixel
+    // value per element kind, so "tall" means one thing for an image and
+    // another for a list.
+    enum size-hint {
+        compact,
+        regular,
+        tall,
+    }
+
     // New: Image config
     record image-config {
         cache-key: option<string>,
         url: option<string>,
-        max-height: option<f32>,
+        height: option<size-hint>,
     }
 
     // Tabs for view switching
@@ -312,7 +321,7 @@ interface ui {
     record list-container-config {
         id: string,
         items: list<list-item-config>,
-        max-height: option<f32>,
+        height: option<size-hint>,
         empty-message: option<string>,
     }
 
@@ -357,8 +366,7 @@ interface ui {
         id: string,
         images: list<tuple<string, option<string>>>,  // (cache_key, optional_url)
         current-index: u32,
-        max-height: option<f32>,
-        thumbnail-height: option<f32>,
+        height: option<size-hint>,
         enable-lightbox: bool,
     }
 

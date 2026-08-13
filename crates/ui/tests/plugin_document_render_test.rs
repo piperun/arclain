@@ -10,11 +10,12 @@
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
     PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginUiDocument,
-    PluginUiNodeDto, PluginUiNodeKind, SpacingStep, TextRole,
+    PluginUiNodeDto, PluginUiNodeKind, SizeHint, SpacingStep, TextRole,
 };
 use arclain_ui::features::plugins::application::PluginNavigation;
 use arclain_ui::features::plugins::presentation::rendering::{
-    render_document, text_style_for_role, DocumentContext, DocumentEvent, DocumentExtent, RoleStyle,
+    carousel_height_for_hint, image_height_for_hint, list_height_for_hint, render_document,
+    text_style_for_role, DocumentContext, DocumentEvent, DocumentExtent, RoleStyle,
 };
 use arclain_ui::shared::theme::AppTheme;
 use egui_kittest::kittest::Queryable as _;
@@ -513,5 +514,93 @@ fn a_larger_role_takes_more_room_on_screen_than_a_smaller_one() {
     assert!(
         body > caption,
         "body text must outgrow a caption, got {body} and {caption}"
+    );
+}
+
+/// One vocabulary, three scales. A plugin names `Tall` and the host answers
+/// 400 for an image, 700 for a list and 700 for a carousel -- if these three
+/// ever collapse onto one table, the reason the plugin names a step instead
+/// of a number disappears with them.
+///
+/// The absent hint is pinned too, and it is not one answer either: an image
+/// with no hint has nothing to say to the renderer below it, while a list
+/// always occupies a height and so must resolve to one.
+#[test]
+fn a_step_means_a_different_height_per_kind() {
+    assert_eq!(image_height_for_hint(Some(SizeHint::Tall)), Some(400.0));
+    assert_eq!(list_height_for_hint(Some(SizeHint::Tall)), 700.0);
+    assert_eq!(carousel_height_for_hint(Some(SizeHint::Tall)), 700.0);
+
+    assert_eq!(image_height_for_hint(Some(SizeHint::Regular)), Some(200.0));
+    assert_eq!(carousel_height_for_hint(Some(SizeHint::Regular)), 400.0);
+
+    assert_eq!(image_height_for_hint(None), None);
+    assert_eq!(list_height_for_hint(None), 300.0);
+    assert_eq!(carousel_height_for_hint(None), 300.0);
+}
+
+/// The scale above is only worth pinning if the renderer reads it. A table
+/// test compares the host's numbers to themselves and would pass just as
+/// green against a renderer that ignored the hint entirely, which is exactly
+/// the shape of bug this vocabulary exists to prevent.
+///
+/// The list container is the kind that can be measured without an asset: it
+/// bounds a scroll area, so overflowing content makes the resolved number
+/// the height on screen. An image and a carousel need a real texture before
+/// they occupy anything, so `a_step_means_a_different_height_per_kind` is
+/// what covers those two.
+#[test]
+fn a_taller_list_hint_bounds_the_list_higher_on_screen() {
+    fn consumed(height: Option<SizeHint>) -> f32 {
+        let rows: Vec<PluginUiNodeDto> = (0..60)
+            .map(|index| {
+                node(
+                    &format!("row-{index}"),
+                    PluginUiNodeKind::Label {
+                        text: "Row".to_string(),
+                        role: TextRole::Body,
+                    },
+                )
+            })
+            .collect();
+        let mut harness = Harness::new_ui_state(
+            |ui, stage: &mut Stage| {
+                let before = ui.cursor().min.y;
+                let ctx = DocumentContext {
+                    colors: &stage.theme.colors,
+                    shared_state: None,
+                    image_owner: None,
+                    extent: stage.extent,
+                };
+                let _ = render_document(ui, &stage.document, ctx);
+                stage.consumed = ui.cursor().min.y - before;
+            },
+            Stage::new(document(vec![node(
+                "list",
+                PluginUiNodeKind::ListContainer {
+                    children: rows,
+                    height,
+                    empty_message: None,
+                },
+            )])),
+        );
+        harness.run();
+        harness.state().consumed
+    }
+
+    let compact = consumed(Some(SizeHint::Compact));
+    let absent = consumed(None);
+    let regular = consumed(Some(SizeHint::Regular));
+
+    // 200 against 300: the gap is the host's scale, and the frame's own
+    // margins cancel because both sides carry the same frame.
+    assert_eq!(
+        regular - compact,
+        100.0,
+        "regular bounds a list 100px higher than compact, got {compact} and {regular}"
+    );
+    assert_eq!(
+        absent, regular,
+        "a list with no hint takes the same room as a regular one"
     );
 }

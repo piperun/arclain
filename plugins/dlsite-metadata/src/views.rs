@@ -26,7 +26,7 @@ pub(crate) fn dispatch(
         ButtonAction, ButtonConfig, CarouselConfig, CheckboxConfig, DropdownConfig, ImageConfig,
         KeyValueListConfig, KeyValuePair, LabelConfig, ListContainerConfig, ListItemConfig,
         LoadingConfig, MetadataGridConfig, PluginLayout, SectionHeaderConfig, SettingsGroupHeader,
-        SpacingStep, SplitConfig, TabsConfig, TagChipsConfig, TextInputConfig, TextRole,
+        SizeHint, SpacingStep, SplitConfig, TabsConfig, TagChipsConfig, TextInputConfig, TextRole,
         ToolbarButtonConfig, ToolbarConfig, UiElement, WarningConfig, WarningIcon,
     };
 
@@ -276,7 +276,7 @@ pub(crate) fn dispatch(
                     elements.push(UiElement::Image(ImageConfig {
                         cache_key: Some(cover_cache_key),
                         url: cover_url, // May be None, host will use cache key
-                        max_height: Some(150.0),
+                        height: Some(SizeHint::Compact),
                     }));
 
                     // Title (prominent)
@@ -704,7 +704,7 @@ pub(crate) fn dispatch(
                                         ),
                                     ),
                                     url: Some(cover_url.clone()),
-                                    max_height: Some(200.0),
+                                    height: Some(SizeHint::Regular),
                                 }));
                             }
                             if let Some(desc) = &scraped_data.description {
@@ -932,7 +932,7 @@ pub(crate) fn dispatch(
                 sidebar_elements.push(UiElement::ListContainer(ListContainerConfig {
                     id: "browser_list".to_string(),
                     items,
-                    max_height: Some(700.0), // Taller list for sidebar
+                    height: Some(SizeHint::Tall),
                     empty_message: Some("Enter a search term".to_string()),
                 }));
             } else {
@@ -1015,7 +1015,7 @@ pub(crate) fn dispatch(
                 sidebar_elements.push(UiElement::ListContainer(ListContainerConfig {
                     id: "browser_list".to_string(),
                     items,
-                    max_height: Some(700.0),
+                    height: Some(SizeHint::Tall),
                     empty_message: Some("No cached entries".to_string()),
                 }));
             }
@@ -1230,8 +1230,7 @@ pub(crate) fn dispatch(
                             id: format!("gallery_{}", selected_id),
                             images: carousel_images,
                             current_index: carousel_index,
-                            max_height: Some(400.0),
-                            thumbnail_height: Some(60.0),
+                            height: Some(SizeHint::Regular),
                             enable_lightbox: true,
                         }));
                     }
@@ -1341,7 +1340,7 @@ pub(crate) fn dispatch(
                                             ),
                                         ),
                                         url: Some(url.to_string()),
-                                        max_height: Some(200.0),
+                                        height: Some(SizeHint::Regular),
                                     }));
                                     content_elements.push(UiElement::Space(SpacingStep::Small));
                                 }

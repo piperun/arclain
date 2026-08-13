@@ -1,7 +1,7 @@
 //! Pure conversions from generated WIT values into Wirt's neutral model.
 
 use crate::{
-    BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginLayout, PluginUiElement,
+    BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginLayout, PluginUiElement, SizeHint,
     SpacingStep, TextRole, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
 };
 use crate::{MoveFileRule, MoveRule, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger};
@@ -97,7 +97,7 @@ pub fn convert_ui_element(
         UiElement::Image(config) => PluginUiElement::Image {
             cache_key: config.cache_key,
             url: config.url,
-            max_height: config.max_height,
+            height: config.height.map(convert_size_hint),
         },
         UiElement::Tabs(config) => PluginUiElement::Tabs {
             id: config.id,
@@ -123,7 +123,7 @@ pub fn convert_ui_element(
                     }),
                 })
                 .collect(),
-            max_height: config.max_height,
+            height: config.height.map(convert_size_hint),
             empty_message: config.empty_message,
         },
         UiElement::Loading(config) => PluginUiElement::Loading {
@@ -157,8 +157,7 @@ pub fn convert_ui_element(
             id: config.id,
             images: config.images,
             current_index: config.current_index as usize,
-            max_height: config.max_height,
-            thumbnail_height: config.thumbnail_height,
+            height: config.height.map(convert_size_hint),
             enable_lightbox: config.enable_lightbox,
         },
         UiElement::KeyValueList(config) => PluginUiElement::KeyValueList {
@@ -200,6 +199,16 @@ fn convert_text_role(role: crate::bindings::wirt::plugin::ui::TextRole) -> TextR
         WitRole::Body => TextRole::Body,
         WitRole::Caption => TextRole::Caption,
         WitRole::Emphasis => TextRole::Emphasis,
+    }
+}
+
+fn convert_size_hint(hint: crate::bindings::wirt::plugin::ui::SizeHint) -> SizeHint {
+    use crate::bindings::wirt::plugin::ui::SizeHint as WitHint;
+
+    match hint {
+        WitHint::Compact => SizeHint::Compact,
+        WitHint::Regular => SizeHint::Regular,
+        WitHint::Tall => SizeHint::Tall,
     }
 }
 

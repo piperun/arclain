@@ -17,7 +17,7 @@ use wirt::ui_model::{
     PluginWarningIconDto, MAX_UI_ASSETS, MAX_UI_NODES, MAX_UI_TEXT_BYTES, MAX_UI_TREE_DEPTH,
 };
 use wirt::{
-    ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, SpacingStep, TextRole,
+    ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, SizeHint, SpacingStep, TextRole,
     ToolbarButton, WarningIcon,
 };
 
@@ -201,7 +201,7 @@ fn image_is_display_only_and_counts_toward_the_asset_budget() {
     let layout = single(vec![PluginUiElement::Image {
         cache_key: Some("cover:1".to_string()),
         url: None,
-        max_height: Some(200.0),
+        height: Some(SizeHint::Tall),
     }]);
     let children = root_children(&layout);
     assert_eq!(children[0].id, "#root/0");
@@ -210,7 +210,7 @@ fn image_is_display_only_and_counts_toward_the_asset_budget() {
         PluginUiNodeKind::Image {
             cache_key: Some("cover:1".to_string()),
             url: None,
-            max_height: Some(200.0),
+            height: Some(SizeHint::Tall),
         }
     );
 }
@@ -293,20 +293,20 @@ fn list_container_keeps_its_own_id_and_normalizes_nested_list_items() {
             selected: false,
             warning_icon: None,
         }],
-        max_height: Some(400.0),
+        height: Some(SizeHint::Tall),
         empty_message: Some("Nothing here".to_string()),
     }]);
     let children = root_children(&layout);
     assert_eq!(children[0].id, "results");
     let PluginUiNodeKind::ListContainer {
         children: items,
-        max_height,
+        height,
         empty_message,
     } = &children[0].kind
     else {
         panic!("expected ListContainer");
     };
-    assert_eq!(*max_height, Some(400.0));
+    assert_eq!(*height, Some(SizeHint::Tall));
     assert_eq!(empty_message.as_deref(), Some("Nothing here"));
     assert_eq!(items[0].id, "row-1");
 }
@@ -394,8 +394,7 @@ fn carousel_keeps_its_id_and_converts_every_image_and_counts_assets() {
             ("img-2".to_string(), None),
         ],
         current_index: 1,
-        max_height: Some(300.0),
-        thumbnail_height: Some(60.0),
+        height: Some(SizeHint::Regular),
         enable_lightbox: true,
     }]);
     let children = root_children(&layout);
@@ -522,7 +521,7 @@ fn unmatched_group_end_at_any_nesting_level_is_rejected() {
     let layout = single(vec![PluginUiElement::ListContainer {
         id: "list".to_string(),
         items: vec![PluginUiElement::GroupEnd],
-        max_height: None,
+        height: None,
         empty_message: None,
     }]);
     assert_eq!(
@@ -539,7 +538,7 @@ fn group_begin_unclosed_inside_a_nested_container_is_rejected() {
             title: "Never closed".to_string(),
             description: None,
         }],
-        max_height: None,
+        height: None,
         empty_message: None,
     }]);
     assert_eq!(
@@ -574,7 +573,7 @@ fn tree_depth_node_text_and_asset_budgets_are_enforced_end_to_end() {
         PluginUiElement::ListContainer {
             id: format!("nested-{remaining}"),
             items: vec![nested(remaining - 1)],
-            max_height: None,
+            height: None,
             empty_message: None,
         }
     }
@@ -610,7 +609,7 @@ fn tree_depth_node_text_and_asset_budgets_are_enforced_end_to_end() {
             .map(|index| PluginUiElement::Image {
                 cache_key: Some(format!("cover:{index}")),
                 url: None,
-                max_height: None,
+                height: None,
             })
             .collect(),
     );

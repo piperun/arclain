@@ -118,7 +118,7 @@ use wirt::ui_model::{self, PluginUiNormalizeError};
 pub use wirt::ui_model::{
     PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginHostIntentDto,
     PluginImageDto, PluginKeyValueDto, PluginToastLevelDto, PluginToolbarButtonDto,
-    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SpacingStep, TextRole,
+    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SizeHint, SpacingStep, TextRole,
 };
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
@@ -207,11 +207,11 @@ fn rewrite_cache_keys(mut node: PluginUiNodeDto, plugin_id: &str) -> PluginUiNod
         PluginUiNodeKind::Image {
             cache_key,
             url,
-            max_height,
+            height,
         } => PluginUiNodeKind::Image {
             cache_key: cache_key.map(|key| encode_plugin_image_cache_key(plugin_id, &key)),
             url,
-            max_height,
+            height,
         },
         PluginUiNodeKind::ListItem {
             title,
@@ -233,8 +233,7 @@ fn rewrite_cache_keys(mut node: PluginUiNodeDto, plugin_id: &str) -> PluginUiNod
         PluginUiNodeKind::Carousel {
             images,
             current_index,
-            max_height,
-            thumbnail_height,
+            height,
             enable_lightbox,
         } => PluginUiNodeKind::Carousel {
             images: images
@@ -245,8 +244,7 @@ fn rewrite_cache_keys(mut node: PluginUiNodeDto, plugin_id: &str) -> PluginUiNod
                 })
                 .collect(),
             current_index,
-            max_height,
-            thumbnail_height,
+            height,
             enable_lightbox,
         },
         PluginUiNodeKind::Single { children } => PluginUiNodeKind::Single {
@@ -263,11 +261,11 @@ fn rewrite_cache_keys(mut node: PluginUiNodeDto, plugin_id: &str) -> PluginUiNod
         },
         PluginUiNodeKind::ListContainer {
             children,
-            max_height,
+            height,
             empty_message,
         } => PluginUiNodeKind::ListContainer {
             children: rewrite_children(children, plugin_id),
-            max_height,
+            height,
             empty_message,
         },
         PluginUiNodeKind::Group {
@@ -4096,7 +4094,7 @@ mod tests {
                 PluginUiElement::Image {
                     cache_key: Some("cover:1".to_string()),
                     url: None,
-                    max_height: None,
+                    height: None,
                 },
                 PluginUiElement::ListContainer {
                     id: "list".to_string(),
@@ -4110,7 +4108,7 @@ mod tests {
                         selected: false,
                         warning_icon: None,
                     }],
-                    max_height: None,
+                    height: None,
                     empty_message: None,
                 },
             ],
