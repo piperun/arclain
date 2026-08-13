@@ -3,7 +3,7 @@
 //! Renders the main application tab bar with host tabs and plugin-registered tabs.
 //! Supports badge rendering (numeric count and dot indicators).
 
-use arclain_app::plugins::PluginBadgeDto;
+use arclain_app::plugins::{BadgeLevel, PluginBadgeDto};
 use arclain_theme::ThemeColors;
 use egui::{Color32, RichText, Ui, Vec2};
 
@@ -176,7 +176,7 @@ pub fn render(
 
 /// Render a badge (count or dot)
 fn render_badge(ui: &mut Ui, badge: &PluginBadgeDto, colors: &ThemeColors) {
-    let color = badge_color(&badge.color, colors);
+    let color = badge_color(badge.level, colors);
 
     if let Some(count) = badge.count {
         if count > 0 {
@@ -240,19 +240,21 @@ fn render_badge(ui: &mut Ui, badge: &PluginBadgeDto, colors: &ThemeColors) {
     }
 }
 
-/// Map a plugin-emitted badge color name to a theme token.
+/// Which theme token draws a badge of this level.
 ///
-/// Plugins describe badge color semantically ("red" for failure,
-/// "green" for success, etc.); this routes through `ThemeColors` so
-/// the actual hex follows the active theme rather than being baked
-/// into the renderer.
-fn badge_color(color: &str, colors: &ThemeColors) -> Color32 {
-    match color {
-        "red" => colors.error,
-        "green" => colors.success,
-        "blue" => colors.primary,
-        "orange" => colors.warning,
-        _ => colors.primary,
+/// A plugin names what its badge means and the host answers with a
+/// colour, so restyling moves every plugin's badge at once and no
+/// plugin-authored text ever reaches a paint call. Four of the five
+/// levels have a status token of their own; `Neutral` reports no status
+/// at all and takes the app's own accent, which is the closest thing
+/// `ThemeColors` has to "a badge with nothing to say".
+fn badge_color(level: BadgeLevel, colors: &ThemeColors) -> Color32 {
+    match level {
+        BadgeLevel::Neutral => colors.primary,
+        BadgeLevel::Info => colors.info,
+        BadgeLevel::Success => colors.success,
+        BadgeLevel::Warning => colors.warning,
+        BadgeLevel::Error => colors.error,
     }
 }
 
@@ -303,34 +305,138 @@ mod tests {
     }
 
     #[test]
-    fn badge_color_red_maps_to_theme_error() {
+    fn every_badge_level_takes_the_theme_token_that_means_the_same_thing() {
         let colors = test_colors();
-        assert_eq!(badge_color("red", &colors), colors.error);
+        assert_eq!(badge_color(BadgeLevel::Info, &colors), colors.info);
+        assert_eq!(badge_color(BadgeLevel::Success, &colors), colors.success);
+        assert_eq!(badge_color(BadgeLevel::Warning, &colors), colors.warning);
+        assert_eq!(badge_color(BadgeLevel::Error, &colors), colors.error);
     }
 
+    /// `Neutral` is the one level with no status token behind it. It takes
+    /// the app's accent, and the assertion is written against what that
+    /// means rather than against a hex value: whatever the active theme
+    /// makes of `primary`, a neutral badge follows it.
     #[test]
-    fn badge_color_green_maps_to_theme_success() {
+    fn a_neutral_badge_takes_the_apps_own_accent() {
         let colors = test_colors();
-        assert_eq!(badge_color("green", &colors), colors.success);
+        assert_eq!(badge_color(BadgeLevel::Neutral, &colors), colors.primary);
     }
 
+    /// No two levels may collapse onto one colour, or the vocabulary
+    /// promises a distinction the screen does not keep. This is the
+    /// assertion that fails if a theme is restyled carelessly -- and it is
+    /// the reason `Neutral` does not take `on_surface_variant`, which the
+    /// shipped theme sets to the same value as `info`.
     #[test]
-    fn badge_color_blue_maps_to_theme_primary() {
-        let colors = test_colors();
-        assert_eq!(badge_color("blue", &colors), colors.primary);
+    fn no_two_levels_render_as_the_same_colour() {
+        for colors in [ThemeColors::light(), ThemeColors::dark()] {
+            let mut seen: Vec<Color32> = Vec::new();
+            for level in [
+                BadgeLevel::Neutral,
+                BadgeLevel::Info,
+                BadgeLevel::Success,
+                BadgeLevel::Warning,
+                BadgeLevel::Error,
+            ] {
+                let color = badge_color(level, &colors);
+                assert!(
+                    !seen.contains(&color),
+                    "{level:?} renders as {color:?}, which another level already took"
+                );
+                seen.push(color);
+            }
+        }
     }
 
-    #[test]
-    fn badge_color_orange_maps_to_theme_warning() {
-        let colors = test_colors();
-        assert_eq!(badge_color("orange", &colors), colors.warning);
+    // =========================================================================
+    // render_badge
+    // =========================================================================
+
+    /// Collect the fill of every dot-sized circle the frame painted.
+    fn painted_dot_fills(shapes: Vec<egui::epaint::ClippedShape>) -> Vec<Color32> {
+        fn walk(shape: &egui::Shape, found: &mut Vec<Color32>) {
+            match shape {
+                egui::Shape::Circle(circle) if circle.radius == 4.0 => found.push(circle.fill),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        for clipped in &shapes {
+            walk(&clipped.shape, &mut found);
+        }
+        found
     }
 
+    /// Renders one tab whose badge carries `level` and reports the colour
+    /// the dot was actually painted with.
+    fn painted_badge_color(level: BadgeLevel, colors: &ThemeColors) -> Color32 {
+        let tabs = vec![TopTab {
+            id: "t".to_string(),
+            label: "T".to_string(),
+            icon: "DATABASE".to_string(),
+            badge: Some(PluginBadgeDto {
+                count: None,
+                dot: true,
+                level,
+            }),
+            source: None,
+        }];
+        let mut state = TopTabBarState::new("t");
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(320.0, 64.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                render(ui, colors, &mut state, &tabs);
+            });
+        });
+
+        let fills = painted_dot_fills(output.shapes);
+        assert_eq!(fills.len(), 1, "one badge paints one dot, got {fills:?}");
+        fills[0]
+    }
+
+    /// The table above compares the resolver to the theme, which cannot
+    /// see whether the renderer reads the resolver at all. This one reads
+    /// the colour off the painted circle, so a renderer that ignored the
+    /// level -- or pinned one colour for every badge -- fails here.
     #[test]
-    fn badge_color_unknown_defaults_to_primary() {
+    fn the_level_a_badge_names_is_the_colour_it_gets_painted() {
         let colors = test_colors();
-        assert_eq!(badge_color("purple", &colors), colors.primary);
-        assert_eq!(badge_color("", &colors), colors.primary);
+        for level in [
+            BadgeLevel::Neutral,
+            BadgeLevel::Info,
+            BadgeLevel::Success,
+            BadgeLevel::Warning,
+            BadgeLevel::Error,
+        ] {
+            assert_eq!(
+                painted_badge_color(level, &colors),
+                badge_color(level, &colors),
+                "a {level:?} badge is painted with the colour the host assigns it"
+            );
+        }
+    }
+
+    /// The colour follows the theme rather than the plugin: the same badge
+    /// drawn against a different theme comes out a different colour, with
+    /// nothing on the plugin's side changed.
+    #[test]
+    fn the_same_badge_changes_colour_when_the_theme_does() {
+        let light = painted_badge_color(BadgeLevel::Neutral, &ThemeColors::light());
+        let dark = painted_badge_color(BadgeLevel::Neutral, &ThemeColors::dark());
+        assert_ne!(light, dark);
     }
 
     // =========================================================================

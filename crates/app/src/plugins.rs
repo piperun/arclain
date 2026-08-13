@@ -118,8 +118,14 @@ use wirt::ui_model::{self, PluginUiNormalizeError};
 pub use wirt::ui_model::{
     PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginHostIntentDto,
     PluginImageDto, PluginKeyValueDto, PluginToastLevelDto, PluginToolbarButtonDto,
-    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto,
+    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SidebarWidth, SizeHint, SpacingStep,
+    TextRole,
 };
+// Re-exported for the same reason, but from the model root rather than
+// `ui_model`: a badge is chrome on a top tab, not a node in a plugin's
+// document, so it never passes through the UI-node normalizer. This
+// facade's own `PluginBadgeDto` names it.
+pub use wirt::BadgeLevel;
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::ids::{ArchiveSessionId, PluginSessionId};
@@ -207,11 +213,11 @@ fn rewrite_cache_keys(mut node: PluginUiNodeDto, plugin_id: &str) -> PluginUiNod
         PluginUiNodeKind::Image {
             cache_key,
             url,
-            max_height,
+            height,
         } => PluginUiNodeKind::Image {
             cache_key: cache_key.map(|key| encode_plugin_image_cache_key(plugin_id, &key)),
             url,
-            max_height,
+            height,
         },
         PluginUiNodeKind::ListItem {
             title,
@@ -233,8 +239,7 @@ fn rewrite_cache_keys(mut node: PluginUiNodeDto, plugin_id: &str) -> PluginUiNod
         PluginUiNodeKind::Carousel {
             images,
             current_index,
-            max_height,
-            thumbnail_height,
+            height,
             enable_lightbox,
         } => PluginUiNodeKind::Carousel {
             images: images
@@ -245,8 +250,7 @@ fn rewrite_cache_keys(mut node: PluginUiNodeDto, plugin_id: &str) -> PluginUiNod
                 })
                 .collect(),
             current_index,
-            max_height,
-            thumbnail_height,
+            height,
             enable_lightbox,
         },
         PluginUiNodeKind::Single { children } => PluginUiNodeKind::Single {
@@ -255,19 +259,19 @@ fn rewrite_cache_keys(mut node: PluginUiNodeDto, plugin_id: &str) -> PluginUiNod
         PluginUiNodeKind::Split {
             sidebar,
             content,
-            sidebar_width,
+            width,
         } => PluginUiNodeKind::Split {
             sidebar: rewrite_children(sidebar, plugin_id),
             content: rewrite_children(content, plugin_id),
-            sidebar_width,
+            width,
         },
         PluginUiNodeKind::ListContainer {
             children,
-            max_height,
+            height,
             empty_message,
         } => PluginUiNodeKind::ListContainer {
             children: rewrite_children(children, plugin_id),
-            max_height,
+            height,
             empty_message,
         },
         PluginUiNodeKind::Group {
@@ -1368,18 +1372,16 @@ pub struct PluginBadgeDto {
     pub count: Option<u32>,
     /// Render a plain dot instead of a number.
     pub dot: bool,
-    /// The plugin's semantic color name (`"red"`, `"green"`, `"blue"`,
-    /// `"orange"`, or anything else). Plugin-authored and therefore
-    /// untrusted: a renderer maps known names onto its own theme and
-    /// falls back for the rest, and must never treat this as a color
-    /// literal.
-    pub color: String,
+    /// What the badge means. One of five host-defined levels, so there is
+    /// no plugin-authored text here for a renderer to parse: it maps each
+    /// level onto its own theme and every level has an answer.
+    pub level: BadgeLevel,
 }
 
 impl From<arclain_plugins::types::BadgeConfig> for PluginBadgeDto {
     fn from(badge: arclain_plugins::types::BadgeConfig) -> Self {
-        let arclain_plugins::types::BadgeConfig { count, dot, color } = badge;
-        Self { count, dot, color }
+        let arclain_plugins::types::BadgeConfig { count, dot, level } = badge;
+        Self { count, dot, level }
     }
 }
 
@@ -4096,7 +4098,7 @@ mod tests {
                 PluginUiElement::Image {
                     cache_key: Some("cover:1".to_string()),
                     url: None,
-                    max_height: None,
+                    height: None,
                 },
                 PluginUiElement::ListContainer {
                     id: "list".to_string(),
@@ -4110,7 +4112,7 @@ mod tests {
                         selected: false,
                         warning_icon: None,
                     }],
-                    max_height: None,
+                    height: None,
                     empty_message: None,
                 },
             ],
@@ -4969,7 +4971,7 @@ mod chrome_and_network_log_tests {
         let dto = PluginBadgeDto::from(BadgeConfig {
             count: Some(12),
             dot: true,
-            color: "red".to_string(),
+            level: BadgeLevel::Error,
         });
 
         assert_eq!(
@@ -4977,7 +4979,7 @@ mod chrome_and_network_log_tests {
             PluginBadgeDto {
                 count: Some(12),
                 dot: true,
-                color: "red".to_string(),
+                level: BadgeLevel::Error,
             }
         );
     }
@@ -4990,12 +4992,12 @@ mod chrome_and_network_log_tests {
         let dto = PluginBadgeDto::from(BadgeConfig {
             count: None,
             dot: false,
-            color: String::new(),
+            level: BadgeLevel::Neutral,
         });
 
         assert_eq!(dto.count, None);
         assert!(!dto.dot);
-        assert!(dto.color.is_empty());
+        assert_eq!(dto.level, BadgeLevel::Neutral);
     }
 
     fn sample_top_tab() -> TopTabConfig {
@@ -5006,7 +5008,7 @@ mod chrome_and_network_log_tests {
             badge: Some(BadgeConfig {
                 count: Some(4),
                 dot: false,
-                color: "blue".to_string(),
+                level: BadgeLevel::Info,
             }),
             priority: 10,
         }
@@ -5026,7 +5028,7 @@ mod chrome_and_network_log_tests {
                 badge: Some(PluginBadgeDto {
                     count: Some(4),
                     dot: false,
-                    color: "blue".to_string(),
+                    level: BadgeLevel::Info,
                 }),
                 priority: 10,
             }

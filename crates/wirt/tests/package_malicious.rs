@@ -4,7 +4,7 @@ use std::io::{Cursor, Write};
 use support::{manifest_toml, UI_DEMO_COMPONENT};
 use wirt::{
     package_bytes, read_package_bytes, MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_WASM_BYTES,
-    MAX_WIRT_PACKAGE_BYTES,
+    MAX_WIRT_PACKAGE_BYTES, WIRT_ABI_VERSION,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -408,17 +408,33 @@ fn manifest_network_authority_requires_exact_domains() {
     }
 }
 
+/// The fixture manifest with a different ABI declared.
+///
+/// The needle is derived rather than written out, and asserted to have
+/// matched: a hand-written `abi = "0.2.0"` stops matching the moment the host
+/// ABI moves, at which point the caller silently stops testing what it named.
+fn manifest_with_abi(abi: &str) -> String {
+    let declared = format!("abi = \"{WIRT_ABI_VERSION}\"");
+    let replaced = manifest_toml().replace(&declared, &format!("abi = \"{abi}\""));
+    assert_ne!(
+        replaced,
+        manifest_toml(),
+        "the fixture manifest no longer declares {declared:?}"
+    );
+    replaced
+}
+
 #[test]
 fn hostile_manifest_values_and_parser_diagnostics_are_bounded() {
     let marker = "HOSTILE-MANIFEST-VALUE".repeat(400);
-    let invalid_abi = manifest_toml().replace("abi = \"0.2.0\"", &format!("abi = \"{marker}\""));
+    let invalid_abi = manifest_with_abi(&marker);
     let invalid_domain = manifest_toml()
         .replace("network = false", "network = true")
         .replace(
             "network_domains = []",
             &format!("network_domains = [\"{marker}\"]"),
         );
-    let malformed = format!("[wirt]\nabi = \"0.2.0\"\n{marker}");
+    let malformed = format!("[wirt]\nabi = \"{WIRT_ABI_VERSION}\"\n{marker}");
 
     for (label, manifest) in [
         ("ABI", invalid_abi),
@@ -440,4 +456,70 @@ fn hostile_manifest_values_and_parser_diagnostics_are_bounded() {
             "{label} error reflected hostile input"
         );
     }
+}
+
+#[test]
+fn stale_package_refusal_names_found_required_and_remedy() {
+    // Which refusal this reaches, precisely: `read_package_bytes` runs
+    // `validate_manifest` before it compares any ABI, so a package a version
+    // behind the host is refused by the manifest check. Neither package-level
+    // ABI branch fires — nor can it, while the manifest has just been forced
+    // equal to `WIRT_ABI_VERSION` and the contract's ABI is stamped with that
+    // same constant. What is asserted here is the message a stale package
+    // actually gets, and that it is not the string that once reported the
+    // manifest, the component and the host as a single failure.
+    let stale = manifest_with_abi("0.1.0");
+    let bytes = archive(&[
+        ("plugin.toml", stale.as_bytes(), canonical_options()),
+        ("plugin.wasm", UI_DEMO_COMPONENT, canonical_options()),
+    ]);
+
+    let message = read_package_bytes(&bytes).unwrap_err().to_string();
+    assert!(
+        message.contains("0.1.0"),
+        "names the version found: {message}"
+    );
+    assert!(
+        message.contains(WIRT_ABI_VERSION),
+        "names the version required: {message}"
+    );
+    assert!(
+        message.contains("wirt-sdk/template"),
+        "says where to rebuild: {message}"
+    );
+    assert!(
+        !message.contains("manifest, component, and host"),
+        "the three cases are no longer one message: {message}"
+    );
+}
+
+#[test]
+fn control_characters_in_a_declared_abi_never_reach_the_message() {
+    // TOML `\u` escapes decode to real control characters, so a well-formed
+    // manifest can declare an ABI made entirely of ESC. That value is echoed
+    // back by the refusal, which is what makes it a message-injection vector
+    // and what makes the escaped rendering — not the raw input — the thing
+    // that has to be bounded: one ESC renders as six characters.
+    let hostile = manifest_with_abi(&"\\u001B".repeat(400));
+    let bytes = archive(&[
+        ("plugin.toml", hostile.as_bytes(), canonical_options()),
+        ("plugin.wasm", UI_DEMO_COMPONENT, canonical_options()),
+    ]);
+
+    let error = read_package_bytes(&bytes).unwrap_err().to_string();
+    // Without this the test passes vacuously on a manifest that failed to
+    // parse, never reaching the refusal that echoes the value.
+    assert!(
+        error.contains("this host speaks"),
+        "reached the ABI refusal: {error}"
+    );
+    assert!(
+        !error.contains('\u{1b}'),
+        "a control character reached the message: {error:?}"
+    );
+    assert!(
+        error.len() <= 240,
+        "escaped control characters blew the budget: {} bytes",
+        error.len()
+    );
 }

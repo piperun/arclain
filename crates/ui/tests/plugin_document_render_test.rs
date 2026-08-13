@@ -10,11 +10,13 @@
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
     PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginUiDocument,
-    PluginUiNodeDto, PluginUiNodeKind,
+    PluginUiNodeDto, PluginUiNodeKind, SidebarWidth, SizeHint, SpacingStep, TextRole,
 };
 use arclain_ui::features::plugins::application::PluginNavigation;
 use arclain_ui::features::plugins::presentation::rendering::{
-    render_document, DocumentContext, DocumentEvent, DocumentExtent,
+    carousel_height_for_hint, image_height_for_hint, list_height_for_hint, render_document,
+    sidebar_width_for_step, text_style_for_role, DocumentContext, DocumentEvent, DocumentExtent,
+    RoleStyle,
 };
 use arclain_ui::shared::theme::AppTheme;
 use egui_kittest::kittest::Queryable as _;
@@ -219,8 +221,7 @@ fn a_hidden_node_is_not_drawn_at_all() {
             "visible_label",
             PluginUiNodeKind::Label {
                 text: "Still here".to_string(),
-                bold: false,
-                size: None,
+                role: TextRole::Body,
             },
         ),
     ]));
@@ -317,6 +318,42 @@ fn sibling_nodes_with_identical_labels_stay_individually_addressable() {
     );
 }
 
+/// A plugin names a step; the host picks the pixels. The three steps are
+/// asserted against each other rather than against absolute heights, so the
+/// gap the document wrapper adds around any single node cancels out and what
+/// is left is purely the host's scale: 8, 12 and 20.
+#[test]
+fn each_spacing_step_costs_the_height_the_host_assigns_it() {
+    fn consumed(step: SpacingStep) -> f32 {
+        let mut harness = Harness::new_ui_state(
+            |ui, stage: &mut Stage| {
+                let before = ui.cursor().min.y;
+                let ctx = DocumentContext {
+                    colors: &stage.theme.colors,
+                    shared_state: None,
+                    image_owner: None,
+                    extent: stage.extent,
+                };
+                let _ = render_document(ui, &stage.document, ctx);
+                stage.consumed = ui.cursor().min.y - before;
+            },
+            Stage::new(document(vec![node(
+                "gap",
+                PluginUiNodeKind::Space { step },
+            )])),
+        );
+        harness.run();
+        harness.state().consumed
+    }
+
+    let small = consumed(SpacingStep::Small);
+    let medium = consumed(SpacingStep::Medium);
+    let large = consumed(SpacingStep::Large);
+
+    assert_eq!(medium - small, 4.0, "medium is 12 where small is 8");
+    assert_eq!(large - small, 12.0, "large is 20 where small is 8");
+}
+
 /// A `Split` in a stacked host is bounded so it cannot swallow the rest of
 /// the panel; in a host that owns its container it is not.
 #[test]
@@ -330,19 +367,17 @@ fn a_split_is_height_bounded_only_when_the_host_asks_for_it() {
                     "s",
                     PluginUiNodeKind::Label {
                         text: "Sidebar".to_string(),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     },
                 )],
                 content: vec![node(
                     "c",
                     PluginUiNodeKind::Label {
                         text: "Content".to_string(),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     },
                 )],
-                sidebar_width: Some(120.0),
+                width: Some(SidebarWidth::Narrow),
             },
         );
         doc
@@ -399,5 +434,279 @@ fn a_split_is_height_bounded_only_when_the_host_asks_for_it() {
     assert!(
         full.state().consumed > bounded_height,
         "an unbounded split must be free to take more room than a bounded one"
+    );
+}
+
+/// A plugin names a role; this pins the host's answer. Every role has to
+/// land on its own row of the type scale, or two of them say different
+/// things and render as the same thing -- which is the failure a plugin
+/// author cannot see and cannot work around.
+#[test]
+fn every_text_role_renders_differently() {
+    let styles: Vec<RoleStyle> = [
+        TextRole::Title,
+        TextRole::Subtitle,
+        TextRole::Body,
+        TextRole::Caption,
+        TextRole::Emphasis,
+    ]
+    .into_iter()
+    .map(text_style_for_role)
+    .collect();
+
+    for (index, style) in styles.iter().enumerate() {
+        assert!(
+            !styles[index + 1..].contains(style),
+            "two roles render identically: {style:?}"
+        );
+    }
+}
+
+/// The scale above is only worth pinning if the renderer reads it. The
+/// retired code decided "this is a heading" from the declared size and then
+/// drew every heading through a widget that sized itself, so a title and a
+/// subtitle came out identical on screen while any table would have called
+/// them distinct. Measuring real consumed height is what separates "the
+/// numbers differ" from "the numbers reach the user".
+///
+/// Only the four roles with distinct sizes are ordered here. Emphasis and
+/// body share a size and differ by weight, which does not move the line
+/// box; `every_text_role_renders_differently` is what covers that pair.
+#[test]
+fn a_larger_role_takes_more_room_on_screen_than_a_smaller_one() {
+    fn consumed(role: TextRole) -> f32 {
+        let mut harness = Harness::new_ui_state(
+            |ui, stage: &mut Stage| {
+                let before = ui.cursor().min.y;
+                let ctx = DocumentContext {
+                    colors: &stage.theme.colors,
+                    shared_state: None,
+                    image_owner: None,
+                    extent: stage.extent,
+                };
+                let _ = render_document(ui, &stage.document, ctx);
+                stage.consumed = ui.cursor().min.y - before;
+            },
+            Stage::new(document(vec![node(
+                "text",
+                PluginUiNodeKind::Label {
+                    text: "Ay".to_string(),
+                    role,
+                },
+            )])),
+        );
+        harness.run();
+        harness.state().consumed
+    }
+
+    let title = consumed(TextRole::Title);
+    let subtitle = consumed(TextRole::Subtitle);
+    let body = consumed(TextRole::Body);
+    let caption = consumed(TextRole::Caption);
+
+    assert!(
+        title > subtitle,
+        "a title must outgrow a subtitle, got {title} and {subtitle}"
+    );
+    assert!(
+        subtitle > body,
+        "a subtitle must outgrow body text, got {subtitle} and {body}"
+    );
+    assert!(
+        body > caption,
+        "body text must outgrow a caption, got {body} and {caption}"
+    );
+}
+
+/// One vocabulary, three scales. A plugin names `Tall` and the host answers
+/// 400 for an image, 700 for a list and 700 for a carousel -- if these three
+/// ever collapse onto one table, the reason the plugin names a step instead
+/// of a number disappears with them.
+///
+/// The absent hint is pinned too, and it is not one answer either: an image
+/// with no hint has nothing to say to the renderer below it, while a list
+/// always occupies a height and so must resolve to one.
+#[test]
+fn a_step_means_a_different_height_per_kind() {
+    assert_eq!(image_height_for_hint(Some(SizeHint::Tall)), Some(400.0));
+    assert_eq!(list_height_for_hint(Some(SizeHint::Tall)), 700.0);
+    assert_eq!(carousel_height_for_hint(Some(SizeHint::Tall)), 700.0);
+
+    assert_eq!(image_height_for_hint(Some(SizeHint::Regular)), Some(200.0));
+    assert_eq!(carousel_height_for_hint(Some(SizeHint::Regular)), 400.0);
+
+    assert_eq!(image_height_for_hint(None), None);
+    assert_eq!(list_height_for_hint(None), 300.0);
+    assert_eq!(carousel_height_for_hint(None), 300.0);
+}
+
+/// The scale above is only worth pinning if the renderer reads it. A table
+/// test compares the host's numbers to themselves and would pass just as
+/// green against a renderer that ignored the hint entirely, which is exactly
+/// the shape of bug this vocabulary exists to prevent.
+///
+/// The list container is the kind that can be measured without an asset: it
+/// bounds a scroll area, so overflowing content makes the resolved number
+/// the height on screen. An image and a carousel need a real texture before
+/// they occupy anything, so `a_step_means_a_different_height_per_kind` is
+/// what covers those two.
+#[test]
+fn a_taller_list_hint_bounds_the_list_higher_on_screen() {
+    fn consumed(height: Option<SizeHint>) -> f32 {
+        let rows: Vec<PluginUiNodeDto> = (0..60)
+            .map(|index| {
+                node(
+                    &format!("row-{index}"),
+                    PluginUiNodeKind::Label {
+                        text: "Row".to_string(),
+                        role: TextRole::Body,
+                    },
+                )
+            })
+            .collect();
+        let mut harness = Harness::new_ui_state(
+            |ui, stage: &mut Stage| {
+                let before = ui.cursor().min.y;
+                let ctx = DocumentContext {
+                    colors: &stage.theme.colors,
+                    shared_state: None,
+                    image_owner: None,
+                    extent: stage.extent,
+                };
+                let _ = render_document(ui, &stage.document, ctx);
+                stage.consumed = ui.cursor().min.y - before;
+            },
+            Stage::new(document(vec![node(
+                "list",
+                PluginUiNodeKind::ListContainer {
+                    children: rows,
+                    height,
+                    empty_message: None,
+                },
+            )])),
+        );
+        harness.run();
+        harness.state().consumed
+    }
+
+    let compact = consumed(Some(SizeHint::Compact));
+    let absent = consumed(None);
+    let regular = consumed(Some(SizeHint::Regular));
+
+    // 200 against 300: the gap is the host's scale, and the frame's own
+    // margins cancel because both sides carry the same frame.
+    assert_eq!(
+        regular - compact,
+        100.0,
+        "regular bounds a list 100px higher than compact, got {compact} and {regular}"
+    );
+    assert_eq!(
+        absent, regular,
+        "a list with no hint takes the same room as a regular one"
+    );
+}
+
+/// A plugin names how much of the pane its sidebar wants; this pins the
+/// host's answer. The absent step is pinned alongside the three named ones
+/// because it is the case a plugin reaches by saying nothing at all, and it
+/// has to land on a real width rather than on nothing -- a split always
+/// draws a sidebar.
+#[test]
+fn a_sidebar_step_is_a_width_the_host_owns() {
+    assert_eq!(sidebar_width_for_step(Some(SidebarWidth::Narrow)), 200.0);
+    assert_eq!(sidebar_width_for_step(Some(SidebarWidth::Medium)), 250.0);
+    assert_eq!(sidebar_width_for_step(Some(SidebarWidth::Wide)), 300.0);
+    assert_eq!(sidebar_width_for_step(None), 250.0);
+}
+
+/// Renders a split and reports where the content pane's own label starts.
+/// The content pane begins where the sidebar ends, so this is the resolved
+/// sidebar width arriving on screen.
+fn split_content_left(width: Option<SidebarWidth>, sidebar: Vec<PluginUiNodeDto>) -> f32 {
+    let mut document = document(Vec::new());
+    document.root = node(
+        "#root",
+        PluginUiNodeKind::Split {
+            sidebar,
+            content: vec![node(
+                "c",
+                PluginUiNodeKind::Label {
+                    text: "Content".to_string(),
+                    role: TextRole::Body,
+                },
+            )],
+            width,
+        },
+    );
+    let mut stage = harness(document);
+    stage.run();
+    stage.get_by_label("Content").rect().left()
+}
+
+/// One short label: the sparsest sidebar a plugin can write, and the one
+/// that stopped holding its width.
+fn sparse_sidebar() -> Vec<PluginUiNodeDto> {
+    vec![node(
+        "s",
+        PluginUiNodeKind::Label {
+            text: "Sidebar".to_string(),
+            role: TextRole::Body,
+        },
+    )]
+}
+
+/// The scale above is only worth pinning if the renderer reads it. A table
+/// test compares the host's numbers to themselves and would pass just as
+/// green against a renderer that pinned one width and ignored the step,
+/// which is the shape of bug this vocabulary exists to prevent.
+#[test]
+fn a_wider_sidebar_step_pushes_the_content_pane_further_right() {
+    let narrow = split_content_left(Some(SidebarWidth::Narrow), sparse_sidebar());
+    let medium = split_content_left(Some(SidebarWidth::Medium), sparse_sidebar());
+    let wide = split_content_left(Some(SidebarWidth::Wide), sparse_sidebar());
+    let absent = split_content_left(None, sparse_sidebar());
+
+    // 200, 250 and 300: the gaps are the host's scale, and every other
+    // margin cancels because all four documents are otherwise identical.
+    assert_eq!(
+        medium - narrow,
+        50.0,
+        "medium starts the content pane 50px right of narrow, got {narrow} and {medium}"
+    );
+    assert_eq!(
+        wide - narrow,
+        100.0,
+        "wide starts the content pane 100px right of narrow, got {narrow} and {wide}"
+    );
+    assert_eq!(
+        absent, medium,
+        "a split with no step gets the width a medium one gets"
+    );
+}
+
+/// What a plugin puts in its sidebar must not decide how wide the sidebar
+/// is -- the step decides, and the host answers the step. A `SidePanel`
+/// remembers the rect its contents occupied and reuses it as its width from
+/// the next frame on, so a sidebar holding one short label used to collapse
+/// to a 96px floor a frame after being drawn at the width it asked for. A
+/// plugin author would see a `Wide` sidebar come out narrower than a
+/// `Narrow` one whose content happened to be wide, with nothing in their own
+/// code to explain it.
+///
+/// A rule spans whatever room it is given, so the filled sidebar is the case
+/// that never collapsed; the sparse one has to land in exactly the same
+/// place.
+#[test]
+fn a_sparse_sidebar_keeps_the_width_the_host_assigned() {
+    let filled = split_content_left(
+        Some(SidebarWidth::Wide),
+        vec![node("rule", PluginUiNodeKind::Separator)],
+    );
+    let sparse = split_content_left(Some(SidebarWidth::Wide), sparse_sidebar());
+
+    assert_eq!(
+        sparse, filled,
+        "a sidebar holding one short label must be as wide as one holding a full-width rule, \
+         got {sparse} and {filled}"
     );
 }

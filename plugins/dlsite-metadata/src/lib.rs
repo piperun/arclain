@@ -253,7 +253,7 @@ impl wirt_sdk::Guest for Component {
     }
 
     fn get_top_tabs() -> Vec<wirt_sdk::wirt::plugin::ui::TopTabConfig> {
-        use wirt_sdk::wirt::plugin::ui::{BadgeConfig, TopTabConfig};
+        use wirt_sdk::wirt::plugin::ui::{BadgeConfig, BadgeLevel, TopTabConfig};
 
         let cache_count = wirt_sdk::cached_metadata_count("dlsite")
             .ok()
@@ -266,7 +266,7 @@ impl wirt_sdk::Guest for Component {
             badge: cache_count.map(|count| BadgeConfig {
                 count: if count > 0 { Some(count) } else { None },
                 dot: count == 0, // Show dot if no count but tab is active
-                color: "blue".to_string(),
+                level: BadgeLevel::Info,
             }),
             priority: 100, // After host tabs (0-99 reserved for host)
         }]

@@ -31,8 +31,7 @@ impl wirt_sdk::Guest for Component {
             "MainPage" => PluginLayout::Single(vec![
                 UiElement::Label(LabelConfig {
                     text: "UI Demo Plugin".to_string(),
-                    bold: true,
-                    size: Some(16.0),
+                    role: TextRole::Subtitle,
                 }),
                 UiElement::Button(ButtonConfig {
                     id: "demo_btn".to_string(),
@@ -51,10 +50,10 @@ impl wirt_sdk::Guest for Component {
                     checked: false,
                 }),
                 UiElement::Separator,
+                UiElement::Space(SpacingStep::Small),
                 UiElement::Label(LabelConfig {
                     text: "New Elements".to_string(),
-                    bold: true,
-                    size: None,
+                    role: TextRole::Emphasis,
                 }),
                 UiElement::RadioGroup(RadioGroupConfig {
                     id: "theme_radio".to_string(),
@@ -83,15 +82,14 @@ impl wirt_sdk::Guest for Component {
                 action: None,
             })]),
             "Panel" => PluginLayout::Single(vec![
+                UiElement::Space(SpacingStep::Small),
                 UiElement::Label(LabelConfig {
                     text: "Plugin Info".to_string(),
-                    bold: true,
-                    size: None,
+                    role: TextRole::Emphasis,
                 }),
                 UiElement::Label(LabelConfig {
                     text: "Status: Active".to_string(),
-                    bold: false,
-                    size: None,
+                    role: TextRole::Body,
                 }),
             ]),
             _ => PluginLayout::Single(vec![]),

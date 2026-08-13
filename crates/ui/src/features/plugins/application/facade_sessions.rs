@@ -1648,7 +1648,7 @@ mod tests {
                         "list",
                         PluginUiNodeKind::ListContainer {
                             children: vec![button("third", "Third")],
-                            max_height: None,
+                            height: None,
                             empty_message: None,
                         },
                     ),
@@ -1693,7 +1693,7 @@ mod tests {
                         children: vec![button("inner", "Inner")],
                     },
                 )],
-                sidebar_width: None,
+                width: None,
             },
         );
 

@@ -36,9 +36,9 @@ use arclain_app::ids::{ArchiveSessionId, PluginSessionId};
 // real facade never returns, only useful here to hand-build a sample
 // document for one serde round-trip test.
 use arclain_app::plugins::{
-    is_plugin_disabled_refusal, PluginActionDto, PluginActionRequest, PluginBadgeDto,
+    is_plugin_disabled_refusal, BadgeLevel, PluginActionDto, PluginActionRequest, PluginBadgeDto,
     PluginCapabilityDto, PluginExtensionPointDto, PluginHostIntentDto, PluginToastLevelDto,
-    PluginTopTabDto, PluginUiDocument,
+    PluginTopTabDto, PluginUiDocument, TextRole,
 };
 use arclain_app::{ArclainApp, BootstrapConfig};
 
@@ -148,7 +148,7 @@ fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
 
 fn install_failing_init_fixture(plugins_dir: &std::path::Path) {
     const MANIFEST: &[u8] = br#"[wirt]
-abi = "0.2.0"
+abi = "0.3.0"
 
 [plugin]
 id = "failing-init"
@@ -1143,7 +1143,7 @@ fn plugin_chrome_reports_the_counts_and_the_fixtures_declared_top_tab() {
             badge: Some(PluginBadgeDto {
                 count: Some(7),
                 dot: true,
-                color: "orange".to_string(),
+                level: BadgeLevel::Warning,
             }),
             priority: 250,
         }],
@@ -1313,7 +1313,21 @@ fn open_plugin_session_opens_the_panel_extension_point_with_real_content() {
     else {
         panic!("expected a Single root");
     };
-    assert_eq!(children.len(), 2, "ui-demo's Panel layout has two labels");
+    // Assert the labels the guest actually emitted rather than a child
+    // count: the count is a proxy for "real content arrived", and it breaks
+    // whenever the guest adds a display-only node such as a spacer.
+    let labels: Vec<&str> = children
+        .iter()
+        .filter_map(|child| match &child.kind {
+            arclain_app::plugins::PluginUiNodeKind::Label { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        labels,
+        ["Plugin Info", "Status: Active"],
+        "ui-demo's Panel layout carries its two labels"
+    );
 }
 
 #[test]
@@ -2456,8 +2470,7 @@ fn plugin_ui_updated_operation_result_round_trips_through_serde() {
     let layout = wirt::PluginLayout::Single {
         elements: vec![wirt::PluginUiElement::Label {
             text: "hello".to_string(),
-            bold: false,
-            size: None,
+            role: TextRole::Body,
         }],
     };
     let root = wirt::ui_model::normalize_layout(&layout).unwrap();

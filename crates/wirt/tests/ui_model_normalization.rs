@@ -4,7 +4,7 @@
 //! shape `crate::conversions::convert_ui_element` produces from the raw
 //! WIT `ui-element` variant, i.e. exactly what reaches this crate's
 //! normalization boundary from a real plugin -- plus every rejection
-//! path the brief for this module calls out explicitly: duplicate
+//! path normalization is required to reject: duplicate
 //! interactive ids, unmatched group markers, malformed layouts, and the
 //! tree depth/node/text/asset budgets. Compile-guard coverage (this
 //! crate builds without any egui/UI-signal type reachable from its
@@ -16,7 +16,10 @@ use wirt::ui_model::{
     normalize_layout, PluginButtonActionDto, PluginUiNodeKind, PluginUiNormalizeError,
     PluginWarningIconDto, MAX_UI_ASSETS, MAX_UI_NODES, MAX_UI_TEXT_BYTES, MAX_UI_TREE_DEPTH,
 };
-use wirt::{ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, ToolbarButton, WarningIcon};
+use wirt::{
+    ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, SidebarWidth, SizeHint, SpacingStep,
+    TextRole, ToolbarButton, WarningIcon,
+};
 
 fn single(elements: Vec<PluginUiElement>) -> PluginLayout {
     PluginLayout::Single { elements }
@@ -38,8 +41,7 @@ fn root_children(layout: &PluginLayout) -> Vec<wirt::ui_model::PluginUiNodeDto> 
 fn label_normalizes_to_a_display_only_node_with_a_structural_id() {
     let layout = single(vec![PluginUiElement::Label {
         text: "hello".to_string(),
-        bold: true,
-        size: Some(18.0),
+        role: TextRole::Title,
     }]);
     let children = root_children(&layout);
     assert_eq!(children[0].id, "#root/0");
@@ -47,8 +49,7 @@ fn label_normalizes_to_a_display_only_node_with_a_structural_id() {
         children[0].kind,
         PluginUiNodeKind::Label {
             text: "hello".to_string(),
-            bold: true,
-            size: Some(18.0),
+            role: TextRole::Title,
         }
     );
 }
@@ -200,7 +201,7 @@ fn image_is_display_only_and_counts_toward_the_asset_budget() {
     let layout = single(vec![PluginUiElement::Image {
         cache_key: Some("cover:1".to_string()),
         url: None,
-        max_height: Some(200.0),
+        height: Some(SizeHint::Tall),
     }]);
     let children = root_children(&layout);
     assert_eq!(children[0].id, "#root/0");
@@ -209,7 +210,7 @@ fn image_is_display_only_and_counts_toward_the_asset_budget() {
         PluginUiNodeKind::Image {
             cache_key: Some("cover:1".to_string()),
             url: None,
-            max_height: Some(200.0),
+            height: Some(SizeHint::Tall),
         }
     );
 }
@@ -218,11 +219,18 @@ fn image_is_display_only_and_counts_toward_the_asset_budget() {
 fn separator_and_space_are_display_only() {
     let layout = single(vec![
         PluginUiElement::Separator,
-        PluginUiElement::Space { size: 12.0 },
+        PluginUiElement::Space {
+            step: SpacingStep::Large,
+        },
     ]);
     let children = root_children(&layout);
     assert_eq!(children[0].kind, PluginUiNodeKind::Separator);
-    assert_eq!(children[1].kind, PluginUiNodeKind::Space { size: 12.0 });
+    assert_eq!(
+        children[1].kind,
+        PluginUiNodeKind::Space {
+            step: SpacingStep::Large
+        }
+    );
 }
 
 #[test]
@@ -285,20 +293,20 @@ fn list_container_keeps_its_own_id_and_normalizes_nested_list_items() {
             selected: false,
             warning_icon: None,
         }],
-        max_height: Some(400.0),
+        height: Some(SizeHint::Tall),
         empty_message: Some("Nothing here".to_string()),
     }]);
     let children = root_children(&layout);
     assert_eq!(children[0].id, "results");
     let PluginUiNodeKind::ListContainer {
         children: items,
-        max_height,
+        height,
         empty_message,
     } = &children[0].kind
     else {
         panic!("expected ListContainer");
     };
-    assert_eq!(*max_height, Some(400.0));
+    assert_eq!(*height, Some(SizeHint::Tall));
     assert_eq!(empty_message.as_deref(), Some("Nothing here"));
     assert_eq!(items[0].id, "row-1");
 }
@@ -386,8 +394,7 @@ fn carousel_keeps_its_id_and_converts_every_image_and_counts_assets() {
             ("img-2".to_string(), None),
         ],
         current_index: 1,
-        max_height: Some(300.0),
-        thumbnail_height: Some(60.0),
+        height: Some(SizeHint::Regular),
         enable_lightbox: true,
     }]);
     let children = root_children(&layout);
@@ -442,32 +449,30 @@ fn split_layout_normalizes_sidebar_and_content_into_separate_subtrees() {
     let layout = PluginLayout::Split {
         sidebar: vec![PluginUiElement::Label {
             text: "sidebar".to_string(),
-            bold: false,
-            size: None,
+            role: TextRole::Body,
         }],
         content: vec![PluginUiElement::Label {
             text: "content".to_string(),
-            bold: false,
-            size: None,
+            role: TextRole::Body,
         }],
-        sidebar_width: Some(220.0),
+        width: Some(SidebarWidth::Narrow),
     };
     let root = normalize_layout(&layout).unwrap();
     let PluginUiNodeKind::Split {
         sidebar,
         content,
-        sidebar_width,
+        width,
     } = &root.kind
     else {
         panic!("expected Split root");
     };
-    assert_eq!(sidebar_width, &Some(220.0));
+    assert_eq!(width, &Some(SidebarWidth::Narrow));
     assert_eq!(sidebar[0].id, "#root/sidebar/0");
     assert_eq!(content[0].id, "#root/content/0");
 }
 
 // ============================================================================
-// Rejection paths the brief calls out explicitly.
+// The layouts normalization must refuse.
 // ============================================================================
 
 #[test]
@@ -503,7 +508,7 @@ fn duplicate_interactive_ids_across_sidebar_and_content_are_rejected() {
             label: "Content".to_string(),
             action: None,
         }],
-        sidebar_width: None,
+        width: None,
     };
     assert_eq!(
         normalize_layout(&layout).unwrap_err(),
@@ -516,7 +521,7 @@ fn unmatched_group_end_at_any_nesting_level_is_rejected() {
     let layout = single(vec![PluginUiElement::ListContainer {
         id: "list".to_string(),
         items: vec![PluginUiElement::GroupEnd],
-        max_height: None,
+        height: None,
         empty_message: None,
     }]);
     assert_eq!(
@@ -533,7 +538,7 @@ fn group_begin_unclosed_inside_a_nested_container_is_rejected() {
             title: "Never closed".to_string(),
             description: None,
         }],
-        max_height: None,
+        height: None,
         empty_message: None,
     }]);
     assert_eq!(
@@ -568,7 +573,7 @@ fn tree_depth_node_text_and_asset_budgets_are_enforced_end_to_end() {
         PluginUiElement::ListContainer {
             id: format!("nested-{remaining}"),
             items: vec![nested(remaining - 1)],
-            max_height: None,
+            height: None,
             empty_message: None,
         }
     }
@@ -591,8 +596,7 @@ fn tree_depth_node_text_and_asset_budgets_are_enforced_end_to_end() {
     // Text budget.
     let over_text = single(vec![PluginUiElement::Label {
         text: "x".repeat(MAX_UI_TEXT_BYTES + 1),
-        bold: false,
-        size: None,
+        role: TextRole::Body,
     }]);
     assert_eq!(
         normalize_layout(&over_text).unwrap_err(),
@@ -605,7 +609,7 @@ fn tree_depth_node_text_and_asset_budgets_are_enforced_end_to_end() {
             .map(|index| PluginUiElement::Image {
                 cache_key: Some(format!("cover:{index}")),
                 url: None,
-                max_height: None,
+                height: None,
             })
             .collect(),
     );

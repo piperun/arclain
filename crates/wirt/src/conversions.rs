@@ -1,8 +1,9 @@
 //! Pure conversions from generated WIT values into Wirt's neutral model.
 
 use crate::{
-    BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginLayout, PluginUiElement,
-    ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
+    BadgeConfig, BadgeLevel, ButtonAction, KeyValuePair, PluginAction, PluginLayout,
+    PluginUiElement, SidebarWidth, SizeHint, SpacingStep, TextRole, ToastLevel, ToolbarButton,
+    TopTabConfig, WarningIcon,
 };
 use crate::{MoveFileRule, MoveRule, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger};
 
@@ -18,7 +19,7 @@ pub fn convert_plugin_layout(
         WitLayout::Split(config) => PluginLayout::Split {
             sidebar: config.sidebar.into_iter().map(convert_ui_element).collect(),
             content: config.content.into_iter().map(convert_ui_element).collect(),
-            sidebar_width: config.sidebar_width,
+            width: config.width.map(convert_sidebar_width),
         },
     }
 }
@@ -33,7 +34,7 @@ pub fn convert_top_tab_config(
         badge: config.badge.map(|badge| BadgeConfig {
             count: badge.count,
             dot: badge.dot,
-            color: badge.color,
+            level: convert_badge_level(badge.level),
         }),
         priority: config.priority,
     }
@@ -47,8 +48,7 @@ pub fn convert_ui_element(
     match element {
         UiElement::Label(config) => PluginUiElement::Label {
             text: config.text,
-            bold: config.bold,
-            size: config.size,
+            role: convert_text_role(config.role),
         },
         UiElement::SectionHeader(config) => PluginUiElement::SectionHeader {
             title: config.title,
@@ -92,11 +92,13 @@ pub fn convert_ui_element(
             selected: config.selected,
         },
         UiElement::Separator => PluginUiElement::Separator,
-        UiElement::Space(size) => PluginUiElement::Space { size },
+        UiElement::Space(step) => PluginUiElement::Space {
+            step: convert_spacing_step(step),
+        },
         UiElement::Image(config) => PluginUiElement::Image {
             cache_key: config.cache_key,
             url: config.url,
-            max_height: config.max_height,
+            height: config.height.map(convert_size_hint),
         },
         UiElement::Tabs(config) => PluginUiElement::Tabs {
             id: config.id,
@@ -122,7 +124,7 @@ pub fn convert_ui_element(
                     }),
                 })
                 .collect(),
-            max_height: config.max_height,
+            height: config.height.map(convert_size_hint),
             empty_message: config.empty_message,
         },
         UiElement::Loading(config) => PluginUiElement::Loading {
@@ -156,8 +158,7 @@ pub fn convert_ui_element(
             id: config.id,
             images: config.images,
             current_index: config.current_index as usize,
-            max_height: config.max_height,
-            thumbnail_height: config.thumbnail_height,
+            height: config.height.map(convert_size_hint),
             enable_lightbox: config.enable_lightbox,
         },
         UiElement::KeyValueList(config) => PluginUiElement::KeyValueList {
@@ -187,6 +188,60 @@ pub fn convert_ui_element(
             description: header.description,
         },
         UiElement::GroupEnd => PluginUiElement::GroupEnd,
+    }
+}
+
+fn convert_text_role(role: crate::bindings::wirt::plugin::ui::TextRole) -> TextRole {
+    use crate::bindings::wirt::plugin::ui::TextRole as WitRole;
+
+    match role {
+        WitRole::Title => TextRole::Title,
+        WitRole::Subtitle => TextRole::Subtitle,
+        WitRole::Body => TextRole::Body,
+        WitRole::Caption => TextRole::Caption,
+        WitRole::Emphasis => TextRole::Emphasis,
+    }
+}
+
+fn convert_size_hint(hint: crate::bindings::wirt::plugin::ui::SizeHint) -> SizeHint {
+    use crate::bindings::wirt::plugin::ui::SizeHint as WitHint;
+
+    match hint {
+        WitHint::Compact => SizeHint::Compact,
+        WitHint::Regular => SizeHint::Regular,
+        WitHint::Tall => SizeHint::Tall,
+    }
+}
+
+fn convert_sidebar_width(width: crate::bindings::wirt::plugin::ui::SidebarWidth) -> SidebarWidth {
+    use crate::bindings::wirt::plugin::ui::SidebarWidth as WitWidth;
+
+    match width {
+        WitWidth::Narrow => SidebarWidth::Narrow,
+        WitWidth::Medium => SidebarWidth::Medium,
+        WitWidth::Wide => SidebarWidth::Wide,
+    }
+}
+
+fn convert_badge_level(level: crate::bindings::wirt::plugin::ui::BadgeLevel) -> BadgeLevel {
+    use crate::bindings::wirt::plugin::ui::BadgeLevel as WitLevel;
+
+    match level {
+        WitLevel::Neutral => BadgeLevel::Neutral,
+        WitLevel::Info => BadgeLevel::Info,
+        WitLevel::Success => BadgeLevel::Success,
+        WitLevel::Warning => BadgeLevel::Warning,
+        WitLevel::Error => BadgeLevel::Error,
+    }
+}
+
+fn convert_spacing_step(step: crate::bindings::wirt::plugin::ui::SpacingStep) -> SpacingStep {
+    use crate::bindings::wirt::plugin::ui::SpacingStep as WitStep;
+
+    match step {
+        WitStep::Small => SpacingStep::Small,
+        WitStep::Medium => SpacingStep::Medium,
+        WitStep::Large => SpacingStep::Large,
     }
 }
 
@@ -281,5 +336,62 @@ fn convert_plugin_rule_actions(
         organize_content: actions.organize_content,
         delete_original: actions.delete_original,
         use_standard_layout: actions.use_standard_layout,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bindings::wirt::plugin::ui::{
+        BadgeConfig as WitBadgeConfig, BadgeLevel as WitBadgeLevel, TopTabConfig as WitTopTabConfig,
+    };
+    use crate::BadgeLevel;
+
+    /// A tab's badge crosses the boundary outside the UI element tree
+    /// entirely -- it is chrome, reached from `get-top-tabs` rather than
+    /// from a layout -- so this is the one styling vocabulary neither
+    /// `convert_ui_element` nor `convert_plugin_layout` ever sees. Every
+    /// field is destructured with no `..` so that a field surviving here
+    /// that should no longer exist fails to compile.
+    #[test]
+    fn badge_level_survives_the_conversion() {
+        for (wit, expected) in [
+            (WitBadgeLevel::Neutral, BadgeLevel::Neutral),
+            (WitBadgeLevel::Info, BadgeLevel::Info),
+            (WitBadgeLevel::Success, BadgeLevel::Success),
+            (WitBadgeLevel::Warning, BadgeLevel::Warning),
+            (WitBadgeLevel::Error, BadgeLevel::Error),
+        ] {
+            let config = convert_top_tab_config(WitTopTabConfig {
+                id: "t".to_string(),
+                label: "T".to_string(),
+                icon: "*".to_string(),
+                badge: Some(WitBadgeConfig {
+                    count: Some(3),
+                    dot: false,
+                    level: wit,
+                }),
+                priority: 5,
+            });
+            let BadgeConfig { count, dot, level } = config.badge.expect("the badge survives");
+            assert_eq!(count, Some(3));
+            assert!(!dot);
+            assert_eq!(level, expected);
+        }
+    }
+
+    /// A tab without a badge is the common case -- three of the four
+    /// bundled guests register no badge at all -- and it must stay absent
+    /// rather than acquiring a level nobody asked for.
+    #[test]
+    fn a_tab_without_a_badge_converts_without_one() {
+        let config = convert_top_tab_config(WitTopTabConfig {
+            id: "t".to_string(),
+            label: "T".to_string(),
+            icon: "*".to_string(),
+            badge: None,
+            priority: 5,
+        });
+        assert_eq!(config.badge, None);
     }
 }

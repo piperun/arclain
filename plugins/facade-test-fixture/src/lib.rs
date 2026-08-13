@@ -172,8 +172,7 @@ impl wirt_sdk::Guest for Component {
                 PluginLayout::Single(vec![
                     UiElement::Label(LabelConfig {
                         text: format!("layout-call-{call_number}"),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     }),
                     UiElement::Button(ButtonConfig {
                         id: "trigger-trap".to_string(),
@@ -211,8 +210,7 @@ impl wirt_sdk::Guest for Component {
                         wirt_sdk::wirt::plugin::host::get_setting(REMEMBERED_SETTING_KEY)
                             .unwrap_or_else(|| "unset".to_string()),
                     ),
-                    bold: false,
-                    size: None,
+                    role: TextRole::Body,
                 }),
                 UiElement::Label(LabelConfig {
                     text: format!(
@@ -220,8 +218,7 @@ impl wirt_sdk::Guest for Component {
                         wirt_sdk::wirt::plugin::host::get_setting(LOAD_COUNT_SETTING_KEY)
                             .unwrap_or_else(|| "0".to_string()),
                     ),
-                    bold: false,
-                    size: None,
+                    role: TextRole::Body,
                 }),
                 UiElement::Button(ButtonConfig {
                     id: "remember".to_string(),
@@ -234,8 +231,7 @@ impl wirt_sdk::Guest for Component {
                 PluginLayout::Single(vec![
                     UiElement::Label(LabelConfig {
                         text: format!("dialog-layout-call-{call_number}"),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     }),
                     // Reuses `on-ui-event`'s `"multi-action"` handler, so a
                     // press from a dialog is observable through the same
@@ -267,16 +263,14 @@ impl wirt_sdk::Guest for Component {
                 PluginLayout::Single(vec![
                     UiElement::Label(LabelConfig {
                         text: format!("page-layout-call-{call_number}"),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     }),
                     UiElement::Label(LabelConfig {
                         text: extension_point
                             .strip_prefix("Page:")
                             .unwrap_or_default()
                             .to_string(),
-                        bold: false,
-                        size: None,
+                        role: TextRole::Body,
                     }),
                     UiElement::Button(ButtonConfig {
                         id: "multi-action".to_string(),
@@ -300,12 +294,12 @@ impl wirt_sdk::Guest for Component {
     }
 
     fn get_top_tabs() -> Vec<wirt_sdk::wirt::plugin::ui::TopTabConfig> {
-        use wirt_sdk::wirt::plugin::ui::{BadgeConfig, TopTabConfig};
+        use wirt_sdk::wirt::plugin::ui::{BadgeConfig, BadgeLevel, TopTabConfig};
 
         // Every field distinct and constant: a count that is not the
-        // priority, a `dot` that is not the default, and a colour the
-        // renderer maps rather than passes through -- so a mirror test
-        // that transposed two fields would fail rather than pass by
+        // priority, a `dot` that is not the default, and a level the
+        // renderer resolves rather than passes through -- so a mirror
+        // test that transposed two fields would fail rather than pass by
         // coincidence.
         vec![TopTabConfig {
             id: "fixture-tab".to_string(),
@@ -314,7 +308,7 @@ impl wirt_sdk::Guest for Component {
             badge: Some(BadgeConfig {
                 count: Some(7),
                 dot: true,
-                color: "orange".to_string(),
+                level: BadgeLevel::Warning,
             }),
             priority: 250,
         }]

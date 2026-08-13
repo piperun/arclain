@@ -31,9 +31,7 @@ pub enum PluginUiElement {
     Label {
         text: String,
         #[serde(default)]
-        bold: bool,
-        #[serde(default)]
-        size: Option<f32>,
+        role: TextRole,
     },
     SectionHeader {
         title: String,
@@ -85,12 +83,12 @@ pub enum PluginUiElement {
         #[serde(default)]
         url: Option<String>,
         #[serde(default)]
-        max_height: Option<f32>,
+        height: Option<SizeHint>,
     },
     Separator,
     Space {
-        #[serde(default = "default_space_size")]
-        size: f32,
+        #[serde(default)]
+        step: SpacingStep,
     },
     Tabs {
         id: String,
@@ -117,7 +115,7 @@ pub enum PluginUiElement {
         id: String,
         items: Vec<PluginUiElement>,
         #[serde(default)]
-        max_height: Option<f32>,
+        height: Option<SizeHint>,
         #[serde(default)]
         empty_message: Option<String>,
     },
@@ -148,9 +146,7 @@ pub enum PluginUiElement {
         images: Vec<(String, Option<String>)>,
         current_index: usize,
         #[serde(default)]
-        max_height: Option<f32>,
-        #[serde(default)]
-        thumbnail_height: Option<f32>,
+        height: Option<SizeHint>,
         #[serde(default = "default_true")]
         enable_lightbox: bool,
     },
@@ -182,6 +178,69 @@ pub struct ToolbarButton {
     pub primary: bool,
     #[serde(default)]
     pub spacer_before: bool,
+}
+
+/// How much room a plugin wants between two elements. The host owns the
+/// pixel value for each step, so a density change moves every gap at once.
+///
+/// Carries a `Default` because its field is bare and `#[serde(default)]`,
+/// so a document omitting it needs a value to land on. The steps that sit
+/// behind an `Option` deliberately have none — they fall to `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SpacingStep {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+/// What a piece of text IS, not how large it is. The host owns the type
+/// scale, so restyling moves every label at once.
+///
+/// Carries a `Default` for the same reason [`SpacingStep`] does: its field
+/// is bare and `#[serde(default)]`, so an omitted role needs somewhere to
+/// land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TextRole {
+    Title,
+    Subtitle,
+    #[default]
+    Body,
+    Caption,
+    Emphasis,
+}
+
+/// How much vertical room an element wants. The host owns the pixel value
+/// per element kind, so `Tall` means one thing for an image and another for
+/// a list.
+///
+/// Deliberately not [`Default`]: the absent hint is a real case that means
+/// "the host decides", and what the host decides differs per kind, so there
+/// is no one variant an absent hint could stand for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SizeHint {
+    Compact,
+    Regular,
+    Tall,
+}
+
+/// How much of the pane a split's sidebar wants. The host owns the pixel
+/// width, so restyling moves every plugin's sidebar at once.
+///
+/// Deliberately not [`Default`]: the absent width is a real case that means
+/// "the host decides", and it stays its own case rather than collapsing
+/// onto `Medium`. The two resolve to the same number today, but one is a
+/// number the host is free to move and the other is what a plugin asked
+/// for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarWidth {
+    Narrow,
+    Medium,
+    Wide,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -226,19 +285,33 @@ pub enum PluginAction {
     },
 }
 
-fn default_space_size() -> f32 {
-    8.0
-}
-
 fn default_true() -> bool {
     true
+}
+
+/// What a badge MEANS, in the same vocabulary as [`ToastLevel`] plus a
+/// `Neutral` for a badge that reports no status at all. The host owns the
+/// colour, so restyling moves every plugin's badge at once.
+///
+/// Deliberately not [`Default`]: a badge always states its level, so there
+/// is no absent case for a default to answer, and a defaulted level would
+/// let a test that asserts the default pass against a level dropped on the
+/// floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BadgeLevel {
+    Neutral,
+    Info,
+    Success,
+    Warning,
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BadgeConfig {
     pub count: Option<u32>,
     pub dot: bool,
-    pub color: String,
+    pub level: BadgeLevel,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -260,7 +333,7 @@ pub enum PluginLayout {
         sidebar: Vec<PluginUiElement>,
         content: Vec<PluginUiElement>,
         #[serde(default)]
-        sidebar_width: Option<f32>,
+        width: Option<SidebarWidth>,
     },
 }
 

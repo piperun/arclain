@@ -53,6 +53,10 @@ use arclain_app::plugins::{
 use eframe::egui;
 
 use super::image::ImageContext;
+use super::scale::{
+    carousel_height_for_hint, image_height_for_hint, list_height_for_hint, sidebar_width_for_step,
+    space_height_for_step, text_style_for_role, CAROUSEL_THUMBNAIL_HEIGHT,
+};
 use crate::features::plugins::application::PluginNavigation;
 use crate::shared::components::carousel::{Carousel, CarouselEvent};
 use crate::shared::components::settings_form::{SectionHeader, SettingsGroup, SettingsRow};
@@ -138,11 +142,6 @@ pub enum DocumentExtent {
     /// `Split` is capped at this many points tall.
     Bounded(u32),
 }
-
-/// Default cap for a document hosted in the archive browser's properties
-/// panel. Sized to show a usable two-pane layout without dominating a
-/// panel that also stacks archive info, file info, and attributes.
-pub const PANEL_SPLIT_MAX_HEIGHT: u32 = 320;
 
 /// Everything a document render needs beyond the document itself.
 #[derive(Clone, Copy)]
@@ -241,9 +240,9 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
         PluginUiNodeKind::Split {
             sidebar,
             content,
-            sidebar_width,
+            width,
         } => {
-            let sidebar_width = sidebar_width.unwrap_or(250.0);
+            let sidebar_width = sidebar_width_for_step(*width);
             let draw = |ui: &mut egui::Ui, sink: &mut Sink<'_>| {
                 egui::SidePanel::left(ui.id().with("split_sidebar"))
                     .resizable(true)
@@ -251,6 +250,16 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                     .show_inside(ui, |ui| {
                         egui::ScrollArea::vertical()
                             .id_salt("split_sidebar_scroll")
+                            // A `SidePanel` remembers the rect its *contents*
+                            // occupied and uses that as its width from the
+                            // next frame on, so a sidebar holding nothing
+                            // wide shrinks to a 96px floor and the width the
+                            // host assigned survives exactly one frame. Not
+                            // shrinking horizontally is what makes the
+                            // assigned width stick. Kept resizable: this
+                            // fixes the starting width, it does not pin it,
+                            // so a user's drag still persists both ways.
+                            .auto_shrink([false, true])
                             .show(ui, |ui| render_children(ui, sidebar, sink));
                     });
                 egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -296,7 +305,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
         }
         PluginUiNodeKind::ListContainer {
             children,
-            max_height,
+            height,
             empty_message,
         } => {
             egui::Frame::NONE
@@ -305,7 +314,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                 .inner_margin(4.0)
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
-                        .max_height(max_height.unwrap_or(300.0))
+                        .max_height(list_height_for_hint(*height))
                         .show(ui, |ui| {
                             if children.is_empty() {
                                 let message = empty_message.as_deref().unwrap_or("No items");
@@ -326,17 +335,21 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
                         });
                 });
         }
-        PluginUiNodeKind::Label { text, bold, size } => {
-            if *bold && size.unwrap_or(14.0) >= 14.0 {
-                SectionHeader::new(text).show(ui, colors);
+        PluginUiNodeKind::Label { text, role } => {
+            let style = text_style_for_role(*role);
+            let mut rich = egui::RichText::new(text)
+                .size(style.size)
+                .color(colors.on_surface);
+            if style.bold {
+                rich = rich.strong();
+            }
+            if style.heading {
+                // A title or subtitle opens a section, so it gets the room
+                // one needs above and below it.
+                ui.add_space(8.0);
+                ui.label(rich);
+                ui.add_space(4.0);
             } else {
-                let mut rich = egui::RichText::new(text).color(colors.on_surface);
-                if *bold {
-                    rich = rich.strong();
-                }
-                if let Some(size) = size {
-                    rich = rich.size(*size);
-                }
                 ui.label(rich);
             }
         }
@@ -356,7 +369,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
             ui.separator();
             ui.add_space(8.0);
         }
-        PluginUiNodeKind::Space { size } => ui.add_space(*size),
+        PluginUiNodeKind::Space { step } => ui.add_space(space_height_for_step(*step)),
         PluginUiNodeKind::Button { label, action } => {
             if ui
                 .add(
@@ -620,8 +633,14 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
         PluginUiNodeKind::Image {
             cache_key,
             url,
-            max_height,
-        } => render_image(ui, sink, cache_key.as_deref(), url.as_deref(), *max_height),
+            height,
+        } => render_image(
+            ui,
+            sink,
+            cache_key.as_deref(),
+            url.as_deref(),
+            image_height_for_hint(*height),
+        ),
         PluginUiNodeKind::ListItem {
             title,
             subtitle,
@@ -661,8 +680,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
         PluginUiNodeKind::Carousel {
             images,
             current_index,
-            max_height,
-            thumbnail_height,
+            height,
             enable_lightbox,
         } => render_carousel(
             ui,
@@ -670,8 +688,7 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
             id,
             images,
             *current_index,
-            *max_height,
-            *thumbnail_height,
+            carousel_height_for_hint(*height),
             *enable_lightbox,
         ),
         PluginUiNodeKind::KeyValueList { items, columns } => {
@@ -906,15 +923,13 @@ fn render_image(
     ui.label(egui::RichText::new(message).color(color).italics());
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_carousel(
     ui: &mut egui::Ui,
     sink: &mut Sink<'_>,
     id: &str,
     images: &[PluginImageDto],
     current_index: u64,
-    max_height: Option<f32>,
-    thumbnail_height: Option<f32>,
+    main_height: f32,
     enable_lightbox: bool,
 ) {
     let pairs: Vec<(String, Option<String>)> = images
@@ -922,8 +937,8 @@ fn render_carousel(
         .map(|image| (image.cache_key.clone(), image.url.clone()))
         .collect();
     let carousel = Carousel::new(id, &pairs, current_index as usize)
-        .main_height(max_height.unwrap_or(300.0))
-        .thumbnail_height(thumbnail_height.unwrap_or(60.0))
+        .main_height(main_height)
+        .thumbnail_height(CAROUSEL_THUMBNAIL_HEIGHT)
         .enable_lightbox(enable_lightbox)
         .colors(sink.colors())
         .shared_state(sink.ctx.shared_state)

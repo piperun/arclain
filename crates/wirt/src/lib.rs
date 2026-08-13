@@ -42,8 +42,9 @@ pub use manifest::{
     REQUEST_FETCH_CAPABILITIES,
 };
 pub use model::{
-    BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginExtensionPoint, PluginLayout,
-    PluginUiElement, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
+    BadgeConfig, BadgeLevel, ButtonAction, KeyValuePair, PluginAction, PluginExtensionPoint,
+    PluginLayout, PluginUiElement, SidebarWidth, SizeHint, SpacingStep, TextRole, ToastLevel,
+    ToolbarButton, TopTabConfig, WarningIcon,
 };
 pub use package::{
     package_bytes, read_package, read_package_bytes, PackageFingerprint, ValidatedPackage,
@@ -56,4 +57,4 @@ pub use runtime::{
     sandboxed_wasi_ctx, LoadedComponent, PluginInstance, WasmRuntime, WirtStoreState,
 };
 
-pub const WIRT_ABI_VERSION: &str = "0.2.0";
+pub const WIRT_ABI_VERSION: &str = "0.3.0";

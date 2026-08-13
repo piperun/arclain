@@ -110,7 +110,7 @@ fn top_tab_bar_renders_empty() {
 
 #[test]
 fn top_tab_bar_renders_with_badge() {
-    use arclain_app::plugins::PluginBadgeDto;
+    use arclain_app::plugins::{BadgeLevel, PluginBadgeDto};
     use arclain_ui::shared::components::top_tab_bar::*;
 
     let tabs = vec![TopTab {
@@ -120,7 +120,7 @@ fn top_tab_bar_renders_with_badge() {
         badge: Some(PluginBadgeDto {
             count: Some(5),
             dot: false,
-            color: "red".into(),
+            level: BadgeLevel::Error,
         }),
         source: None,
     }];

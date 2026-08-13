@@ -46,13 +46,11 @@ impl wirt_sdk::Guest for Component {
             "Sidebar" => PluginLayout::Single(vec![
                 UiElement::Label(LabelConfig {
                     text: "Video Preview".to_string(),
-                    bold: true,
-                    size: Some(18.0),
+                    role: TextRole::Title,
                 }),
                 UiElement::Label(LabelConfig {
                     text: "No file selected".to_string(),
-                    bold: false,
-                    size: None,
+                    role: TextRole::Body,
                 }),
                 UiElement::Button(ButtonConfig {
                     id: "generate_preview".to_string(),
@@ -65,11 +63,13 @@ impl wirt_sdk::Guest for Component {
                 label: "Play Preview".to_string(),
                 action: None,
             })]),
-            "Panel" => PluginLayout::Single(vec![UiElement::Label(LabelConfig {
-                text: "Video Stats".to_string(),
-                bold: true,
-                size: None,
-            })]),
+            "Panel" => PluginLayout::Single(vec![
+                UiElement::Space(SpacingStep::Small),
+                UiElement::Label(LabelConfig {
+                    text: "Video Stats".to_string(),
+                    role: TextRole::Emphasis,
+                }),
+            ]),
             _ => PluginLayout::Single(vec![]),
         }
     }

@@ -707,7 +707,7 @@ fn ui_element_limit_counts_nested_elements_at_the_boundary() {
         elements: vec![PluginUiElement::ListContainer {
             id: "items".to_string(),
             items: nested_items,
-            max_height: None,
+            height: None,
             empty_message: None,
         }],
     };
@@ -812,16 +812,14 @@ fn every_rendered_layout_collection_counts_boundary_and_one_over() {
                 id: String::new(),
                 images: images(MAX_UI_ELEMENTS - 1),
                 current_index: 0,
-                max_height: None,
-                thumbnail_height: None,
+                height: None,
                 enable_lightbox: true,
             }),
             single(PluginUiElement::Carousel {
                 id: String::new(),
                 images: images(MAX_UI_ELEMENTS),
                 current_index: 0,
-                max_height: None,
-                thumbnail_height: None,
+                height: None,
                 enable_lightbox: true,
             }),
         ),
@@ -898,7 +896,7 @@ fn split_nested_layout_combines_all_rendered_work() {
         sidebar: vec![PluginUiElement::ListContainer {
             id: String::new(),
             items: vec![PluginUiElement::Separator; 4_998],
-            max_height: None,
+            height: None,
             empty_message: None,
         }],
         content: vec![PluginUiElement::Toolbar {
@@ -913,7 +911,7 @@ fn split_nested_layout_combines_all_rendered_work() {
                 button_count
             ],
         }],
-        sidebar_width: None,
+        width: None,
     };
 
     assert!(validate_layout_result(&layout(5_000)).is_ok());

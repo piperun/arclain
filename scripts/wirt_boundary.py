@@ -7,6 +7,10 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+# The one package line every plugin compiles against. Named once so the
+# rule and the message it prints can never disagree about the version.
+CANONICAL_WIT_PACKAGE = ("wirt", "plugin", "0.3.0")
+
 FORBIDDEN_PREFIXES = ("arclain_", "gameta_", "filer")
 FORBIDDEN_EXACT = {
     "egui", "eframe", "flutter_rust_bridge", "frb",
@@ -1188,9 +1192,11 @@ def wirt_wit_violations(workspace_root: Path) -> list[str]:
     }
     if canonical not in plugin_wit_files:
         violations.append("wirt-sdk/wit/plugin.wit: missing canonical Wirt plugin WIT")
-    elif package_declarations[canonical] != ([("wirt", "plugin", "0.2.0")], False):
+    elif package_declarations[canonical] != ([CANONICAL_WIT_PACKAGE], False):
+        namespace, name, version = CANONICAL_WIT_PACKAGE
         violations.append(
-            "wirt-sdk/wit/plugin.wit: must declare package wirt:plugin@0.2.0"
+            "wirt-sdk/wit/plugin.wit: must declare package "
+            f"{namespace}:{name}@{version}"
         )
 
     for path, (_, malformed) in package_declarations.items():

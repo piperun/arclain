@@ -1,4 +1,4 @@
-use crate::component_contract::inspect_component_contract;
+use crate::component_contract::{bounded_name, inspect_component_contract};
 use crate::loader::validate_manifest;
 use crate::{PluginError, PluginManifest, Result, WIRT_ABI_VERSION};
 use serde::{Deserialize, Serialize};
@@ -97,8 +97,19 @@ pub fn package_bytes(manifest: &[u8], component: &[u8]) -> Result<Vec<u8>> {
     validate_manifest(&parsed)?;
     let contract =
         inspect_component_contract(component).map_err(|error| package_error(error.to_string()))?;
+    // Unreachable today: `validate_manifest` above forces `parsed.wirt.abi` to
+    // equal `WIRT_ABI_VERSION`, and `ComponentContract::abi` is stamped with
+    // that same constant rather than read out of the component, so the two
+    // sides cannot differ. Kept as a guard for the day the contract's ABI is
+    // derived from the component's own imports; the message says the contract
+    // "reports" a version for the same reason — nothing parses one yet.
     if contract.abi != parsed.wirt.abi {
-        return Err(package_error("manifest and component ABI differ"));
+        return Err(package_error(format!(
+            "plugin.toml declares Wirt ABI {manifest_abi} but the component's contract \
+             reports {component_abi}; the package is inconsistent with itself",
+            manifest_abi = bounded_name(&parsed.wirt.abi),
+            component_abi = bounded_name(&contract.abi),
+        )));
     }
 
     write_package_bytes(manifest, component)
@@ -169,8 +180,28 @@ pub fn read_package_bytes(bytes: &[u8]) -> Result<ValidatedPackage> {
     }
     let contract =
         inspect_component_contract(&component).map_err(|error| package_error(error.to_string()))?;
-    if contract.abi != manifest.wirt.abi || manifest.wirt.abi != WIRT_ABI_VERSION {
-        return Err(package_error("manifest, component, and host ABI differ"));
+    // Unreachable today, for the same two reasons as the check in
+    // `package_bytes`: `validate_manifest` at the top of this function forces
+    // `manifest.wirt.abi` to equal `WIRT_ABI_VERSION`, and
+    // `ComponentContract::abi` is stamped with that constant rather than
+    // parsed from the component.
+    if contract.abi != manifest.wirt.abi {
+        return Err(package_error(format!(
+            "plugin.toml declares Wirt ABI {manifest_abi} but the component's contract \
+             reports {component_abi}; the package is inconsistent with itself",
+            manifest_abi = bounded_name(&manifest.wirt.abi),
+            component_abi = bounded_name(&contract.abi),
+        )));
+    }
+    // Unreachable today: `validate_manifest` above already refused any
+    // manifest whose ABI is not `WIRT_ABI_VERSION`, and it is the loader's
+    // refusal — not this one — that a stale package actually meets.
+    if manifest.wirt.abi != WIRT_ABI_VERSION {
+        return Err(package_error(format!(
+            "this plugin declares Wirt ABI {found}; this host speaks {WIRT_ABI_VERSION}. \
+             Rebuild it against the current wirt-sdk/template and republish.",
+            found = bounded_name(&manifest.wirt.abi),
+        )));
     }
     Ok(ValidatedPackage {
         manifest,
@@ -343,12 +374,12 @@ mod tests {
 
     #[test]
     fn deterministic_writer_has_a_small_inline_fixed_output_golden() {
-        const MANIFEST: &[u8] = b"[wirt]\nabi = \"0.2.0\"\n";
+        const MANIFEST: &[u8] = b"[wirt]\nabi = \"0.3.0\"\n";
         const COMPONENT: &[u8] = b"\0asm\x0d\0\x01\0";
         let package = write_package_bytes(MANIFEST, COMPONENT).unwrap();
         assert_eq!(
             PackageFingerprint::sha256(&package).as_str(),
-            "8f8415c612b3e08fe18e039e9ef303fbcd187bf865b9fcfe7a63e41b7c3cbe44"
+            "155d1a891acc32d46b5492084fccb4d32c7985b0e17f2f1a30a210ebdef1d1ca"
         );
     }
 }

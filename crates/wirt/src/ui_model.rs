@@ -12,8 +12,7 @@
 //! revision without re-deriving element-kind-specific rules of its own.
 //!
 //! [`normalize_layout`] is that boundary-normalization step. It does not
-//! change the WIT ABI (the brief for this module explicitly forbids
-//! that): it runs entirely on the host side, after
+//! change the WIT ABI: it runs entirely on the host side, after
 //! `crate::conversions::convert_plugin_layout` has already produced a
 //! `PluginLayout`. Two rules decide where a node's `id` comes from:
 //!
@@ -70,6 +69,12 @@ use crate::model::{
     ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, ToastLevel, ToolbarButton,
     WarningIcon,
 };
+
+/// Re-exported because a node kind names them directly. Steps and roles are
+/// host vocabulary rather than plugin-supplied data, so there is nothing for
+/// a DTO twin to normalize -- the enum a plugin picks from is the enum a
+/// frontend matches on.
+pub use crate::model::{SidebarWidth, SizeHint, SpacingStep, TextRole};
 
 /// Maximum nesting depth (containers within containers within the root)
 /// a normalized tree may reach.
@@ -171,12 +176,11 @@ pub enum PluginUiNodeKind {
     Split {
         sidebar: Vec<PluginUiNodeDto>,
         content: Vec<PluginUiNodeDto>,
-        sidebar_width: Option<f32>,
+        width: Option<SidebarWidth>,
     },
     Label {
         text: String,
-        bold: bool,
-        size: Option<f32>,
+        role: TextRole,
     },
     SectionHeader {
         title: String,
@@ -216,11 +220,11 @@ pub enum PluginUiNodeKind {
     Image {
         cache_key: Option<String>,
         url: Option<String>,
-        max_height: Option<f32>,
+        height: Option<SizeHint>,
     },
     Separator,
     Space {
-        size: f32,
+        step: SpacingStep,
     },
     Tabs {
         tabs: Vec<String>,
@@ -237,7 +241,7 @@ pub enum PluginUiNodeKind {
     },
     ListContainer {
         children: Vec<PluginUiNodeDto>,
-        max_height: Option<f32>,
+        height: Option<SizeHint>,
         empty_message: Option<String>,
     },
     Loading {
@@ -262,8 +266,7 @@ pub enum PluginUiNodeKind {
     Carousel {
         images: Vec<PluginImageDto>,
         current_index: u64,
-        max_height: Option<f32>,
-        thumbnail_height: Option<f32>,
+        height: Option<SizeHint>,
         enable_lightbox: bool,
     },
     KeyValueList {
@@ -526,14 +529,14 @@ pub fn normalize_layout(layout: &PluginLayout) -> Result<PluginUiNodeDto, Plugin
         PluginLayout::Split {
             sidebar,
             content,
-            sidebar_width,
+            width,
         } => {
             let sidebar_nodes = normalize_children(&mut ctx, sidebar, "#root/sidebar", 1)?;
             let content_nodes = normalize_children(&mut ctx, content, "#root/content", 1)?;
             PluginUiNodeKind::Split {
                 sidebar: sidebar_nodes,
                 content: content_nodes,
-                sidebar_width: *sidebar_width,
+                width: *width,
             }
         }
     };
@@ -652,14 +655,13 @@ fn normalize_element(
     ctx.charge_node()?;
 
     let (id, kind) = match element {
-        PluginUiElement::Label { text, bold, size } => {
+        PluginUiElement::Label { text, role } => {
             ctx.charge_text(text.len())?;
             (
                 ctx.register_id(structural_path.to_string())?,
                 PluginUiNodeKind::Label {
                     text: text.clone(),
-                    bold: *bold,
-                    size: *size,
+                    role: *role,
                 },
             )
         }
@@ -778,7 +780,7 @@ fn normalize_element(
         PluginUiElement::Image {
             cache_key,
             url,
-            max_height,
+            height,
         } => {
             if cache_key.is_some() || url.is_some() {
                 ctx.charge_asset()?;
@@ -788,7 +790,7 @@ fn normalize_element(
                 PluginUiNodeKind::Image {
                     cache_key: cache_key.clone(),
                     url: url.clone(),
-                    max_height: *max_height,
+                    height: *height,
                 },
             )
         }
@@ -796,9 +798,9 @@ fn normalize_element(
             ctx.register_id(structural_path.to_string())?,
             PluginUiNodeKind::Separator,
         ),
-        PluginUiElement::Space { size } => (
+        PluginUiElement::Space { step } => (
             ctx.register_id(structural_path.to_string())?,
-            PluginUiNodeKind::Space { size: *size },
+            PluginUiNodeKind::Space { step: *step },
         ),
         PluginUiElement::Tabs { id, tabs, selected } => {
             for tab in tabs {
@@ -848,7 +850,7 @@ fn normalize_element(
         PluginUiElement::ListContainer {
             id,
             items,
-            max_height,
+            height,
             empty_message,
         } => {
             if let Some(empty_message) = empty_message {
@@ -859,7 +861,7 @@ fn normalize_element(
                 ctx.register_id(id.clone())?,
                 PluginUiNodeKind::ListContainer {
                     children,
-                    max_height: *max_height,
+                    height: *height,
                     empty_message: empty_message.clone(),
                 },
             )
@@ -915,8 +917,7 @@ fn normalize_element(
             id,
             images,
             current_index,
-            max_height,
-            thumbnail_height,
+            height,
             enable_lightbox,
         } => {
             for _ in images {
@@ -934,8 +935,7 @@ fn normalize_element(
                 PluginUiNodeKind::Carousel {
                     images,
                     current_index: *current_index as u64,
-                    max_height: *max_height,
-                    thumbnail_height: *thumbnail_height,
+                    height: *height,
                     enable_lightbox: *enable_lightbox,
                 },
             )
@@ -977,12 +977,191 @@ fn normalize_element(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings::wirt::plugin::ui::{
+        CarouselConfig as WitCarouselConfig, ImageConfig as WitImageConfig,
+        LabelConfig as WitLabelConfig, ListContainerConfig as WitListContainerConfig,
+        PluginLayout as WitPluginLayout, SidebarWidth as WitSidebarWidth, SizeHint as WitSizeHint,
+        SpacingStep as WitSpacingStep, SplitConfig as WitSplitConfig, TextRole as WitTextRole,
+        UiElement as WitUiElement,
+    };
+    use crate::conversions::{convert_plugin_layout, convert_ui_element};
+
+    #[test]
+    fn text_role_survives_the_conversion() {
+        for (wit, expected) in [
+            (WitTextRole::Title, TextRole::Title),
+            (WitTextRole::Subtitle, TextRole::Subtitle),
+            (WitTextRole::Body, TextRole::Body),
+            (WitTextRole::Caption, TextRole::Caption),
+            (WitTextRole::Emphasis, TextRole::Emphasis),
+        ] {
+            let element = convert_ui_element(WitUiElement::Label(WitLabelConfig {
+                text: "x".to_string(),
+                role: wit,
+            }));
+            let PluginUiElement::Label { text, role } = element else {
+                panic!("a label converts to a label");
+            };
+            assert_eq!(text, "x");
+            assert_eq!(role, expected);
+        }
+    }
+
+    #[test]
+    fn spacing_step_survives_the_conversion() {
+        for (wit, expected) in [
+            (WitSpacingStep::Small, SpacingStep::Small),
+            (WitSpacingStep::Medium, SpacingStep::Medium),
+            (WitSpacingStep::Large, SpacingStep::Large),
+        ] {
+            let element = convert_ui_element(WitUiElement::Space(wit));
+            let PluginUiElement::Space { step } = element else {
+                panic!("space converts to a space");
+            };
+            assert_eq!(step, expected);
+        }
+    }
+
+    /// Three element kinds share one vocabulary of size steps, and each
+    /// one has to carry the step it was given all the way across the
+    /// boundary -- the host is what turns a step into a different number
+    /// per kind, and it cannot do that with a hint that arrived as
+    /// something else. Every field is destructured with no `..` so that a
+    /// field surviving here that should no longer exist fails to compile.
+    #[test]
+    fn size_hint_survives_the_conversion_for_every_kind() {
+        for (wit, expected) in [
+            (WitSizeHint::Compact, SizeHint::Compact),
+            (WitSizeHint::Regular, SizeHint::Regular),
+            (WitSizeHint::Tall, SizeHint::Tall),
+        ] {
+            let element = convert_ui_element(WitUiElement::Image(WitImageConfig {
+                cache_key: Some("k".to_string()),
+                url: None,
+                height: Some(wit),
+            }));
+            let PluginUiElement::Image {
+                cache_key,
+                url,
+                height,
+            } = element
+            else {
+                panic!("an image converts to an image");
+            };
+            assert_eq!(cache_key.as_deref(), Some("k"));
+            assert_eq!(url, None);
+            assert_eq!(height, Some(expected));
+
+            let element = convert_ui_element(WitUiElement::ListContainer(WitListContainerConfig {
+                id: "list".to_string(),
+                items: Vec::new(),
+                height: Some(wit),
+                empty_message: None,
+            }));
+            let PluginUiElement::ListContainer {
+                id,
+                items,
+                height,
+                empty_message,
+            } = element
+            else {
+                panic!("a list container converts to a list container");
+            };
+            assert_eq!(id, "list");
+            assert!(items.is_empty());
+            assert_eq!(empty_message, None);
+            assert_eq!(height, Some(expected));
+
+            let element = convert_ui_element(WitUiElement::Carousel(WitCarouselConfig {
+                id: "gallery".to_string(),
+                images: Vec::new(),
+                current_index: 0,
+                height: Some(wit),
+                enable_lightbox: true,
+            }));
+            let PluginUiElement::Carousel {
+                id,
+                images,
+                current_index,
+                height,
+                enable_lightbox,
+            } = element
+            else {
+                panic!("a carousel converts to a carousel");
+            };
+            assert_eq!(id, "gallery");
+            assert!(images.is_empty());
+            assert_eq!(current_index, 0);
+            assert!(enable_lightbox);
+            assert_eq!(height, Some(expected));
+        }
+    }
+
+    /// The sidebar's width crosses the boundary inside the layout rather
+    /// than inside an element, so it is the one styling vocabulary
+    /// `convert_ui_element` never sees. Every field is destructured with no
+    /// `..` so that a field surviving here that should no longer exist
+    /// fails to compile.
+    #[test]
+    fn sidebar_width_survives_the_conversion() {
+        for (wit, expected) in [
+            (WitSidebarWidth::Narrow, SidebarWidth::Narrow),
+            (WitSidebarWidth::Medium, SidebarWidth::Medium),
+            (WitSidebarWidth::Wide, SidebarWidth::Wide),
+        ] {
+            let layout = convert_plugin_layout(WitPluginLayout::Split(WitSplitConfig {
+                sidebar: vec![WitUiElement::Separator],
+                content: Vec::new(),
+                width: Some(wit),
+            }));
+            let PluginLayout::Split {
+                sidebar,
+                content,
+                width,
+            } = layout
+            else {
+                panic!("a split layout converts to a split layout");
+            };
+            assert_eq!(sidebar.len(), 1);
+            assert!(content.is_empty());
+            assert_eq!(width, Some(expected));
+        }
+    }
+
+    /// A split that names no width is a real case and has to stay one: the
+    /// absent width is what the host reads as "you decide".
+    #[test]
+    fn an_absent_sidebar_width_converts_to_an_absent_sidebar_width() {
+        let layout = convert_plugin_layout(WitPluginLayout::Split(WitSplitConfig {
+            sidebar: Vec::new(),
+            content: Vec::new(),
+            width: None,
+        }));
+        let PluginLayout::Split { width, .. } = layout else {
+            panic!("a split layout converts to a split layout");
+        };
+        assert_eq!(width, None);
+    }
+
+    /// An element that names no size is a real case and has to stay one:
+    /// the absent hint is what the host reads as "you decide".
+    #[test]
+    fn an_absent_size_hint_converts_to_an_absent_size_hint() {
+        let element = convert_ui_element(WitUiElement::Image(WitImageConfig {
+            cache_key: None,
+            url: None,
+            height: None,
+        }));
+        let PluginUiElement::Image { height, .. } = element else {
+            panic!("an image converts to an image");
+        };
+        assert_eq!(height, None);
+    }
 
     fn label(text: &str) -> PluginUiElement {
         PluginUiElement::Label {
             text: text.to_string(),
-            bold: false,
-            size: None,
+            role: TextRole::Body,
         }
     }
 
@@ -1035,18 +1214,18 @@ mod tests {
         let layout = PluginLayout::Split {
             sidebar: vec![label("side")],
             content: vec![label("main")],
-            sidebar_width: Some(120.0),
+            width: Some(SidebarWidth::Wide),
         };
         let root = normalize_layout(&layout).unwrap();
         let PluginUiNodeKind::Split {
             sidebar,
             content,
-            sidebar_width,
+            width,
         } = &root.kind
         else {
             panic!("expected Split root");
         };
-        assert_eq!(sidebar_width, &Some(120.0));
+        assert_eq!(width, &Some(SidebarWidth::Wide));
         assert_eq!(sidebar[0].id, "#root/sidebar/0");
         assert_eq!(content[0].id, "#root/content/0");
     }
@@ -1143,7 +1322,7 @@ mod tests {
             PluginUiElement::ListContainer {
                 id: format!("list-{remaining}"),
                 items: vec![nested_list_container(remaining - 1)],
-                max_height: None,
+                height: None,
                 empty_message: None,
             }
         }
@@ -1190,7 +1369,7 @@ mod tests {
             PluginUiElement::Image {
                 cache_key: Some("k".to_string()),
                 url: None,
-                max_height: None,
+                height: None,
             }
         }
 
@@ -1218,7 +1397,7 @@ mod tests {
                 selected: false,
                 warning_icon: None,
             }],
-            max_height: None,
+            height: None,
             empty_message: None,
         }]);
         let root = normalize_layout(&layout).unwrap();

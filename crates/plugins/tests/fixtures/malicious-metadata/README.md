@@ -24,4 +24,4 @@ Copy-Item target/plugin-fixture/wasm32-wasip2/release/malicious_metadata.wasm cr
 The generated `.wasm` is intentionally force-tracked despite the repository's
 global `*.wasm` ignore rule. Its SHA-256 is updated here whenever the fixture
 is regenerated:
-`7D956F9CC6743745D6CD643B373669CCC54509132B0D70F34EFB05E900141B8B`.
+`00B67FA9A1DDE05D98706A64AC2C8619F036DA53E575C550C261A1F33FDD62CB`.

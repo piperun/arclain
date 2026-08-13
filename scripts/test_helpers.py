@@ -32,6 +32,7 @@ import _package
 import _plugins
 import _ui
 import _format
+import wirt_boundary
 import release
 from _package import get_platform, workspace_version
 from _ui import load_rust_log
@@ -1033,7 +1034,7 @@ class TestWirtAbi(unittest.TestCase):
         self.assertFalse(legacy.exists())
         self.assertEqual(
             canonical.read_text(encoding="utf-8").splitlines()[0],
-            "package wirt:plugin@0.2.0;",
+            "package {}:{}@{};".format(*wirt_boundary.CANONICAL_WIT_PACKAGE),
         )
         self.assertRegex(
             sdk,

@@ -1,4 +1,4 @@
-package wirt:plugin@0.2.0;
+package wirt:plugin@0.3.0;
 
 interface host {
     // Logging
@@ -217,11 +217,20 @@ interface ui {
         custom(string),
     }
 
+    // What a piece of text IS, not how large it is. The host owns the type
+    // scale, so restyling moves every label at once.
+    enum text-role {
+        title,
+        subtitle,
+        body,
+        caption,
+        emphasis,
+    }
+
     // UI Element configs
     record label-config {
         text: string,
-        bold: bool,
-        size: option<f32>,
+        role: text-role,
     }
 
     // Section header for semantic title hierarchy (like h1-h4)
@@ -273,11 +282,20 @@ interface ui {
         selected: string,
     }
 
+    // How much vertical room an element wants. The host owns the pixel
+    // value per element kind, so "tall" means one thing for an image and
+    // another for a list.
+    enum size-hint {
+        compact,
+        regular,
+        tall,
+    }
+
     // New: Image config
     record image-config {
         cache-key: option<string>,
         url: option<string>,
-        max-height: option<f32>,
+        height: option<size-hint>,
     }
 
     // Tabs for view switching
@@ -303,7 +321,7 @@ interface ui {
     record list-container-config {
         id: string,
         items: list<list-item-config>,
-        max-height: option<f32>,
+        height: option<size-hint>,
         empty-message: option<string>,
     }
 
@@ -348,8 +366,7 @@ interface ui {
         id: string,
         images: list<tuple<string, option<string>>>,  // (cache_key, optional_url)
         current-index: u32,
-        max-height: option<f32>,
-        thumbnail-height: option<f32>,
+        height: option<size-hint>,
         enable-lightbox: bool,
     }
 
@@ -371,6 +388,14 @@ interface ui {
         columns: option<u32>,  // Number of columns (default: auto-fit based on available width)
     }
 
+    // How much room a plugin wants between two elements. The host owns the
+    // pixel value for each step, so a density change moves every gap at once.
+    enum spacing-step {
+        small,
+        medium,
+        large,
+    }
+
     // UI Element variant (Leaf nodes and simple containers)
     variant ui-element {
         label(label-config),
@@ -382,7 +407,7 @@ interface ui {
         slider(slider-config),
         dropdown(dropdown-config),
         separator,
-        space(f32),
+        space(spacing-step),
         image(image-config),
         tabs(tabs-config),
         list-container(list-container-config),
@@ -408,11 +433,19 @@ interface ui {
         description: option<string>,
     }
 
+    // How much of the pane the sidebar wants. The host owns the pixel
+    // width, so restyling moves every plugin's sidebar at once.
+    enum sidebar-width {
+        narrow,
+        medium,
+        wide,
+    }
+
     // Top-level layout structure
     record split-config {
         sidebar: list<ui-element>,
         content: list<ui-element>,
-        sidebar-width: option<f32>,
+        width: option<sidebar-width>,
     }
 
     variant plugin-layout {
@@ -423,11 +456,21 @@ interface ui {
     // === Top Tab Registration ===
     // Plugins can register top-level tabs in the app
 
+    // What a badge MEANS, in the same vocabulary as toast-level. The host
+    // owns the colour, so restyling moves every plugin's badge at once.
+    enum badge-level {
+        neutral,
+        info,
+        success,
+        warning,
+        error,
+    }
+
     // Badge configuration for tabs
     record badge-config {
         count: option<u32>,      // Numeric badge (e.g., "3")
         dot: bool,               // Just a dot indicator
-        color: string,           // "red", "green", "blue"
+        level: badge-level,      // What the badge means
     }
 
     // Top-level tab configuration

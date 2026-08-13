@@ -11,10 +11,10 @@ use wasmparser::types::Types;
 use wasmparser::{Encoding, Parser, Payload, PrimitiveValType, Validator};
 
 const WIRT_IMPORTS: [&str; 4] = [
-    "wirt:plugin/host@0.2.0",
-    "wirt:plugin/meta@0.2.0",
-    "wirt:plugin/rules@0.2.0",
-    "wirt:plugin/ui@0.2.0",
+    "wirt:plugin/host@0.3.0",
+    "wirt:plugin/meta@0.3.0",
+    "wirt:plugin/rules@0.3.0",
+    "wirt:plugin/ui@0.3.0",
 ];
 
 const WASI_IMPORTS: [&str; 14] = [
@@ -61,9 +61,9 @@ const MAX_TYPE_GRAPH_NODES: usize = 100_000;
 const MAX_TYPE_GRAPH_DEPTH: usize = 64;
 const MAX_TYPE_GRAPH_TOKEN_BYTES: usize = 64 * 1024;
 const EXPECTED_CONTRACT_HASH: &str =
-    "a4cd3fed4d07ad7a47ea5ec61a556ac0fc320711a34b130c1b183533b3628fba";
+    "4b8c992aba4e744d07ff3bbd452b5188d07e7493c2e8e74b44684e5f65267166";
 const EXPECTED_FIXED_WASI_CONTRACT_HASH: &str =
-    "de3a0cc46ac6621acca0c4efd6f650da656e268401035dc6953f1624dfedf264";
+    "fe2845f9628af6b7a57339cbf1a32d265d1a04552d89b5b7e620026f4dddec94";
 
 struct CanonicalMember {
     name: &'static str,
@@ -90,16 +90,46 @@ fn contract_error(classification: &str) -> PluginError {
     ))
 }
 
-fn bounded_name(name: &str) -> String {
+/// Render plugin-supplied text for an error message: escaped, quoted, and
+/// bounded.
+///
+/// The budget applies to the *escaped* form, which is the only length that
+/// reaches a terminal or a log. Escaping first and measuring second is what
+/// makes the bound real: one ESC renders as the six characters `\u{1b}`, so
+/// bounding the input instead would let 80 bytes of control characters become
+/// a message six times the size the callers' ceilings assume. The result is at
+/// most `MAX` bytes of escaped text, plus the ellipsis and the two quotes.
+///
+/// Callers interpolate this with `{}`. Formatting it with `{:?}` would escape
+/// the escapes.
+pub(crate) fn bounded_name(name: &str) -> String {
     const MAX: usize = 80;
-    if name.len() <= MAX {
-        return name.to_owned();
+    let mut bounded = String::with_capacity(MAX + '…'.len_utf8() + 2);
+    let mut truncated = false;
+    bounded.push('"');
+    for character in name.chars() {
+        // `str`'s Debug leaves an apostrophe alone where `char`'s escapes it;
+        // match the former, since this renders a string.
+        let escaped_len = if character == '\'' {
+            1
+        } else {
+            character.escape_debug().map(char::len_utf8).sum()
+        };
+        if bounded.len() + escaped_len > MAX + 1 {
+            truncated = true;
+            break;
+        }
+        if character == '\'' {
+            bounded.push(character);
+        } else {
+            bounded.extend(character.escape_debug());
+        }
     }
-    let mut end = MAX;
-    while !name.is_char_boundary(end) {
-        end -= 1;
+    if truncated {
+        bounded.push('…');
     }
-    format!("{}…", &name[..end])
+    bounded.push('"');
+    bounded
 }
 
 fn claim_token_bytes(total: &mut usize, bytes: usize) -> Result<()> {
@@ -1073,13 +1103,16 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
         } else {
             match item.ty {
                 ComponentEntityType::Instance(_) => {
-                    let classification = if name.starts_with("wirt:plugin/") {
-                        "unsupported Wirt interface version"
-                    } else {
-                        "unsupported import"
-                    };
+                    if name.starts_with("wirt:plugin/") {
+                        return Err(contract_error(&format!(
+                            "the component imports {}, which this host does not speak; \
+                             it speaks Wirt ABI {WIRT_ABI_VERSION}. Rebuild it against \
+                             the current wirt-sdk/template and republish.",
+                            bounded_name(name)
+                        )));
+                    }
                     return Err(contract_error(&format!(
-                        "{classification} {:?}",
+                        "unsupported import {}",
                         bounded_name(name)
                     )));
                 }
@@ -1170,7 +1203,7 @@ pub fn inspect_component_contract(component: &[u8]) -> Result<ComponentContract>
 
 #[cfg(test)]
 mod tests {
-    use super::{fixed_wasi_profile, inspect_component_contract, sort_watch};
+    use super::{bounded_name, fixed_wasi_profile, inspect_component_contract, sort_watch};
     use wasm_encoder::reencode::ReencodeComponent;
 
     const UI_DEMO_COMPONENT: &[u8] = include_bytes!(concat!(
@@ -1178,6 +1211,53 @@ mod tests {
         "/tests/fixtures/bundled/ui-demo.wasm"
     ));
     const WATCHED_PREFIX: &str = "many-common-prefix-segments-for-sort-review";
+
+    /// The budget covers `MAX` bytes of escaped text plus the ellipsis and
+    /// the two quotes.
+    const LONGEST_BOUNDED_NAME: usize = 80 + 3 + 2;
+
+    #[test]
+    fn bounded_name_bounds_the_escaped_rendering_not_the_input() {
+        // One ESC is six characters escaped, so bounding the input would let
+        // this render roughly 480 bytes past the ceilings callers assert.
+        let rendered = bounded_name(&"\u{1b}".repeat(1_000));
+        assert!(
+            !rendered.contains('\u{1b}'),
+            "control character survived: {rendered:?}"
+        );
+        assert!(
+            rendered.len() <= LONGEST_BOUNDED_NAME,
+            "escaped rendering was unbounded: {} bytes",
+            rendered.len()
+        );
+    }
+
+    #[test]
+    fn bounded_name_renders_short_ascii_verbatim_and_marks_what_it_cut() {
+        assert_eq!(
+            bounded_name("wirt:plugin/ui@0.3.0"),
+            "\"wirt:plugin/ui@0.3.0\""
+        );
+        assert_eq!(bounded_name(""), "\"\"");
+
+        let long = bounded_name(&"a".repeat(1_000));
+        assert_eq!(long.len(), LONGEST_BOUNDED_NAME);
+        assert!(long.starts_with("\"aaa"), "{long}");
+        assert!(long.ends_with("…\""), "{long}");
+    }
+
+    #[test]
+    fn bounded_name_never_splits_a_multibyte_character() {
+        // 27 three-byte characters reach 81 bytes, so the budget lands inside
+        // the last one.
+        let rendered = bounded_name(&"…".repeat(27));
+        assert!(
+            rendered.len() <= LONGEST_BOUNDED_NAME,
+            "{} bytes",
+            rendered.len()
+        );
+        assert!(rendered.is_char_boundary(rendered.len()), "{rendered}");
+    }
 
     #[test]
     fn fixed_wasi_profile_accepts_only_the_complete_fixed_pair() {
