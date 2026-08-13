@@ -911,7 +911,7 @@ fn split_nested_layout_combines_all_rendered_work() {
                 button_count
             ],
         }],
-        sidebar_width: None,
+        width: None,
     };
 
     assert!(validate_layout_result(&layout(5_000)).is_ok());

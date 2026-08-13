@@ -219,6 +219,22 @@ pub enum SizeHint {
     Tall,
 }
 
+/// How much of the pane a split's sidebar wants. The host owns the pixel
+/// width, so restyling moves every plugin's sidebar at once.
+///
+/// Deliberately not [`Default`]: the absent width is a real case that means
+/// "the host decides", and it stays its own case rather than collapsing
+/// onto `Medium`. The two resolve to the same number today, but one is a
+/// number the host is free to move and the other is what a plugin asked
+/// for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarWidth {
+    Narrow,
+    Medium,
+    Wide,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WarningIcon {
     Warning,
@@ -291,7 +307,7 @@ pub enum PluginLayout {
         sidebar: Vec<PluginUiElement>,
         content: Vec<PluginUiElement>,
         #[serde(default)]
-        sidebar_width: Option<f32>,
+        width: Option<SidebarWidth>,
     },
 }
 

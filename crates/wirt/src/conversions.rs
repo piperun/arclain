@@ -1,8 +1,9 @@
 //! Pure conversions from generated WIT values into Wirt's neutral model.
 
 use crate::{
-    BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginLayout, PluginUiElement, SizeHint,
-    SpacingStep, TextRole, ToastLevel, ToolbarButton, TopTabConfig, WarningIcon,
+    BadgeConfig, ButtonAction, KeyValuePair, PluginAction, PluginLayout, PluginUiElement,
+    SidebarWidth, SizeHint, SpacingStep, TextRole, ToastLevel, ToolbarButton, TopTabConfig,
+    WarningIcon,
 };
 use crate::{MoveFileRule, MoveRule, PluginRuleActions, PluginRuleDefinition, PluginRuleTrigger};
 
@@ -18,7 +19,7 @@ pub fn convert_plugin_layout(
         WitLayout::Split(config) => PluginLayout::Split {
             sidebar: config.sidebar.into_iter().map(convert_ui_element).collect(),
             content: config.content.into_iter().map(convert_ui_element).collect(),
-            sidebar_width: config.sidebar_width,
+            width: config.width.map(convert_sidebar_width),
         },
     }
 }
@@ -209,6 +210,16 @@ fn convert_size_hint(hint: crate::bindings::wirt::plugin::ui::SizeHint) -> SizeH
         WitHint::Compact => SizeHint::Compact,
         WitHint::Regular => SizeHint::Regular,
         WitHint::Tall => SizeHint::Tall,
+    }
+}
+
+fn convert_sidebar_width(width: crate::bindings::wirt::plugin::ui::SidebarWidth) -> SidebarWidth {
+    use crate::bindings::wirt::plugin::ui::SidebarWidth as WitWidth;
+
+    match width {
+        WitWidth::Narrow => SidebarWidth::Narrow,
+        WitWidth::Medium => SidebarWidth::Medium,
+        WitWidth::Wide => SidebarWidth::Wide,
     }
 }
 

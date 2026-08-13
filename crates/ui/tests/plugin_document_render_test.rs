@@ -10,12 +10,13 @@
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
     PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginUiDocument,
-    PluginUiNodeDto, PluginUiNodeKind, SizeHint, SpacingStep, TextRole,
+    PluginUiNodeDto, PluginUiNodeKind, SidebarWidth, SizeHint, SpacingStep, TextRole,
 };
 use arclain_ui::features::plugins::application::PluginNavigation;
 use arclain_ui::features::plugins::presentation::rendering::{
     carousel_height_for_hint, image_height_for_hint, list_height_for_hint, render_document,
-    text_style_for_role, DocumentContext, DocumentEvent, DocumentExtent, RoleStyle,
+    sidebar_width_for_step, text_style_for_role, DocumentContext, DocumentEvent, DocumentExtent,
+    RoleStyle,
 };
 use arclain_ui::shared::theme::AppTheme;
 use egui_kittest::kittest::Queryable as _;
@@ -376,7 +377,7 @@ fn a_split_is_height_bounded_only_when_the_host_asks_for_it() {
                         role: TextRole::Body,
                     },
                 )],
-                sidebar_width: Some(120.0),
+                width: Some(SidebarWidth::Narrow),
             },
         );
         doc
@@ -602,5 +603,75 @@ fn a_taller_list_hint_bounds_the_list_higher_on_screen() {
     assert_eq!(
         absent, regular,
         "a list with no hint takes the same room as a regular one"
+    );
+}
+
+/// A plugin names how much of the pane its sidebar wants; this pins the
+/// host's answer. The absent step is pinned alongside the three named ones
+/// because it is the case a plugin reaches by saying nothing at all, and it
+/// has to land on a real width rather than on nothing -- a split always
+/// draws a sidebar.
+#[test]
+fn a_sidebar_step_is_a_width_the_host_owns() {
+    assert_eq!(sidebar_width_for_step(Some(SidebarWidth::Narrow)), 200.0);
+    assert_eq!(sidebar_width_for_step(Some(SidebarWidth::Medium)), 250.0);
+    assert_eq!(sidebar_width_for_step(Some(SidebarWidth::Wide)), 300.0);
+    assert_eq!(sidebar_width_for_step(None), 250.0);
+}
+
+/// The scale above is only worth pinning if the renderer reads it. A table
+/// test compares the host's numbers to themselves and would pass just as
+/// green against a renderer that pinned one width and ignored the step,
+/// which is the shape of bug this vocabulary exists to prevent.
+///
+/// The content pane starts where the sidebar ends, so the left edge of a
+/// label in the content pane is the resolved width arriving on screen.
+#[test]
+fn a_wider_sidebar_step_pushes_the_content_pane_further_right() {
+    fn content_left(width: Option<SidebarWidth>) -> f32 {
+        let mut document = document(Vec::new());
+        document.root = node(
+            "#root",
+            PluginUiNodeKind::Split {
+                // A rule spans whatever room it is given, so the sidebar
+                // holds the width the host handed it instead of shrinking
+                // to fit one short label -- the same thing a real plugin's
+                // sidebar content does.
+                sidebar: vec![node("rule", PluginUiNodeKind::Separator)],
+                content: vec![node(
+                    "c",
+                    PluginUiNodeKind::Label {
+                        text: "Content".to_string(),
+                        role: TextRole::Body,
+                    },
+                )],
+                width,
+            },
+        );
+        let mut stage = harness(document);
+        stage.run();
+        stage.get_by_label("Content").rect().left()
+    }
+
+    let narrow = content_left(Some(SidebarWidth::Narrow));
+    let medium = content_left(Some(SidebarWidth::Medium));
+    let wide = content_left(Some(SidebarWidth::Wide));
+    let absent = content_left(None);
+
+    // 200, 250 and 300: the gaps are the host's scale, and every other
+    // margin cancels because all four documents are otherwise identical.
+    assert_eq!(
+        medium - narrow,
+        50.0,
+        "medium starts the content pane 50px right of narrow, got {narrow} and {medium}"
+    );
+    assert_eq!(
+        wide - narrow,
+        100.0,
+        "wide starts the content pane 100px right of narrow, got {narrow} and {wide}"
+    );
+    assert_eq!(
+        absent, medium,
+        "a split with no step gets the width a medium one gets"
     );
 }

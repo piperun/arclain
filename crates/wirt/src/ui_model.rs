@@ -75,7 +75,7 @@ use crate::model::{
 /// host vocabulary rather than plugin-supplied data, so there is nothing for
 /// a DTO twin to normalize -- the enum a plugin picks from is the enum a
 /// frontend matches on.
-pub use crate::model::{SizeHint, SpacingStep, TextRole};
+pub use crate::model::{SidebarWidth, SizeHint, SpacingStep, TextRole};
 
 /// Maximum nesting depth (containers within containers within the root)
 /// a normalized tree may reach.
@@ -177,7 +177,7 @@ pub enum PluginUiNodeKind {
     Split {
         sidebar: Vec<PluginUiNodeDto>,
         content: Vec<PluginUiNodeDto>,
-        sidebar_width: Option<f32>,
+        width: Option<SidebarWidth>,
     },
     Label {
         text: String,
@@ -530,14 +530,14 @@ pub fn normalize_layout(layout: &PluginLayout) -> Result<PluginUiNodeDto, Plugin
         PluginLayout::Split {
             sidebar,
             content,
-            sidebar_width,
+            width,
         } => {
             let sidebar_nodes = normalize_children(&mut ctx, sidebar, "#root/sidebar", 1)?;
             let content_nodes = normalize_children(&mut ctx, content, "#root/content", 1)?;
             PluginUiNodeKind::Split {
                 sidebar: sidebar_nodes,
                 content: content_nodes,
-                sidebar_width: *sidebar_width,
+                width: *width,
             }
         }
     };
@@ -981,10 +981,11 @@ mod tests {
     use crate::bindings::wirt::plugin::ui::{
         CarouselConfig as WitCarouselConfig, ImageConfig as WitImageConfig,
         LabelConfig as WitLabelConfig, ListContainerConfig as WitListContainerConfig,
-        SizeHint as WitSizeHint, SpacingStep as WitSpacingStep, TextRole as WitTextRole,
+        PluginLayout as WitPluginLayout, SidebarWidth as WitSidebarWidth, SizeHint as WitSizeHint,
+        SpacingStep as WitSpacingStep, SplitConfig as WitSplitConfig, TextRole as WitTextRole,
         UiElement as WitUiElement,
     };
-    use crate::conversions::convert_ui_element;
+    use crate::conversions::{convert_plugin_layout, convert_ui_element};
 
     #[test]
     fn text_role_survives_the_conversion() {
@@ -1097,6 +1098,52 @@ mod tests {
         }
     }
 
+    /// The sidebar's width crosses the boundary inside the layout rather
+    /// than inside an element, so it is the one styling vocabulary
+    /// `convert_ui_element` never sees. Every field is destructured with no
+    /// `..` so that a field surviving here that should no longer exist
+    /// fails to compile.
+    #[test]
+    fn sidebar_width_survives_the_conversion() {
+        for (wit, expected) in [
+            (WitSidebarWidth::Narrow, SidebarWidth::Narrow),
+            (WitSidebarWidth::Medium, SidebarWidth::Medium),
+            (WitSidebarWidth::Wide, SidebarWidth::Wide),
+        ] {
+            let layout = convert_plugin_layout(WitPluginLayout::Split(WitSplitConfig {
+                sidebar: vec![WitUiElement::Separator],
+                content: Vec::new(),
+                width: Some(wit),
+            }));
+            let PluginLayout::Split {
+                sidebar,
+                content,
+                width,
+            } = layout
+            else {
+                panic!("a split layout converts to a split layout");
+            };
+            assert_eq!(sidebar.len(), 1);
+            assert!(content.is_empty());
+            assert_eq!(width, Some(expected));
+        }
+    }
+
+    /// A split that names no width is a real case and has to stay one: the
+    /// absent width is what the host reads as "you decide".
+    #[test]
+    fn an_absent_sidebar_width_converts_to_an_absent_sidebar_width() {
+        let layout = convert_plugin_layout(WitPluginLayout::Split(WitSplitConfig {
+            sidebar: Vec::new(),
+            content: Vec::new(),
+            width: None,
+        }));
+        let PluginLayout::Split { width, .. } = layout else {
+            panic!("a split layout converts to a split layout");
+        };
+        assert_eq!(width, None);
+    }
+
     /// An element that names no size is a real case and has to stay one:
     /// the absent hint is what the host reads as "you decide".
     #[test]
@@ -1168,18 +1215,18 @@ mod tests {
         let layout = PluginLayout::Split {
             sidebar: vec![label("side")],
             content: vec![label("main")],
-            sidebar_width: Some(120.0),
+            width: Some(SidebarWidth::Wide),
         };
         let root = normalize_layout(&layout).unwrap();
         let PluginUiNodeKind::Split {
             sidebar,
             content,
-            sidebar_width,
+            width,
         } = &root.kind
         else {
             panic!("expected Split root");
         };
-        assert_eq!(sidebar_width, &Some(120.0));
+        assert_eq!(width, &Some(SidebarWidth::Wide));
         assert_eq!(sidebar[0].id, "#root/sidebar/0");
         assert_eq!(content[0].id, "#root/content/0");
     }

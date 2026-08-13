@@ -433,11 +433,19 @@ interface ui {
         description: option<string>,
     }
 
+    // How much of the pane the sidebar wants. The host owns the pixel
+    // width, so restyling moves every plugin's sidebar at once.
+    enum sidebar-width {
+        narrow,
+        medium,
+        wide,
+    }
+
     // Top-level layout structure
     record split-config {
         sidebar: list<ui-element>,
         content: list<ui-element>,
-        sidebar-width: option<f32>,
+        width: option<sidebar-width>,
     }
 
     variant plugin-layout {

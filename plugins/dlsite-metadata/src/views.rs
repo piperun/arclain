@@ -26,8 +26,9 @@ pub(crate) fn dispatch(
         ButtonAction, ButtonConfig, CarouselConfig, CheckboxConfig, DropdownConfig, ImageConfig,
         KeyValueListConfig, KeyValuePair, LabelConfig, ListContainerConfig, ListItemConfig,
         LoadingConfig, MetadataGridConfig, PluginLayout, SectionHeaderConfig, SettingsGroupHeader,
-        SizeHint, SpacingStep, SplitConfig, TabsConfig, TagChipsConfig, TextInputConfig, TextRole,
-        ToolbarButtonConfig, ToolbarConfig, UiElement, WarningConfig, WarningIcon,
+        SidebarWidth, SizeHint, SpacingStep, SplitConfig, TabsConfig, TagChipsConfig,
+        TextInputConfig, TextRole, ToolbarButtonConfig, ToolbarConfig, UiElement, WarningConfig,
+        WarningIcon,
     };
 
     match extension_point {
@@ -1364,7 +1365,7 @@ pub(crate) fn dispatch(
             PluginLayout::Split(SplitConfig {
                 sidebar: sidebar_elements,
                 content: content_elements,
-                sidebar_width: Some(300.0),
+                width: Some(SidebarWidth::Wide),
             })
         }
 

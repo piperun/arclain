@@ -61,9 +61,9 @@ const MAX_TYPE_GRAPH_NODES: usize = 100_000;
 const MAX_TYPE_GRAPH_DEPTH: usize = 64;
 const MAX_TYPE_GRAPH_TOKEN_BYTES: usize = 64 * 1024;
 const EXPECTED_CONTRACT_HASH: &str =
-    "3b47c68dbd4f11e47898d796049c0b8e828f561e3236cf99af1902b0bd43460a";
+    "1607441281fae953e0d3156fad2a972d74caab36c34273cfc6dccae313a2cfaa";
 const EXPECTED_FIXED_WASI_CONTRACT_HASH: &str =
-    "2e62c42da2ecc7194319304388907a450ef2dde96c33c9b4b17a91c7a0723020";
+    "9afea8dfd8cfe3f327dabc3f3455138f83ff3e87fce341fc477c63eeab1665a9";
 
 struct CanonicalMember {
     name: &'static str,

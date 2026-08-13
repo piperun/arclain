@@ -48,7 +48,8 @@
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
     PluginActionDto, PluginImageDto, PluginKeyValueDto, PluginToolbarButtonDto, PluginUiDocument,
-    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SizeHint, SpacingStep, TextRole,
+    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SidebarWidth, SizeHint, SpacingStep,
+    TextRole,
 };
 use eframe::egui;
 
@@ -127,6 +128,17 @@ pub fn carousel_height_for_hint(hint: Option<SizeHint>) -> f32 {
         Some(SizeHint::Regular) => 400.0,
         Some(SizeHint::Tall) => 700.0,
         None => 300.0,
+    }
+}
+
+/// arclain's own horizontal scale, for a split's sidebar. A sidebar always
+/// has a width, so an absent step resolves to the middle of the scale
+/// rather than to nothing.
+pub fn sidebar_width_for_step(step: Option<SidebarWidth>) -> f32 {
+    match step {
+        Some(SidebarWidth::Narrow) => 200.0,
+        Some(SidebarWidth::Medium) | None => 250.0,
+        Some(SidebarWidth::Wide) => 300.0,
     }
 }
 
@@ -316,9 +328,9 @@ fn render_node_kind(ui: &mut egui::Ui, node: &PluginUiNodeDto, sink: &mut Sink<'
         PluginUiNodeKind::Split {
             sidebar,
             content,
-            sidebar_width,
+            width,
         } => {
-            let sidebar_width = sidebar_width.unwrap_or(250.0);
+            let sidebar_width = sidebar_width_for_step(*width);
             let draw = |ui: &mut egui::Ui, sink: &mut Sink<'_>| {
                 egui::SidePanel::left(ui.id().with("split_sidebar"))
                     .resizable(true)

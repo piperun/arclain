@@ -118,7 +118,8 @@ use wirt::ui_model::{self, PluginUiNormalizeError};
 pub use wirt::ui_model::{
     PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginHostIntentDto,
     PluginImageDto, PluginKeyValueDto, PluginToastLevelDto, PluginToolbarButtonDto,
-    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SizeHint, SpacingStep, TextRole,
+    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto, SidebarWidth, SizeHint, SpacingStep,
+    TextRole,
 };
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
@@ -253,11 +254,11 @@ fn rewrite_cache_keys(mut node: PluginUiNodeDto, plugin_id: &str) -> PluginUiNod
         PluginUiNodeKind::Split {
             sidebar,
             content,
-            sidebar_width,
+            width,
         } => PluginUiNodeKind::Split {
             sidebar: rewrite_children(sidebar, plugin_id),
             content: rewrite_children(content, plugin_id),
-            sidebar_width,
+            width,
         },
         PluginUiNodeKind::ListContainer {
             children,

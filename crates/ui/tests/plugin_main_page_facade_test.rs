@@ -24,7 +24,8 @@ use std::time::{Duration, Instant};
 
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
-    PluginExtensionPointDto, PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind, TextRole,
+    PluginExtensionPointDto, PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind, SidebarWidth,
+    TextRole,
 };
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 use arclain_ui::features::plugins::application::{PluginSlot, SlotView};
@@ -624,7 +625,7 @@ fn a_split_main_page_keeps_both_panes_and_stays_one_section_of_the_form() {
                 PluginUiNodeKind::Split {
                     sidebar: vec![label("s", "Sidebar Item")],
                     content: vec![label("c", "Content Item")],
-                    sidebar_width: Some(120.0),
+                    width: Some(SidebarWidth::Narrow),
                 },
             ),
         ),

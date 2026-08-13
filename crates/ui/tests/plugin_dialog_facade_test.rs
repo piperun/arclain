@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 use arclain_app::event::OperationKind;
 use arclain_app::ids::PluginSessionId;
 use arclain_app::plugins::{
-    PluginExtensionPointDto, PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind, TextRole,
+    PluginExtensionPointDto, PluginUiDocument, PluginUiNodeDto, PluginUiNodeKind, SidebarWidth,
+    TextRole,
 };
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 use arclain_ui::core::app_lifecycle;
@@ -632,7 +633,7 @@ fn split_document(session_id: PluginSessionId) -> PluginUiDocument {
             kind: PluginUiNodeKind::Split {
                 sidebar: vec![label("side", "sidebar-pane")],
                 content: vec![label("main", "content-pane")],
-                sidebar_width: Some(120.0),
+                width: Some(SidebarWidth::Narrow),
             },
             visible: true,
             enabled: true,

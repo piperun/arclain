@@ -1693,7 +1693,7 @@ mod tests {
                         children: vec![button("inner", "Inner")],
                     },
                 )],
-                sidebar_width: None,
+                width: None,
             },
         );
 

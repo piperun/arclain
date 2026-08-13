@@ -17,8 +17,8 @@ use wirt::ui_model::{
     PluginWarningIconDto, MAX_UI_ASSETS, MAX_UI_NODES, MAX_UI_TEXT_BYTES, MAX_UI_TREE_DEPTH,
 };
 use wirt::{
-    ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, SizeHint, SpacingStep, TextRole,
-    ToolbarButton, WarningIcon,
+    ButtonAction, KeyValuePair, PluginLayout, PluginUiElement, SidebarWidth, SizeHint, SpacingStep,
+    TextRole, ToolbarButton, WarningIcon,
 };
 
 fn single(elements: Vec<PluginUiElement>) -> PluginLayout {
@@ -455,18 +455,18 @@ fn split_layout_normalizes_sidebar_and_content_into_separate_subtrees() {
             text: "content".to_string(),
             role: TextRole::Body,
         }],
-        sidebar_width: Some(220.0),
+        width: Some(SidebarWidth::Narrow),
     };
     let root = normalize_layout(&layout).unwrap();
     let PluginUiNodeKind::Split {
         sidebar,
         content,
-        sidebar_width,
+        width,
     } = &root.kind
     else {
         panic!("expected Split root");
     };
-    assert_eq!(sidebar_width, &Some(220.0));
+    assert_eq!(width, &Some(SidebarWidth::Narrow));
     assert_eq!(sidebar[0].id, "#root/sidebar/0");
     assert_eq!(content[0].id, "#root/content/0");
 }
@@ -508,7 +508,7 @@ fn duplicate_interactive_ids_across_sidebar_and_content_are_rejected() {
             label: "Content".to_string(),
             action: None,
         }],
-        sidebar_width: None,
+        width: None,
     };
     assert_eq!(
         normalize_layout(&layout).unwrap_err(),
