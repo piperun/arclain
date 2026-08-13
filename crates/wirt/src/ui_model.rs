@@ -12,8 +12,7 @@
 //! revision without re-deriving element-kind-specific rules of its own.
 //!
 //! [`normalize_layout`] is that boundary-normalization step. It does not
-//! change the WIT ABI (the brief for this module explicitly forbids
-//! that): it runs entirely on the host side, after
+//! change the WIT ABI: it runs entirely on the host side, after
 //! `crate::conversions::convert_plugin_layout` has already produced a
 //! `PluginLayout`. Two rules decide where a node's `id` comes from:
 //!

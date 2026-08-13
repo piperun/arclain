@@ -3,7 +3,10 @@
 //! A plugin names a role, a step or a size hint; it never names pixels. This
 //! module holds every table that answers those names, plus the two layout
 //! numbers nobody asks for at all (the carousel's thumbnail strip and the
-//! cap on a `Split` in a stacked host). Changing a value here restyles every
+//! cap on a `Split` in a stacked host). One name is answered elsewhere: a
+//! badge level resolves to a colour off the live theme, not to a constant,
+//! so it lives with the chrome that draws it in
+//! `shared::components::top_tab_bar`. Changing a value here restyles every
 //! plugin at once, which is the whole reason the vocabulary is coarse.
 //!
 //! It sits beside [`super::document`] rather than inside it because none of

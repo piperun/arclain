@@ -182,6 +182,10 @@ pub struct ToolbarButton {
 
 /// How much room a plugin wants between two elements. The host owns the
 /// pixel value for each step, so a density change moves every gap at once.
+///
+/// Carries a `Default` because its field is bare and `#[serde(default)]`,
+/// so a document omitting it needs a value to land on. The steps that sit
+/// behind an `Option` deliberately have none — they fall to `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SpacingStep {
@@ -193,6 +197,10 @@ pub enum SpacingStep {
 
 /// What a piece of text IS, not how large it is. The host owns the type
 /// scale, so restyling moves every label at once.
+///
+/// Carries a `Default` for the same reason [`SpacingStep`] does: its field
+/// is bare and `#[serde(default)]`, so an omitted role needs somewhere to
+/// land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TextRole {

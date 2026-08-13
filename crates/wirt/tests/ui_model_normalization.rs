@@ -4,7 +4,7 @@
 //! shape `crate::conversions::convert_ui_element` produces from the raw
 //! WIT `ui-element` variant, i.e. exactly what reaches this crate's
 //! normalization boundary from a real plugin -- plus every rejection
-//! path the brief for this module calls out explicitly: duplicate
+//! path normalization is required to reject: duplicate
 //! interactive ids, unmatched group markers, malformed layouts, and the
 //! tree depth/node/text/asset budgets. Compile-guard coverage (this
 //! crate builds without any egui/UI-signal type reachable from its
@@ -472,7 +472,7 @@ fn split_layout_normalizes_sidebar_and_content_into_separate_subtrees() {
 }
 
 // ============================================================================
-// Rejection paths the brief calls out explicitly.
+// The layouts normalization must refuse.
 // ============================================================================
 
 #[test]
