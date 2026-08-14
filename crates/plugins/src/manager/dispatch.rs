@@ -510,7 +510,7 @@ mod tests {
             .join("../../plugins")
             .join(plugin_id);
         let component_fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../wirt/tests/fixtures/bundled/ui-demo.wasm");
+            .join("tests/fixtures/wirt/ui-demo.wasm");
         std::fs::copy(
             component_fixture,
             plugin_dir.join(format!("{plugin_id}.wasm")),

@@ -23,10 +23,8 @@ ROOT_PACKAGES = (
     "arclain_theme",
     "arclain_ui",
     "arclain_widgets",
-    "wirt",
 )
 STANDALONE_MANIFESTS = (
-    "wirt-sdk/Cargo.toml",
     "plugins/dlsite-metadata/Cargo.toml",
     "plugins/facade-test-fixture/Cargo.toml",
     "plugins/gstreamer-preview/Cargo.toml",

@@ -562,6 +562,7 @@ dependencies = [
 [[package]]
 name = "wirt-sdk"
 version = "0.3.0"
+source = "git+https://codeberg.org/0xdev/wirt.git?rev=1fc2a8edcbb17830a6c6f46604453ca9126dc387#1fc2a8edcbb17830a6c6f46604453ca9126dc387"
 dependencies = [
  "serde",
  "serde_json",

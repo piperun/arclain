@@ -333,8 +333,7 @@ pub(crate) fn dispatch(
                         let cover_key =
                             gameta_lib::providers::dlsite::cache_keys::cover_key(product_id);
                         let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
-                        let cover_is_cached =
-                            wirt_sdk::wirt::plugin::host::has_data(&cover_key);
+                        let cover_is_cached = wirt_sdk::wirt::plugin::host::has_data(&cover_key);
 
                         let show_cover = if is_cached_tab {
                             cover_is_cached
@@ -357,8 +356,7 @@ pub(crate) fn dispatch(
                                         gameta_lib::providers::dlsite::cache_keys::screenshot_key(
                                             product_id, i,
                                         );
-                                    let is_cached =
-                                        wirt_sdk::wirt::plugin::host::has_data(&key);
+                                    let is_cached = wirt_sdk::wirt::plugin::host::has_data(&key);
 
                                     let should_include =
                                         if is_cached_tab { is_cached } else { true };

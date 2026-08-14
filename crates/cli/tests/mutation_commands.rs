@@ -80,7 +80,7 @@ impl Env {
             .join(name);
         let fixture_component = if name == "ui-demo" {
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../wirt/tests/fixtures/bundled/ui-demo.wasm")
+                .join("../plugins/tests/fixtures/wirt/ui-demo.wasm")
         } else {
             fixture_dir.join(format!("{name}.wasm"))
         };

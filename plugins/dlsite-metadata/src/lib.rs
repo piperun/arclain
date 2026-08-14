@@ -1,5 +1,5 @@
-use wirt_sdk::info;
 use std::cell::RefCell;
+use wirt_sdk::info;
 
 pub(crate) const CACHED_METADATA_PAGE_SIZE: u32 = 100;
 const ARCHIVE_SCAN_PAGE_SIZE: u32 = 256;
@@ -246,9 +246,7 @@ impl wirt_sdk::Guest for Component {
         }]
     }
 
-    fn get_ui_layout(
-        extension_point: String,
-    ) -> wirt_sdk::wirt::plugin::ui::PluginLayout {
+    fn get_ui_layout(extension_point: String) -> wirt_sdk::wirt::plugin::ui::PluginLayout {
         views::dispatch(&extension_point)
     }
 
@@ -438,10 +436,8 @@ pub(crate) fn get_cached_dlsite_metadata(
 pub(crate) fn fetch_dlsite_metadata(
     product_id: &str,
 ) -> Option<(serde_json::Value, Option<ScrapedData>)> {
+    use gameta_lib::providers::dlsite::{parse_html, plan_fetch, DlsiteFetchOptions, FetchStep};
     use wirt_sdk::{fetch_string_blocking, log_network_activity};
-    use gameta_lib::providers::dlsite::{
-        parse_html, plan_fetch, DlsiteFetchOptions, FetchStep,
-    };
 
     // Use the orchestrator to plan our fetch
     // We request ALL sources (API + HTML)
@@ -592,9 +588,7 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
         ));
         log_network_activity(&format!("Fetching cover image: {}", cover_url));
 
-        if let Err(e) =
-            wirt_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image)
-        {
+        if let Err(e) = wirt_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image) {
             log_network_activity(&format!("Failed to fetch cover image: {}", e));
         }
         done += 1;
@@ -629,12 +623,10 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
 /// like "720" / "480"). Files land in the host's temp dir as
 /// `dlsite_<product_id>_video_<idx>_<resolution>p.mp4`.
 pub(crate) fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData) {
-    use wirt_sdk::{
-        fetch_string_blocking, fetch_to_cache, log_network_activity, ResourceType,
-    };
     use gameta_lib::parsers::chobit::{parse_chobit_embed, ChobitVideoInfo, VideoSource};
     use gameta_lib::parsers::dlsite::DescriptionSection as Section;
     use gameta_lib::providers::dlsite::cache_keys;
+    use wirt_sdk::{fetch_string_blocking, fetch_to_cache, log_network_activity, ResourceType};
 
     let (cache_videos, quality_pref) = STATE.with(|s| {
         let st = s.borrow();
@@ -829,8 +821,8 @@ pub(crate) fn generate_metadata_json(
 
 /// Search DLSite for a query and return list of (code, title, maker, thumbnail_url)
 pub(crate) fn search_dlsite(query: &str) -> Vec<(String, String, String, Option<String>)> {
-    use wirt_sdk::{fetch_string_blocking, log_network_activity};
     use gameta_lib::providers::dlsite::parse_search_response;
+    use wirt_sdk::{fetch_string_blocking, log_network_activity};
 
     log_network_activity(&format!("Searching DLSite: {}", query));
 

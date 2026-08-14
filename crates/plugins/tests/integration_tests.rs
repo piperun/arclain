@@ -68,7 +68,7 @@ fn bundled_plugins_dir() -> PathBuf {
             .expect("read bundled plugin manifest");
             let component = fs::read(
                 repository_root
-                    .join("crates/wirt/tests/fixtures/bundled")
+                    .join("crates/plugins/tests/fixtures/wirt")
                     .join(format!("{plugin_id}.wasm")),
             )
             .expect("read tracked bundled component fixture");
@@ -109,7 +109,7 @@ fn fixture_package(temp_dir: &TempDir, plugin_id: &str) -> (PathBuf, wirt::Packa
     let component = if plugin_id == "ui-demo" {
         fs::read(
             repository_root
-                .join("crates/wirt/tests/fixtures/bundled")
+                .join("crates/plugins/tests/fixtures/wirt")
                 .join(format!("{plugin_id}.wasm")),
         )
     } else {

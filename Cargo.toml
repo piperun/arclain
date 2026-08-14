@@ -13,8 +13,6 @@ members = [
     "crates/app_fs",
     "crates/app",
     "crates/cli",
-    "crates/wirt",
-    "crates/wirt-cli",
 ]
 default-members = ["crates/ui"]
 exclude = [
@@ -22,7 +20,6 @@ exclude = [
     "plugins/facade-test-fixture",
     "plugins/gstreamer-preview",
     "plugins/ui-demo",
-    "wirt-sdk",
     "crates/dioxus-spike",
     "crates/freya-spike",
     "crates/iced-spike",
@@ -49,6 +46,7 @@ tracing = "0.1"
 zip = "=7.2.0"
 wasmparser = { version = "=0.252.0", default-features = false, features = ["std", "validate", "component-model"] }
 wit-parser = { version = "=0.252.0", default-features = false, features = ["std"] }
+wirt = { git = "https://codeberg.org/0xdev/wirt.git", rev = "1fc2a8edcbb17830a6c6f46604453ca9126dc387" }
 
 # Storage
 diesel = { version = "2.2", features = ["sqlite", "returning_clauses_for_sqlite_3_35", "r2d2", "64-column-tables"] }

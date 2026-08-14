@@ -2398,7 +2398,7 @@ mod tests {
         std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::copy(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../wirt/tests/fixtures/bundled/ui-demo.wasm"),
+                .join("../plugins/tests/fixtures/wirt/ui-demo.wasm"),
             plugin_dir.join("ui-demo.wasm"),
         )
         .unwrap();

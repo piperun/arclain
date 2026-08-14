@@ -24,9 +24,7 @@ impl wirt_sdk::Guest for Component {
         vec![]
     }
 
-    fn get_ui_layout(
-        extension_point: String,
-    ) -> wirt_sdk::wirt::plugin::ui::PluginLayout {
+    fn get_ui_layout(extension_point: String) -> wirt_sdk::wirt::plugin::ui::PluginLayout {
         use wirt_sdk::wirt::plugin::ui::*;
 
         match extension_point.as_str() {

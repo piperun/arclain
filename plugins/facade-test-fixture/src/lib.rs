@@ -380,8 +380,7 @@ impl wirt_sdk::Guest for Component {
             "persistent-data-read" => {
                 let count = wirt_sdk::data_key_count("fixture:");
                 let page = wirt_sdk::list_data_keys_page("fixture:", 0, 256);
-                let indexed = count == Ok(1)
-                    && page == Ok(vec![PERSISTENT_DATA_KEY.to_string()]);
+                let indexed = count == Ok(1) && page == Ok(vec![PERSISTENT_DATA_KEY.to_string()]);
                 let value = indexed
                     .then(|| wirt_sdk::wirt::plugin::host::get_data(PERSISTENT_DATA_KEY))
                     .flatten()

@@ -13,19 +13,31 @@ targets automatically:
 rustup target add wasm32-wasip2
 ```
 
+Install the exact reviewed Wirt CLI revision recorded in
+[`wirt-toolchain.toml`](../wirt-toolchain.toml):
+
+```console
+cargo install --locked --git https://codeberg.org/0xdev/wirt.git --rev 1fc2a8edcbb17830a6c6f46604453ca9126dc387 wirt-cli
+wirt --version
+```
+
+The reported identity must be `wirt-cli 0.3.0 (ABI 0.3.0)`. Set `WIRT` to an
+alternate executable path when the reviewed CLI is not named `wirt`; Arclain
+never installs or updates it automatically.
+
 Then create, build, validate, package, and validate a starter project:
 
 ```console
-just wirt new plugins/my-plugin
-just wirt build plugins/my-plugin
-just wirt validate plugins/my-plugin
-just wirt package plugins/my-plugin
-just wirt validate plugins/my-plugin/my-plugin-0.1.0.wirt
+wirt new plugins/my-plugin
+wirt build plugins/my-plugin
+wirt validate plugins/my-plugin
+wirt package plugins/my-plugin
+wirt validate plugins/my-plugin/my-plugin-0.1.0.wirt
 ```
 
-`wirt new` copies the maintained starter and a local `wirt-sdk` into an empty
-destination. Edit the starter metadata in `Cargo.toml`, `plugin.toml`, and
-`src/lib.rs` together before publishing.
+`wirt new` copies the reviewed starter, SDK, WIT, and security documents into
+an empty destination. Edit the starter metadata in `Cargo.toml`, `plugin.toml`,
+and `src/lib.rs` together before publishing.
 
 Install the resulting `.wirt` file from Arclain's Plugins page. Arclain first
 shows the package identity, exact Wirt ABI, requested capabilities, network
@@ -41,6 +53,7 @@ my-plugin/
 ├── plugin.toml
 ├── src/
 │   └── lib.rs
+├── docs/
 └── wirt-sdk/              # vendored by `wirt new`
 ```
 
@@ -48,10 +61,10 @@ The generated `<id>-<version>.wirt` is a distribution artifact and is ignored
 by Git. The package contains the manifest and component; it is the only format
 accepted by the public install flow.
 
-Repository-maintained projects use `wirt-sdk = { path = "../../wirt-sdk" }`
-instead of the vendored path. Every maintained project also contains an empty
-`[workspace]` table so it builds as a standalone workspace from nested Git
-worktrees.
+Repository-maintained projects use the exact Wirt SDK Git URL and revision in
+[`wirt-toolchain.toml`](../wirt-toolchain.toml). Every maintained project also
+contains an empty `[workspace]` table so it builds as a standalone workspace
+from nested Git worktrees.
 
 ## Manifest
 
@@ -166,7 +179,7 @@ directory.
 ## Debugging
 
 - Use `wirt_sdk::{debug, info, warn, error}` for bounded plugin logging.
-- Run `just wirt validate <project-or-package>` before investigating host
+- Run `wirt validate <project-or-package>` before investigating host
   loading failures.
 - Check that `plugin.toml` and `get_metadata` agree exactly.
 - Check that every host operation has its corresponding manifest capability.
@@ -176,7 +189,8 @@ directory.
 
 ## More detail
 
-- [Wirt SDK](../wirt-sdk/README.md)
-- [ABI policy](../docs/wirt/abi-policy.md)
-- [Package format](../docs/wirt/package-format.md)
-- [Security model](../docs/wirt/security-model.md)
+- [Arclain's Wirt consumer boundary](../docs/wirt.md)
+- [Wirt SDK](https://codeberg.org/0xdev/wirt/src/commit/1fc2a8edcbb17830a6c6f46604453ca9126dc387/crates/wirt-sdk/README.md)
+- [ABI policy](https://codeberg.org/0xdev/wirt/src/commit/1fc2a8edcbb17830a6c6f46604453ca9126dc387/docs/abi-policy.md)
+- [Package format](https://codeberg.org/0xdev/wirt/src/commit/1fc2a8edcbb17830a6c6f46604453ca9126dc387/docs/package-format.md)
+- [Security model](https://codeberg.org/0xdev/wirt/src/commit/1fc2a8edcbb17830a6c6f46604453ca9126dc387/docs/security-model.md)

@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-wirt-sdk = { path = "../../wirt-sdk" }
+wirt-sdk = { git = "https://codeberg.org/0xdev/wirt.git", rev = "1fc2a8edcbb17830a6c6f46604453ca9126dc387", version = "0.3.0" }
 serde = { version = "1", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1", features = ["alloc"], default-features = false }
 

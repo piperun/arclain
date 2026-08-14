@@ -24,7 +24,7 @@ fn build_wirt_install_fixture(root: &std::path::Path) -> std::path::PathBuf {
         &package_path,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../wirt/tests/fixtures/bundled/facade-test-fixture.wirt"
+            "/../plugins/tests/fixtures/wirt/facade-test-fixture.wirt"
         )),
     )
     .expect("write maintained package fixture");

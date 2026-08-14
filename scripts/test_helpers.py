@@ -32,7 +32,6 @@ import _package
 import _plugins
 import _ui
 import _format
-import wirt_boundary
 import release
 from _package import get_platform, workspace_version
 from _ui import load_rust_log
@@ -70,11 +69,8 @@ class TestOwnedFormatting(unittest.TestCase):
         "arclain_ui",
         "--package",
         "arclain_widgets",
-        "--package",
-        "wirt",
     ]
     MANIFEST_COMMANDS = [
-        ["cargo", "fmt", "--manifest-path", "wirt-sdk/Cargo.toml"],
         [
             "cargo",
             "fmt",
@@ -358,7 +354,41 @@ class TestPluginBuild(unittest.TestCase):
             text=True,
         )
 
-    def test_build_creates_and_validates_exact_wirt_archive_only(self):
+    def test_plugin_build_rejects_the_wrong_wirt_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugins_dir = Path(directory) / "plugins"
+            plugins_dir.mkdir()
+            installed = subprocess.CompletedProcess(
+                ["rustup", "target", "list", "--installed"],
+                0,
+                stdout=f"{_plugins.WASM_TARGET}\n",
+                stderr="",
+            )
+            wrong = subprocess.CompletedProcess(
+                ["wirt", "--version"],
+                0,
+                "wirt-cli 0.2.0 (ABI 0.2.0)\n",
+                "",
+            )
+
+            with mock.patch.object(_plugins, "PLUGINS_DIR", plugins_dir), \
+                 mock.patch.object(_plugins, "WIRT_COMMAND", ["wirt"]), \
+                 mock.patch.object(
+                     _plugins.subprocess,
+                     "run",
+                     side_effect=(installed, wrong),
+                 ) as run:
+                self.assertEqual(_plugins.build(), 1)
+
+            self.assertEqual(
+                [call.args[0] for call in run.call_args_list],
+                [
+                    ["rustup", "target", "list", "--installed"],
+                    ["wirt", "--version"],
+                ],
+            )
+
+    def test_plugin_build_uses_the_verified_external_wirt_cli(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             plugins_dir = root / "plugins"
@@ -386,14 +416,22 @@ class TestPluginBuild(unittest.TestCase):
             def run_command(command, **_kwargs):
                 if command == ["rustup", "target", "list", "--installed"]:
                     return installed
-                if command[:4] == ["cargo", "run", "-p", "wirt-cli"]:
-                    action = command[5]
+                if command == ["wirt", "--version"]:
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        "wirt-cli 0.3.0 (ABI 0.3.0)\n",
+                        "",
+                    )
+                if command[0] == "wirt":
+                    action = command[1]
                     if action == "package":
                         expected_package.write_bytes(b"deterministic wirt package")
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             with mock.patch.object(_plugins, "PLUGINS_DIR", plugins_dir), \
                  mock.patch.object(_plugins, "REPO_ROOT", root), \
+                 mock.patch.object(_plugins, "WIRT_COMMAND", ["wirt"]), \
                  mock.patch.object(
                      _plugins.subprocess,
                      "run",
@@ -409,8 +447,19 @@ class TestPluginBuild(unittest.TestCase):
                 ["example-plugin-1.2.3.wirt"],
             )
             self.assertEqual(
-                [call.args[0][5] for call in run.call_args_list[1:]],
-                ["build", "package", "validate"],
+                [call.args[0] for call in run.call_args_list[1:]],
+                [
+                    ["wirt", "--version"],
+                    ["wirt", "build", str(plugin_dir)],
+                    [
+                        "wirt",
+                        "package",
+                        str(plugin_dir),
+                        "--output",
+                        str(expected_package),
+                    ],
+                    ["wirt", "validate", str(expected_package)],
+                ],
             )
 
     def test_build_fails_when_wirt_package_is_missing_after_command(self):
@@ -434,10 +483,18 @@ class TestPluginBuild(unittest.TestCase):
             def run_command(command, **_kwargs):
                 if command == ["rustup", "target", "list", "--installed"]:
                     return installed
+                if command == ["wirt", "--version"]:
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        "wirt-cli 0.3.0 (ABI 0.3.0)\n",
+                        "",
+                    )
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             with mock.patch.object(_plugins, "PLUGINS_DIR", plugins_dir), \
                  mock.patch.object(_plugins, "REPO_ROOT", root), \
+                 mock.patch.object(_plugins, "WIRT_COMMAND", ["wirt"]), \
                  mock.patch.object(
                      _plugins.subprocess,
                      "run",
@@ -1021,55 +1078,6 @@ class TestPluginFetchRouting(unittest.TestCase):
         )
         self.assertIn("arclain_app", direct_packages)
         self.assertNotIn("arclain-network", direct_packages)
-
-
-class TestWirtAbi(unittest.TestCase):
-    def test_one_versioned_wit_source_and_no_arclain_namespace(self):
-        canonical = REPO_ROOT / "wirt-sdk" / "wit" / "plugin.wit"
-        legacy = REPO_ROOT / "wit" / "arclain.wit"
-        sdk = (REPO_ROOT / "wirt-sdk" / "src" / "lib.rs").read_text(
-            encoding="utf-8",
-        )
-        self.assertTrue(canonical.is_file())
-        self.assertFalse(legacy.exists())
-        self.assertEqual(
-            canonical.read_text(encoding="utf-8").splitlines()[0],
-            "package {}:{}@{};".format(*wirt_boundary.CANONICAL_WIT_PACKAGE),
-        )
-        self.assertRegex(
-            sdk,
-            r'path\s*:\s*"wit/plugin\.wit"',
-        )
-
-        roots = (
-            REPO_ROOT / "crates" / "plugins" / "src",
-            REPO_ROOT
-            / "crates"
-            / "plugins"
-            / "tests"
-            / "fixtures"
-            / "malicious-metadata"
-            / "src",
-            REPO_ROOT / "wirt-sdk" / "src",
-            REPO_ROOT / "plugins" / "dlsite-metadata" / "src",
-            REPO_ROOT / "plugins" / "facade-test-fixture" / "src",
-            REPO_ROOT / "plugins" / "gstreamer-preview" / "src",
-            REPO_ROOT / "plugins" / "ui-demo" / "src",
-        )
-        offenders = []
-        for root in roots:
-            for path in root.rglob("*.rs"):
-                text = path.read_text(encoding="utf-8")
-                if any(
-                    marker in text
-                    for marker in (
-                        "archust_plugin_sdk::arclain",
-                        "arclain::plugin",
-                        "arclain.wit",
-                    )
-                ):
-                    offenders.append(path.relative_to(REPO_ROOT).as_posix())
-        self.assertEqual(offenders, [])
 
 
 class TestSmoke(unittest.TestCase):

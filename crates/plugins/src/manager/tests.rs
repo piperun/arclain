@@ -487,7 +487,7 @@ fn ui_demo_package(path: &std::path::Path) -> wirt::PackageFingerprint {
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        "/tests/fixtures/wirt/ui-demo.wasm"
     ));
     let bytes = wirt::package_bytes(manifest, component).expect("valid ui-demo package");
     let fingerprint = wirt::PackageFingerprint::sha256(&bytes);
@@ -911,7 +911,7 @@ fn ui_demo_package_with_manifest(
     let manifest = toml::to_string(&manifest).unwrap();
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        "/tests/fixtures/wirt/ui-demo.wasm"
     ));
     let bytes = wirt::package_bytes(manifest.as_bytes(), component).unwrap();
     let fingerprint = wirt::PackageFingerprint::sha256(&bytes);
@@ -1135,8 +1135,7 @@ fn package_metadata_mismatch_rolls_back_staging_and_live_state() {
 
 fn fixture_path_for_manager_test(name: &str) -> std::path::PathBuf {
     if name == "ui-demo" {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../wirt/tests/fixtures/bundled/ui-demo.wasm")
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wirt/ui-demo.wasm")
     } else {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../plugins")
@@ -1234,7 +1233,7 @@ fn manager_replaces_live_plugin_settings_from_a_validated_snapshot() {
         &wasm_path,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+            "/tests/fixtures/wirt/ui-demo.wasm"
         )),
     )
     .unwrap();
@@ -1277,7 +1276,7 @@ fn plugin_settings_handoff_rejects_a_reloaded_plugin_generation() {
         &wasm_path,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+            "/tests/fixtures/wirt/ui-demo.wasm"
         )),
     )
     .unwrap();
@@ -1316,7 +1315,7 @@ fn install_rejects_exported_unsafe_id_before_filesystem_use() {
     let wasm_path = temp_dir.path().join("unsafe-id.wasm");
     let mut component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        "/tests/fixtures/wirt/ui-demo.wasm"
     ))
     .to_vec();
     let id_offset = component
@@ -1370,7 +1369,7 @@ fn malicious_metadata_cannot_escape_validation_sandbox_or_run_init() {
         );
         assert!(
             child.status.success(),
-            "validation child failed; args/environment may have leaked\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            "validation child failed; environment may have leaked\nstdout:\n{stdout}\nstderr:\n{stderr}",
         );
         return;
     }
@@ -1417,7 +1416,7 @@ fn malicious_metadata_cannot_escape_validation_sandbox_or_run_init() {
 
     assert!(
         matches!(result, Err(crate::types::PluginError::InvalidManifest(_))),
-        "metadata retrieval must hide args/environment, skip init, and reach invalid PluginId rejection: {result:?}",
+        "metadata retrieval must hide the environment, skip init, and reach invalid PluginId rejection: {result:?}",
     );
     assert!(
         !metadata_sentinel.exists(),
@@ -1466,7 +1465,7 @@ fn valid_install_runs_normal_init_once_after_id_validation() {
         &wasm_path,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+            "/tests/fixtures/wirt/ui-demo.wasm"
         )),
     )
     .unwrap();
@@ -1542,7 +1541,7 @@ fn install_uses_the_case_folded_identity_key_for_its_destination() {
     let wasm_path = temp_dir.path().join("uppercase-id.wasm");
     let mut component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        "/tests/fixtures/wirt/ui-demo.wasm"
     ))
     .to_vec();
     let id_offset = component
@@ -1579,7 +1578,7 @@ fn case_folded_lifecycle_rejects_manifest_spelling_that_differs_from_guest() {
     let wasm_path = temp_dir.path().join("uppercase-id.wasm");
     let mut component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        "/tests/fixtures/wirt/ui-demo.wasm"
     ))
     .to_vec();
     let id_offset = component
@@ -1664,7 +1663,7 @@ fn install_rejects_a_case_variant_already_present_in_the_manager_registry() {
         &lowercase_wasm,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+            "/tests/fixtures/wirt/ui-demo.wasm"
         )),
     )
     .unwrap();
@@ -1703,7 +1702,7 @@ fn install_rejects_a_case_folded_on_disk_destination_collision() {
     let wasm_path = temp_dir.path().join("plugin2.wasm");
     let mut component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        "/tests/fixtures/wirt/ui-demo.wasm"
     ))
     .to_vec();
     let id_offset = component
@@ -1742,7 +1741,7 @@ fn install_rejects_an_existing_on_disk_destination_without_overwriting_it() {
         &wasm_path,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+            "/tests/fixtures/wirt/ui-demo.wasm"
         )),
     )
     .unwrap();
@@ -1981,7 +1980,7 @@ fn package_publish_race_rolls_back_fingerprint_sidecar_and_staging() {
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        "/tests/fixtures/wirt/ui-demo.wasm"
     ));
     let fingerprint =
         wirt::PackageFingerprint::sha256(&wirt::package_bytes(manifest_bytes, component).unwrap());
@@ -2021,7 +2020,7 @@ fn package_staging_construction_failure_preserves_io_kind_and_removes_every_part
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        "/tests/fixtures/wirt/ui-demo.wasm"
     ));
     let fingerprint =
         wirt::PackageFingerprint::sha256(&wirt::package_bytes(manifest, component).unwrap());
@@ -2087,7 +2086,7 @@ fn unix_publish_rejects_a_swapped_staged_artifact_identity() {
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        "/tests/fixtures/wirt/ui-demo.wasm"
     ));
     let fingerprint =
         wirt::PackageFingerprint::sha256(&wirt::package_bytes(manifest, component).unwrap());
@@ -2134,7 +2133,7 @@ fn unix_cleanup_preserves_a_swapped_staging_root() {
     .unwrap();
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        "/tests/fixtures/wirt/ui-demo.wasm"
     ));
     let loader = crate::loader::PluginLoader::new(plugins_dir).unwrap();
     let staged = super::lifecycle::StagedPluginPackage::new(
@@ -2615,7 +2614,7 @@ fn reload_and_unload_replace_only_manifest_owned_domains() {
         &wasm_path,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+            "/tests/fixtures/wirt/ui-demo.wasm"
         )),
     )
     .unwrap();
@@ -2756,7 +2755,7 @@ fn top_tabs_wait_for_a_busy_enabled_plugin_instead_of_returning_partial_results(
         &wasm_path,
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+            "/tests/fixtures/wirt/ui-demo.wasm"
         )),
     )
     .unwrap();

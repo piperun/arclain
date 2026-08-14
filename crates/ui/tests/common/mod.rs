@@ -58,7 +58,7 @@ pub fn install_plugin_fixture(plugins_dir: &std::path::Path, name: &str) {
     let component = match name {
         "dlsite-metadata" | "gstreamer-preview" | "ui-demo" => {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../wirt/tests/fixtures/bundled")
+                .join("../plugins/tests/fixtures/wirt")
                 .join(format!("{name}.wasm"))
         }
         _ => fixture_dir.join(format!("{name}.wasm")),

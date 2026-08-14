@@ -558,7 +558,6 @@ dependencies = [
  "tracing",
  "tracing-test",
  "wasmtime",
- "wasmtime-wasi",
  "windows-sys 0.61.2",
  "wirt",
 ]
@@ -8753,7 +8752,8 @@ dependencies = [
 
 [[package]]
 name = "wirt"
-version = "2.3.2"
+version = "0.3.0"
+source = "git+https://codeberg.org/0xdev/wirt.git?rev=1fc2a8edcbb17830a6c6f46604453ca9126dc387#1fc2a8edcbb17830a6c6f46604453ca9126dc387"
 dependencies = [
  "anyhow",
  "cap-fs-ext",
@@ -8761,28 +8761,14 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tempfile",
  "thiserror 2.0.18",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
- "wasm-encoder 0.252.0",
  "wasmparser 0.252.0",
  "wasmtime",
  "wasmtime-wasi",
  "wit-parser 0.252.0",
  "zip",
-]
-
-[[package]]
-name = "wirt-cli"
-version = "2.3.2"
-dependencies = [
- "anyhow",
- "cap-fs-ext",
- "cap-std",
- "serde_json",
- "tempfile",
- "wirt",
 ]
 
 [[package]]

@@ -45,13 +45,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use wasmtime::component::ResourceTable;
-use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 #[allow(unused_imports)]
 pub(crate) use wirt::{
-    PluginStoreLimiter, StoreQuotaExceeded, StoreQuotaKind, MAX_CORE_INSTANCES,
-    MAX_LINEAR_MEMORY_BYTES, MAX_MEMORIES, MAX_TABLES, MAX_TABLE_ELEMENTS,
+    StoreQuotaExceeded, StoreQuotaKind, MAX_CORE_INSTANCES, MAX_LINEAR_MEMORY_BYTES, MAX_MEMORIES,
+    MAX_TABLES, MAX_TABLE_ELEMENTS,
 };
 
 use temp_storage::PluginTempStorage;
@@ -166,9 +164,6 @@ pub struct HostFunctions {
 
     // Data API state
     pub data_service: DataService,
-    pub table: ResourceTable,
-    pub ctx: WasiCtx,
-    pub(crate) store_limiter: PluginStoreLimiter,
     temp_storage: Option<PluginTempStorage>,
 
     /// Bridge to the host's per-tab signal tree — replaces the
@@ -255,8 +250,6 @@ impl HostFunctions {
     ) -> PluginResult<Self> {
         let plugin_id = PluginId::parse(plugin_id)?;
         let initial_settings = bounded_plugin_settings(initial_settings);
-        let ctx = wirt::sandboxed_wasi_ctx();
-
         let plugin_logger = Arc::new(match plugin_log_dir {
             Some(log_dir) => PluginLogger::new(&plugin_id, log_dir),
             None => PluginLogger::deferred(&plugin_id),
@@ -281,9 +274,6 @@ impl HostFunctions {
             resource_manager: None,
 
             data_service,
-            table: ResourceTable::new(),
-            ctx,
-            store_limiter: PluginStoreLimiter,
             // Created only after an authorized `create_file` call. Loading a
             // plugin, including one with FileWrite, performs no temp I/O.
             temp_storage: None,
@@ -595,21 +585,7 @@ impl HostFunctions {
     }
 }
 
-// Implement WasiView for HostFunctions
-impl WasiView for HostFunctions {
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.ctx,
-            table: &mut self.table,
-        }
-    }
-}
-
-impl wirt::WirtStoreState for HostFunctions {
-    fn store_limiter(&mut self) -> &mut PluginStoreLimiter {
-        &mut self.store_limiter
-    }
-}
+impl wirt::WirtStoreState for HostFunctions {}
 
 impl Host for HostFunctions {
     fn log(&mut self, level: LogLevel, message: String) {

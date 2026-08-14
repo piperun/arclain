@@ -7,6 +7,7 @@ Usage:
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tomllib
@@ -16,7 +17,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGINS_DIR = REPO_ROOT / "plugins"
 WASM_TARGET = "wasm32-wasip2"
-WIRT_COMMAND = ["cargo", "run", "-p", "wirt-cli", "--"]
+with (REPO_ROOT / "wirt-toolchain.toml").open("rb") as handle:
+    WIRT_TOOLCHAIN = tomllib.load(handle)["wirt"]
+WIRT_REV = WIRT_TOOLCHAIN["rev"]
+WIRT_CLI_VERSION = WIRT_TOOLCHAIN["cli_version"]
+WIRT_ABI = WIRT_TOOLCHAIN["abi"]
+WIRT_COMMAND = [os.environ.get("WIRT", "wirt")]
 PRESERVED_ROOT_WASM = {"facade-test-fixture.wasm"}
 
 
@@ -40,6 +46,31 @@ def _run_wirt(*args: str | Path) -> subprocess.CompletedProcess[str]:
         [*WIRT_COMMAND, *(str(arg) for arg in args)],
         cwd=REPO_ROOT,
     )
+
+
+def verify_wirt_cli() -> bool:
+    """Return whether the configured Wirt executable has the reviewed identity."""
+    expected = f"wirt-cli {WIRT_CLI_VERSION} (ABI {WIRT_ABI})"
+    try:
+        result = subprocess.run(
+            [*WIRT_COMMAND, "--version"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        result = None
+    if result is None or result.returncode != 0 or result.stdout.strip() != expected:
+        print(
+            "Install the reviewed Wirt CLI with: "
+            "cargo install --locked --git "
+            "https://codeberg.org/0xdev/wirt.git --rev "
+            f"{WIRT_REV} wirt-cli",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def validate_package(package: Path) -> bool:
@@ -81,6 +112,8 @@ def build() -> int:
     print("Building Wirt plugins...")
     print(f"  Target: {WASM_TARGET}")
     if not ensure_target():
+        return 1
+    if not verify_wirt_cli():
         return 1
 
     failures: list[str] = []

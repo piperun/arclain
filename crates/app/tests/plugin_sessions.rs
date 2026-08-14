@@ -74,7 +74,7 @@ fn fixture_project_dir(name: &str) -> PathBuf {
 fn fixture_wasm_path(name: &str) -> PathBuf {
     if name == "ui-demo" {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../wirt/tests/fixtures/bundled/ui-demo.wasm")
+            .join("../plugins/tests/fixtures/wirt/ui-demo.wasm")
     } else {
         fixture_project_dir(name).join(format!("{name}.wasm"))
     }

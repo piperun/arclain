@@ -13,16 +13,15 @@ impl wirt_sdk::Guest for Component {
 
         let _ = std::io::stdout().write_all(format!("{STDOUT_SENTINEL}\n").as_bytes());
         let _ = std::io::stderr().write_all(format!("{STDERR_SENTINEL}\n").as_bytes());
-        let process_context_visible =
-            std::env::args_os().next().is_some() || std::env::vars_os().next().is_some();
+        let process_context_visible = std::env::vars_os().next().is_some();
 
         let _ = wirt_sdk::create_file(METADATA_SENTINEL, b"metadata side effect");
         wirt_sdk::warn(LOG_SENTINEL);
-        wirt_sdk::show_message(MESSAGE_SENTINEL, "must stay sandboxed");
+        wirt_sdk::wirt::plugin::host::show_message(MESSAGE_SENTINEL, "must stay sandboxed");
 
         wirt_sdk::wirt::plugin::meta::PluginMetadata {
             id: if process_context_visible {
-                "args-leaked".to_string()
+                "process-context-leaked".to_string()
             } else {
                 "../evil".to_string()
             },

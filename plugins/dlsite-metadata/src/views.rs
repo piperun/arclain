@@ -19,9 +19,7 @@ use crate::{
 };
 use wirt_sdk::info;
 
-pub(crate) fn dispatch(
-    extension_point: &str,
-) -> wirt_sdk::wirt::plugin::ui::PluginLayout {
+pub(crate) fn dispatch(extension_point: &str) -> wirt_sdk::wirt::plugin::ui::PluginLayout {
     use wirt_sdk::wirt::plugin::ui::{
         ButtonAction, ButtonConfig, CarouselConfig, CheckboxConfig, DropdownConfig, ImageConfig,
         KeyValueListConfig, KeyValuePair, LabelConfig, ListContainerConfig, ListItemConfig,
@@ -969,8 +967,7 @@ pub(crate) fn dispatch(
                         .unwrap_or(true);
 
                     if need_refresh {
-                        let summaries =
-                            wirt_sdk::get_metadata_summaries(filtered_ids.clone());
+                        let summaries = wirt_sdk::get_metadata_summaries(filtered_ids.clone());
                         let data: Vec<(String, Option<String>, bool)> = summaries
                             .into_iter()
                             .map(|s| (s.id, s.title, s.geo_blocked))

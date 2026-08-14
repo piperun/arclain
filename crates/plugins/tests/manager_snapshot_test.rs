@@ -14,7 +14,7 @@ fn installed_ui_demo() -> (TempDir, PluginManager) {
     ));
     let component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wirt/tests/fixtures/bundled/ui-demo.wasm"
+        "/tests/fixtures/wirt/ui-demo.wasm"
     ));
     let package = wirt::package_bytes(manifest, component).unwrap();
     let fingerprint = wirt::PackageFingerprint::sha256(&package);

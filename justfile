@@ -82,10 +82,6 @@ plugins:
 clean-plugins:
     {{python}} scripts/_plugins.py clean
 
-# Run the repository-owned Wirt developer command.
-wirt *args:
-    cargo run -p wirt-cli -- {{args}}
-
 # ─── app/dev helpers ──────────────────────────────────────────────────────
 # Extra args forward verbatim: `just ui --features dev-foo`.
 
@@ -181,12 +177,9 @@ _check-gameta:
 _check-boundary:
     {{python}} scripts/frontend_boundary.py
 
-# Wirt must remain a product-neutral plugin kernel.
+# Wirt host and guest dependencies must share the reviewed external revision.
 _check-wirt:
-    {{python}} scripts/wirt_boundary.py
+    {{python}} scripts/wirt_dependency.py
 
 test-frontend-boundary:
     {{python}} scripts/test_frontend_boundary.py
-
-test-wirt-boundary:
-    {{python}} scripts/test_wirt_boundary.py

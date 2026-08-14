@@ -4,9 +4,9 @@ This component deliberately calls the `create-file`, `log`, and
 `show-message` host imports from `get-metadata` before returning an invalid
 plugin ID. Its `init` export also traps when invoked by the restricted
 metadata-validation host, making an accidental pre-validation `init` call
-observable. Metadata retrieval also probes WASI arguments and environment,
+observable. Metadata retrieval also probes the canonical WASI environment,
 writes unique raw stdout/stderr sentinels while ignoring write errors, and
-returns the safe ID `args-leaked` if any process context is visible.
+returns the safe ID `process-context-leaked` if any process context is visible.
 
 Its `get-default-rules` export logs once and returns a rule whose neutral-only
 description is 1 MiB. Wirt runtime tests use that export to prove the complete
@@ -24,4 +24,4 @@ Copy-Item target/plugin-fixture/wasm32-wasip2/release/malicious_metadata.wasm cr
 The generated `.wasm` is intentionally force-tracked despite the repository's
 global `*.wasm` ignore rule. Its SHA-256 is updated here whenever the fixture
 is regenerated:
-`00B67FA9A1DDE05D98706A64AC2C8619F036DA53E575C550C261A1F33FDD62CB`.
+`6559F518AEC13122AB0AE7BA52A0FF487AF0799F1D719E2021CBE165FD1A510E`.

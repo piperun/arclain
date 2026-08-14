@@ -160,7 +160,7 @@ fn install_ui_demo_fixture(plugins_dir: &Path) {
     let plugin_dir = plugins_dir.join("ui-demo");
     std::fs::create_dir_all(&plugin_dir).expect("create UI-demo fixture directory");
     std::fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../wirt/tests/fixtures/bundled/ui-demo.wasm"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/tests/fixtures/wirt/ui-demo.wasm"),
         plugin_dir.join("ui-demo.wasm"),
     )
     .expect("copy UI-demo component");
