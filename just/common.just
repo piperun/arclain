@@ -43,6 +43,14 @@ test-scripts:
 typecheck:
     uvx basedpyright
 
+# ── excludes ──
+# Keep worktree copies out of the language servers and search tools that would
+# otherwise index the repo once per checkout. Writes what each tool reads
+# (analysis_options.yaml, tsconfig, .gdignore, .vscode, .ignore), detected from
+# the repo. `just exclude`, `just exclude worktrees dart`.
+exclude preset="worktrees" scope="auto":
+    {{python}} just/exclude.py {{preset}} --scope {{scope}}
+
 # ── just meta ──
 # List recipes (projects can do `default: list`).
 list:
