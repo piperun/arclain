@@ -1,0 +1,10 @@
+# ─── VENDORED — DO NOT EDIT ───────────────────────────────────────────
+# Source of truth: monodev/just/deploy.py. Re-sync with `just -g ignore`.
+#
+# Git worktrees are full copies of this repo. Tools that honour .ignore
+# (ripgrep, fd, and friends) skip them here, so one match stops showing up
+# once per checkout. Language servers need their own excludes — see the
+# editor settings and analyzer config this command also maintains.
+# ──────────────────────────────────────────────────────────────────────
+.worktrees/
+.claude/worktrees/
