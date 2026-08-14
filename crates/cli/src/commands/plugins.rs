@@ -4,7 +4,7 @@
 use arclain_app::event::OperationResult;
 use arclain_app::plugins::{
     PluginActionDto, PluginActionRequest, PluginExtensionPointDto, PluginHostIntentDto,
-    PluginUiNodeDto, PluginUiNodeKind, PluginUiUpdate, TextRole,
+    PluginUiNodeDto, PluginUiNodeKind, PluginUiUpdate,
 };
 use arclain_app::ArclainApp;
 use clap::{Args, Subcommand};
@@ -407,6 +407,9 @@ fn node_kind_label(kind: &PluginUiNodeKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the fixtures below name a text role; importing it at module
+    // scope would leave the non-test build carrying an unused import.
+    use arclain_app::plugins::TextRole;
 
     fn node(id: &str, kind: PluginUiNodeKind) -> PluginUiNodeDto {
         PluginUiNodeDto {
