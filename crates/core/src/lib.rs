@@ -40,7 +40,7 @@ pub use services::{
     LibraryService, MetadataSummary, METADATA_SUMMARY_MAX_IDS, METADATA_SUMMARY_MAX_ID_BYTES,
     METADATA_SUMMARY_MAX_STORED_ID_BYTES, METADATA_SUMMARY_TITLE_CHARS,
 };
-pub use utilities::{init_logging, FileOpener, OpenStrategy};
+pub use utilities::init_logging;
 
 // Re-export UI/DB types so consumers don't need to import arclain_db directly
 pub use arclain_db::{ActionType, CacheType, DisplayMode, UiItem, UiRegion, UserConfig};

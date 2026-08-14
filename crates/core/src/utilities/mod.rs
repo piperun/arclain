@@ -14,7 +14,6 @@ pub mod checksum_service;
 
 #[cfg(feature = "gameta")]
 pub mod dlsite;
-pub mod file_opener;
 pub mod filesystem;
 pub mod logging;
 pub mod password_matcher;
@@ -27,7 +26,6 @@ pub(crate) use checked_relative_path::CheckedRelativePath;
 pub use checksum_service::{ChecksumService, RecoveryAction, VerifyResult};
 #[cfg(feature = "gameta")]
 pub use dlsite::{detect_dlsite_code, has_dlsite_code};
-pub use file_opener::{FileOpener, OpenStrategy};
 pub use filesystem::rename_no_replace;
 pub use logging::{
     app_log_dir, app_log_path_for_date, current_app_log_file_name, current_app_log_path,
