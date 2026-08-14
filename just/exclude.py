@@ -162,17 +162,40 @@ def ignore_file_content(entries: list[str]) -> str:
     return IGNORE_HEADER + "".join(f"{e.removesuffix('/**')}/\n" for e in entries)
 
 
+SKIP_DIRS = {"build", "node_modules", "target", "dist", "vendor", "third_party"}
+
+
+def _has_marker(repo: Path, marker: str) -> bool:
+    """True if `marker` sits at the repo root or in an immediate subdirectory.
+
+    A package one level down still counts — transmute keeps its Flutter app in
+    flutter/. Hidden directories are skipped so a pubspec inside a worktree copy
+    (.worktrees/branch/pubspec.yaml) does not make every repo look like a Dart
+    project, and the scan stops at one level so it stays cheap and predictable.
+    """
+    if (repo / marker).exists():
+        return True
+    for child in repo.iterdir():
+        if not child.is_dir() or child.name.startswith(".") or child.name in SKIP_DIRS:
+            continue
+        if (child / marker).exists():
+            return True
+    return False
+
+
 def detect_toolchains(repo: Path) -> list[str]:
     repo = Path(repo)
+    if not repo.is_dir():
+        return []
     found = []
-    if (repo / "pubspec.yaml").exists():
-        found.append("dart")
-    if (repo / "tsconfig.json").exists():
-        found.append("ts")
-    if (repo / "Cargo.toml").exists():
-        found.append("rust")
-    if (repo / "project.godot").exists():
-        found.append("godot")
+    for marker, name in (
+        ("pubspec.yaml", "dart"),
+        ("tsconfig.json", "ts"),
+        ("Cargo.toml", "rust"),
+        ("project.godot", "godot"),
+    ):
+        if _has_marker(repo, marker):
+            found.append(name)
     return found
 
 
