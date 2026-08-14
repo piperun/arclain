@@ -146,8 +146,9 @@ pub enum MaterializationAction {
     /// Launch the materialized content in the OS's default external
     /// application (or, if it is itself an archive, open it as a nested
     /// archive in this tab instead) -- `crate::features::archive_operations::
-    /// application::file_opener`'s replacement for the pre-facade leaked
-    /// `FileOpener`. `relative_target` is `Some` when the lease represents
+    /// application::file_opener`, which replaced a pre-facade opener that
+    /// leaked one shared temp directory per process.
+    /// `relative_target` is `Some` when the lease represents
     /// a whole directory (materializing a target file's containing folder
     /// so sibling files -- a game executable's co-located DLLs -- come
     /// along too) and names the specific file within it to actually open;

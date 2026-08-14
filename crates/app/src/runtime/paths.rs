@@ -221,8 +221,9 @@ impl AppPaths {
     /// individually-leased copies of archive entries extracted onto real
     /// disk paths -- see `crate::materialization`) are rooted. Deliberately
     /// under `cache_dir`, not the OS temp directory: unlike the leaked
-    /// `std::env::temp_dir()`-rooted directory the pre-facade UI used
-    /// (`arclain_<pid>`, shared by every `FileOpener` in one process run),
+    /// `std::env::temp_dir()`-rooted directory the pre-facade UI used --
+    /// one `arclain_<pid>` directory per process, shared by every opener
+    /// in it and recursively deleted by whichever one dropped first --
     /// this application owns the whole subtree, names each lease's own
     /// directory by its `MaterializationLeaseId`, and is responsible for
     /// removing it again -- on release, on expiry, and on shutdown.
