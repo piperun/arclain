@@ -1,4 +1,4 @@
-# Arclain dev/CI container — mirrors woodpecker's rust:1.94 step so
+# Arclain dev/CI container — mirrors Woodpecker's exact Rust step so
 # you can reproduce any CI step locally with warm caches.
 #
 # Build:
@@ -18,7 +18,7 @@
 # command starts warm. Removing the volumes wipes the cache:
 #   podman volume rm arclain-target arclain-cargo-registry arclain-cargo-git
 
-FROM docker.io/library/rust:1.94-bookworm
+FROM docker.io/library/rust:1.97.0-bookworm
 
 # ── System deps — copy-paste from .woodpecker.yml so a Containerfile drift
 #    can't silently diverge from CI. Add python3 for scripts/release.py.

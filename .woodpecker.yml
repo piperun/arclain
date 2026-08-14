@@ -42,7 +42,7 @@ steps:
   # ── Tests on every push + tag ───────────────────────────────────────
 
   cargo-check:
-    image: rust:1.97
+    image: rust:1.97.0-bookworm
     when:
       - event: [push, tag]
     commands:
@@ -61,7 +61,7 @@ steps:
     depends_on: [fetch-gameta]
 
   cargo-test:
-    image: rust:1.94
+    image: rust:1.97.0-bookworm
     when:
       - event: [push, tag]
     commands:
@@ -96,12 +96,12 @@ steps:
     depends_on: [fetch-gameta]
 
   wasm-plugins:
-    image: rust:1.94
+    image: rust:1.97.0-bookworm
     when:
       - event: [push, tag]
     commands:
       # `rustup target add` modifies the toolchain at /usr/local/rustup/
-      # which is owned by root in the rust:1.94 image — runner can't
+      # which is owned by root in the exact Rust image — runner can't
       # touch it, so this has to happen as root before the drop.
       - rustup target add wasm32-wasip2
       # `useradd` only — no chown. /workspace was already chowned to
@@ -131,7 +131,7 @@ steps:
   # ── Linux release build on tag ──────────────────────────────────────
 
   build-linux-x86_64:
-    image: rust:1.94
+    image: rust:1.97.0-bookworm
     when:
       - event: tag
     commands:
@@ -172,7 +172,7 @@ steps:
   # UI — no automatic firing.
 
   build-windows-x86_64:
-    image: rust:1.94
+    image: rust:1.97.0-bookworm
     when:
       - event: manual
     commands:
@@ -182,7 +182,7 @@ steps:
       - apt-get install -yqq llvm clang lld
       - useradd -m runner
       # Chown CARGO_HOME + RUSTUP_HOME too, on top of /workspace.
-      # The rust:1.94 image sets both to /usr/local/{cargo,rustup}
+      # The exact Rust image sets both to /usr/local/{cargo,rustup}
       # and those are root-owned by default. If we ran `cargo install`
       # or `rustup target add` as root then dropped to runner, the
       # root-owned registry cache entries would block runner from
