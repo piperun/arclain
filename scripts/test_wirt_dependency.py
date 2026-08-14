@@ -235,6 +235,22 @@ class TestWirtDependency(unittest.TestCase):
             ],
         )
 
+    def test_rejects_workspace_inheritance_in_standalone_guest(self):
+        for manifest_path in GUEST_MANIFESTS:
+            with self.subTest(manifest_path=manifest_path):
+                root = self.fixture()
+                self.write(
+                    root,
+                    manifest_path,
+                    "[dependencies]\nwirt-sdk = { workspace = true }\n",
+                )
+                self.assertEqual(
+                    check(root),
+                    [
+                        f"{manifest_path}: Wirt dependency is not an exact Git revision",
+                    ],
+                )
+
     def test_accepts_one_exact_external_wirt_revision(self):
         root = self.fixture(
             root_manifest='members = ["crates/app"]',

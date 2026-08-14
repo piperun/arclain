@@ -76,7 +76,9 @@ services:
   # the `test` service is the source of truth for those.
   build-linux:
     <<: *base
-    command: python3 scripts/release.py release --skip-tests
+    command: >
+      sh -c "cargo install --locked --git https://codeberg.org/0xdev/wirt.git --rev 1fc2a8edcbb17830a6c6f46604453ca9126dc387 wirt-cli &&
+             python3 scripts/release.py release --skip-tests"
 
 volumes:
   arclain-target:

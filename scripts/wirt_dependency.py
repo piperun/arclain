@@ -129,15 +129,17 @@ def _is_wirt_dependency(name: str, specification: Any) -> bool:
 
 
 def _is_exact_dependency(
+    name: str,
     specification: Any,
     *,
     git_url: str,
     revision: str,
+    allow_workspace: bool,
 ) -> bool:
     if not isinstance(specification, dict):
         return False
     if specification.get("workspace") is True:
-        return not any(
+        return allow_workspace and name == "wirt" and not any(
             key in specification for key in ("git", "rev", "path", "branch", "tag")
         )
     return (
@@ -149,6 +151,20 @@ def _is_exact_dependency(
     )
 
 
+def _workspace_member_manifests(root: Path) -> set[Path]:
+    try:
+        manifest = _load_toml(root / "Cargo.toml")
+    except (OSError, tomllib.TOMLDecodeError):
+        return set()
+    workspace = manifest.get("workspace", {})
+    members = workspace.get("members", []) if isinstance(workspace, dict) else []
+    return {
+        (root / member / "Cargo.toml").resolve()
+        for member in members
+        if isinstance(member, str)
+    }
+
+
 def _manifest_dependencies(
     root: Path,
     errors: list[str],
@@ -156,6 +172,7 @@ def _manifest_dependencies(
     git_url: str,
     revision: str,
 ) -> None:
+    workspace_members = _workspace_member_manifests(root)
     manifests = sorted(
         path
         for path in root.rglob("Cargo.toml")
@@ -171,9 +188,11 @@ def _manifest_dependencies(
         for table in _dependency_tables(manifest):
             for name, specification in table.items():
                 if _is_wirt_dependency(name, specification) and not _is_exact_dependency(
+                    name,
                     specification,
                     git_url=git_url,
                     revision=revision,
+                    allow_workspace=path.resolve() in workspace_members,
                 ):
                     invalid = True
         if invalid:

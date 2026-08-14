@@ -141,6 +141,7 @@ steps:
           libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
           python3
       - rustup target add wasm32-wasip2
+      - cargo install --locked --git https://codeberg.org/0xdev/wirt.git --rev 1fc2a8edcbb17830a6c6f46604453ca9126dc387 wirt-cli
       # The cargo-test step is the source of truth for test gating;
       # release.py just builds + packages.
       - python3 scripts/release.py release

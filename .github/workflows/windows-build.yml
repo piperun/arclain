@@ -86,6 +86,12 @@ jobs:
         working-directory: codeberg/arclain
         run: cargo build --release --bin arclain_ui --locked
 
+      - name: Install reviewed Wirt toolchain
+        working-directory: codeberg/arclain
+        run: |
+          rustup target add wasm32-wasip2
+          cargo install --locked --git https://codeberg.org/0xdev/wirt.git --rev 1fc2a8edcbb17830a6c6f46604453ca9126dc387 wirt-cli
+
       - name: Build WASM plugins
         working-directory: codeberg/arclain
         run: python scripts/_plugins.py build

@@ -950,6 +950,23 @@ class TestPackageArchive(unittest.TestCase):
 
 
 class TestReleaseWorkflows(unittest.TestCase):
+    def test_release_runners_install_the_exact_wirt_cli(self):
+        install = (
+            "cargo install --locked --git https://codeberg.org/0xdev/wirt.git "
+            f"--rev {_plugins.WIRT_REV} wirt-cli"
+        )
+        release_entry_points = (
+            REPO_ROOT / ".github" / "workflows" / "windows-build.yml",
+            REPO_ROOT / ".woodpecker.yml",
+            REPO_ROOT / "compose.yaml",
+        )
+        for path in release_entry_points:
+            with self.subTest(path=path.relative_to(REPO_ROOT)):
+                self.assertIn(install, path.read_text(encoding="utf-8"))
+
+        windows = release_entry_points[0].read_text(encoding="utf-8")
+        self.assertIn("rustup target add wasm32-wasip2", windows)
+
     def test_headless_ci_runs_all_non_ui_test_targets(self):
         woodpecker = (REPO_ROOT / ".woodpecker.yml").read_text(encoding="utf-8")
         compose = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
