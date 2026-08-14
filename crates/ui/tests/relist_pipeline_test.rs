@@ -208,7 +208,7 @@ fn open_fixture(entries: &[(&str, &[u8])]) -> OpenedFixture {
     }
 }
 
-/// The brief's end-to-end sequence: open, list, navigate, mutate,
+/// The end-to-end sequence: open, list, navigate, mutate,
 /// relist -- with the selection and folder-expansion state surviving the
 /// refresh, the refreshed page answering the *navigated* directory (not
 /// the root), and the tab's snapshot tracking the bumped revision.

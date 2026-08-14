@@ -860,7 +860,7 @@ fn a_stale_expected_revision_is_rejected_as_conflict_before_any_backend_work() {
     });
 }
 
-/// The brief's own regression test: a failed mutation must never leave
+/// A failed mutation must never leave
 /// the session's entry index claiming content the backend did not
 /// commit -- index refresh + revision bump strictly after backend
 /// success.
@@ -1177,7 +1177,7 @@ fn a_structurally_empty_request_against_an_unknown_session_is_not_found_not_comp
     });
 }
 
-/// The brief's own regression scenario for a desynced session: a
+/// A desynced session: a
 /// mutation whose own backend call succeeds but whose follow-up re-list
 /// fails must never again let a subsequent mutation through, regardless
 /// of which `expected_revision` it claims -- neither the stale value a
