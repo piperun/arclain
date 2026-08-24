@@ -118,6 +118,7 @@ impl ArchiveSessionStore {
     /// to this event by calling `archive_snapshot` must always see the
     /// change it was just told about, never a stale value racing the
     /// notification.
+    #[cfg(feature = "plugin-host")]
     pub(crate) fn publish_metadata_changed(&self, session_id: ArchiveSessionId) {
         let _ = self
             .session_events
@@ -440,6 +441,7 @@ mod tests {
         assert_eq!(second_close.kind, ApplicationErrorKind::NotFound);
     }
 
+    #[cfg(feature = "plugin-host")]
     #[tokio::test]
     async fn publish_metadata_changed_delivers_to_a_subscriber() {
         let store = ArchiveSessionStore::new();
@@ -455,6 +457,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "plugin-host")]
     #[tokio::test]
     async fn every_subscriber_independently_receives_the_same_event() {
         let store = ArchiveSessionStore::new();
@@ -474,6 +477,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "plugin-host")]
     #[tokio::test]
     async fn publishing_with_no_subscribers_does_not_panic() {
         // `broadcast::Sender::send` returns `Err` with zero receivers --
@@ -484,6 +488,7 @@ mod tests {
         store.publish_metadata_changed(ArchiveSessionId::from_raw(1));
     }
 
+    #[cfg(feature = "plugin-host")]
     #[tokio::test]
     async fn a_subscriber_that_falls_behind_observes_lagged_rather_than_silently_missing_events() {
         // Mirrors `OperationRegistry`'s own lag contract: a subscriber

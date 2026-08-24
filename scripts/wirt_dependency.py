@@ -32,6 +32,17 @@ GUEST_LOCKS = (
 GUEST_MANIFESTS = tuple(path.replace("Cargo.lock", "Cargo.toml") for path in GUEST_LOCKS)
 REMOVED_FIXTURE_PATH = "crates/wirt" + "/tests/fixtures/bundled"
 IGNORED_PARTS = frozenset({".git", "target", ".tmp"})
+DEFAULT_TREE = ["cargo", "tree", "-p", "arclain_app", "-e", "normal"]
+ARCHIVE_ONLY_TREE = [
+    "cargo",
+    "tree",
+    "-p",
+    "arclain_app",
+    "-e",
+    "normal",
+    "--no-default-features",
+]
+TREE_GLYPHS = "│├└─ \t"
 
 
 def _relative(root: Path, path: Path) -> str:
@@ -185,20 +196,97 @@ def _manifest_dependencies(
             errors.append(f"{_relative(root, path)}: invalid TOML: {error}")
             continue
         invalid = False
+        is_app_manifest = path.relative_to(root).as_posix() == "crates/app/Cargo.toml"
+        app_wirt_dependencies: list[Any] = []
+        normal_dependencies = manifest.get("dependencies")
+        has_normal_app_wirt = (
+            is_app_manifest
+            and isinstance(normal_dependencies, dict)
+            and "wirt" in normal_dependencies
+        )
+        normal_app_wirt = (
+            normal_dependencies["wirt"] if has_normal_app_wirt else None
+        )
         for table in _dependency_tables(manifest):
             for name, specification in table.items():
-                if _is_wirt_dependency(name, specification) and not _is_exact_dependency(
-                    name,
-                    specification,
-                    git_url=git_url,
-                    revision=revision,
-                    allow_workspace=path.resolve() in workspace_members,
-                ):
-                    invalid = True
+                if _is_wirt_dependency(name, specification):
+                    exact = _is_exact_dependency(
+                        name,
+                        specification,
+                        git_url=git_url,
+                        revision=revision,
+                        allow_workspace=path.resolve() in workspace_members,
+                    )
+                    if not exact:
+                        invalid = True
+                    if is_app_manifest and name == "wirt":
+                        app_wirt_dependencies.append(specification)
         if invalid:
             errors.append(
                 f"{_relative(root, path)}: Wirt dependency is not an exact Git revision"
             )
+        if is_app_manifest:
+            if not has_normal_app_wirt:
+                errors.append(
+                    "crates/app/Cargo.toml: required direct wirt dependency is missing"
+                )
+            else:
+                normal_app_wirt_is_exact = _is_exact_dependency(
+                    "wirt",
+                    normal_app_wirt,
+                    git_url=git_url,
+                    revision=revision,
+                    allow_workspace=path.resolve() in workspace_members,
+                )
+                if (
+                    not isinstance(normal_app_wirt, dict)
+                    or normal_app_wirt.get("optional") is not True
+                ):
+                    errors.append("crates/app/Cargo.toml: wirt dependency must be optional")
+                if normal_app_wirt_is_exact and normal_app_wirt.get("workspace") is not True:
+                    errors.append(
+                        "crates/app/Cargo.toml: wirt dependency must inherit the workspace pin"
+                    )
+            if len(app_wirt_dependencies) > 1:
+                errors.append(
+                    "crates/app/Cargo.toml: expected exactly one direct wirt dependency, "
+                    f"found {len(app_wirt_dependencies)}"
+                )
+
+
+def wirt_tree_errors(default_tree: str, archive_only_tree: str) -> list[str]:
+    """Require Wirt in the default graph and exclude it from archive-only."""
+    errors: list[str] = []
+    if "wirt" not in cargo_tree_package_names(default_tree):
+        errors.append("default arclain_app tree is missing Wirt")
+    if "wirt" in cargo_tree_package_names(archive_only_tree):
+        errors.append("archive-only arclain_app tree contains Wirt")
+    return errors
+
+
+def cargo_tree_package_names(tree: str) -> set[str]:
+    """Parse exact package-name tokens from rendered `cargo tree` lines."""
+    packages: set[str] = set()
+    for line in tree.splitlines():
+        crate_line = line.lstrip(TREE_GLYPHS)
+        if crate_line:
+            packages.add(crate_line.split(maxsplit=1)[0])
+    return packages
+
+
+def _cargo_tree(command: list[str]) -> str | None:
+    result = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        print(f"Wirt dependency boundary: `{' '.join(command)}` failed", file=sys.stderr)
+        return None
+    return result.stdout
 
 
 def _required_dependencies(root: Path, errors: list[str]) -> None:
@@ -363,6 +451,11 @@ def check(root: Path = REPO_ROOT) -> list[str]:
 
 def main() -> int:
     errors = check()
+    default_tree = _cargo_tree(DEFAULT_TREE)
+    archive_only_tree = _cargo_tree(ARCHIVE_ONLY_TREE)
+    if default_tree is None or archive_only_tree is None:
+        return 1
+    errors.extend(wirt_tree_errors(default_tree, archive_only_tree))
     if errors:
         print("Wirt dependency boundary violations:", file=sys.stderr)
         for error in errors:

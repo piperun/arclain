@@ -5,7 +5,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from scripts.wirt_dependency import check
+from scripts.wirt_dependency import check, wirt_tree_errors
 
 
 WIRT_GIT = "https://codeberg.org/0xdev/wirt.git"
@@ -107,7 +107,7 @@ class TestWirtDependency(unittest.TestCase):
             root_manifest='members = ["crates/wirt"]',
             manifests={
                 "crates/app/Cargo.toml": (
-                    '[dependencies]\nwirt = { path = "../wirt" }\n'
+                    '[dependencies]\nwirt = { path = "../wirt", optional = true }\n'
                 ),
             },
             directories=["crates/wirt", "wirt-sdk"],
@@ -125,11 +125,12 @@ class TestWirtDependency(unittest.TestCase):
     def test_rejects_mismatched_host_and_guest_revisions(self):
         other = "b" * 40
         root = self.fixture(
+            root_manifest='members = ["crates/app"]',
             manifests={
                 "crates/app/Cargo.toml": textwrap.dedent(
-                    f'''\
+                    '''\
                     [dependencies]
-                    wirt = {{ git = "{WIRT_GIT}", rev = "{WIRT_REV}" }}
+                    wirt = { workspace = true, optional = true }
                     '''
                 ),
                 "plugins/example/Cargo.toml": textwrap.dedent(
@@ -235,6 +236,107 @@ class TestWirtDependency(unittest.TestCase):
             ],
         )
 
+    def test_rejects_a_required_wirt_edge_from_arclain_app(self):
+        root = self.fixture(
+            root_manifest='members = ["crates/app"]',
+            manifests={
+                "crates/app/Cargo.toml": (
+                    "[dependencies]\nwirt.workspace = true\n"
+                ),
+            },
+        )
+
+        self.assertEqual(
+            check(root),
+            ["crates/app/Cargo.toml: wirt dependency must be optional"],
+        )
+
+    def test_rejects_a_missing_direct_wirt_edge_from_arclain_app(self):
+        root = self.fixture(
+            root_manifest='members = ["crates/app"]',
+            manifests={"crates/app/Cargo.toml": "[dependencies]\n"},
+        )
+
+        self.assertEqual(
+            check(root),
+            ["crates/app/Cargo.toml: required direct wirt dependency is missing"],
+        )
+
+    def test_non_normal_wirt_edges_do_not_satisfy_the_required_app_edge(self):
+        manifests = {
+            "target-specific": textwrap.dedent(
+                '''\
+                [target.'cfg(windows)'.dependencies]
+                wirt = { workspace = true, optional = true }
+                '''
+            ),
+            "dev-only": textwrap.dedent(
+                '''\
+                [dev-dependencies]
+                wirt = { workspace = true, optional = true }
+                '''
+            ),
+            "build-only": textwrap.dedent(
+                '''\
+                [build-dependencies]
+                wirt = { workspace = true, optional = true }
+                '''
+            ),
+        }
+
+        for shape, manifest in manifests.items():
+            with self.subTest(shape=shape):
+                root = self.fixture(
+                    root_manifest='members = ["crates/app"]',
+                    manifests={"crates/app/Cargo.toml": manifest},
+                )
+
+                self.assertEqual(
+                    check(root),
+                    [
+                        "crates/app/Cargo.toml: required direct wirt dependency is missing"
+                    ],
+                )
+
+    def test_rejects_multiple_direct_wirt_edges_from_arclain_app(self):
+        root = self.fixture(
+            root_manifest='members = ["crates/app"]',
+            manifests={
+                "crates/app/Cargo.toml": textwrap.dedent(
+                    '''\
+                    [dependencies]
+                    wirt = { workspace = true, optional = true }
+
+                    [target.'cfg(windows)'.dependencies]
+                    wirt = { workspace = true, optional = true }
+                    '''
+                )
+            },
+        )
+
+        self.assertEqual(
+            check(root),
+            [
+                "crates/app/Cargo.toml: expected exactly one direct wirt dependency, found 2"
+            ],
+        )
+
+    def test_rejects_a_direct_app_edge_that_does_not_inherit_the_workspace_pin(self):
+        root = self.fixture(
+            root_manifest='members = ["crates/app"]',
+            manifests={
+                "crates/app/Cargo.toml": (
+                    "[dependencies]\n"
+                    f'wirt = {{ git = "{WIRT_GIT}", rev = "{WIRT_REV}", optional = true }}\n'
+                )
+            },
+        )
+
+        self.assertEqual(
+            check(root),
+            ["crates/app/Cargo.toml: wirt dependency must inherit the workspace pin"],
+        )
+
     def test_rejects_workspace_inheritance_in_standalone_guest(self):
         for manifest_path in GUEST_MANIFESTS:
             with self.subTest(manifest_path=manifest_path):
@@ -256,7 +358,7 @@ class TestWirtDependency(unittest.TestCase):
             root_manifest='members = ["crates/app"]',
             manifests={
                 "crates/app/Cargo.toml": (
-                    "[dependencies]\nwirt.workspace = true\n"
+                    "[dependencies]\nwirt = { workspace = true, optional = true }\n"
                 ),
                 "plugins/example/Cargo.toml": textwrap.dedent(
                     f'''\
@@ -267,6 +369,38 @@ class TestWirtDependency(unittest.TestCase):
             },
         )
         self.assertEqual(check(root), [])
+
+    def test_accepts_wirt_only_in_the_default_app_graph(self):
+        self.assertEqual(
+            wirt_tree_errors(
+                "arclain_app v0.1.0\n└── wirt v0.3.0\n",
+                "arclain_app v0.1.0\n",
+            ),
+            [],
+        )
+
+    def test_rejects_missing_default_wirt_positive_control(self):
+        self.assertEqual(
+            wirt_tree_errors("arclain_app v0.1.0\n", "arclain_app v0.1.0\n"),
+            ["default arclain_app tree is missing Wirt"],
+        )
+
+    def test_rejects_wirt_in_the_archive_only_graph(self):
+        self.assertEqual(
+            wirt_tree_errors(
+                "arclain_app v0.1.0\n└── wirt v0.3.0\n",
+                "arclain_app v0.1.0\n└── wirt v0.3.0\n",
+            ),
+            ["archive-only arclain_app tree contains Wirt"],
+        )
+
+    def test_checkout_path_name_is_not_treated_as_a_wirt_package(self):
+        path_only_tree = "arclain_app v0.1.0 (C:/work/wirt checkout/arclain)"
+
+        self.assertEqual(
+            wirt_tree_errors(path_only_tree, "arclain_app v0.1.0"),
+            ["default arclain_app tree is missing Wirt"],
+        )
 
 
 if __name__ == "__main__":

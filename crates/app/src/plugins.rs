@@ -129,79 +129,19 @@ pub use wirt::BadgeLevel;
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::ids::{ArchiveSessionId, PluginSessionId};
-
-/// Maximum bytes [`crate::ArclainApp::read_plugin_image`] will return for
-/// one `cache_key`. Chosen independently of `arclain_plugins::types::
-/// MAX_PLUGIN_METADATA_BYTES`/`MAX_PLUGIN_GUEST_DATA_BYTES` (4 MiB each):
-/// those bound *structured* data crossing the WASM boundary itself, while
-/// this bounds a *rendered image asset* a non-egui frontend materializes
-/// directly (a decoded texture upload, not a JSON blob) -- large enough
-/// for a typical cover/screenshot, small enough that a single asset can
-/// never exhaust a frontend's memory on its own.
-pub const MAX_PLUGIN_IMAGE_BYTES: u32 = 16 * 1024 * 1024;
-
-/// Prefix marking a [`PluginUiDocument`] node's `cache_key`/`image_key`
-/// field as an *encoded* reference this module rewrote at normalization
-/// time -- see [`encode_plugin_image_cache_key`].
-const PLUGIN_IMAGE_CACHE_KEY_PREFIX: &str = "plugin-image:";
-
-/// Encodes a plugin's own (unscoped) content-cache key together with the
-/// plugin id that owns it, so [`crate::ArclainApp::read_plugin_image`]
-/// can resolve it later without any other context. Plugin-authored
-/// `Image.cache_key`/`Carousel` image/`ListItem.image_key` values are
-/// always resolved through the calling plugin's *own* Data API
-/// namespace (`arclain_data::CacheOwner::Plugin` -- see the WIT `host`
-/// interface's own doc comment on `fetch-to-cache`: "ContentCache
-/// entries are namespaced to the calling plugin id"), so a bare cache_key
-/// string is ambiguous on its own once it has left the session that
-/// produced it. `plugin_id` never contains `:` (`PluginId::parse` only
-/// accepts `[A-Za-z0-9_-]`), so [`decode_plugin_image_cache_key`] can
-/// always find the boundary with a single `split_once(':')` even though
-/// `raw_key` itself commonly does contain `:` (e.g. `"dlsite:image:
-/// RJ123456"`).
-fn encode_plugin_image_cache_key(plugin_id: &str, raw_key: &str) -> String {
-    format!("{PLUGIN_IMAGE_CACHE_KEY_PREFIX}{plugin_id}:{raw_key}")
-}
-
-/// Reverses [`encode_plugin_image_cache_key`], returning `(plugin_id,
-/// raw_key)`. `None` for any string this module did not itself produce.
-fn decode_plugin_image_cache_key(cache_key: &str) -> Option<(&str, &str)> {
-    cache_key
-        .strip_prefix(PLUGIN_IMAGE_CACHE_KEY_PREFIX)?
-        .split_once(':')
-}
-
-/// Whether `cache_key` addresses the **plugin-scoped** image namespace --
-/// i.e. whether this facade stamped it with an owning plugin at
-/// normalization time.
-///
-/// This predicate is the single boundary between the two image namespaces,
-/// and it is total: every string is either a plugin-scoped key (`true`,
-/// handled only by `read_plugin_image`/`write_plugin_image`/
-/// `fetch_plugin_image`) or a host-owned one (`false`, handled only by
-/// `read_host_image`/`fetch_host_image`/`discard_host_image`). Each family
-/// refuses the other's keys, so no key is addressable through both -- and
-/// a read and a write of the same key can never disagree about which
-/// namespace it lives in.
-///
-/// Exposed so a frontend routes by the *facade's* own predicate instead of
-/// re-deriving the prefix from a copy of the literal, which is exactly how
-/// the two halves would drift apart again.
-pub fn is_plugin_image_key(cache_key: &str) -> bool {
-    cache_key.starts_with(PLUGIN_IMAGE_CACHE_KEY_PREFIX)
-}
-
-/// The plugin a plugin-scoped image key names as its owner, or `None` for
-/// a host-owned key.
-///
-/// The key encodes its own owner, so this is a *claim*, never an
-/// authorization: every write path independently requires the caller to
-/// state which plugin it is acting for and refuses a mismatch. Frontends
-/// use it to check a key against the surface that is rendering it before
-/// the facade is even called.
-pub fn plugin_image_key_owner(cache_key: &str) -> Option<&str> {
-    decode_plugin_image_cache_key(cache_key).map(|(plugin_id, _)| plugin_id)
-}
+use crate::image_cache::{
+    decode_plugin_image_cache_key, encode_plugin_image_cache_key, fetch_display_image,
+    oversized_image_error,
+};
+#[cfg(test)]
+use crate::image_cache::{
+    discard_host_image, fetch_host_image, host_image_key, read_host_image,
+    CACHE_SCOPED_KEY_SENTINEL,
+};
+pub use crate::image_cache::{
+    is_plugin_image_key, plugin_image_key_owner, ImageBytesDto, MAX_HOST_IMAGE_BYTES,
+    MAX_PLUGIN_IMAGE_BYTES,
+};
 
 /// Rewrites every image-bearing node's cache key reference to the
 /// encoded form [`encode_plugin_image_cache_key`] produces, recursing
@@ -460,252 +400,6 @@ fn authorize_plugin_image_write<'key>(
 // key both families accept, so no caller can choose where a given key's
 // bytes land, and a read can never resolve a namespace a write did not.
 
-/// Maximum bytes [`crate::ArclainApp::read_host_image`] returns, and
-/// [`crate::ArclainApp::fetch_host_image`] stores, for one host-owned
-/// `cache_key`.
-///
-/// **Three times [`MAX_PLUGIN_IMAGE_BYTES`], on purpose.** The two
-/// namespaces are different trust boundaries, not two spellings of one
-/// rule:
-///
-/// - A plugin-scoped asset is named by plugin-authored content, so its
-///   ceiling is a containment budget against a guest. 16 MiB is generous
-///   for a cover or screenshot and deliberately tight against anything
-///   else.
-/// - A host-owned asset is one the host itself resolved. Nothing guest-
-///   authored decides it exists, so the ceiling's job here is bounding a
-///   single buffered response, not fencing an untrusted party.
-///
-/// The value is exactly the ceiling host image reads have *always* had:
-/// before this surface existed the frontend read them through
-/// `ContentCache::get`, whose default is
-/// `arclain_data::DEFAULT_MAX_RESOURCE_SIZE_BYTES`. Matching it is the
-/// point -- introducing a bound must not retire images that render today.
-/// A host entry between the plugin cap and this one is not hypothetical
-/// (see `a_host_image_larger_than_the_plugin_cap_still_round_trips`), and
-/// narrowing to 16 MiB would have broken exactly those permanently: the
-/// read refuses them, and so would every URL-fallback refetch that tried
-/// to heal the gap.
-///
-/// The assertion below keeps that equality honest -- if the underlying
-/// default ever moves, this fails to compile instead of silently
-/// narrowing what a user can already see.
-///
-/// What this bound does *not* claim to do is cap decoded size: 50 MiB of
-/// PNG can expand to far more RGBA, and bounding that is the frontend's
-/// job at texture-upload time, not this constant's.
-///
-/// Held as a separate constant rather than an alias of the plugin cap so
-/// the two can move independently, which is the whole reason they can
-/// legitimately differ.
-pub const MAX_HOST_IMAGE_BYTES: u32 = 50 * 1024 * 1024;
-
-const _: () = assert!(
-    MAX_HOST_IMAGE_BYTES as usize == arclain_data::DEFAULT_MAX_RESOURCE_SIZE_BYTES,
-    "MAX_HOST_IMAGE_BYTES must stay equal to the content cache's default \
-     materialized-read ceiling: it exists to preserve what host image reads \
-     already accept, and drifting below it silently stops serving cached \
-     images that render today",
-);
-
-/// Smallest response body accepted as an image by
-/// [`fetch_display_image`].
-///
-/// Carried over verbatim from the pre-facade frontend fetch, which
-/// rejected anything at or below this size on the grounds that "real
-/// images are >1KB". It is a heuristic, not a format check, and its real
-/// job is refusing a tiny placeholder or error document that happens to
-/// carry an `image/*` content type.
-const MIN_FETCHED_IMAGE_BYTES: usize = 1000;
-
-/// Bytes for one image reference, plus whether serving them needed the
-/// network -- the result of [`crate::ArclainApp::fetch_host_image`] and
-/// [`crate::ArclainApp::fetch_plugin_image`].
-///
-/// `served_from_cache` is what makes "fetch once, then serve from cache"
-/// observable to a caller (and testable) without exposing the cache
-/// itself.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct ImageBytesDto {
-    pub bytes: Vec<u8>,
-    pub served_from_cache: bool,
-}
-
-/// Resolves the host-namespace raw key `cache_key` addresses, refusing
-/// anything that could name a row outside the host namespace.
-///
-/// The refusal is the host half of the namespace boundary, and it is a
-/// security property rather than tidiness: without it, every host image
-/// method would be a second, *unauthorized* door into a plugin's cache
-/// namespace. It has to close **two** doors, not one, because a key can
-/// name a plugin's row in two different vocabularies:
-///
-/// 1. **This module's encoding** (`plugin-image:{owner}:{key}`), which
-///    `read_host_image` would otherwise resolve straight into the owner's
-///    namespace.
-/// 2. **The storage layer's own scoped encoding**
-///    (`CacheOwner::scoped_key`). This one is not obvious and was a real
-///    leak: `ContentCache`'s *host* read, remove, and has all fall back to
-///    the unscoped keyspace for rows written before owner scoping existed
-///    (`cache.rs`'s `matches!(owner, CacheOwner::Host) && self.service.has(key)`
-///    branch) -- and every plugin row is indexed under exactly that scoped
-///    string. So a host key that *is* a plugin row's scoped string reached
-///    it: verified returning another plugin's bytes verbatim, and
-///    `discard_host_image` verified destroying that plugin's entry.
-///
-/// Both checks below are therefore load-bearing, and they are deliberately
-/// belt-and-braces: [`arclain_data::CacheOwner::from_scoped_key`] is the
-/// storage layer's own parser (so this stays correct if the encoding
-/// changes shape), while the sentinel check catches a *malformed* key
-/// wearing the same marker byte, which the parser rejects but a future
-/// fallback might not.
-fn host_image_key(cache_key: &str) -> Result<&str, ApplicationError> {
-    let refuse = |summary: &str| {
-        Err(
-            ApplicationError::new(ApplicationErrorKind::PermissionDenied, summary)
-                .with_recoverability(Recoverability::Fatal)
-                .with_field("cache_key"),
-        )
-    };
-    if is_plugin_image_key(cache_key) {
-        return refuse("cache key belongs to a plugin image namespace, not the host");
-    }
-    if arclain_data::CacheOwner::from_scoped_key(cache_key).is_some()
-        || cache_key.starts_with(CACHE_SCOPED_KEY_SENTINEL)
-    {
-        return refuse("cache key names a storage-scoped cache row, not a host image");
-    }
-    Ok(cache_key)
-}
-
-/// First byte of [`arclain_data::CacheOwner::scoped_key`]'s output.
-///
-/// A control character precisely so it cannot occur in a key any caller
-/// legitimately authors; a key carrying it is addressing the storage
-/// layer's internal keyspace.
-///
-/// `scoped_key` allocates, so this cannot be a compile-time assertion --
-/// `the_scoped_key_sentinel_matches_the_storage_encoding` checks it
-/// against the real encoding instead, so a change there turns red rather
-/// than quietly reopening the hole [`host_image_key`] closes.
-const CACHE_SCOPED_KEY_SENTINEL: char = '\u{1}';
-
-fn oversized_image_error(summary: &str, actual: usize, limit: usize) -> ApplicationError {
-    ApplicationError::new(ApplicationErrorKind::InvalidInput, summary)
-        .with_diagnostic(format!("{actual} bytes exceeds the {limit}-byte limit"))
-        .with_recoverability(Recoverability::Fatal)
-}
-
-/// Reads a host-owned image out of the content cache, honoring
-/// [`MAX_HOST_IMAGE_BYTES`]. Backs `ArclainApp::read_host_image`.
-///
-/// `NotFound` for a key the cache does not hold; `PermissionDenied` for a
-/// plugin-scoped key (see [`host_image_key`]); `Internal` for an entry
-/// whose size exceeds the cap or any other cache read failure --
-/// `ContentCache::get_with_limit` enforces the cap during the read, so an
-/// oversized entry never assembles into one `Vec<u8>` first.
-pub(crate) fn read_host_image(
-    content_cache: &arclain_data::ContentCache,
-    cache_key: &str,
-) -> Result<Vec<u8>, ApplicationError> {
-    read_cached_host_image(content_cache, host_image_key(cache_key)?)?.ok_or_else(|| {
-        ApplicationError::new(ApplicationErrorKind::NotFound, "host image not found")
-            .with_recoverability(Recoverability::Fatal)
-    })
-}
-
-/// The cache probe behind both [`read_host_image`] and
-/// [`fetch_host_image`]: `Ok(None)` for a plain miss, so the fetch path
-/// can tell "not cached yet" from "the cache is broken".
-fn read_cached_host_image(
-    content_cache: &arclain_data::ContentCache,
-    raw_key: &str,
-) -> Result<Option<Vec<u8>>, ApplicationError> {
-    content_cache
-        .get_with_limit(raw_key, MAX_HOST_IMAGE_BYTES as usize)
-        .map_err(|error| {
-            ApplicationError::new(ApplicationErrorKind::Internal, "failed to read host image")
-                .with_diagnostic(error.to_string())
-                .with_recoverability(Recoverability::Fatal)
-        })
-}
-
-/// Drops a host-owned cached image, returning whether anything was
-/// removed. Backs `ArclainApp::discard_host_image`.
-///
-/// Exists for exactly one caller shape: a frontend that read an entry,
-/// failed to decode it, and must stop that permanently-corrupt entry from
-/// being re-served forever. It refuses plugin-scoped keys like every other
-/// host method -- evicting a plugin's cache entry is not a frontend's
-/// decision to make.
-pub(crate) fn discard_host_image(
-    content_cache: &arclain_data::ContentCache,
-    cache_key: &str,
-) -> Result<bool, ApplicationError> {
-    content_cache
-        .remove(host_image_key(cache_key)?)
-        .map_err(|error| {
-            ApplicationError::new(
-                ApplicationErrorKind::Internal,
-                "failed to discard host image",
-            )
-            .with_diagnostic(error.to_string())
-            .with_recoverability(Recoverability::Retry)
-        })
-}
-
-/// Serves `cache_key` from the host image namespace, fetching `url` into
-/// it first if it is not cached yet. Backs
-/// `ArclainApp::fetch_host_image`.
-///
-/// `on_behalf_of_plugin` names whose *network policy* gates the request --
-/// a plugin document's URL fallback must spend that plugin's domain
-/// whitelist and rate-limit budget even when the key it fills is a legacy
-/// host-owned one. It never selects a namespace: this function writes the
-/// host namespace and nothing else, and refuses a plugin-scoped key
-/// outright.
-///
-/// **Blocking.** Both the cache access and the fetch block; call it from a
-/// blocking context (`spawn_blocking`), never from a runtime task.
-pub(crate) fn fetch_host_image(
-    content_cache: &arclain_data::ContentCache,
-    http: &arclain_network::AsyncHttpClient,
-    cache_key: &str,
-    url: &str,
-    on_behalf_of_plugin: Option<&str>,
-) -> Result<ImageBytesDto, ApplicationError> {
-    let raw_key = host_image_key(cache_key)?;
-    if let Some(bytes) = read_cached_host_image(content_cache, raw_key)? {
-        return Ok(ImageBytesDto {
-            bytes,
-            served_from_cache: true,
-        });
-    }
-    let bytes = fetch_display_image(
-        http,
-        on_behalf_of_plugin,
-        url,
-        MAX_HOST_IMAGE_BYTES as usize,
-    )?;
-    content_cache
-        .put(
-            raw_key,
-            &bytes,
-            arclain_core::CacheType::Screenshot,
-            None,
-            Some(url),
-        )
-        .map_err(|error| {
-            ApplicationError::new(ApplicationErrorKind::Internal, "failed to cache host image")
-                .with_diagnostic(error.to_string())
-                .with_recoverability(Recoverability::Retry)
-        })?;
-    Ok(ImageBytesDto {
-        bytes,
-        served_from_cache: false,
-    })
-}
-
 /// Serves `cache_key` from the plugin namespace it encodes, fetching `url`
 /// into it first if it is not cached yet. Backs
 /// `ArclainApp::fetch_plugin_image`.
@@ -716,7 +410,7 @@ pub(crate) fn fetch_host_image(
 /// one authorization ([`authorize_plugin_image_write`]) and one owner
 /// encoding. `plugin_id` must match the owner the key names.
 ///
-/// **Blocking.** Same contract as [`fetch_host_image`].
+/// **Blocking.** Same contract as the host-image fetch.
 pub(crate) fn fetch_plugin_image(
     content_cache: &arclain_data::ContentCache,
     http: &arclain_network::AsyncHttpClient,
@@ -751,109 +445,6 @@ pub(crate) fn fetch_plugin_image(
         bytes,
         served_from_cache: false,
     })
-}
-
-/// Fetches `url` as a displayable image, bounded to `max_bytes`.
-///
-/// Bounded *while reading*, not after: the network layer refuses a
-/// declared `Content-Length` over the ceiling and stops streaming the
-/// moment the body crosses it, so a hostile URL can never make the
-/// application buffer an unbounded body before the cap is checked. That is
-/// the half a frontend could not own -- it only ever saw a fully buffered
-/// body.
-///
-/// Because the ceiling is enforced during the read, an oversized body
-/// never reaches the checks below -- it comes back as
-/// `HttpError::ResponseTooLarge`, which [`image_fetch_error`] classifies
-/// as a *permanent* refusal. A post-hoc `body.len() > max_bytes` check
-/// here would be unreachable.
-///
-/// The three response checks are the pre-facade frontend's, moved here
-/// intact: a 200 status, a body over [`MIN_FETCHED_IMAGE_BYTES`], and an
-/// `image/*` content type. Anything else is `InvalidInput`, so a cached
-/// HTML error page can never be served back as an image.
-///
-/// **Blocking**: the network calls below use `block_on` internally and
-/// must run on a blocking thread.
-fn fetch_display_image(
-    http: &arclain_network::AsyncHttpClient,
-    on_behalf_of_plugin: Option<&str>,
-    url: &str,
-    max_bytes: usize,
-) -> Result<Vec<u8>, ApplicationError> {
-    let fetched = match on_behalf_of_plugin {
-        Some(plugin_id) => {
-            http.blocking_get_response_for_plugin_with_limit(plugin_id, url, max_bytes)
-        }
-        None => http.blocking_get_response_with_limit(url, false, max_bytes),
-    };
-    let response = fetched.map_err(image_fetch_error)?;
-
-    if response.status_code != 200 {
-        return Err(ApplicationError::new(
-            ApplicationErrorKind::InvalidInput,
-            "image fetch returned an unexpected status",
-        )
-        .with_diagnostic(format!("HTTP status {}", response.status_code))
-        .with_recoverability(Recoverability::Retry));
-    }
-    if !response
-        .content_type
-        .as_deref()
-        .is_some_and(|content_type| content_type.starts_with("image/"))
-    {
-        return Err(ApplicationError::new(
-            ApplicationErrorKind::InvalidInput,
-            "image fetch returned a non-image content type",
-        )
-        .with_recoverability(Recoverability::Fatal));
-    }
-    if response.body.len() <= MIN_FETCHED_IMAGE_BYTES {
-        return Err(ApplicationError::new(
-            ApplicationErrorKind::InvalidInput,
-            "image fetch returned too few bytes to be an image",
-        )
-        .with_diagnostic(format!(
-            "{} bytes is at or below the {MIN_FETCHED_IMAGE_BYTES}-byte floor",
-            response.body.len()
-        ))
-        .with_recoverability(Recoverability::Retry));
-    }
-    Ok(response.body)
-}
-
-/// Maps a network failure onto the envelope, keeping "too large" apart
-/// from "the network misbehaved".
-///
-/// The distinction is the difference between a broken image and a hot
-/// loop: an oversized asset is exactly as oversized on the next attempt,
-/// while an unreachable host may well not be. Size refusals are therefore
-/// `InvalidInput` with `Recoverability::Fatal`, everything else stays
-/// `Backend` with `Recoverability::Retry`.
-///
-/// This classification is only half the fix -- a caller has to *act* on
-/// it. `arclain_ui`'s image store keeps the recoverability across its own
-/// error boundary and refuses to re-arm the renderer's 30 s retry for a
-/// key refused as `Fatal`; see `ImageFetchError` there. Classifying
-/// without that was the earlier bug: correct at this boundary, discarded
-/// one call before the only code that could use it.
-fn image_fetch_error(error: arclain_network::HttpError) -> ApplicationError {
-    match error {
-        arclain_network::HttpError::ResponseTooLarge { limit } => ApplicationError::new(
-            ApplicationErrorKind::InvalidInput,
-            "image fetch exceeded the maximum size",
-        )
-        .with_diagnostic(format!("response body exceeds the {limit}-byte limit"))
-        .with_recoverability(Recoverability::Fatal),
-        other => ApplicationError::new(ApplicationErrorKind::Backend, "image fetch failed")
-            .with_diagnostic(other.to_string())
-            .with_recoverability(Recoverability::Retry)
-            // `with_recoverability` does not touch `retryable`, which
-            // defaults to false -- leaving the two halves of the envelope
-            // contradicting each other for exactly the case where a caller
-            // most wants to trust them.
-            .with_retryable(true),
-    }
 }
 
 // ============================================================================
@@ -4201,7 +3792,7 @@ mod tests {
     #[test]
     fn the_host_image_surface_refuses_a_key_naming_a_plugin_namespace() {
         let (_root, cache) = test_content_cache();
-        let victim = vec![0x11_u8; MIN_FETCHED_IMAGE_BYTES + 1];
+        let victim = vec![0x11_u8; 1025];
         let victim_key = encode_plugin_image_cache_key("victim-plugin", "secret");
         write_plugin_image(&cache, "victim-plugin", &victim_key, &victim, None).unwrap();
 

@@ -275,7 +275,7 @@ pub struct ArchiveFormatOptionDto {
 }
 
 /// Every output format a profile may store. Pure and stateless -- no
-/// app handle, no async, no I/O (the same shape [`crate::analyze_url`]
+/// app handle, no async, no I/O (the same shape `crate::analyze_url`
 /// has, for the same reason: a frontend needs this to render a form,
 /// not to perform an operation).
 pub fn archive_format_options() -> Vec<ArchiveFormatOptionDto> {

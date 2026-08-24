@@ -20,6 +20,7 @@ use arclain_core::archive::{ArchiveKind, MultiPartArchive};
 use arclain_core::backends::BackendSelector;
 use arclain_core::utilities::{auto_password_for, PassRule};
 use arclain_core::{ArchiveBackend, ArchiveInfo};
+#[cfg(feature = "plugin-host")]
 use arclain_plugins::PluginEvent;
 
 use crate::archive::OpenArchiveRequest;
@@ -257,6 +258,7 @@ async fn fail(inner: &Arc<AppRuntime>, operation_id: OperationId, error: Applica
 /// application-owned `archive_session_id` rather than a UI-signal handle
 /// (see `PluginEvent::OnArchiveOpen`'s own doc comment) -- is directly
 /// unit-testable without needing a running `PluginEventScheduler`.
+#[cfg(feature = "plugin-host")]
 fn build_archive_opened_event(
     source_path: &Path,
     kind: ArchiveKind,
@@ -280,6 +282,7 @@ fn build_archive_opened_event(
 /// `crates/ui/src/core/state/archive_ops.rs`'s own `try_schedule` use,
 /// which this replaces as the one place `OnArchiveOpen` is now fired
 /// from).
+#[cfg(feature = "plugin-host")]
 fn dispatch_archive_opened_event(
     inner: &AppRuntime,
     source_path: &Path,
@@ -486,6 +489,7 @@ pub(super) async fn run_open_archive(
                 // version of this function did) could tell a plugin
                 // about a session in the same instant it was being torn
                 // down as unreachable.
+                #[cfg(feature = "plugin-host")]
                 dispatch_archive_opened_event(
                     &inner,
                     &source_path,
@@ -1164,6 +1168,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "plugin-host")]
     #[test]
     fn build_archive_opened_event_carries_the_given_session_id() {
         let event = build_archive_opened_event(

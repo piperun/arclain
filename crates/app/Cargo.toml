@@ -32,8 +32,8 @@ zeroize.workspace = true
 # unrestricted, so this does not create a boundary violation.
 arclain_app_fs = { path = "../app_fs" }
 arclain_core = { path = "../core", default-features = false }
-arclain_plugins = { path = "../plugins", default-features = false }
-wirt.workspace = true
+arclain_plugins = { path = "../plugins", default-features = false, optional = true }
+wirt = { workspace = true, optional = true }
 # Task 10 (settings facade) reuses `ProxyConfig::validate_for_storage` for
 # `update_settings`'s SOCKS5 validation instead of re-deriving the same
 # userinfo-rejection logic a second time. Headless-to-headless, so this
@@ -61,11 +61,13 @@ arclain_db = { path = "../db", default-features = false }
 arclain_signals = { path = "../signals" }
 
 [features]
-default = ["gameta"]
+default = ["plugin-host", "gameta"]
+plugin-host = ["dep:arclain_plugins", "dep:wirt"]
 # The metadata stack end to end. Off: a lean archive-manager facade --
 # open/list/extract/organize/pipelines all work; metadata resolution,
 # the DLSite password tier and plugin metadata storage answer absent.
 gameta = [
+    "plugin-host",
     "arclain_core/gameta",
     "arclain_plugins/gameta",
     "arclain_data/gameta",

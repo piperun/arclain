@@ -51,16 +51,19 @@ use std::sync::Arc;
 use arclain_core::backends::BackendSelector;
 use arclain_core::utilities::PassRule;
 use arclain_core::ArchiveBackend;
+#[cfg(feature = "plugin-host")]
 use arclain_plugins::PluginEventScheduler;
 
 use crate::archive::ArchiveSnapshot;
 use crate::archive::{ArchiveSessionStore, EntryPage, ListEntriesRequest, OpenArchiveRequest};
 use crate::challenge::{ChallengeResponse, SecretInput};
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
-use crate::event::{
-    OperationEvent, OperationKind, OperationResult, OperationSnapshot, OperationState, SessionEvent,
-};
-use crate::ids::{ArchiveSessionId, MaterializationLeaseId, OperationId, PluginSessionId};
+use crate::event::{OperationEvent, OperationKind, OperationSnapshot, SessionEvent};
+#[cfg(feature = "plugin-host")]
+use crate::event::{OperationResult, OperationState};
+#[cfg(feature = "plugin-host")]
+use crate::ids::PluginSessionId;
+use crate::ids::{ArchiveSessionId, MaterializationLeaseId, OperationId};
 use crate::materialization::{MaterializationLease, MaterializationStore, MaterializeRequest};
 use crate::operations::{
     ArchiveMutationRequest, ChallengeWaiters, ConvertRequest, OperationRegistry, OrganizeRequest,
@@ -279,9 +282,11 @@ pub(crate) struct AppRuntime {
     // Task 9 sections elsewhere in this file: a concurrent worktree may be
     // touching this same shared file for an unrelated task.
     /// Every open renderer-neutral plugin session.
+    #[cfg(feature = "plugin-host")]
     plugin_sessions: crate::plugins::PluginSessionStore,
     /// Which archive session the frontend last reported as active, via
     /// [`ArclainApp::set_active_archive_session`].
+    #[cfg(feature = "plugin-host")]
     active_archive_session: crate::plugins::ActiveArchiveSession,
     // ==================== Task 11: plugin sessions (end) ====================
     tokio_runtime: RuntimeOwner,
@@ -301,6 +306,7 @@ impl AppRuntime {
     /// long-lived, independently-owned adapter such as
     /// `crate::plugins::ArchiveContextBridge`, which cannot borrow
     /// `&AppRuntime` for its own lifetime.
+    #[cfg(feature = "plugin-host")]
     pub(crate) fn archive_sessions_handle(&self) -> Arc<ArchiveSessionStore> {
         self.archive_sessions.clone()
     }
@@ -358,6 +364,7 @@ impl AppRuntime {
         self.session.mutable.read().pass_rules.clone()
     }
 
+    #[cfg(feature = "plugin-host")]
     pub(crate) fn plugin_event_scheduler(&self) -> Option<PluginEventScheduler> {
         self.session.plugin_event_scheduler.clone()
     }
@@ -390,6 +397,7 @@ impl AppRuntime {
 
     // ==================== Task 11: plugin sessions (start) ====================
 
+    #[cfg(feature = "plugin-host")]
     pub(crate) fn plugin_manager(
         &self,
     ) -> Option<Arc<parking_lot::Mutex<arclain_plugins::PluginManager>>> {
@@ -400,10 +408,12 @@ impl AppRuntime {
         self.session.content_cache.as_ref()
     }
 
+    #[cfg(feature = "plugin-host")]
     pub(crate) fn plugin_sessions(&self) -> &crate::plugins::PluginSessionStore {
         &self.plugin_sessions
     }
 
+    #[cfg(feature = "plugin-host")]
     pub(crate) fn active_archive_session(&self) -> &crate::plugins::ActiveArchiveSession {
         &self.active_archive_session
     }
@@ -639,6 +649,7 @@ impl ArclainApp {
         // entries this is the *only* pull for -- an installed plugin's
         // `init`, a top-tab query, and the event worker that runs guests
         // with no plugin session open at all.
+        #[cfg(feature = "plugin-host")]
         settings_ops::run_flush_all_plugin_settings(&self.inner).await;
         // Synchronous, but always safe to call from any context --
         // including from within a task on this app's own runtime --
@@ -787,7 +798,7 @@ impl ArclainApp {
     ///
     /// There is deliberately no write counterpart. Metadata is written
     /// by plugins, through the `emit_metadata` host function and
-    /// [`crate::plugins::ArchiveContextBridge`]; every announcement of
+    /// `crate::plugins::ArchiveContextBridge`; every announcement of
     /// such a write reaches a frontend as
     /// [`crate::event::SessionEvent::MetadataChanged`]. No frontend path
     /// writes metadata, and adding a second writer here would give the
@@ -2154,6 +2165,7 @@ impl ArclainApp {
     /// runtime simply reports zero plugins, matching `capabilities()`'s
     /// own `plugins_available` flag rather than failing every plugin
     /// call outright).
+    #[cfg(feature = "plugin-host")]
     pub async fn plugins(&self) -> Result<Vec<crate::plugins::PluginSummary>, ApplicationError> {
         self.dispatch(|inner| {
             let visibility = inner
@@ -2186,6 +2198,7 @@ impl ArclainApp {
     /// refuse until the plugin is enabled again -- see `crate::plugins::
     /// PluginSessionStore`'s own doc comment for that policy and its
     /// in-flight edges.
+    #[cfg(feature = "plugin-host")]
     pub async fn set_plugin_enabled(
         &self,
         plugin_id: String,
@@ -2211,6 +2224,7 @@ impl ArclainApp {
     /// fails, the already-durable removal row wins instead: the package remains
     /// installed but disabled, while its sessions, live settings, and proxy
     /// route stay cleared so this process agrees with the next restart.
+    #[cfg(feature = "plugin-host")]
     pub async fn uninstall_plugin(&self, plugin_id: String) -> Result<(), ApplicationError> {
         self.dispatch_async(move |inner| async move {
             settings_ops::run_uninstall_plugin(&inner, plugin_id).await
@@ -2221,6 +2235,7 @@ impl ArclainApp {
     /// Replace a resource-blocked plugin with a fresh, user-authorized
     /// instance. A later resource violation on that instance counts as a
     /// failed retry in the persistent quarantine ledger.
+    #[cfg(feature = "plugin-host")]
     pub async fn retry_plugin(&self, plugin_id: String) -> Result<(), ApplicationError> {
         self.dispatch_blocking(move |inner| {
             let manager = crate::plugins::require_manager(inner.plugin_manager())?;
@@ -2230,6 +2245,7 @@ impl ArclainApp {
     }
 
     /// Remove a persistent quarantine record and load a fresh instance.
+    #[cfg(feature = "plugin-host")]
     pub async fn reset_plugin_quarantine(&self, plugin_id: String) -> Result<(), ApplicationError> {
         self.dispatch_blocking(move |inner| {
             let manager = crate::plugins::require_manager(inner.plugin_manager())?;
@@ -2241,6 +2257,7 @@ impl ArclainApp {
     /// Reads `plugin_id`'s live, host-bounded settings together with the
     /// shared application settings revision a caller must present to replace
     /// them.
+    #[cfg(feature = "plugin-host")]
     pub async fn plugin_settings(
         &self,
         plugin_id: String,
@@ -2254,6 +2271,7 @@ impl ArclainApp {
     /// Replaces `plugin_id`'s settings only if `expected_revision` still
     /// matches the shared application revision. The candidate is validated and
     /// persisted before it is activated in the running plugin instance.
+    #[cfg(feature = "plugin-host")]
     pub async fn set_plugin_settings(
         &self,
         plugin_id: String,
@@ -2297,6 +2315,7 @@ impl ArclainApp {
     /// distinct from the `NotFound` an unknown `plugin_id` produces -- a
     /// renderer should quietly draw nothing for the first and drop a
     /// stale reference for the second.
+    #[cfg(feature = "plugin-host")]
     pub async fn open_plugin_session(
         &self,
         plugin_id: String,
@@ -2323,6 +2342,7 @@ impl ArclainApp {
     /// later requests falls back to whatever is active at completion.
     /// Callers that want the inferred behavior use
     /// [`Self::open_plugin_session`].
+    #[cfg(feature = "plugin-host")]
     pub async fn open_plugin_session_for_archive(
         &self,
         plugin_id: String,
@@ -2336,6 +2356,7 @@ impl ArclainApp {
     /// `pinned` is `Some(choice)` when the caller named the origin (even
     /// `Some(None)`, meaning "explicitly no archive"), and `None` when it
     /// wants this application's own active session used instead.
+    #[cfg(feature = "plugin-host")]
     async fn open_plugin_session_inner(
         &self,
         plugin_id: String,
@@ -2378,6 +2399,7 @@ impl ArclainApp {
     /// are pinned to, as named (or inferred) when it opened -- see
     /// [`Self::open_plugin_session_for_archive`]. `NotFound` for an
     /// unknown or already-closed session id.
+    #[cfg(feature = "plugin-host")]
     pub async fn plugin_session_archive_origin(
         &self,
         session_id: crate::ids::PluginSessionId,
@@ -2399,6 +2421,7 @@ impl ArclainApp {
     /// nothing rather than an error. See `crate::plugins::
     /// PluginSessionStore`'s own doc comment for what a disable does to an
     /// open session, and what it deliberately does not do.
+    #[cfg(feature = "plugin-host")]
     pub async fn plugin_ui_document(
         &self,
         session_id: PluginSessionId,
@@ -2412,6 +2435,7 @@ impl ArclainApp {
 
     /// Closes an open plugin session. `NotFound` if `session_id` is
     /// unknown or already closed.
+    #[cfg(feature = "plugin-host")]
     pub async fn close_plugin_session(
         &self,
         session_id: PluginSessionId,
@@ -2439,6 +2463,7 @@ impl ArclainApp {
     /// the guest call cannot be recalled, but nothing it produced is
     /// published (see `crate::plugins::PluginSessionStore`'s own doc
     /// comment).
+    #[cfg(feature = "plugin-host")]
     pub async fn start_plugin_action(
         &self,
         request: crate::plugins::PluginActionRequest,
@@ -2518,6 +2543,7 @@ impl ArclainApp {
     /// instead of a UI-owned notion of "the active tab". A frontend calls
     /// this on every tab-activation change (including "no tab has an
     /// archive open", `None`).
+    #[cfg(feature = "plugin-host")]
     pub async fn set_active_archive_session(
         &self,
         session_id: Option<ArchiveSessionId>,
@@ -2540,6 +2566,7 @@ impl ArclainApp {
     /// runtime; there is nothing to install in that case. A frontend can
     /// therefore perform this one-time setup without receiving or
     /// depending on `PluginManager` itself.
+    #[cfg(feature = "plugin-host")]
     pub fn install_active_tab_bridge(
         &self,
         fallback: impl Fn(Option<serde_json::Value>) + Send + Sync + 'static,
@@ -2572,6 +2599,7 @@ impl ArclainApp {
     /// lower-level constructor remains useful to application tests and
     /// other headless composition code that needs to exercise the bridge
     /// directly.
+    #[cfg(feature = "plugin-host")]
     pub fn active_tab_bridge(
         &self,
         fallback: impl Fn(Option<serde_json::Value>) + Send + Sync + 'static,
@@ -2590,6 +2618,7 @@ impl ArclainApp {
     /// at [`crate::plugins::MAX_PLUGIN_IMAGE_BYTES`]. `NotFound` for an
     /// unrecognized or uncached key; `Internal` for a cached entry that
     /// exceeds the cap or any other cache read failure.
+    #[cfg(feature = "plugin-host")]
     pub async fn read_plugin_image(&self, cache_key: String) -> Result<Vec<u8>, ApplicationError> {
         self.dispatch_blocking(move |inner| {
             crate::plugins::read_plugin_image(image_cache(inner)?, &cache_key)
@@ -2630,6 +2659,7 @@ impl ArclainApp {
     /// - A frontend that obtains bytes out of band -- a bridge fetching
     ///   through its platform's own HTTP stack rather than this one -- has
     ///   no other supported way to put them where the read will look.
+    #[cfg(feature = "plugin-host")]
     pub async fn write_plugin_image(
         &self,
         plugin_id: String,
@@ -2658,15 +2688,15 @@ impl ArclainApp {
     // namespaces refuse each other's keys.
 
     /// Resolves a **host-owned** image cache key into its cached bytes,
-    /// capped at [`crate::plugins::MAX_HOST_IMAGE_BYTES`].
+    /// capped at the host-image cache limit.
     ///
     /// `NotFound` for a key nothing cached; `PermissionDenied` for a
-    /// plugin-scoped key (those resolve through
-    /// [`Self::read_plugin_image`] and nothing else); `Internal` for an
+    /// plugin-scoped key (those resolve through `read_plugin_image` in a
+    /// plugin-host build and nothing else); `Internal` for an
     /// entry over the cap or any other cache read failure.
     pub async fn read_host_image(&self, cache_key: String) -> Result<Vec<u8>, ApplicationError> {
         self.dispatch_blocking(move |inner| {
-            crate::plugins::read_host_image(image_cache(inner)?, &cache_key)
+            crate::image_cache::read_host_image(image_cache(inner)?, &cache_key)
         })
         .await?
     }
@@ -2681,7 +2711,7 @@ impl ArclainApp {
     /// call.
     pub async fn discard_host_image(&self, cache_key: String) -> Result<bool, ApplicationError> {
         self.dispatch_blocking(move |inner| {
-            crate::plugins::discard_host_image(image_cache(inner)?, &cache_key)
+            crate::image_cache::discard_host_image(image_cache(inner)?, &cache_key)
         })
         .await?
     }
@@ -2693,7 +2723,7 @@ impl ArclainApp {
     /// This is the affordance that lets a frontend stop owning an HTTP
     /// client: it passes the key its renderer asked for plus the URL the
     /// document offered as a fallback, and the application owns the
-    /// fetch, the [`crate::plugins::MAX_HOST_IMAGE_BYTES`] ceiling
+    /// fetch, the [`crate::MAX_HOST_IMAGE_BYTES`] ceiling
     /// (enforced *while* reading the body, so an oversized response is
     /// never buffered whole), the response validation, and the cache
     /// write. A second call for the same key answers from the cache with
@@ -2710,9 +2740,9 @@ impl ArclainApp {
         cache_key: String,
         url: String,
         on_behalf_of_plugin: Option<String>,
-    ) -> Result<crate::plugins::ImageBytesDto, ApplicationError> {
+    ) -> Result<crate::ImageBytesDto, ApplicationError> {
         self.dispatch_blocking(move |inner| {
-            crate::plugins::fetch_host_image(
+            crate::image_cache::fetch_host_image(
                 image_cache(inner)?,
                 &inner.core_services().async_http_client,
                 &cache_key,
@@ -2734,6 +2764,7 @@ impl ArclainApp {
     /// the key encodes (`PermissionDenied` otherwise), and a key this
     /// facade never encoded is `NotFound` -- host-owned keys go through
     /// [`Self::fetch_host_image`].
+    #[cfg(feature = "plugin-host")]
     pub async fn fetch_plugin_image(
         &self,
         plugin_id: String,
@@ -2823,6 +2854,7 @@ impl ArclainApp {
     /// layer will actually enforce, not a snapshot that can drift from
     /// it. An unknown (but non-empty) `plugin_id` is not an error: it
     /// simply has requested no domains yet.
+    #[cfg(feature = "plugin-host")]
     pub async fn plugin_domain_whitelist(
         &self,
         plugin_id: String,
@@ -2840,6 +2872,7 @@ impl ArclainApp {
     /// concurrent mutations are serialized so durable and in-memory
     /// state cannot observe opposite orderings. A failed persistence
     /// write leaves live network access unchanged.
+    #[cfg(feature = "plugin-host")]
     pub async fn set_plugin_domain_approved(
         &self,
         plugin_id: String,
@@ -2949,6 +2982,7 @@ impl ArclainApp {
 
     /// Validate a selected `.wirt` package and return the exact metadata and
     /// fingerprint the renderer must present for approval.
+    #[cfg(feature = "plugin-host")]
     pub async fn inspect_plugin_package(
         &self,
         package_path: std::path::PathBuf,
@@ -2963,6 +2997,7 @@ impl ArclainApp {
 
     /// Reopen and install a `.wirt` package only when it still matches the
     /// fingerprint returned by [`Self::inspect_plugin_package`].
+    #[cfg(feature = "plugin-host")]
     pub async fn install_plugin_package(
         &self,
         package_path: std::path::PathBuf,
@@ -3007,6 +3042,7 @@ impl ArclainApp {
     /// does not fail this read. An application composed without a plugin
     /// runtime reports zero counts and no tabs rather than an error, for
     /// the same reason [`Self::plugins`] reports an empty list.
+    #[cfg(feature = "plugin-host")]
     pub async fn plugin_chrome(
         &self,
     ) -> Result<crate::plugins::PluginChromeSnapshot, ApplicationError> {
@@ -3032,6 +3068,7 @@ impl ArclainApp {
     /// is open, and combining them would impose the tighter cadence on
     /// both. Reports an empty log, not an error, when this application has
     /// no plugin runtime.
+    #[cfg(feature = "plugin-host")]
     pub async fn plugin_network_log(
         &self,
     ) -> Result<Vec<crate::plugins::PluginNetworkLogEntryDto>, ApplicationError> {

@@ -28,30 +28,31 @@
 //! organization-profile summaries, and the `ArclainApp` methods declared
 //! in `crate::runtime`'s own delimited "Task 10" section.
 //!
-//! [`plugins`] exposes renderer-neutral plugin sessions: see
-//! [`plugins::PluginUiDocument`] and the facade methods
+//! `plugins` exposes renderer-neutral plugin sessions when the
+//! `plugin-host` feature is enabled: see `plugins::PluginUiDocument` and
+//! the facade methods
 //! `ArclainApp::{plugins, set_plugin_enabled, open_plugin_session,
 //! plugin_ui_document, close_plugin_session, start_plugin_action,
 //! set_active_archive_session, read_plugin_image}`. A *disabled* plugin
 //! is refused by all of them, here rather than in each renderer, and
 //! distinguishably from an unknown plugin -- see
-//! [`plugins::is_plugin_disabled_refusal`]. It also owns the
+//! `plugins::is_plugin_disabled_refusal`. It also owns the
 //! domain-access surface a frontend used to reach `arclain-network`
-//! directly for: [`plugins::DomainWhitelistEntryDto`] (via
+//! directly for: `plugins::DomainWhitelistEntryDto` (via
 //! `ArclainApp::{plugin_domain_whitelist, set_plugin_domain_approved}`)
-//! and the pure [`analyze_url`]
+//! and the pure `analyze_url`
 //! re-exported below -- and the whole *display-image* surface, so a
 //! frontend holds neither a content-cache handle nor an HTTP client to
 //! render one: `ArclainApp::{read_plugin_image, write_plugin_image,
 //! fetch_plugin_image}` for the plugin-scoped namespace and
 //! `ArclainApp::{read_host_image, fetch_host_image, discard_host_image}`
-//! for the host-owned one, kept apart by [`plugins::is_plugin_image_key`].
+//! for the host-owned one, kept apart by `plugins::is_plugin_image_key`.
 //! It further owns plugin *management* through
 //! `ArclainApp::{inspect_plugin_package, install_plugin_package}`, and the
 //! two read models an application frame draws its plugin-owned
-//! surfaces from -- [`plugins::PluginChromeSnapshot`] (status counts plus
+//! surfaces from -- `plugins::PluginChromeSnapshot` (status counts plus
 //! the live top-tab strip, via `ArclainApp::plugin_chrome`) and
-//! [`plugins::PluginNetworkLogEntryDto`] (via
+//! `plugins::PluginNetworkLogEntryDto` (via
 //! `ArclainApp::plugin_network_log`). Those two stay separate calls
 //! because their staleness needs are unrelated -- see
 //! `ArclainApp::plugin_network_log`'s own doc comment.
@@ -123,18 +124,21 @@ pub mod challenge;
 pub mod error;
 pub mod event;
 pub mod ids;
+mod image_cache;
 pub mod layout;
 mod legacy_network;
 pub mod logging;
 pub mod materialization;
 pub mod operations;
 pub mod organization;
+#[cfg(feature = "plugin-host")]
 pub mod plugins;
 pub mod process;
 pub mod runtime;
 pub mod settings;
 
 pub use arclain_network::PreparedPluginNetworkRouting;
+pub use image_cache::{ImageBytesDto, MAX_HOST_IMAGE_BYTES};
 pub use legacy_network::inspect_legacy_network_settings;
 pub use runtime::{AppPaths, ArclainApp, BootstrapConfig, BootstrapOverrides};
 pub use settings::LegacyNetworkSettings;
@@ -144,6 +148,7 @@ pub use settings::LegacyNetworkSettings;
 /// (see its own doc comment), so requiring a caller to reach it through
 /// the `plugins` module would suggest a coupling to plugin state that
 /// does not exist. `arclain_app::plugins::analyze_url` still resolves too.
+#[cfg(feature = "plugin-host")]
 pub use plugins::analyze_url;
 
 /// Re-exported so `arclain_ui` (and any other frontend) never needs

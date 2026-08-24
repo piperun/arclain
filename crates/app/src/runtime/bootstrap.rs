@@ -34,6 +34,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(feature = "plugin-host")]
 use parking_lot::Mutex as SyncMutex;
 use tracing::{info, warn};
 
@@ -41,9 +42,12 @@ use arclain_core::backends::sevenz_cli::SevenZipCli;
 use arclain_core::backends::{BackendSelector, UnrarCli};
 use arclain_core::services::{ConfigService, Services as CoreServices};
 use arclain_core::utilities::{effective_plugin_proxy_map, ChecksumService, PassRule};
+use arclain_core::UserConfig;
 use arclain_core::{open_databases, ConfigDbs, DbPaths, SecretsKey};
-use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion, UserConfig};
+#[cfg(feature = "plugin-host")]
+use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion};
 use arclain_core::{ContentCache, ResourceConfig, ResourceManager};
+#[cfg(feature = "plugin-host")]
 use arclain_plugins::PluginManager;
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
@@ -509,12 +513,18 @@ pub(crate) fn run(
     core_services.checksum_service = checksum_service.clone();
 
     // -- plugin manager, plugin service injection, plugin scheduler --
+    #[cfg(feature = "plugin-host")]
     info!("Initializing plugin system");
+    #[cfg(feature = "plugin-host")]
     info!("Using plugins directory: {}", paths.plugins_dir.display());
+    #[cfg(feature = "plugin-host")]
     let plugin_settings = user_config.get_all_plugin_settings();
+    #[cfg(feature = "plugin-host")]
     let mut plugin_manager: Option<Arc<SyncMutex<PluginManager>>> = None;
+    #[cfg(feature = "plugin-host")]
     let mut plugin_event_scheduler = None;
 
+    #[cfg(feature = "plugin-host")]
     if let Ok(mut manager) = PluginManager::new(paths.plugins_dir.clone(), plugin_settings) {
         manager.init().ok();
 
@@ -592,6 +602,7 @@ pub(crate) fn run(
 
     let session = SessionStore {
         core_services: Arc::new(core_services),
+        #[cfg(feature = "plugin-host")]
         plugin_manager,
         content_cache,
         resource_manager,
@@ -599,6 +610,7 @@ pub(crate) fn run(
         backend_selector,
         fallback_backend,
         unrar_available,
+        #[cfg(feature = "plugin-host")]
         plugin_event_scheduler,
         database_ready,
         mutable: parking_lot::RwLock::new(crate::settings::MutableSettings::new(
@@ -631,7 +643,9 @@ pub(crate) fn run(
         settings_write_lock: tokio::sync::Mutex::new(()),
         cache_maintenance_lock: parking_lot::Mutex::new(()),
         shut_down: std::sync::atomic::AtomicBool::new(false),
+        #[cfg(feature = "plugin-host")]
         plugin_sessions: crate::plugins::PluginSessionStore::new(),
+        #[cfg(feature = "plugin-host")]
         active_archive_session: crate::plugins::ActiveArchiveSession::new(),
         tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
     })
@@ -667,6 +681,7 @@ pub(crate) fn run(
 /// Deliberately not behind `settings_write_lock`: this runs during
 /// bootstrap, before any application handle (and therefore any
 /// concurrent facade writer) exists.
+#[cfg(feature = "plugin-host")]
 fn sync_plugin_top_tab_items(
     ui_service: &arclain_core::services::UiService,
     top_tabs: Vec<(String, arclain_plugins::types::TopTabConfig)>,
@@ -783,6 +798,7 @@ mod tests {
 
     /// A `UiService` over a real (temp-file) config database, its
     /// tables created and seeded the same way a launch creates them.
+    #[cfg(feature = "plugin-host")]
     fn temp_ui_service(temp: &tempfile::TempDir) -> arclain_core::services::UiService {
         let db_path = temp.path().join("config.sqlite");
         drop(arclain_core::config::ConfigDb::open(&db_path).expect("create the config database"));
@@ -793,6 +809,7 @@ mod tests {
 
     /// One enabled plugin declaring one top tab labelled `label`, in
     /// the shape `PluginManager::get_all_top_tabs` reports.
+    #[cfg(feature = "plugin-host")]
     fn one_top_tab(label: &str) -> Vec<(String, arclain_plugins::types::TopTabConfig)> {
         vec![(
             "demo".to_string(),
@@ -815,6 +832,7 @@ mod tests {
     /// long caption. The sync must clamp what it stores to the same
     /// bound the user path enforces, and the row must still appear
     /// (truncated), not be dropped.
+    #[cfg(feature = "plugin-host")]
     #[test]
     fn top_tab_sync_clamps_plugin_text_so_the_region_stays_saveable() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -871,6 +889,7 @@ mod tests {
     /// top-tab strip still renders it from the plugin manager directly;
     /// it just gets no arrangeable row -- and, critically, it cannot
     /// poison the region for the layout editor.
+    #[cfg(feature = "plugin-host")]
     #[test]
     fn a_top_tab_whose_identity_cannot_fit_a_row_is_skipped() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -899,6 +918,7 @@ mod tests {
     /// wiring) and never the user's own arrangement of the row --
     /// visibility, position, display mode -- which `save_ui_items` and
     /// the layout editors store between launches.
+    #[cfg(feature = "plugin-host")]
     #[test]
     fn top_tab_sync_preserves_user_arrangement_and_applies_plugin_renames() {
         let temp = tempfile::TempDir::new().unwrap();

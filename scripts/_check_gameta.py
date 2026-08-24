@@ -25,12 +25,48 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 NEEDLE = "gameta"
 TREE_GLYPHS = "│├└─ \t"
 DEFAULTS_TREE = ["cargo", "tree", "-p", "arclain_app"]
-LEAN_TREE = ["cargo", "tree", "-p", "arclain_app", "--no-default-features"]
+LEAN_TREE = [
+    "cargo",
+    "tree",
+    "-p",
+    "arclain_app",
+    "--no-default-features",
+    "--features",
+    "plugin-host",
+]
 LEAN_COMMANDS = (
-    ["cargo", "check", "-p", "arclain_app", "--no-default-features", "--all-targets"],
+    [
+        "cargo",
+        "check",
+        "-p",
+        "arclain_app",
+        "--no-default-features",
+        "--features",
+        "plugin-host",
+        "--all-targets",
+    ],
     ["cargo", "test", "-p", "arclain_core", "--no-default-features"],
-    ["cargo", "test", "-p", "arclain_app", "--no-default-features"],
+    [
+        "cargo",
+        "test",
+        "-p",
+        "arclain_app",
+        "--no-default-features",
+        "--features",
+        "plugin-host",
+    ],
 )
+
+
+def gameta_tree_lines(tree: str) -> list[str]:
+    """Return normalized Cargo tree lines whose package name is Gameta."""
+    matches: list[str] = []
+    for line in tree.splitlines():
+        crate_line = line.lstrip(TREE_GLYPHS)
+        package_name = crate_line.split(maxsplit=1)[0].lower()
+        if package_name == NEEDLE or package_name.startswith(f"{NEEDLE}_"):
+            matches.append(crate_line)
+    return matches
 
 
 def gameta_lines(command: list[str]) -> list[str] | None:
@@ -51,11 +87,7 @@ def gameta_lines(command: list[str]) -> list[str] | None:
         sys.stderr.write(result.stderr)
         print(f"check-gameta: `{' '.join(command)}` failed")
         return None
-    return [
-        line.lstrip(TREE_GLYPHS)
-        for line in result.stdout.splitlines()
-        if NEEDLE in line.lower()
-    ]
+    return gameta_tree_lines(result.stdout)
 
 
 def assert_trees() -> int:

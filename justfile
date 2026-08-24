@@ -151,8 +151,8 @@ push-release:
     git push origin $(git tag --points-at HEAD)
 
 # ─── invariant checks ─────────────────────────────────────────────────────
-# `just check` (all), `just check gameta`, `just check boundary`, or
-# `just check wirt`.
+# `just check` (all), `just check gameta`, `just check boundary`,
+# `just check wirt`, or `just check plugin-host`.
 
 # Run invariant checks. subject: all (default) | gameta | boundary.
 check subject="all":
@@ -162,6 +162,7 @@ _check-all:
     just _check-gameta
     just _check-boundary
     just _check-wirt
+    just _check-plugin-host
 
 # The gameta feature's contract: a no-default-features `arclain_app`
 # pulls in no gameta crate, that configuration compiles with all targets,
@@ -180,6 +181,11 @@ _check-boundary:
 # Wirt host and guest dependencies must share the reviewed external revision.
 _check-wirt:
     {{python}} scripts/wirt_dependency.py
+
+# Archive-only `arclain_app` must not resolve the plugin manager, Wirt,
+# or Wasmtime; the default graph stays as the positive control.
+_check-plugin-host:
+    {{python}} scripts/_check_plugin_host.py
 
 test-frontend-boundary:
     {{python}} scripts/test_frontend_boundary.py

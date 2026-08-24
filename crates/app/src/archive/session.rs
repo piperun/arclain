@@ -567,6 +567,7 @@ impl EntryIndex {
     /// time, so this is `O(1)`. Matches [`Self::file_paths`]'s scope
     /// (files only, not the synthesized directories `entry_count` also
     /// includes).
+    #[cfg(feature = "plugin-host")]
     pub(crate) fn file_count(&self) -> usize {
         self.sorted_file_ids.len()
     }
@@ -612,6 +613,7 @@ impl EntryIndex {
     /// path-sorted order [`Self::file_paths`] does not guarantee --
     /// `O(limit)` beyond an `O(1)` slice to `offset`, never touching (let
     /// alone cloning) a path outside the requested page.
+    #[cfg(feature = "plugin-host")]
     pub(crate) fn file_paths_page(&self, offset: usize, limit: usize) -> Vec<String> {
         self.sorted_file_ids
             .get(offset..)
@@ -1313,6 +1315,7 @@ impl ArchiveSession {
     /// Number of `File`-kind entries in this session's current index,
     /// without materializing any path -- see
     /// [`EntryIndex::file_count`]'s own doc comment.
+    #[cfg(feature = "plugin-host")]
     pub(crate) fn file_count(&self) -> usize {
         self.entry_index.read().file_count()
     }
@@ -1320,6 +1323,7 @@ impl ArchiveSession {
     /// One page of file paths from this session's current index, without
     /// materializing the rest -- see [`EntryIndex::file_paths_page`]'s
     /// own doc comment.
+    #[cfg(feature = "plugin-host")]
     pub(crate) fn file_paths_page(&self, offset: usize, limit: usize) -> Vec<String> {
         self.entry_index.read().file_paths_page(offset, limit)
     }
@@ -1926,6 +1930,7 @@ mod tests {
     /// look identical whether or not the implementation wastefully
     /// materialized everything first, so this also asserts the call count
     /// on the expensive path stays at zero throughout.
+    #[cfg(feature = "plugin-host")]
     #[test]
     fn file_count_and_file_paths_page_do_not_materialize_the_full_file_list() {
         const TOTAL: usize = 5_000;

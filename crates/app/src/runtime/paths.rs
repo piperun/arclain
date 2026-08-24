@@ -127,6 +127,7 @@ impl AppPaths {
             arclain_app_fs::ensure_owner_dir(dir)
                 .map_err(|error| directory_error(&format!("creating {}", dir.display()), error))?;
         }
+        #[cfg(feature = "plugin-host")]
         self.prepare_plugins_dir();
         Ok(())
     }
@@ -150,6 +151,7 @@ impl AppPaths {
     ///   install's plugins directory is typically meant to be
     ///   world-readable; forcing it owner-only would fight the
     ///   installer, not protect anything.
+    #[cfg(feature = "plugin-host")]
     fn prepare_plugins_dir(&self) {
         if let Err(error) = std::fs::create_dir_all(&self.plugins_dir) {
             tracing::warn!(

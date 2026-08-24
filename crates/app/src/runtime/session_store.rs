@@ -16,6 +16,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(feature = "plugin-host")]
 use parking_lot::Mutex as SyncMutex;
 
 use arclain_core::backends::sevenz_cli::SevenZipCli;
@@ -23,6 +24,7 @@ use arclain_core::backends::BackendSelector;
 use arclain_core::services::Services as CoreServices;
 use arclain_core::utilities::ChecksumService;
 use arclain_core::{ConfigDbs, ContentCache, DbPaths, PassRule, ResourceManager, UserConfig};
+#[cfg(feature = "plugin-host")]
 use arclain_plugins::{PluginEventScheduler, PluginManager};
 
 /// One archive backend's reported read/write capabilities, as a frontend
@@ -54,6 +56,7 @@ pub struct ExternalToolStatusDto {
 pub struct AppCapabilities {
     pub archive_backends: Vec<BackendCapabilityDto>,
     pub external_tools: Vec<ExternalToolStatusDto>,
+    #[cfg(feature = "plugin-host")]
     pub plugins_available: bool,
 }
 
@@ -94,9 +97,12 @@ pub struct HealthSnapshot {
 pub(crate) fn compute_capabilities(
     sevenzip_resolved_path: Option<&std::path::Path>,
     unrar_available: bool,
-    plugins_available: bool,
+    plugin_host_available: bool,
 ) -> AppCapabilities {
     use arclain_core::archive::BackendCapabilities;
+
+    #[cfg(not(feature = "plugin-host"))]
+    let _ = plugin_host_available;
 
     let sevenzip_available = sevenzip_resolved_path.is_some();
     let full = BackendCapabilities::full_featured();
@@ -138,7 +144,8 @@ pub(crate) fn compute_capabilities(
                 resolved_path: None,
             },
         ],
-        plugins_available,
+        #[cfg(feature = "plugin-host")]
+        plugins_available: plugin_host_available,
     }
 }
 
@@ -166,9 +173,12 @@ pub(crate) fn compute_capabilities(
 pub(crate) fn compute_health(
     sevenzip_available: bool,
     unrar_available: bool,
-    plugins_available: bool,
+    plugin_host_available: bool,
     database_ready: bool,
 ) -> HealthSnapshot {
+    #[cfg(not(feature = "plugin-host"))]
+    let _ = plugin_host_available;
+
     let mut degraded_components = Vec::new();
     let mut required_degraded = false;
 
@@ -176,7 +186,8 @@ pub(crate) fn compute_health(
         degraded_components.push("sevenzip".to_string());
         required_degraded = true;
     }
-    if !plugins_available {
+    #[cfg(feature = "plugin-host")]
+    if !plugin_host_available {
         degraded_components.push("plugins".to_string());
         required_degraded = true;
     }
@@ -199,6 +210,7 @@ pub(crate) fn compute_health(
 /// construction. See the module doc comment.
 pub struct LegacyComposition {
     pub core_services: Arc<CoreServices>,
+    #[cfg(feature = "plugin-host")]
     pub plugin_manager: Option<Arc<SyncMutex<PluginManager>>>,
     pub content_cache: Option<Arc<ContentCache>>,
     pub resource_manager: Option<Arc<ResourceManager>>,
@@ -219,6 +231,7 @@ pub struct LegacyComposition {
     /// one-shot-taken value, so `crates/ui` can call this again to
     /// refresh its mirror after a facade-driven settings/vault mutation.
     pub dbs: Option<ConfigDbs>,
+    #[cfg(feature = "plugin-host")]
     pub plugin_event_scheduler: Option<PluginEventScheduler>,
 }
 
@@ -229,6 +242,7 @@ pub struct LegacyComposition {
 /// rest to `crates/ui` (see the module doc comment).
 pub(crate) struct SessionStore {
     pub(crate) core_services: Arc<CoreServices>,
+    #[cfg(feature = "plugin-host")]
     pub(crate) plugin_manager: Option<Arc<SyncMutex<PluginManager>>>,
     pub(crate) content_cache: Option<Arc<ContentCache>>,
     pub(crate) resource_manager: Option<Arc<ResourceManager>>,
@@ -243,6 +257,7 @@ pub(crate) struct SessionStore {
     /// UnRAR CLI executable. Not `Option<PathBuf>`: `UnrarCli` exposes no
     /// path accessor -- see [`compute_capabilities`]'s doc comment.
     pub(crate) unrar_available: bool,
+    #[cfg(feature = "plugin-host")]
     pub(crate) plugin_event_scheduler: Option<PluginEventScheduler>,
     /// Snapshotted once at bootstrap time: whether `open_databases` (and
     /// `init_db_services`) succeeded. Cached rather than re-derived from
@@ -289,18 +304,22 @@ impl SessionStore {
 
     pub(crate) fn capabilities(&self) -> AppCapabilities {
         let sevenzip_path = self.sevenzip_path();
-        compute_capabilities(
-            sevenzip_path,
-            self.unrar_available,
-            self.plugin_manager.is_some(),
-        )
+        #[cfg(feature = "plugin-host")]
+        let plugin_host_available = self.plugin_manager.is_some();
+        #[cfg(not(feature = "plugin-host"))]
+        let plugin_host_available = false;
+        compute_capabilities(sevenzip_path, self.unrar_available, plugin_host_available)
     }
 
     pub(crate) fn health(&self) -> HealthSnapshot {
+        #[cfg(feature = "plugin-host")]
+        let plugin_host_available = self.plugin_manager.is_some();
+        #[cfg(not(feature = "plugin-host"))]
+        let plugin_host_available = false;
         compute_health(
             self.sevenzip_still_available(),
             self.unrar_available,
-            self.plugin_manager.is_some(),
+            plugin_host_available,
             self.database_ready,
         )
     }
@@ -320,6 +339,7 @@ impl SessionStore {
         let mutable = self.mutable.read();
         LegacyComposition {
             core_services: self.core_services.clone(),
+            #[cfg(feature = "plugin-host")]
             plugin_manager: self.plugin_manager.clone(),
             content_cache: self.content_cache.clone(),
             resource_manager: self.resource_manager.clone(),
@@ -331,6 +351,7 @@ impl SessionStore {
             encrypted_crc_policy: mutable.encrypted_crc_policy.clone(),
             db_paths: mutable.db_paths.clone(),
             dbs: mutable.dbs.clone(),
+            #[cfg(feature = "plugin-host")]
             plugin_event_scheduler: self.plugin_event_scheduler.clone(),
         }
     }
@@ -429,6 +450,7 @@ mod tests {
         assert_eq!(health.degraded_components, vec!["unrar"]);
     }
 
+    #[cfg(feature = "plugin-host")]
     #[test]
     fn degraded_plugins_are_reported_without_affecting_archive_capabilities() {
         let sevenzip_path = std::path::Path::new(SEVENZIP_PATH);
@@ -441,6 +463,7 @@ mod tests {
         assert_eq!(health.degraded_components, vec!["plugins"]);
     }
 
+    #[cfg(feature = "plugin-host")]
     #[test]
     fn fully_ready_runtime_has_no_degraded_components() {
         let sevenzip_path = std::path::Path::new(SEVENZIP_PATH);

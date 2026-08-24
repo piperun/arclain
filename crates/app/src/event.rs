@@ -12,6 +12,7 @@ use crate::challenge::Challenge;
 use crate::error::ApplicationError;
 use crate::ids::{ArchiveSessionId, OperationId};
 use crate::materialization::MaterializationLease;
+#[cfg(feature = "plugin-host")]
 use crate::plugins::PluginUiUpdate;
 
 /// Which kind of long-running, cancellable action an operation performs.
@@ -44,6 +45,7 @@ pub enum OperationKind {
     OpenArchive,
     Organize,
     Pipeline,
+    #[cfg(feature = "plugin-host")]
     PluginAction,
 }
 
@@ -64,6 +66,7 @@ pub enum OperationResult {
     Materialized {
         lease: MaterializationLease,
     },
+    #[cfg(feature = "plugin-host")]
     PluginUiUpdated {
         update: PluginUiUpdate,
     },

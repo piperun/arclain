@@ -21,7 +21,7 @@
 //!
 //! Detection touches the filesystem (see [`detect`]'s own doc comment on
 //! exactly where), so it is *not* pure the way
-//! [`crate::archive::is_archive_extension`] or [`crate::analyze_url`] are.
+//! [`crate::archive::is_archive_extension`] or `crate::analyze_url` are.
 //! It is nonetheless a free function, for two reasons that both hold
 //! independently:
 //!

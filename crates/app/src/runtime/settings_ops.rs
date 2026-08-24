@@ -74,6 +74,7 @@
 //! (both in `tests/settings_facade.rs`) pin down exactly this documented
 //! end state for steps 2 and 3 respectively.
 
+#[cfg(feature = "plugin-host")]
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -84,6 +85,7 @@ use arclain_network::features::proxy::ConnectionTestResult;
 
 use crate::challenge::SecretInput;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
+#[cfg(feature = "plugin-host")]
 use crate::plugins::PluginSettingsSnapshot;
 use crate::settings::{
     self, CacheMaintenanceReport, CacheMaintenanceTask, GametaServerInfo, NetworkProbeReport,
@@ -987,6 +989,7 @@ pub(super) async fn run_delete_password_rule(
 /// either way, indistinguishable from "the user explicitly disabled it".
 /// A full snapshot has no such ambiguity -- absent means disabled, always
 /// -- so bootstrap's reconciliation step can trust it completely.
+#[cfg(feature = "plugin-host")]
 pub(super) async fn run_set_plugin_enabled(
     inner: &Arc<AppRuntime>,
     plugin_id: String,
@@ -1055,6 +1058,7 @@ pub(super) async fn run_set_plugin_enabled(
 /// the incomplete hidden staging directory. This transaction still restores
 /// the persisted row and sessions; the already-loaded generation remains usable
 /// until process exit, while restart discovery ignores the partial staging.
+#[cfg(feature = "plugin-host")]
 pub(super) async fn run_uninstall_plugin(
     inner: &Arc<AppRuntime>,
     plugin_id: String,
@@ -1211,6 +1215,7 @@ pub(super) async fn run_uninstall_plugin(
 /// in one order and in memory in the opposite order. The database write
 /// runs on the blocking pool; the live whitelist is changed only after
 /// that write succeeds.
+#[cfg(feature = "plugin-host")]
 pub(super) async fn run_set_plugin_domain_approved(
     inner: &Arc<AppRuntime>,
     plugin_id: String,
@@ -1319,6 +1324,7 @@ pub(super) async fn run_set_plugin_domain_approved(
 /// report a problem with something else. The write is retried implicitly
 /// by the next interaction: a failed save leaves the mirror untouched, so
 /// that comparison still finds a difference next time.
+#[cfg(feature = "plugin-host")]
 pub(super) async fn flush_plugin_settings(inner: &Arc<AppRuntime>, plugin_id: &str) {
     if let Err(error) = run_flush_plugin_settings(inner, plugin_id.to_string()).await {
         tracing::error!(
@@ -1363,10 +1369,12 @@ pub(super) async fn flush_plugin_settings(inner: &Arc<AppRuntime>, plugin_id: &s
 /// Merges into the stored map rather than replacing it, so a plugin that
 /// is no longer loaded keeps whatever was last saved for it instead of
 /// being silently dropped from the row.
+#[cfg(feature = "plugin-host")]
 pub(super) async fn run_flush_all_plugin_settings(inner: &Arc<AppRuntime>) {
     run_flush_all_plugin_settings_after(inner, std::future::ready(())).await;
 }
 
+#[cfg(feature = "plugin-host")]
 async fn run_flush_all_plugin_settings_after(
     inner: &Arc<AppRuntime>,
     before_write_lock: impl std::future::Future<Output = ()>,
@@ -1438,6 +1446,7 @@ async fn run_flush_all_plugin_settings_after(
 /// revision that protects a later replacement. Taking the same write lock as
 /// mutations keeps the live map and revision from straddling a successful
 /// compare-and-set activation.
+#[cfg(feature = "plugin-host")]
 pub(super) async fn run_plugin_settings(
     inner: &Arc<AppRuntime>,
     plugin_id: String,
@@ -1470,6 +1479,7 @@ pub(super) async fn run_plugin_settings(
 /// shared revision, plugin liveness, and the host's canonical settings limits
 /// have all been checked while `settings_write_lock` is held. The running
 /// instance changes only after the user-config row saves successfully.
+#[cfg(feature = "plugin-host")]
 pub(super) async fn run_set_plugin_settings(
     inner: &Arc<AppRuntime>,
     plugin_id: String,
@@ -1571,6 +1581,7 @@ pub(super) async fn run_set_plugin_settings(
 /// keeps the pre-CAS behavior: it trusts the running instance's already
 /// bounded map, advances the shared revision after a successful save, and does
 /// not try to reactivate the instance it just read from.
+#[cfg(feature = "plugin-host")]
 pub(super) async fn run_flush_plugin_settings(
     inner: &Arc<AppRuntime>,
     plugin_id: String,
@@ -1578,6 +1589,7 @@ pub(super) async fn run_flush_plugin_settings(
     run_flush_plugin_settings_after(inner, plugin_id, std::future::ready(())).await
 }
 
+#[cfg(feature = "plugin-host")]
 async fn run_flush_plugin_settings_after(
     inner: &Arc<AppRuntime>,
     plugin_id: String,
@@ -1654,6 +1666,7 @@ async fn run_flush_plugin_settings_after(
 // Shared helpers.
 // ============================================================================
 
+#[cfg(feature = "plugin-host")]
 fn upsert_canonical_plugin_settings(
     stored: &mut HashMap<String, HashMap<String, String>>,
     canonical_id: &str,
@@ -2108,6 +2121,7 @@ fn conflict_error(current_revision: u64) -> ApplicationError {
     .with_field("expected_revision")
 }
 
+#[cfg(feature = "plugin-host")]
 fn plugin_settings_validation_error(
     _error: arclain_plugins::PluginSettingsValidationError,
 ) -> ApplicationError {
@@ -2119,6 +2133,7 @@ fn plugin_settings_validation_error(
     .with_field("values")
 }
 
+#[cfg(feature = "plugin-host")]
 fn plugin_settings_activation_error(
     plugin_id: &str,
     error: arclain_plugins::PluginError,
@@ -2384,8 +2399,10 @@ mod tests {
         assert_eq!(error.field.as_deref(), Some("server_url"));
     }
 
+    #[cfg(feature = "plugin-host")]
     const SETTINGS_RACE_PLUGIN_ID: &str = "ui-demo";
 
+    #[cfg(feature = "plugin-host")]
     fn bootstrap_settings_race_fixture(root: &std::path::Path) -> crate::ArclainApp {
         let paths = crate::AppPaths {
             config_dir: root.join("config"),
@@ -2420,6 +2437,7 @@ mod tests {
         .expect("bootstrap facade test fixture")
     }
 
+    #[cfg(feature = "plugin-host")]
     fn replace_live_plugin_settings(app: &crate::ArclainApp, values: BTreeMap<String, String>) {
         let manager = app.inner.plugin_manager().expect("plugin manager");
         let target = manager
@@ -2433,12 +2451,14 @@ mod tests {
             .expect("replace live plugin settings");
     }
 
+    #[cfg(feature = "plugin-host")]
     #[derive(Clone, Copy)]
     enum SettingsFlushPath {
         Plugin,
         WholeMap,
     }
 
+    #[cfg(feature = "plugin-host")]
     fn assert_waiting_flush_cannot_overwrite_a_cas(path: SettingsFlushPath) {
         let temp = tempfile::tempdir().unwrap();
         let app = bootstrap_settings_race_fixture(temp.path());
@@ -2522,6 +2542,7 @@ mod tests {
     /// Catches the old ordering where a guest flush captured settings before
     /// waiting for `settings_write_lock`, then overwrote a newer CAS row after
     /// that CAS had already persisted and activated its replacement.
+    #[cfg(feature = "plugin-host")]
     #[test]
     fn guest_flush_snapshot_waiting_for_the_settings_lock_cannot_overwrite_a_cas() {
         assert_waiting_flush_cannot_overwrite_a_cas(SettingsFlushPath::Plugin);
@@ -2529,6 +2550,7 @@ mod tests {
 
     /// The shutdown sweep is a distinct whole-map persistence path and must
     /// take its live snapshot only after admission to the same write lock.
+    #[cfg(feature = "plugin-host")]
     #[test]
     fn shutdown_flush_snapshot_waiting_for_settings_lock_cannot_overwrite_a_cas() {
         assert_waiting_flush_cannot_overwrite_a_cas(SettingsFlushPath::WholeMap);
