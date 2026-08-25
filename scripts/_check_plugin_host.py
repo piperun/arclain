@@ -34,6 +34,27 @@ ARCHIVE_ONLY_RUSTDOC = [
     "-D",
     "rustdoc::broken-intra-doc-links",
 ]
+ARCHIVE_ONLY_BEHAVIOR_CHECKS = (
+    [
+        "cargo",
+        "check",
+        "--locked",
+        "-p",
+        "arclain_app",
+        "--no-default-features",
+        "--lib",
+    ],
+    [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "arclain_app",
+        "--no-default-features",
+        "--test",
+        "plugin_host_disabled",
+    ],
+)
 FORBIDDEN = ("arclain_plugins", "wirt", "wasmtime")
 TREE_GLYPHS = "│├└─ \t"
 COMPILE_CONTRACT_DIR = REPO_ROOT / "crates/app/tests/compile_contract"
@@ -160,6 +181,16 @@ def cargo_tree(command: list[str]) -> str | None:
     return result.stdout
 
 
+def archive_only_behavior_errors() -> list[str]:
+    """Run the archive-only library and real behavior contracts."""
+    errors: list[str] = []
+    for command in ARCHIVE_ONLY_BEHAVIOR_CHECKS:
+        result = subprocess.run(command, cwd=REPO_ROOT)
+        if result.returncode != 0:
+            errors.append(f"archive-only check `{' '.join(command)}` failed")
+    return errors
+
+
 def compile_contract_errors() -> list[str]:
     """Compile the public facade in its default and archive-only shapes."""
     errors: list[str] = []
@@ -247,6 +278,7 @@ def main() -> int:
     errors.extend(plugin_facade_gate_errors(runtime_source))
     errors.extend(compile_contract_errors())
     errors.extend(archive_only_rustdoc_errors())
+    errors.extend(archive_only_behavior_errors())
     if errors:
         print("Plugin-host dependency boundary violations:", file=sys.stderr)
         for error in errors:

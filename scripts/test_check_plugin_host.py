@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
+from scripts import _check_plugin_host
 from scripts._check_plugin_host import (
     plugin_facade_gate_errors,
     plugin_host_rustdoc_errors,
@@ -119,6 +121,63 @@ class TestPluginHostRustdocContract(unittest.TestCase):
             [
                 "error: unresolved link to `crate::analyze_url`",
                 "error: unresolved link to `crate::plugins::ArchiveContextBridge`",
+            ],
+        )
+
+
+class TestArchiveOnlyBehaviorContract(unittest.TestCase):
+    @mock.patch.object(_check_plugin_host, "archive_only_rustdoc_errors", return_value=[])
+    @mock.patch.object(_check_plugin_host, "compile_contract_errors", return_value=[])
+    @mock.patch.object(_check_plugin_host, "plugin_facade_gate_errors", return_value=[])
+    @mock.patch.object(
+        _check_plugin_host,
+        "cargo_tree",
+        side_effect=(
+            "\n".join(
+                (
+                    "arclain_app v0.1.0",
+                    "├── arclain_plugins v0.1.0",
+                    "│   └── wirt v0.3.0",
+                    "│       └── wasmtime v35.0.0",
+                )
+            ),
+            "arclain_app v0.1.0",
+        ),
+    )
+    @mock.patch.object(_check_plugin_host.subprocess, "run")
+    def test_live_guard_runs_the_archive_only_library_and_behavior_checks(
+        self,
+        run: mock.Mock,
+        _cargo_tree: mock.Mock,
+        _plugin_facade_gate_errors: mock.Mock,
+        _compile_contract_errors: mock.Mock,
+        _archive_only_rustdoc_errors: mock.Mock,
+    ):
+        run.return_value.returncode = 0
+
+        self.assertEqual(_check_plugin_host.main(), 0)
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                [
+                    "cargo",
+                    "check",
+                    "--locked",
+                    "-p",
+                    "arclain_app",
+                    "--no-default-features",
+                    "--lib",
+                ],
+                [
+                    "cargo",
+                    "test",
+                    "--locked",
+                    "-p",
+                    "arclain_app",
+                    "--no-default-features",
+                    "--test",
+                    "plugin_host_disabled",
+                ],
             ],
         )
 
