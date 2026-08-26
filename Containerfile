@@ -18,7 +18,7 @@
 # command starts warm. Removing the volumes wipes the cache:
 #   podman volume rm arclain-target arclain-cargo-registry arclain-cargo-git
 
-FROM docker.io/library/rust:1.97.0-bookworm
+FROM docker.io/library/rust:1.98.0-bookworm
 
 # ── System deps — copy-paste from .woodpecker.yml so a Containerfile drift
 #    can't silently diverge from CI. Add python3 for scripts/release.py.

@@ -62,7 +62,7 @@ jobs:
           }
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.97.0
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Install Python
         uses: actions/setup-python@v5

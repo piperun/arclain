@@ -205,7 +205,7 @@ class TestOwnedFormatting(unittest.TestCase):
         self.assertEqual(step.count(cargo_command), 1)
         self.assertLess(step.index(format_command), step.index(cargo_command))
 
-    def test_woodpecker_future_incompat_check_uses_exact_rust_1_97_0(self):
+    def test_woodpecker_future_incompat_check_uses_exact_rust_1_98_0(self):
         lines = (REPO_ROOT / ".woodpecker.yml").read_text(
             encoding="utf-8",
         ).splitlines()
@@ -223,7 +223,7 @@ class TestOwnedFormatting(unittest.TestCase):
             '-p arclain_theme -p arclain_widgets --locked"'
         )
 
-        self.assertEqual(images, ["    image: rust:1.97.0-bookworm"])
+        self.assertEqual(images, ["    image: rust:1.98.0-bookworm"])
         self.assertEqual(step.count(workspace_command), 1)
         self.assertEqual(step.count(future_incompat_command), 1)
         self.assertLess(
@@ -975,13 +975,13 @@ class TestReleaseWorkflows(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertNotIn("rust:1.94", woodpecker)
-        self.assertEqual(woodpecker.count("image: rust:1.97.0-bookworm"), 5)
+        self.assertEqual(woodpecker.count("image: rust:1.98.0-bookworm"), 5)
         self.assertIn(
-            "FROM docker.io/library/rust:1.97.0-bookworm",
+            "FROM docker.io/library/rust:1.98.0-bookworm",
             container,
         )
         self.assertNotIn("rust:1.94", container)
-        self.assertIn("uses: dtolnay/rust-toolchain@1.97.0", windows)
+        self.assertIn("uses: dtolnay/rust-toolchain@1.98.0", windows)
         self.assertNotIn("dtolnay/rust-toolchain@stable", windows)
 
     def test_headless_ci_runs_all_non_ui_test_targets(self):

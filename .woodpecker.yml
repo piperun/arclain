@@ -42,7 +42,7 @@ steps:
   # ── Tests on every push + tag ───────────────────────────────────────
 
   cargo-check:
-    image: rust:1.97.0-bookworm
+    image: rust:1.98.0-bookworm
     when:
       - event: [push, tag]
     commands:
@@ -61,7 +61,7 @@ steps:
     depends_on: [fetch-gameta]
 
   cargo-test:
-    image: rust:1.97.0-bookworm
+    image: rust:1.98.0-bookworm
     when:
       - event: [push, tag]
     commands:
@@ -96,7 +96,7 @@ steps:
     depends_on: [fetch-gameta]
 
   wasm-plugins:
-    image: rust:1.97.0-bookworm
+    image: rust:1.98.0-bookworm
     when:
       - event: [push, tag]
     commands:
@@ -131,7 +131,7 @@ steps:
   # ── Linux release build on tag ──────────────────────────────────────
 
   build-linux-x86_64:
-    image: rust:1.97.0-bookworm
+    image: rust:1.98.0-bookworm
     when:
       - event: tag
     commands:
@@ -172,7 +172,7 @@ steps:
   # UI — no automatic firing.
 
   build-windows-x86_64:
-    image: rust:1.97.0-bookworm
+    image: rust:1.98.0-bookworm
     when:
       - event: manual
     commands:
