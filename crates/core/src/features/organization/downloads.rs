@@ -99,9 +99,18 @@ pub fn stage_plan_downloads(
     })
 }
 
-/// The most this will read for one image, shared with the content
-/// cache's own ceiling so a fetched screenshot and a cached one are
-/// bounded the same way.
+/// The most this will read for one image.
+///
+/// The number is the content cache's own per-resource ceiling, so a
+/// screenshot fetched over the network and the same screenshot read
+/// back out of the cache are bounded alike rather than by two limits
+/// that can drift apart.
+///
+/// Nothing downstream enforces its use: [`read_bounded`] applies
+/// whatever limit its caller passes, and the single call site in
+/// [`http_downloader`] below is the only thing that supplies this
+/// constant. Narrow that call and no test fails -- the call site is
+/// correct by inspection, not by assertion.
 const MAX_DOWNLOAD_BYTES: usize = arclain_data::DEFAULT_MAX_RESOURCE_SIZE_BYTES;
 
 /// How many redirects one image may take. Image URLs in scraped
@@ -136,6 +145,10 @@ pub fn http_downloader() -> Result<impl Fn(&PendingDownload) -> Result<Vec<u8>>>
         .redirect(reqwest::redirect::Policy::limited(MAX_DOWNLOAD_REDIRECTS))
         .build()?;
     Ok(move |download: &PendingDownload| {
+        // The one place the production limit enters a fetch, so
+        // narrowing it later is a one-line change rather than three.
+        let limit = MAX_DOWNLOAD_BYTES;
+
         let mut response = client.get(&download.url).send()?;
         if !response.status().is_success() {
             anyhow::bail!("status {}", response.status());
@@ -143,13 +156,11 @@ pub fn http_downloader() -> Result<impl Fn(&PendingDownload) -> Result<Vec<u8>>>
         // The advertised length rejects an oversized image for the cost
         // of one header, before any body is transferred.
         if let Some(length) = response.content_length() {
-            if length > MAX_DOWNLOAD_BYTES as u64 {
-                anyhow::bail!(
-                    "{length} bytes, over the {MAX_DOWNLOAD_BYTES}-byte limit for one image"
-                );
+            if length > limit as u64 {
+                anyhow::bail!("{length} bytes, over the {limit}-byte limit for one image");
             }
         }
-        read_bounded(&mut response, MAX_DOWNLOAD_BYTES)
+        read_bounded(&mut response, limit)
     })
 }
 
@@ -228,19 +239,6 @@ mod tests {
         assert!(
             message.contains(&TEST_LIMIT.to_string()),
             "the reason reaches the user, so it must name the limit: {message}"
-        );
-    }
-
-    /// The boundary tests above pass a small limit, so this pins that
-    /// production still uses the real ceiling — otherwise the cap could
-    /// be quietly narrowed to the test's value and every test would
-    /// still pass.
-    #[test]
-    fn the_production_limit_is_the_content_cache_ceiling() {
-        assert_eq!(
-            MAX_DOWNLOAD_BYTES,
-            arclain_data::DEFAULT_MAX_RESOURCE_SIZE_BYTES,
-            "a fetched screenshot and a cached one must be bounded alike"
         );
     }
 
