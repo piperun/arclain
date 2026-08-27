@@ -2040,6 +2040,18 @@ mod proxy_routing_atomicity_tests {
     use tokio::net::TcpListener;
     use tokio::runtime::Handle;
 
+    /// Sized to fail a request that never moves, not to race the machine.
+    /// These tests park an in-flight request at route selection, swap the
+    /// routing under it, then release it, so the request's own deadline
+    /// has to outlive the whole orchestration -- and that orchestration
+    /// runs on whatever cores the rest of the suite leaves free. At one
+    /// second, a loaded run failed with the request already timed out
+    /// before the pause was released, while nothing was wrong. A healthy
+    /// run pays nothing for the longer ceiling: every wait here returns
+    /// the moment its condition holds, and the request itself fails on
+    /// the sentinel closing the connection, well before this deadline.
+    const ROUTING_RACE_BUDGET: Duration = Duration::from_secs(60);
+
     async fn observe_one_socks_connect(listener: TcpListener) -> std::net::SocketAddr {
         let (mut socket, _) = listener.accept().await.expect("accept SOCKS5 client");
         let mut greeting = [0_u8; 3];
@@ -2123,7 +2135,7 @@ mod proxy_routing_atomicity_tests {
 
         let host_request = client.request(HttpRequest::get(format!("http://{host_address}/")));
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(2), client.await_complete(&host_request))
+            tokio::time::timeout(ROUTING_RACE_BUDGET, client.await_complete(&host_request))
                 .await
                 .expect("host request timed out"),
             Some(RequestStatus::Ready(_))
@@ -2183,10 +2195,10 @@ mod proxy_routing_atomicity_tests {
                     "http://{TARGET_HOST}:{}/resource",
                     direct_address.port()
                 ))
-                .with_timeout(Duration::from_secs(1)),
+                .with_timeout(ROUTING_RACE_BUDGET),
             )
             .expect("checked request should start before routing becomes unavailable");
-        tokio::time::timeout(Duration::from_secs(1), routing_pause.wait_until_reached())
+        tokio::time::timeout(ROUTING_RACE_BUDGET, routing_pause.wait_until_reached())
             .await
             .expect("in-flight request did not reach route selection");
 
@@ -2267,10 +2279,10 @@ mod proxy_routing_atomicity_tests {
                     "http://{TARGET_HOST}:{}/resource",
                     direct_address.port()
                 ))
-                .with_timeout(Duration::from_secs(1)),
+                .with_timeout(ROUTING_RACE_BUDGET),
             )
             .expect("checked request should start");
-        tokio::time::timeout(Duration::from_secs(1), routing_pause.wait_until_reached())
+        tokio::time::timeout(ROUTING_RACE_BUDGET, routing_pause.wait_until_reached())
             .await
             .expect("in-flight request did not reach route selection");
         assert!(
@@ -2282,7 +2294,7 @@ mod proxy_routing_atomicity_tests {
 
         client.apply_proxy_routing(Some(enabled_proxy), enabled_map);
         routing_pause.release();
-        let destination = tokio::time::timeout(Duration::from_secs(2), proxy_observer)
+        let destination = tokio::time::timeout(ROUTING_RACE_BUDGET, proxy_observer)
             .await
             .expect("checked request never reached SOCKS5")
             .expect("SOCKS5 observer panicked");
@@ -2367,17 +2379,17 @@ mod proxy_routing_atomicity_tests {
                     "http://{TARGET_HOST}:{}/resource",
                     direct_address.port()
                 ))
-                .with_timeout(Duration::from_secs(1)),
+                .with_timeout(ROUTING_RACE_BUDGET),
             )
             .expect("checked request should start");
-        tokio::time::timeout(Duration::from_secs(1), routing_pause.wait_until_reached())
+        tokio::time::timeout(ROUTING_RACE_BUDGET, routing_pause.wait_until_reached())
             .await
             .expect("in-flight request did not reach route selection");
 
         client.replace_plugin_network_routing(prepared);
         routing_pause.release();
 
-        let destination = tokio::time::timeout(Duration::from_secs(2), proxy_observer)
+        let destination = tokio::time::timeout(ROUTING_RACE_BUDGET, proxy_observer)
             .await
             .expect("checked request never reached the new SOCKS5 client")
             .expect("SOCKS5 observer panicked");
