@@ -104,21 +104,36 @@ pub fn stage_plan_downloads(
 /// bounded the same way.
 const MAX_DOWNLOAD_BYTES: usize = arclain_data::DEFAULT_MAX_RESOURCE_SIZE_BYTES;
 
+/// How many redirects one image may take. Image URLs in scraped
+/// metadata routinely hop — http to https, or on to a CDN host — so
+/// refusing redirects outright would fail those fetches for no gain.
+/// The bound exists so a redirect loop cannot spin, not to police where
+/// a hop leads.
+const MAX_DOWNLOAD_REDIRECTS: usize = 3;
+
 /// One HTTP fetcher for a whole plan's downloads, holding a single
 /// client so a batch from one host reuses its connection rather than
 /// re-handshaking per image.
 ///
-/// The URLs come from scraped third-party metadata, so the fetch is
-/// bounded rather than trusting: redirects are refused outright (the
-/// default policy follows up to ten, including to private addresses),
-/// and the body is capped at [`MAX_DOWNLOAD_BYTES`] both by the
-/// advertised `Content-Length` and by the read itself, because a server
-/// can omit or understate that header.
+/// Two bounds, each against a different failure:
+///
+/// - The redirect chain is capped at [`MAX_DOWNLOAD_REDIRECTS`], so a
+///   server that redirects in a cycle cannot spin the fetch.
+/// - The response is capped at [`MAX_DOWNLOAD_BYTES`], by the advertised
+///   `Content-Length` and again by the read itself since a server can
+///   omit or understate that header, so a hostile or merely mis-sized
+///   image cannot exhaust memory. This is the bound that matters.
+///
+/// Neither the initial URL nor any redirect target is checked against an
+/// address policy: the URLs come from scraped third-party metadata, and
+/// nothing here stops one from naming a private or loopback address.
+/// That is a known open question rather than an oversight — do not read
+/// the bounds above as making the destination safe, only the response.
 pub fn http_downloader() -> Result<impl Fn(&PendingDownload) -> Result<Vec<u8>>> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .user_agent("Arclain/1.0")
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::limited(MAX_DOWNLOAD_REDIRECTS))
         .build()?;
     Ok(move |download: &PendingDownload| {
         let mut response = client.get(&download.url).send()?;
@@ -134,23 +149,27 @@ pub fn http_downloader() -> Result<impl Fn(&PendingDownload) -> Result<Vec<u8>>>
                 );
             }
         }
-        read_bounded(&mut response)
+        read_bounded(&mut response, MAX_DOWNLOAD_BYTES)
     })
 }
 
-/// Read a body, refusing anything past [`MAX_DOWNLOAD_BYTES`].
+/// Read a body, refusing anything past `limit` bytes.
 ///
 /// Applied even when `Content-Length` already passed, because that
 /// header is the server's claim rather than a fact: it can be absent
 /// (chunked transfer) or simply understate the body.
-fn read_bounded(body: &mut impl std::io::Read) -> Result<Vec<u8>> {
+///
+/// `limit` is a parameter only so the tests can exercise the boundary
+/// without allocating the real ceiling twice over. Production has one
+/// caller and it passes [`MAX_DOWNLOAD_BYTES`]; this stays private so
+/// the limit cannot be widened from outside the crate.
+fn read_bounded(body: &mut impl std::io::Read, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     // One byte past the limit, so a body sitting exactly at the limit is
     // still accepted and anything longer is detectable.
-    body.take(MAX_DOWNLOAD_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_DOWNLOAD_BYTES {
-        anyhow::bail!("body ran past the {MAX_DOWNLOAD_BYTES}-byte limit for one image");
+    body.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        anyhow::bail!("body ran past the {limit}-byte limit for one image");
     }
     Ok(bytes)
 }
@@ -159,6 +178,13 @@ fn read_bounded(body: &mut impl std::io::Read) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::features::organization::engine::{OrganizationPlan, PendingDownload};
+
+    /// The bound the boundary tests exercise. The cap is a comparison,
+    /// so a few hundred bytes tests it exactly as well as
+    /// [`MAX_DOWNLOAD_BYTES`] would — and does not cost the suite the
+    /// real ceiling in a body plus the same again in a read buffer, per
+    /// test.
+    const TEST_LIMIT: usize = 256;
 
     fn plan_with_one_download() -> OrganizationPlan {
         OrganizationPlan {
@@ -183,9 +209,10 @@ mod tests {
     /// rejected by the cap that exists for the byte after it.
     #[test]
     fn a_body_at_the_limit_is_read_whole() {
-        let body = vec![b'x'; MAX_DOWNLOAD_BYTES];
-        let read = read_bounded(&mut body.as_slice()).expect("a body at the limit must be read");
-        assert_eq!(read.len(), MAX_DOWNLOAD_BYTES);
+        let body = vec![b'x'; TEST_LIMIT];
+        let read = read_bounded(&mut body.as_slice(), TEST_LIMIT)
+            .expect("a body at the limit must be read");
+        assert_eq!(read.len(), TEST_LIMIT);
     }
 
     /// The read cap is the one that matters: a server that omits or
@@ -194,13 +221,26 @@ mod tests {
     /// exactly the no-header case.
     #[test]
     fn a_body_past_the_limit_is_refused_and_the_error_names_the_limit() {
-        let body = vec![b'x'; MAX_DOWNLOAD_BYTES + 1];
-        let error =
-            read_bounded(&mut body.as_slice()).expect_err("a body past the limit must be refused");
+        let body = vec![b'x'; TEST_LIMIT + 1];
+        let error = read_bounded(&mut body.as_slice(), TEST_LIMIT)
+            .expect_err("a body past the limit must be refused");
         let message = format!("{error:#}");
         assert!(
-            message.contains(&MAX_DOWNLOAD_BYTES.to_string()),
+            message.contains(&TEST_LIMIT.to_string()),
             "the reason reaches the user, so it must name the limit: {message}"
+        );
+    }
+
+    /// The boundary tests above pass a small limit, so this pins that
+    /// production still uses the real ceiling — otherwise the cap could
+    /// be quietly narrowed to the test's value and every test would
+    /// still pass.
+    #[test]
+    fn the_production_limit_is_the_content_cache_ceiling() {
+        assert_eq!(
+            MAX_DOWNLOAD_BYTES,
+            arclain_data::DEFAULT_MAX_RESOURCE_SIZE_BYTES,
+            "a fetched screenshot and a cached one must be bounded alike"
         );
     }
 
