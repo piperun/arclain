@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::Path;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use crate::utilities::CheckedRelativePath;
 use crate::Archive;
@@ -339,176 +339,23 @@ pub fn organize_archive(
     Ok(())
 }
 
-/// Execute a generic organization plan
+/// Pack every top-level item under `work_dir` into `dest`, using the
+/// archive's own backend so the output honours the same tool the input
+/// was read with.
 ///
-/// If `profile` is provided, uses its settings for compression.
-/// Otherwise falls back to default 7z maximum compression.
-pub fn execute_organization_plan(
+/// The caller has already laid `work_dir` out -- extract, resolve the
+/// plan's downloads, then apply the plan -- so this only compresses what
+/// it finds. If `profile` is provided, its settings decide the format
+/// and compression; otherwise the output is a default 7z.
+pub fn pack_work_dir(
     archive: &Archive,
     dest: &Path,
-    plan: &crate::features::organization::engine::OrganizationPlan,
-    temp_dir: &Path,
+    work_dir: &Path,
     profile: Option<&super::ArchiveProfile>,
 ) -> Result<()> {
-    plan.validate_paths()?;
-
     let format_name = profile.map(|p| p.format.display_name()).unwrap_or("7z");
-    info!(
-        "Executing organization plan '{}' for archive {} (output: {})",
-        plan.rule_name,
-        archive.path().display(),
-        format_name
-    );
-
-    let work_dir = OwnedWorkDir::new(temp_dir, "arc")?;
-    let source_extracted = work_dir.path().join("src");
-    let organized_dir = work_dir.path().join("out");
-
-    std::fs::create_dir_all(&source_extracted).context("creating temp source dir")?;
-    std::fs::create_dir_all(&organized_dir).context("creating temp organized dir")?;
-
-    let root_folder = CheckedRelativePath::new(&plan.root_folder)?;
-    root_folder.resolve_under(&organized_dir)?;
-    let checked_moves = plan
-        .moves
-        .iter()
-        .map(|(source, destination)| {
-            Ok((
-                CheckedRelativePath::new(source)?,
-                CheckedRelativePath::new(destination)?,
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let checked_generated = plan
-        .generated_files
-        .iter()
-        .map(|(path, _)| CheckedRelativePath::new(path))
-        .collect::<Result<Vec<_>>>()?;
-    let checked_downloads = plan
-        .downloads
-        .iter()
-        .map(|download| CheckedRelativePath::new(&download.dest_path))
-        .collect::<Result<Vec<_>>>()?;
-
-    // Reject static symlinked parents in a pre-existing work directory before
-    // extraction or organization mutates it.
-    for (source, destination) in &checked_moves {
-        source.resolve_under(&source_extracted)?;
-        destination.resolve_under(&organized_dir)?;
-    }
-    for path in &checked_generated {
-        path.resolve_under(&organized_dir)?;
-    }
-    for path in &checked_downloads {
-        path.resolve_under(&organized_dir)?;
-    }
-
-    // 1. Extract source
-    debug!("Extracting source archive");
-    archive
-        .extract_all(&source_extracted)
-        .context("extracting source archive")?;
-
-    // 2. Move files according to plan
-    debug!("Moving files according to plan");
-    let mut deferred_metadata = Vec::new();
-
-    if plan.use_standard_layout {
-        // Standard Layout: Smart Flattening
-        // We ignore explicit moves for game content and use the flattener
-        let game_path = CheckedRelativePath::new(format!("{}/Game", plan.root_folder))?;
-        let game_dir = game_path.resolve_under(&organized_dir)?;
-        std::fs::create_dir_all(&game_dir)?;
-        let game_dir = game_path.resolve_under(&organized_dir)?;
-
-        debug!(
-            "Using Standard Layout - Flattening game content to {:?}",
-            game_dir
-        );
-        super::flatten::find_and_flatten_game_content(&source_extracted, &game_dir)?;
-    } else {
-        // Legacy/Custom Layout: Explicit moves
-        for ((src_rel, _), (source, destination)) in plan.moves.iter().zip(&checked_moves) {
-            let src_path = source.resolve_under(&source_extracted)?;
-            match std::fs::symlink_metadata(&src_path) {
-                Ok(_) => {
-                    let src_path = source.resolve_under(&source_extracted)?;
-                    copy_plan_source(
-                        &organized_dir,
-                        destination,
-                        &src_path,
-                        &mut deferred_metadata,
-                    )?;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    debug!("Source file not found (maybe directory?): {}", src_rel);
-                }
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("inspecting move source {}", src_path.display()));
-                }
-            }
-        }
-    }
-
-    // 2b. Write generated files (e.g. metadata.json)
-    debug!("Writing generated files");
-    for ((_, content), checked_path) in plan.generated_files.iter().zip(&checked_generated) {
-        let mut bytes = std::io::Cursor::new(content.as_bytes());
-        persist_plan_output(&organized_dir, checked_path, &mut bytes)?;
-    }
-
-    // 2c. Download files (e.g. screenshots)
-    if !plan.downloads.is_empty() {
-        debug!("Downloading {} files", plan.downloads.len());
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("Arclain/1.0")
-            .build()?;
-
-        for (download, checked_path) in plan.downloads.iter().zip(&checked_downloads) {
-            let dst_path = checked_path.resolve_under(&organized_dir)?;
-            if let Some(parent) = dst_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-            debug!("Downloading {} to {}", download.url, download.dest_path);
-            match client.get(&download.url).send() {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        if let Ok(bytes) = resp.bytes() {
-                            let mut bytes = std::io::Cursor::new(bytes);
-                            if let Err(e) =
-                                persist_plan_output(&organized_dir, checked_path, &mut bytes)
-                            {
-                                error!(
-                                    "Failed to write downloaded file {}: {}",
-                                    download.dest_path, e
-                                );
-                            }
-                        } else {
-                            error!("Failed to get bytes for {}", download.url);
-                        }
-                    } else {
-                        error!(
-                            "Failed to download {}: status {}",
-                            download.url,
-                            resp.status()
-                        );
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to download {}: {}", download.url, e);
-                }
-            }
-        }
-    }
-
-    apply_deferred_plan_metadata(&organized_dir, &mut deferred_metadata)
-        .context("preserving organized metadata")?;
-
-    // 3. Compress organized directory to dest
     debug!("Compressing organized structure to {}", format_name);
+
     let dest_abs = if dest.is_absolute() {
         dest.to_path_buf()
     } else {
@@ -516,33 +363,25 @@ pub fn execute_organization_plan(
     };
 
     let mut items_to_compress = Vec::new();
-    for entry in std::fs::read_dir(&organized_dir)? {
-        let entry = entry?;
-        items_to_compress.push(entry.path());
+    for entry in std::fs::read_dir(work_dir)
+        .with_context(|| format!("reading organized directory {}", work_dir.display()))?
+    {
+        items_to_compress.push(entry?.path());
     }
-
     if items_to_compress.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Organized directory is empty, nothing to compress"
-        ));
+        anyhow::bail!("organized directory is empty, nothing to compress");
     }
 
-    // Use the backend from the archive handle to create the new archive
-    if let Some(profile) = profile {
-        archive
+    match profile {
+        Some(profile) => archive
             .backend()
             .create_archive_with_profile(&dest_abs, &items_to_compress, profile)
-            .context("creating organized archive with profile")?;
-    } else {
-        // Fallback to default 7z
-        archive
+            .context("creating organized archive with profile"),
+        None => archive
             .backend()
             .create_archive(&dest_abs, &items_to_compress, "7z")
-            .context("creating organized 7z archive")?;
+            .context("creating organized 7z archive"),
     }
-
-    info!("Plan execution completed successfully");
-    Ok(())
 }
 
 #[cfg(test)]

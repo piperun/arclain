@@ -232,6 +232,69 @@ fn seed_rule_and_profile(app: &ArclainApp) -> (i64, i64) {
     (rule_id, profile_id)
 }
 
+/// [`seed_rule_and_profile`] with the two fields the standard-layout
+/// path turns on: `use_standard_layout: true` and a templated
+/// `root_folder`. Everything else -- the `"**"` move rule (which
+/// standard layout ignores: the plan's moves come from the detected
+/// content root instead), the zip profile -- is identical, so a test can
+/// swap one seeder for the other and change only the layout mode.
+///
+/// No metadata row is seeded against `$product_id`, so the template
+/// stays literal and the organized root folder is named `$product_id`.
+/// That is deliberate: the comparison below is between two code paths
+/// applying *the same* plan, and an unexpanded template is the same on
+/// both. Returns `(rule_id, profile_id)`.
+fn seed_standard_layout_rule(app: &ArclainApp) -> (i64, i64) {
+    let legacy = app
+        .take_legacy_composition()
+        .expect("take_legacy_composition must succeed for a freshly bootstrapped app");
+    let organization_service = legacy
+        .core_services
+        .organization_service
+        .clone()
+        .expect("organization_service must be composed for a freshly bootstrapped app");
+    let rule = arclain_core::OrganizationRule {
+        id: 0,
+        name: "standard-layout".to_string(),
+        priority: 0,
+        is_enabled: true,
+        trigger: arclain_core::RuleTrigger::default(),
+        actions: arclain_core::RuleActions {
+            root_folder: Some("$product_id".to_string()),
+            output_name: None,
+            move_files: vec![arclain_core::MoveAction {
+                pattern: "**".to_string(),
+                target: String::new(),
+            }],
+            use_standard_layout: true,
+        },
+    };
+    let rule_id = organization_service
+        .save_domain_rule(&rule)
+        .expect("seeding the standard-layout organization rule must succeed");
+
+    let dbs = legacy
+        .dbs
+        .expect("dbs must be available on the first take_legacy_composition call");
+    let mut conn = dbs.config_pool.get().expect("get a pooled connection");
+    let profile = arclain_core::features::organization::ArchiveProfile {
+        id: 0,
+        name: "standard-layout-profile".to_string(),
+        description: None,
+        format: arclain_core::features::organization::ArchiveFormat::Zip,
+        compression_level: 1,
+        compression_method: None,
+        solid_archive: false,
+        encrypt_headers: false,
+        is_default: false,
+        is_system: false,
+    };
+    let profile_id = arclain_core::save_profile(&mut conn, &profile.to_db())
+        .expect("seed the standard-layout archive profile");
+
+    (rule_id, profile_id)
+}
+
 /// Seeds only a rule (no profile) -- used by the "unknown profile id"
 /// validation test, which needs a real rule but a deliberately-absent
 /// profile.
@@ -1278,10 +1341,10 @@ fn start_organize_extraction_failure_leaves_destination_untouched() {
         );
     });
 
-    // `execute_organization_plan` extracts first and packs last; a
-    // failure this early (the fake backend's `list` always errors) means
-    // the pack step -- the only step that would ever touch `destination`
-    // -- is never reached at all.
+    // An organize run extracts first and packs last; a failure this
+    // early (the fake backend's `list` always errors) means the pack
+    // step -- the only step that would ever touch `destination` -- is
+    // never reached at all.
     assert!(
         !destination.exists(),
         "a failed listing must never create a partial destination"
@@ -1800,6 +1863,336 @@ fn start_organize_and_start_pipeline_agree_on_the_metadata_driven_stem() {
         "pipeline must resolve the identical title-based stem for the same seeded metadata -- \
          if this fails while organize's own file above exists, the two resolve_metadata copies \
          have drifted out of sync"
+    );
+}
+
+/// A test backend that really reads and really writes ZIPs, through the
+/// same `zip` dev-dependency [`build_zip_fixture`] writes fixtures with.
+///
+/// [`FakeExtractBackend`] cannot serve a layout comparison:
+/// its `list` answers one fixed entry and its `extract_all` writes one
+/// fixed file whatever the input holds, so every fixture collapses to
+/// the same single-file tree and no disagreement about *where* content
+/// lives can be observed at all. The real `ZipBackend` is read-only, and
+/// a real 7-Zip is not present on every machine, so the packing half is
+/// implemented here rather than depended on.
+struct RealZipBackend;
+
+impl RealZipBackend {
+    fn handle() -> std::sync::Arc<dyn ArchiveBackend> {
+        std::sync::Arc::new(Self)
+    }
+
+    /// Append `source` to `writer` under the archive-relative `name`,
+    /// recursing so a packed directory keeps its own subtree.
+    fn append<W: std::io::Write + std::io::Seek>(
+        writer: &mut zip::ZipWriter<W>,
+        source: &Path,
+        name: &str,
+    ) -> anyhow::Result<()> {
+        if source.is_dir() {
+            let mut children = std::fs::read_dir(source)?.collect::<std::io::Result<Vec<_>>>()?;
+            children.sort_by_key(|entry| entry.file_name());
+            for child in children {
+                let child_name = format!("{name}/{}", child.file_name().to_string_lossy());
+                Self::append(writer, &child.path(), &child_name)?;
+            }
+            return Ok(());
+        }
+        writer.start_file(name, zip::write::SimpleFileOptions::default())?;
+        std::io::Write::write_all(writer, &std::fs::read(source)?)?;
+        Ok(())
+    }
+}
+
+impl ArchiveBackend for RealZipBackend {
+    fn name(&self) -> &str {
+        "real-zip"
+    }
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::read_only()
+    }
+    fn identify(&self, _path: &Path) -> anyhow::Result<ArchiveKind> {
+        Ok(ArchiveKind::Zip)
+    }
+    fn list(&self, path: &Path, _password: Option<&str>) -> anyhow::Result<ArchiveInfo> {
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
+        let mut entries = Vec::new();
+        for index in 0..archive.len() {
+            let entry = archive.by_index(index)?;
+            entries.push(arclain_core::ArchiveEntry {
+                path: entry.name().replace('\\', "/"),
+                size: entry.size(),
+                packed_size: entry.compressed_size(),
+                is_dir: entry.is_dir(),
+                encrypted: false,
+                modified: None,
+                crc32: None,
+            });
+        }
+        Ok(ArchiveInfo {
+            archive_path: path.to_path_buf(),
+            archive_kind: ArchiveKind::Zip,
+            entries,
+            encrypted: false,
+            headers_encrypted: false,
+            encryption_method: None,
+        })
+    }
+    fn extract_all(&self, path: &Path, dest: &Path, _password: Option<&str>) -> anyhow::Result<()> {
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
+        std::fs::create_dir_all(dest)?;
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index)?;
+            let relative = entry.name().replace('\\', "/");
+            let out = dest.join(&relative);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&out)?;
+                continue;
+            }
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut file = std::fs::File::create(&out)?;
+            std::io::copy(&mut entry, &mut file)?;
+        }
+        Ok(())
+    }
+    fn extract_files(
+        &self,
+        _p: &Path,
+        _d: &Path,
+        _f: &[String],
+        _pw: Option<&str>,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn extract_directory(
+        &self,
+        _p: &Path,
+        _d: &Path,
+        _dp: &str,
+        _pw: Option<&str>,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn recompress_7z(&self, _s: &Path, _d: &Path) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn add_files(&self, _a: &Path, _f: &[PathBuf]) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn create_archive(&self, dest: &Path, files: &[PathBuf], _format: &str) -> anyhow::Result<()> {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(dest)?);
+        for item in files {
+            let name = item
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| anyhow::anyhow!("packing a non-Unicode top-level item"))?
+                .to_string();
+            Self::append(&mut writer, item, &name)?;
+        }
+        writer.finish()?;
+        Ok(())
+    }
+    fn read_text_file(&self, _a: &Path, _p: &str, _pw: Option<&str>) -> anyhow::Result<String> {
+        unimplemented!()
+    }
+    fn delete_files(&self, _a: &Path, _f: &[String]) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn add_or_update_file_from_str(&self, _a: &Path, _p: &str, _c: &str) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn convert_to_7z(
+        &self,
+        _s: &arclain_core::Archive,
+        _d: &Path,
+        _t: &Path,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn crc32_of_entry(&self, _a: &Path, _p: &str, _pw: Option<&str>) -> anyhow::Result<String> {
+        unimplemented!()
+    }
+}
+
+/// The single archive a run wrote into `dir`. Panics if there is not
+/// exactly one, so a run that wrote nothing fails here rather than in a
+/// confusing comparison below.
+fn only_archive_in(dir: &Path) -> PathBuf {
+    let mut found: Vec<_> = std::fs::read_dir(dir)
+        .expect("output directory must exist")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+    assert_eq!(found.len(), 1, "expected one archive in {}", dir.display());
+    found.pop().unwrap()
+}
+
+/// The single folder a run wrote into `dir`, the folder-output mirror of
+/// [`only_archive_in`].
+fn only_folder_in(dir: &Path) -> PathBuf {
+    let mut found: Vec<_> = std::fs::read_dir(dir)
+        .expect("output directory must exist")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    assert_eq!(found.len(), 1, "expected one folder in {}", dir.display());
+    found.pop().unwrap()
+}
+
+/// Sorted file paths inside a produced zip. Read with the same `zip`
+/// dev-dependency `build_zip_fixture` writes fixtures with, so the test
+/// needs no archive backend of its own.
+fn archive_entry_paths(archive: &Path) -> Vec<String> {
+    let file = std::fs::File::open(archive).expect("opening a produced archive must succeed");
+    let mut zip = zip::ZipArchive::new(file).expect("a produced archive must be a readable zip");
+    let mut found = Vec::new();
+    for index in 0..zip.len() {
+        let entry = zip.by_index(index).unwrap();
+        if !entry.is_dir() {
+            found.push(entry.name().replace('\\', "/"));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Sorted file paths inside a produced folder, relative to it -- the
+/// folder-output counterpart of [`archive_entry_paths`], so an archive
+/// tree and a folder tree can be compared as the same kind of list.
+fn folder_entry_paths(root: &Path) -> Vec<String> {
+    fn walk(root: &Path, current: &Path, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(current).expect("reading a produced folder must succeed") {
+            let entry = entry.expect("reading a produced folder entry must succeed");
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, found);
+            } else {
+                found.push(
+                    path.strip_prefix(root)
+                        .expect("a walked path is under the walked root")
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(root, root, &mut found);
+    found.sort();
+    found
+}
+
+/// The same rule on the same archive must produce the same tree whether
+/// it was reached through the standalone organize operation or through a
+/// pipeline's organize step. The two used to apply the same plan by
+/// different means: the pipeline applied its move list, while organize
+/// discarded the moves whenever the rule set `use_standard_layout` and
+/// ran `find_and_flatten_game_content` over the extracted tree instead,
+/// from a second, independent content-root detection.
+///
+/// The fixture is what makes the two disagree, and the disagreement is
+/// not subtle: a launcher `.exe` sitting in the wrapper folder beside
+/// the real game folder. The plan's detection scores each directory by
+/// the indicators of the files directly in it, so `[v1.2] Placeholder
+/// Game` (a named `Game.exe` plus a `data` folder) outscores the wrapper
+/// and the moves strip the wrapper away. The flattener walks down and
+/// stops at the *first* directory holding any `.exe` at all, which is
+/// the wrapper -- so it keeps `[v1.2] Placeholder Game` as a directory
+/// inside `Game/`, and sweeps `setup.exe` and `readme.txt` in with it.
+#[test]
+fn organize_and_pipeline_produce_the_same_tree_for_one_rule() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app_ex(&temp, Some(RealZipBackend::handle()));
+    let (rule_id, profile_id) = seed_standard_layout_rule(&app);
+
+    let source = build_zip_fixture(
+        temp.path(),
+        "[RJ123456] Placeholder Game.zip",
+        &[
+            ("RJ123456/setup.exe", b"exe"),
+            ("RJ123456/[v1.2] Placeholder Game/Game.exe", b"exe"),
+            ("RJ123456/[v1.2] Placeholder Game/data/pack.bin", b"bin"),
+            ("RJ123456/readme.txt", b"readme"),
+        ],
+    );
+
+    let organize_out = temp.path().join("via-organize");
+    let pipeline_out = temp.path().join("via-pipeline");
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![source.clone()],
+                destination: organize_out.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+                archive_session_id: None,
+            })
+            .await
+            .expect("start_organize must be accepted");
+        let (messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            }
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("1 succeeded")),
+            "the organize run must have packed its input, got: {messages:?}"
+        );
+    });
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_pipeline(PipelineRequest {
+                inputs: PipelineInputsDto::Files {
+                    paths: vec![source.clone()],
+                },
+                destination: PipelineDestinationDto::Folder {
+                    path: pipeline_out.clone(),
+                },
+                // Folder output, not Archive: the Archive branch packs
+                // through a real 7-Zip CLI this suite cannot depend on,
+                // and the tree being compared is the same either way.
+                pipeline: PipelineSpecDto::Steps {
+                    steps: vec![PipelineStepDto::Organize {
+                        rule_id: rule_id.to_string(),
+                    }],
+                    output_artifact: OutputArtifactDto::Folder,
+                },
+                collision_policy: None,
+            })
+            .await
+            .expect("start_pipeline must be accepted");
+        let (messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            },
+            "messages: {messages:?}"
+        );
+    });
+
+    // One run writes an archive and the other a folder, so compare the
+    // file paths each layout holds rather than the containers.
+    assert_eq!(
+        archive_entry_paths(&only_archive_in(&organize_out)),
+        folder_entry_paths(&only_folder_in(&pipeline_out)),
+        "the same rule must lay out the same files on both paths"
     );
 }
 
@@ -2663,8 +3056,8 @@ fn report_plugin_title(
 ///
 /// Asserted against what the run actually produced, not against a
 /// progress message: the fake backend's "pack" writes a marker naming
-/// the directories it was handed, which for `execute_organization_plan`
-/// is the organized root folder itself.
+/// the directories it was handed, which for an organize run is the
+/// organized root folder itself.
 ///
 /// Needs the library half of the disagreement, so it needs the feature
 /// that provides the library.

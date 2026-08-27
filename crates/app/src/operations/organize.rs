@@ -49,9 +49,9 @@
 //! operation starts, so a metadata write landing mid-run cannot change
 //! the plan out from under it either).
 //!
-//! **This flow has no output transaction.** `execute_organization_plan`
-//! (the pure core function this now calls, matching the quick action
-//! exactly) extracts, applies the plan, and packs the result via
+//! **This flow has no output transaction.** It extracts, resolves the
+//! plan's downloads, applies the plan through the shared applier, and
+//! packs the result via
 //! `archive.backend().create_archive_with_profile(...)` directly onto
 //! `dest` -- no `StagedOutput`, no atomic commit, no rollback. This
 //! matches the pre-facade quick action's own behavior precisely (it

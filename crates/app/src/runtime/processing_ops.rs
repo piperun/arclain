@@ -32,11 +32,9 @@
 //! organization_controller.rs::ActionContext::handle` reads a rule (for
 //! layout) and a profile (for output format/compression) from two
 //! independent UI selections, builds an `OrganizationPlan` via
-//! `RuleEngine::create_plan`, and calls `arclain_core::features::
-//! organization::execute_organization_plan(&archive, dest, &plan,
-//! temp_dir, profile)` -- a pure core function with **no output
-//! transaction at all**: it extracts, applies the plan, and packs
-//! straight onto `dest` via `archive.backend().
+//! `RuleEngine::create_plan`, and applies it with **no output
+//! transaction at all**: extract, resolve the plan's downloads, apply
+//! the plan, then pack straight onto `dest` via `archive.backend().
 //! create_archive_with_profile(...)`. `OrganizeRequest` wraps *this*
 //! flow, matching the quick action exactly (down to reusing
 //! `archive.backend()` -- whichever backend `ctx.backend_for` resolved
@@ -60,7 +58,7 @@
 //!   completion) while making that per-file granularity newly
 //!   cancellable at the boundary between files. `run_organize` uses the
 //!   same per-file loop shape for the same reason, even though its inner
-//!   call (`execute_organization_plan`) is a single opaque blocking call
+//!   work ([`pack_organize_input`]) is a single opaque blocking call
 //!   with no progress callback at all.
 //! - **Progress translation (Convert/Pipeline).** Each per-file
 //!   `execute_pipeline` call's `PipelineProgress` stream is bridged into
@@ -400,7 +398,7 @@ async fn run_pipeline_over_inputs(
     // registered. Pinned by `process_facade.rs::
     // an_archive_less_folder_warns_in_the_preview_and_completes_the_run`.
     let total = inputs.len() as u64;
-    let ctx_guard = PipelineContextGuard::new(build_pipeline_context(inner));
+    let ctx_guard = OffReactorDrop::new(build_pipeline_context(inner));
     let ctx = ctx_guard.get();
     let temp_root = std::env::temp_dir();
 
@@ -704,10 +702,10 @@ fn build_pipeline_context(inner: &Arc<AppRuntime>) -> PipelineContext {
     }
 }
 
-/// Holds the per-operation `PipelineContext` and releases the last
-/// reference to it off the async task that built it.
+/// Holds a per-operation context and releases the last reference to it
+/// off the async task that built it.
 ///
-/// The context owns the download fetcher, the fetcher owns a `reqwest`
+/// A context owns the download fetcher, the fetcher owns a `reqwest`
 /// blocking client, and that client's teardown joins the thread running
 /// its private runtime. Each per-file `ctx.clone()` is already moved
 /// into a `spawn_blocking` closure and dropped there, but the original
@@ -716,25 +714,27 @@ fn build_pipeline_context(inner: &Arc<AppRuntime>) -> PipelineContext {
 /// forced construction to be deferred (see `build_download_fetcher`);
 /// this is the other half of it.
 ///
-/// Every early return from `run_pipeline_over_inputs` runs this `Drop`,
-/// so the rule lives in one place rather than at each exit.
-struct PipelineContextGuard {
-    ctx: Option<PipelineContext>,
+/// Every early return from the function holding the guard runs this
+/// `Drop`, so the rule lives in one place rather than at each exit.
+/// Generic because Pipeline and Organize each carry their own context
+/// type and each reaches the same fetcher through it.
+struct OffReactorDrop<T: Send + 'static> {
+    ctx: Option<T>,
 }
 
-impl PipelineContextGuard {
-    fn new(ctx: PipelineContext) -> Self {
+impl<T: Send + 'static> OffReactorDrop<T> {
+    fn new(ctx: T) -> Self {
         Self { ctx: Some(ctx) }
     }
 
-    fn get(&self) -> &PipelineContext {
+    fn get(&self) -> &T {
         self.ctx
             .as_ref()
             .expect("the context is taken only while dropping the guard")
     }
 }
 
-impl Drop for PipelineContextGuard {
+impl<T: Send + 'static> Drop for OffReactorDrop<T> {
     fn drop(&mut self) {
         let Some(ctx) = self.ctx.take() else {
             return;
@@ -746,10 +746,17 @@ impl Drop for PipelineContextGuard {
         // OS refuses the thread, `ctx` drops here instead -- the same
         // behavior as before this guard existed.
         let _ = std::thread::Builder::new()
-            .name("arclain-pipeline-ctx-drop".to_string())
+            .name("arclain-operation-ctx-drop".to_string())
             .spawn(move || drop(ctx));
     }
 }
+
+/// The transport a plan's scheduled screenshots are resolved through.
+/// Named once because both context types carry one -- `PipelineContext`
+/// for the pipeline's `Organize` step, [`OrganizeContext`] for the
+/// standalone operation -- and they must be the same type for
+/// [`build_download_fetcher`] to serve both.
+type DownloadFetcher = Arc<dyn Fn(&PendingDownload) -> anyhow::Result<Vec<u8>> + Send + Sync>;
 
 /// The transport an `Organize` step's scheduled screenshots are resolved
 /// through: the app's content cache first, HTTP for anything it doesn't
@@ -773,9 +780,7 @@ impl Drop for PipelineContextGuard {
 /// Building the client can still fail (a broken TLS configuration); that
 /// failure is reported per download rather than propagated, because it
 /// must not stop a pipeline whose other steps need no network at all.
-fn build_download_fetcher(
-    inner: &Arc<AppRuntime>,
-) -> Arc<dyn Fn(&PendingDownload) -> anyhow::Result<Vec<u8>> + Send + Sync> {
+fn build_download_fetcher(inner: &Arc<AppRuntime>) -> DownloadFetcher {
     type Downloader = Box<dyn Fn(&PendingDownload) -> anyhow::Result<Vec<u8>> + Send + Sync>;
 
     let content_cache = inner.content_cache().cloned();
@@ -1138,6 +1143,12 @@ struct OrganizeContext {
     library_service: Option<Arc<LibraryService>>,
     organization_service: Option<Arc<OrganizationService>>,
     config_db_path: Option<PathBuf>,
+    /// The transport a plan's scheduled screenshots are resolved
+    /// through -- the same [`build_download_fetcher`] the pipeline's
+    /// `Organize` step reaches through `PipelineContext::fetch_download`.
+    /// One fetcher means one cache policy and one set of network
+    /// bounds, whichever path organizes the archive.
+    fetch_download: DownloadFetcher,
 }
 
 fn build_organize_context(inner: &Arc<AppRuntime>) -> OrganizeContext {
@@ -1152,6 +1163,7 @@ fn build_organize_context(inner: &Arc<AppRuntime>) -> OrganizeContext {
             .db_paths
             .as_ref()
             .map(|paths| paths.config_db.clone()),
+        fetch_download: build_download_fetcher(inner),
     }
 }
 
@@ -1437,7 +1449,8 @@ async fn run_organize_for_real(
     sources: &OrganizeSources,
 ) {
     let total = sources.inputs.len() as u64;
-    let ctx = build_organize_context(inner);
+    let ctx_guard = OffReactorDrop::new(build_organize_context(inner));
+    let ctx = ctx_guard.get();
     let temp_root = std::env::temp_dir();
     let destination = request.destination.clone();
     let rule_id = parsed_ids.rule_id;
@@ -1470,7 +1483,7 @@ async fn run_organize_for_real(
             inner,
             operation_id,
             &input,
-            &ctx,
+            ctx,
             sources.seed_password.as_deref(),
         )
         .await
@@ -1564,8 +1577,8 @@ async fn run_organize_for_real(
 
     // No "skipped" count here (unlike Convert/Pipeline's three-part
     // summary): Organize has no `OutputCollisionPolicy` concept at all
-    // -- `execute_organization_plan` always attempts the write, matching
-    // the pre-facade quick action's own behavior.
+    // -- `pack_organize_input` always attempts the write, matching the
+    // pre-facade quick action's own behavior.
     let summary = format!("{succeeded} succeeded, {failed} failed");
     emit_progress(inner, operation_id, processed, total, Some(summary)).await;
     let _ = inner
@@ -1648,14 +1661,44 @@ fn pack_organize_input(
         }
         None => arclain_core::Archive::new(backend, input.to_path_buf()),
     };
-    arclain_core::features::organization::execute_organization_plan(
+
+    // Extract -> stage the plan's downloads -> apply the plan -> pack.
+    // The middle two steps are `arclain_core`'s single applier, the one
+    // the pipeline's `Organize` step runs, so a rule laid out one way
+    // there is laid out the same way here.
+    let work_dir =
+        arclain_core::features::organization::tasks::OwnedWorkDir::new(temp_root, "arc")?;
+    archive
+        .extract_all(work_dir.path())
+        .context("extracting source archive")?;
+
+    // The staging root is the directory the applier is handed: it
+    // resolves every move source under that directory, and a staged
+    // screenshot arrives as an ordinary move. Stage anywhere else and
+    // each of those moves resolves to nothing and is skipped silently.
+    let staged = arclain_core::features::organization::downloads::stage_plan_downloads(
+        &plan,
+        work_dir.path(),
+        &|download| (ctx.fetch_download)(download),
+    )
+    .context("staging plan downloads")?;
+    for (url, dest_path, reason) in &staged.unfetched {
+        tracing::warn!("[organize] screenshot not fetched: {dest_path} ({url}): {reason}");
+    }
+
+    arclain_core::features::pipeline::apply_plan::apply_plan_to_workdir(
+        &staged.plan,
+        work_dir.path(),
+    )
+    .context("applying organization plan")?;
+
+    arclain_core::features::organization::organizer::pack_work_dir(
         &archive,
         &dest_path,
-        &plan,
-        temp_root,
+        work_dir.path(),
         Some(&profile),
     )
-    .context("executing organization plan")?;
+    .context("packing organized archive")?;
     Ok(dest_path)
 }
 
@@ -1719,7 +1762,8 @@ async fn run_organize_dry_run(
     sources: &OrganizeSources,
 ) {
     let total = sources.inputs.len() as u64;
-    let ctx = build_organize_context(inner);
+    let ctx_guard = OffReactorDrop::new(build_organize_context(inner));
+    let ctx = ctx_guard.get();
     let rule_id = parsed_ids.rule_id;
     let profile_id = parsed_ids.profile_id;
     let destination = request.destination.clone();
@@ -1738,7 +1782,7 @@ async fn run_organize_dry_run(
             inner,
             operation_id,
             &input,
-            &ctx,
+            ctx,
             sources.seed_password.as_deref(),
         )
         .await
