@@ -50,6 +50,11 @@ steps:
       - apt-get install -yqq
           libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev
           libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+      # The rust images install a minimal toolchain, so `cargo fmt`
+      # is missing until rustfmt is added. rustup's home is
+      # /usr/local/rustup and root-owned in these images, so this has
+      # to run before the drop to runner below.
+      - rustup component add rustfmt
       # Run as non-root so target/ ownership matches cargo-test (also
       # non-root). Without this they race on /workspace/.../target/.cargo-lock
       # — cargo-check writes as root, cargo-test reads as runner, EACCES.

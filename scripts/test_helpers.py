@@ -205,6 +205,31 @@ class TestOwnedFormatting(unittest.TestCase):
         self.assertEqual(step.count(cargo_command), 1)
         self.assertLess(step.index(format_command), step.index(cargo_command))
 
+    def test_woodpecker_installs_rustfmt_before_the_format_check(self):
+        # The official rust images install a minimal toolchain, so
+        # `cargo fmt` is absent until the component is added. rustup's
+        # home is root-owned in those images, so the install has to run
+        # before the step drops to the runner user.
+        lines = (REPO_ROOT / ".woodpecker.yml").read_text(
+            encoding="utf-8",
+        ).splitlines()
+        step_start = lines.index("  cargo-check:")
+        step_end = lines.index("  cargo-test:")
+        step = lines[step_start:step_end]
+        install_command = "      - rustup component add rustfmt"
+        drop_command = "      - useradd -m runner"
+        format_command = (
+            '      - su runner -c "cd /workspace/codeberg/arclain && '
+            'python3 scripts/_format.py --check"'
+        )
+
+        self.assertEqual(step.count(install_command), 1)
+        self.assertLess(step.index(install_command), step.index(drop_command))
+        self.assertLess(
+            step.index(install_command),
+            step.index(format_command),
+        )
+
     def test_woodpecker_future_incompat_check_uses_exact_rust_1_98_0(self):
         lines = (REPO_ROOT / ".woodpecker.yml").read_text(
             encoding="utf-8",
