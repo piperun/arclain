@@ -60,7 +60,7 @@ fn render_plugin_card(
         .inner_margin(spacing::CARD)
         .corner_radius(6.0)
         .stroke(egui::Stroke::new(
-            1.0,
+            1.0_f32,
             theme.colors.outline.linear_multiply(0.2),
         ))
         .show(ui, |ui| {
@@ -122,7 +122,7 @@ fn render_status_icon(
         // DISABLED State (Power Icon, Gray)
         let color = theme.colors.outline;
         ui.painter()
-            .circle_stroke(center, 8.0, egui::Stroke::new(1.5, color));
+            .circle_stroke(center, 8.0, egui::Stroke::new(1.5_f32, color));
         ui.painter().text(
             center,
             egui::Align2::CENTER_CENTER,
@@ -139,7 +139,7 @@ fn render_status_icon(
                 ui.painter()
                     .circle_filled(center, 10.0, status_color.linear_multiply(0.2));
                 ui.painter()
-                    .circle_stroke(center, 8.0, egui::Stroke::new(2.0, status_color));
+                    .circle_stroke(center, 8.0, egui::Stroke::new(2.0_f32, status_color));
                 ui.painter().text(
                     center,
                     egui::Align2::CENTER_CENTER,
@@ -151,7 +151,7 @@ fn render_status_icon(
             PluginStatus::Loading => {
                 // Loading (Blue + Spinner)
                 ui.painter()
-                    .circle_stroke(center, 8.0, egui::Stroke::new(1.5, status_color));
+                    .circle_stroke(center, 8.0, egui::Stroke::new(1.5_f32, status_color));
                 ui.painter().text(
                     center,
                     egui::Align2::CENTER_CENTER,
@@ -165,7 +165,7 @@ fn render_status_icon(
                 ui.painter()
                     .circle_filled(center, 8.0, status_color.linear_multiply(0.2));
                 ui.painter()
-                    .circle_stroke(center, 8.0, egui::Stroke::new(1.5, status_color));
+                    .circle_stroke(center, 8.0, egui::Stroke::new(1.5_f32, status_color));
                 ui.painter().text(
                     center,
                     egui::Align2::CENTER_CENTER,
@@ -176,7 +176,7 @@ fn render_status_icon(
             }
             _ => {
                 ui.painter()
-                    .circle_stroke(center, 6.0, egui::Stroke::new(1.0, status_color));
+                    .circle_stroke(center, 6.0, egui::Stroke::new(1.0_f32, status_color));
             }
         }
     }

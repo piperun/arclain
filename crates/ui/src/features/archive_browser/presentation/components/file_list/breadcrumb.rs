@@ -44,7 +44,7 @@ pub fn render_breadcrumb(
                     egui::pos2(rect.min.x, rect.max.y),
                     egui::pos2(rect.max.x, rect.max.y),
                 ],
-                egui::Stroke::new(1.0, theme.colors.on_surface),
+                egui::Stroke::new(1.0_f32, theme.colors.on_surface),
             );
         }
 
@@ -235,7 +235,7 @@ fn render_breadcrumb_segment(
                 egui::pos2(rect.min.x, rect.max.y),
                 egui::pos2(rect.max.x, rect.max.y),
             ],
-            egui::Stroke::new(1.0, text_color),
+            egui::Stroke::new(1.0_f32, text_color),
         );
     }
 

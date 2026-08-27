@@ -607,7 +607,7 @@ fn render_tab_chip(
         rect,
         egui::CornerRadius::same(TAB_CORNER_RADIUS),
         bg_fill,
-        egui::Stroke::new(1.0, stroke_color),
+        egui::Stroke::new(1.0_f32, stroke_color),
         egui::StrokeKind::Middle,
     );
 
@@ -758,7 +758,7 @@ fn render_chevron_button(ui: &mut egui::Ui, theme: &ThemeColors) -> egui::Respon
         rect,
         egui::CornerRadius::same(TAB_CORNER_RADIUS),
         bg_fill,
-        egui::Stroke::new(1.0, stroke_color),
+        egui::Stroke::new(1.0_f32, stroke_color),
         egui::StrokeKind::Middle,
     );
     paint_text_visually_centered(
@@ -791,7 +791,7 @@ fn render_plus_button(ui: &mut egui::Ui, theme: &ThemeColors) -> egui::Response 
         rect,
         egui::CornerRadius::same(TAB_CORNER_RADIUS),
         bg_fill,
-        egui::Stroke::new(1.0, stroke_color),
+        egui::Stroke::new(1.0_f32, stroke_color),
         egui::StrokeKind::Middle,
     );
     paint_text_visually_centered(

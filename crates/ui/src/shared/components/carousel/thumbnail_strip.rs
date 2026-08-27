@@ -145,7 +145,7 @@ impl<'a> ThumbnailStrip<'a> {
                             colors.outline_variant
                         };
 
-                        let border_width = if is_selected { 2.0 } else { 1.0 };
+                        let border_width = if is_selected { 2.0_f32 } else { 1.0_f32 };
 
                         // Background
                         ui.painter().rect_filled(

@@ -36,7 +36,7 @@ pub fn render_form(ui: &mut egui::Ui, theme: &AppTheme, dialog: &mut PasswordRul
     // Form Container
     egui::Frame::NONE
         .fill(theme.colors.surface_variant)
-        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+        .stroke(egui::Stroke::new(1.0_f32, theme.colors.outline))
         .corner_radius(8.0)
         .inner_margin(16.0)
         .show(ui, |ui| {

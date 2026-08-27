@@ -152,7 +152,7 @@ fn paint_row_selection(
     painter.rect_filled(fill_rect, 0.0, fill_color);
 
     let stroke_color = theme.colors.selection.linear_multiply(0.35);
-    let stroke = egui::Stroke::new(1.0, stroke_color);
+    let stroke = egui::Stroke::new(1.0_f32, stroke_color);
 
     if !prev_selected {
         let y = fill_rect.min.y + 0.5;

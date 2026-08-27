@@ -197,7 +197,7 @@ fn render_selected_item_chip(ui: &mut egui::Ui, theme: &AppTheme, meta: &Product
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style())
                     .fill(theme.colors.surface)
-                    .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+                    .stroke(egui::Stroke::new(1.0_f32, theme.colors.outline))
                     .inner_margin(egui::Margin::same(10))
                     .show(ui, |ui| {
                         ui.set_min_width(280.0);

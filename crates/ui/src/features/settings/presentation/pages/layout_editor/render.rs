@@ -98,7 +98,7 @@ fn render_horizontal_preview<R: Region>(
 ) {
     egui::Frame::NONE
         .fill(theme.colors.surface_variant)
-        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+        .stroke(egui::Stroke::new(1.0_f32, theme.colors.outline))
         .inner_margin(spacing::CARD)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -143,7 +143,7 @@ fn render_horizontal_preview<R: Region>(
                         theme.colors.surface
                     };
                     let stroke = if is_selected {
-                        egui::Stroke::new(2.0, theme.colors.primary)
+                        egui::Stroke::new(2.0_f32, theme.colors.primary)
                     } else {
                         egui::Stroke::NONE
                     };
@@ -193,7 +193,7 @@ fn render_vertical_preview(
     ui.vertical_centered(|ui| {
         egui::Frame::NONE
             .fill(theme.colors.surface_variant)
-            .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+            .stroke(egui::Stroke::new(1.0_f32, theme.colors.outline))
             .inner_margin(spacing::CARD)
             .show(ui, |ui| {
                 ui.set_width(300.0);
@@ -218,7 +218,7 @@ fn render_vertical_preview(
                         let section_btn = egui::Frame::NONE
                             .fill(bg)
                             .stroke(egui::Stroke::new(
-                                if is_selected { 2.0 } else { 1.0 },
+                                if is_selected { 2.0_f32 } else { 1.0_f32 },
                                 if is_selected {
                                     theme.colors.primary
                                 } else {

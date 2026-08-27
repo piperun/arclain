@@ -76,7 +76,7 @@ pub fn render_rule_list(
             egui::Frame::NONE
                 .fill(bg_color)
                 .inner_margin(egui::Margin::symmetric(8, 6))
-                .stroke(egui::Stroke::new(0.5, theme.colors.outline))
+                .stroke(egui::Stroke::new(0.5_f32, theme.colors.outline))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.set_min_width(content_width - 20.0);

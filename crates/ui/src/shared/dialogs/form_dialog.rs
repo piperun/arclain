@@ -293,7 +293,7 @@ impl FormDialog {
             .show(ctx, |ui| {
                 egui::Frame::NONE
                     .fill(theme.colors.surface)
-                    .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+                    .stroke(egui::Stroke::new(1.0_f32, theme.colors.outline))
                     .corner_radius(8.0)
                     .inner_margin(20.0)
                     .show(ui, |ui| {

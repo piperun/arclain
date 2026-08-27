@@ -141,7 +141,7 @@ fn render_plugin_card(
             theme.colors.surface_variant
         })
         .stroke(egui::Stroke::new(
-            1.0,
+            1.0_f32,
             if is_selected {
                 theme.colors.secondary
             } else {

@@ -175,7 +175,7 @@ impl ItemTable {
         if items.is_empty() {
             // Empty state
             egui::Frame::NONE
-                .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+                .stroke(egui::Stroke::new(1.0_f32, theme.colors.outline))
                 .corner_radius(egui::CornerRadius::ZERO) // Y2K: zero radius
                 .inner_margin(20.0)
                 .show(ui, |ui| {
@@ -190,7 +190,7 @@ impl ItemTable {
         } else {
             // Table with data
             egui::Frame::NONE
-                .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+                .stroke(egui::Stroke::new(1.0_f32, theme.colors.outline))
                 .corner_radius(egui::CornerRadius::ZERO) // Y2K: zero radius
                 .inner_margin(4.0)
                 .show(ui, |ui| {

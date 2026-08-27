@@ -112,9 +112,9 @@ fn render_card(
     };
 
     let stroke = if selected {
-        egui::Stroke::new(1.0, theme.colors.primary)
+        egui::Stroke::new(1.0_f32, theme.colors.primary)
     } else if hovered {
-        egui::Stroke::new(1.0, theme.colors.outline)
+        egui::Stroke::new(1.0_f32, theme.colors.outline)
     } else {
         egui::Stroke::NONE
     };

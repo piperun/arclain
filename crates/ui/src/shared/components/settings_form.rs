@@ -194,7 +194,7 @@ impl<'a> SettingsGroup<'a> {
 
         // Y2K: 1px border, zero radius
         egui::Frame::NONE
-            .stroke(egui::Stroke::new(1.0, colors.outline))
+            .stroke(egui::Stroke::new(1.0_f32, colors.outline))
             .inner_margin(spacing::CARD)
             .corner_radius(egui::CornerRadius::ZERO)
             .show(ui, |ui| {

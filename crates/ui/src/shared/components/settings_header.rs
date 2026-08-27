@@ -162,7 +162,7 @@ impl<'a> SettingsHeader<'a> {
                     .stroke(if self.has_changes {
                         egui::Stroke::NONE
                     } else {
-                        egui::Stroke::new(1.0, theme.colors.outline)
+                        egui::Stroke::new(1.0_f32, theme.colors.outline)
                     })
                     .corner_radius(6.0)
                     .min_size(egui::vec2(90.0, 32.0));

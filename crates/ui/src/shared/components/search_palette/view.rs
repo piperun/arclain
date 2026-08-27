@@ -146,7 +146,7 @@ pub fn render_area(
             ui.set_max_width(width);
             egui::Frame::NONE
                 .fill(colors.surface_variant)
-                .stroke(egui::Stroke::new(1.0, colors.outline))
+                .stroke(egui::Stroke::new(1.0_f32, colors.outline))
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(0, 8))
                 .shadow(egui::epaint::Shadow {

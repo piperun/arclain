@@ -349,7 +349,7 @@ pub fn render_path_bar_panel(
             egui::Frame::NONE
                 .fill(shared_state.theme.colors.surface_variant)
                 .inner_margin(egui::Margin::symmetric(16, 8))
-                .stroke(egui::Stroke::new(1.0, shared_state.theme.colors.outline)),
+                .stroke(egui::Stroke::new(1.0_f32, shared_state.theme.colors.outline)),
         )
         .show(ctx, |ui| {
             let tab = shared_state.signals().tabs.get().active().clone();

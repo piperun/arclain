@@ -489,7 +489,7 @@ fn render_section<R>(
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     egui::Frame::NONE
-        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+        .stroke(egui::Stroke::new(1.0_f32, theme.colors.outline))
         .corner_radius(egui::CornerRadius::ZERO)
         .inner_margin(spacing::CARD)
         .show(ui, |ui| {

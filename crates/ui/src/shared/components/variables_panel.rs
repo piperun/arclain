@@ -231,7 +231,10 @@ impl VariablePicker {
                             } else {
                                 egui::Button::new(text)
                                     .fill(egui::Color32::TRANSPARENT)
-                                    .stroke(egui::Stroke::new(1.0, theme.colors.outline_variant))
+                                    .stroke(egui::Stroke::new(
+                                        1.0_f32,
+                                        theme.colors.outline_variant,
+                                    ))
                             };
 
                             if ui.add(button).clicked() {

@@ -128,7 +128,7 @@ impl<'a> NavButton<'a> {
         ui.painter().rect_stroke(
             rect,
             egui::CornerRadius::same(self.style.corner_radius),
-            egui::Stroke::new(1.0, border_color),
+            egui::Stroke::new(1.0_f32, border_color),
             egui::StrokeKind::Inside,
         );
 

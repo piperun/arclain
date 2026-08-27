@@ -196,7 +196,7 @@ pub fn render_extraction_progress_dialog(
             if dlg.show_log {
                 let frame = egui::Frame::new()
                     .fill(theme.colors.surface_variant)
-                    .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+                    .stroke(egui::Stroke::new(1.0_f32, theme.colors.outline))
                     .corner_radius(4.0)
                     .inner_margin(egui::Margin::same(8));
                 frame.show(ui, |ui| {

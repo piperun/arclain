@@ -42,7 +42,7 @@ impl<'a> SettingsCard<'a> {
 
         let card = egui::Frame::NONE
             .fill(colors.surface_variant)
-            .stroke(egui::Stroke::new(1.0, colors.outline))
+            .stroke(egui::Stroke::new(1.0_f32, colors.outline))
             .corner_radius(8.0)
             .inner_margin(20.0)
             .show(ui, |ui| {
@@ -86,7 +86,7 @@ impl<'a> SettingsCard<'a> {
 
         let card = egui::Frame::NONE
             .fill(colors.surface_variant)
-            .stroke(egui::Stroke::new(1.0, colors.outline))
+            .stroke(egui::Stroke::new(1.0_f32, colors.outline))
             .corner_radius(8.0)
             .inner_margin(20.0)
             .show(ui, |ui| {

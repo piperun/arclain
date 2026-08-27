@@ -84,7 +84,7 @@ impl Panel {
     pub fn render(&self, ui: &mut egui::Ui, theme: &AppTheme, shared: Option<&SharedState>) {
         let panel_frame = egui::Frame::NONE
             .fill(theme.colors.surface)
-            .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+            .stroke(egui::Stroke::new(1.0_f32, theme.colors.outline))
             .corner_radius(4.0)
             .inner_margin(egui::Margin::same(0));
 

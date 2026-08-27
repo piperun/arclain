@@ -167,7 +167,7 @@ fn render_connection_status(
 
             egui::Frame::new()
                 .fill(bg_color)
-                .stroke(egui::Stroke::new(1.0, border_color))
+                .stroke(egui::Stroke::new(1.0_f32, border_color))
                 .corner_radius(6.0)
                 .inner_margin(spacing::CARD)
                 .show(ui, |ui| {
@@ -193,7 +193,7 @@ fn render_connection_status(
 
             egui::Frame::new()
                 .fill(bg_color)
-                .stroke(egui::Stroke::new(1.0, border_color))
+                .stroke(egui::Stroke::new(1.0_f32, border_color))
                 .corner_radius(6.0)
                 .inner_margin(spacing::CARD)
                 .show(ui, |ui| {

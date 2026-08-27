@@ -46,7 +46,7 @@ pub fn render_regex_tester_modal(
             ui.painter().rect_stroke(
                 rect,
                 egui::CornerRadius::same(8),
-                egui::Stroke::new(1.0, theme.colors.outline),
+                egui::Stroke::new(1.0_f32, theme.colors.outline),
                 egui::StrokeKind::Outside,
             );
 
