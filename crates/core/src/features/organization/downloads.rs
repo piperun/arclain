@@ -8,30 +8,29 @@
 //! directory. The applier therefore never performs I/O over the network,
 //! and a fetched image is placed and rolled back with everything else.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 
 use crate::features::organization::engine::{OrganizationPlan, PendingDownload};
-
-/// Where staged images are written, relative to the work directory.
-/// Inside the work dir so it is removed with it, and so a path-validated
-/// move can reach it.
-const STAGING_DIR: &str = ".arclain-downloads";
 
 /// A plan whose downloads have been resolved to local files.
 pub struct StagedPlan {
     /// The plan with an empty `downloads` list and one appended move per
     /// image that was fetched.
     pub plan: OrganizationPlan,
-    /// One `(url, reason)` per download that could not be fetched. A
+    /// One `(url, dest_path, reason)` per download that could not be fetched. A
     /// screenshot that fails to arrive does not fail the run; the caller
     /// reports these to its own progress log.
-    pub unfetched: Vec<(String, String)>,
+    pub unfetched: Vec<(String, String, String)>,
 }
 
 /// Fetch every download the plan schedules into a staging directory
 /// inside `work_dir`, and return the plan with each download rewritten
 /// as an ordinary move from that staging path.
+///
+/// The staging directory is created under `work_dir` with a randomized
+/// name and persists after this function returns; the applier will move
+/// files out of it, resolving each move source relative to `work_dir`.
 ///
 /// `fetch` is supplied by the caller so the cache and transport are the
 /// caller's concern: the application consults its content cache and
@@ -54,20 +53,41 @@ pub fn stage_plan_downloads(
         });
     }
 
-    let staging = work_dir.join(STAGING_DIR);
-    std::fs::create_dir_all(&staging)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".arclain-downloads-")
+        .tempdir_in(work_dir)?
+        .keep();
+    let staging_name = staging
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("staging directory name is not valid UTF-8")?
+        .to_string();
 
     for (index, download) in plan.downloads.iter().enumerate() {
         match fetch(download) {
             Ok(bytes) => {
                 let name = format!("{index:03}");
-                std::fs::write(staging.join(&name), &bytes)?;
-                staged
-                    .moves
-                    .push((format!("{STAGING_DIR}/{name}"), download.dest_path.clone()));
+                match std::fs::write(staging.join(&name), &bytes) {
+                    Ok(_) => {
+                        staged
+                            .moves
+                            .push((format!("{staging_name}/{name}"), download.dest_path.clone()));
+                    }
+                    Err(error) => {
+                        unfetched.push((
+                            download.url.clone(),
+                            download.dest_path.clone(),
+                            format!("{error:#}"),
+                        ));
+                    }
+                }
             }
             Err(error) => {
-                unfetched.push((download.url.clone(), format!("{error:#}")));
+                unfetched.push((
+                    download.url.clone(),
+                    download.dest_path.clone(),
+                    format!("{error:#}"),
+                ));
             }
         }
     }
@@ -78,19 +98,21 @@ pub fn stage_plan_downloads(
     })
 }
 
-/// The transport `execute_organization_plan` used, kept so the
-/// application's own `fetch` can fall back to it on a cache miss without
-/// arclain_app taking a direct HTTP dependency.
-pub fn fetch_download_over_http(download: &PendingDownload) -> Result<Vec<u8>> {
+/// One HTTP fetcher for a whole plan's downloads, holding a single
+/// client so a batch from one host reuses its connection rather than
+/// re-handshaking per image.
+pub fn http_downloader() -> Result<impl Fn(&PendingDownload) -> Result<Vec<u8>>> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .user_agent("Arclain/1.0")
         .build()?;
-    let response = client.get(&download.url).send()?;
-    if !response.status().is_success() {
-        anyhow::bail!("status {}", response.status());
-    }
-    Ok(response.bytes()?.to_vec())
+    Ok(move |download: &PendingDownload| {
+        let response = client.get(&download.url).send()?;
+        if !response.status().is_success() {
+            anyhow::bail!("status {}", response.status());
+        }
+        Ok(response.bytes()?.to_vec())
+    })
 }
 
 #[cfg(test)]
@@ -142,7 +164,7 @@ mod tests {
             .iter()
             .find(|(_, d)| d == "Root/screenshots/image_001.jpg")
             .expect("the download must appear as a move to its declared destination");
-        assert_eq!(source, ".arclain-downloads/000");
+        assert!(source.ends_with("/000"), "source must end with /000");
         assert_eq!(destination, "Root/screenshots/image_001.jpg");
         assert_eq!(
             std::fs::read(work.path().join(source)).unwrap(),
@@ -170,7 +192,8 @@ mod tests {
             staged.unfetched[0].0,
             "https://img.example.test/RJ123456_img_main.jpg"
         );
-        assert!(staged.unfetched[0].1.contains("connection refused"));
+        assert_eq!(staged.unfetched[0].1, "Root/screenshots/image_001.jpg");
+        assert!(staged.unfetched[0].2.contains("connection refused"));
     }
 
     #[test]
@@ -183,6 +206,108 @@ mod tests {
             .expect("staging must succeed");
 
         assert_eq!(staged.plan.moves, plan.moves);
-        assert!(!work.path().join(".arclain-downloads").exists());
+        // The staging directory is not created if there are no downloads
+        let staging_exists = work
+            .path()
+            .read_dir()
+            .ok()
+            .map(|mut entries| {
+                entries.any(|e| {
+                    if let Ok(entry) = e {
+                        if let Some(name) = entry.file_name().to_str() {
+                            name.starts_with(".arclain-downloads-")
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                })
+            })
+            .unwrap_or(false);
+        assert!(!staging_exists, "no staging directory should exist");
+    }
+
+    #[test]
+    fn three_downloads_with_middle_failure_indexes_correctly_and_reports_it() {
+        let work = tempfile::tempdir().unwrap();
+
+        let mut plan = plan_with_one_download();
+        plan.downloads = vec![
+            PendingDownload {
+                product_id: Some("RJ123456".to_string()),
+                url: "https://img.example.test/RJ123456_img_1.jpg".to_string(),
+                dest_path: "Root/screenshots/image_001.jpg".to_string(),
+                cache_key: "dlsite:RJ123456:screenshot_0".to_string(),
+                cached: false,
+            },
+            PendingDownload {
+                product_id: Some("RJ123456".to_string()),
+                url: "https://img.example.test/RJ123456_img_2.jpg".to_string(),
+                dest_path: "Root/screenshots/image_002.jpg".to_string(),
+                cache_key: "dlsite:RJ123456:screenshot_1".to_string(),
+                cached: false,
+            },
+            PendingDownload {
+                product_id: Some("RJ123456".to_string()),
+                url: "https://img.example.test/RJ123456_img_3.jpg".to_string(),
+                dest_path: "Root/screenshots/image_003.jpg".to_string(),
+                cache_key: "dlsite:RJ123456:screenshot_2".to_string(),
+                cached: false,
+            },
+        ];
+
+        let fetch_count = std::cell::Cell::new(0);
+        let staged = stage_plan_downloads(&plan, work.path(), &|_download| {
+            let count = fetch_count.get();
+            fetch_count.set(count + 1);
+
+            if count == 1 {
+                // Middle download fails
+                Err(anyhow::anyhow!("server error"))
+            } else {
+                Ok(b"imagedata".to_vec())
+            }
+        })
+        .expect("staging must succeed");
+
+        // Downloads should be consumed
+        assert!(staged.plan.downloads.is_empty());
+
+        // Should have one original move plus two survivors (index 0 and 2)
+        assert_eq!(
+            staged.plan.moves.len(),
+            3,
+            "one original plus two staged images"
+        );
+
+        // Verify the survivors have correct indices
+        let move_sources: Vec<_> = staged
+            .plan
+            .moves
+            .iter()
+            .filter(|(_, d)| d.contains("image_00"))
+            .map(|(s, _)| s.clone())
+            .collect();
+
+        let has_000 = move_sources.iter().any(|s| s.ends_with("/000"));
+        let has_002 = move_sources.iter().any(|s| s.ends_with("/002"));
+        assert!(has_000, "first successful download should be at index 000");
+        assert!(has_002, "third successful download should be at index 002");
+
+        // Verify the failed download is in unfetched with all three fields
+        assert_eq!(staged.unfetched.len(), 1);
+        assert_eq!(
+            staged.unfetched[0].0,
+            "https://img.example.test/RJ123456_img_2.jpg"
+        );
+        assert_eq!(staged.unfetched[0].1, "Root/screenshots/image_002.jpg");
+        assert!(staged.unfetched[0].2.contains("server error"));
+
+        // Verify the plan can be validated (both appliers call validate_paths before use)
+        staged
+            .plan
+            .validate_paths()
+            .expect("staged plan must pass validation");
     }
 }
