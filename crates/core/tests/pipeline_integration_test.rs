@@ -1027,20 +1027,29 @@ fn folder_output_leaves_extracted_tree_on_disk() {
     assert!(input.exists());
 }
 
-/// The whole claim, end to end: a rule that schedules screenshots must
-/// produce them through a pipeline. The `Organize` step used to build a
-/// plan carrying `PendingDownload`s and hand it straight to the applier,
-/// which path-checks `plan.downloads` and then ignores them -- so a
-/// pipeline run silently produced no screenshots at all, however the
-/// rule was written.
-///
-/// Drives the real executor: a seeded library supplies the screenshot
-/// URLs, a saved rule turns them into scheduled downloads, and the
-/// context's transport returns fixed bytes so the test needs no network.
-/// Folder output keeps it off the 7z CLI too.
+/// What one run of the screenshot fixture below reported.
 #[cfg(feature = "gameta")]
-#[test]
-fn an_organize_step_fetches_the_screenshots_its_rule_schedules() {
+struct OrganizeRun {
+    completions: Vec<PathBuf>,
+    failures: Vec<String>,
+    download_warnings: Vec<String>,
+    /// Owns the output tree the paths in `completions` point into, so it
+    /// outlives the fixture and the caller can still read it.
+    _tmp: tempfile::TempDir,
+}
+
+/// Run a real pipeline whose `Organize` step schedules exactly one
+/// screenshot, resolving it through `fetch`.
+///
+/// A seeded library supplies the screenshot URL — the only thing that
+/// makes a rule schedule a download at all — and a saved rule turns it
+/// into one. `OutputArtifact::Folder` keeps the run off the 7z CLI, and
+/// the injected transport keeps it off the network, so this is an
+/// ordinary CI test rather than an `#[ignore]`d one.
+#[cfg(feature = "gameta")]
+fn run_pipeline_scheduling_one_screenshot(
+    fetch: Arc<dyn Fn(&arclain_core::PendingDownload) -> anyhow::Result<Vec<u8>> + Send + Sync>,
+) -> OrganizeRun {
     use arclain_core::backends::BackendSelector;
     use std::io::Write;
 
@@ -1061,8 +1070,6 @@ fn an_organize_step_fetches_the_screenshots_its_rule_schedules() {
         zw.finish().unwrap();
     }
 
-    // A library row carrying one screenshot URL — the only thing that
-    // makes a rule schedule a download at all.
     let library_service = arclain_core::LibraryService::new(&tmp.path().join("metadata.sqlite"))
         .expect("LibraryService::new");
     let mut metadata =
@@ -1103,9 +1110,9 @@ fn an_organize_step_fetches_the_screenshots_its_rule_schedules() {
         .expect("saving the rule");
 
     let pipeline = Pipeline {
-        input: Some(PipelineInput::Files(vec![input.clone()])),
+        input: Some(PipelineInput::Files(vec![input])),
         steps: vec![PipelineStep::Organize { rule_id }],
-        output: PipelineOutput::NewFolder(output_dir.clone()),
+        output: PipelineOutput::NewFolder(output_dir),
         collision_policy: Some(OutputCollisionPolicy::Smart),
         output_artifact: OutputArtifact::Folder,
     };
@@ -1115,32 +1122,56 @@ fn an_organize_step_fetches_the_screenshots_its_rule_schedules() {
     let ctx = PipelineContext {
         organization_service: Some(organization_service),
         library_service: Some(Arc::new(library_service)),
-        fetch_download: Some(Arc::new(|_| Ok(b"jpegbytes".to_vec()))),
+        fetch_download: Some(fetch),
         ..PipelineContext::minimal(move |p: &std::path::Path| selector_cloned.select(p))
     };
 
-    let mut failures: Vec<String> = Vec::new();
-    let mut completions: Vec<PathBuf> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
+    let mut completions = Vec::new();
+    let mut failures = Vec::new();
+    let mut download_warnings = Vec::new();
     execute_pipeline(&pipeline, tmp.path(), &ctx, |ev| {
         use arclain_core::PipelineProgress::*;
         match ev {
             FileFailed { error } => failures.push(error),
             FileComplete { output } => completions.push(output),
-            DownloadWarnings { warnings: w } => warnings.extend(w),
+            DownloadWarnings { warnings } => download_warnings.extend(warnings),
             _ => {}
         }
     })
     .expect("the run should succeed");
 
-    assert!(failures.is_empty(), "unexpected failures: {failures:?}");
-    assert!(
-        warnings.is_empty(),
-        "a transport that answers should report nothing: {warnings:?}"
-    );
-    assert_eq!(completions.len(), 1);
+    OrganizeRun {
+        completions,
+        failures,
+        download_warnings,
+        _tmp: tmp,
+    }
+}
 
-    let screenshot = completions[0].join("Root/Screenshots/image_001.jpg");
+/// The whole claim, end to end: a rule that schedules screenshots must
+/// produce them through a pipeline. The `Organize` step used to build a
+/// plan carrying `PendingDownload`s and hand it straight to the applier,
+/// which path-checks `plan.downloads` and then ignores them -- so a
+/// pipeline run silently produced no screenshots at all, however the
+/// rule was written.
+#[cfg(feature = "gameta")]
+#[test]
+fn an_organize_step_fetches_the_screenshots_its_rule_schedules() {
+    let run = run_pipeline_scheduling_one_screenshot(Arc::new(|_| Ok(b"jpegbytes".to_vec())));
+
+    assert!(
+        run.failures.is_empty(),
+        "unexpected failures: {:?}",
+        run.failures
+    );
+    assert!(
+        run.download_warnings.is_empty(),
+        "a transport that answers should report nothing: {:?}",
+        run.download_warnings
+    );
+    assert_eq!(run.completions.len(), 1);
+
+    let screenshot = run.completions[0].join("Root/Screenshots/image_001.jpg");
     assert_eq!(
         std::fs::read(&screenshot).unwrap_or_default(),
         b"jpegbytes".to_vec(),
@@ -1150,7 +1181,7 @@ fn an_organize_step_fetches_the_screenshots_its_rule_schedules() {
 
     // The staging the fetch needed is an implementation detail of the
     // run, not something the user asked to keep.
-    let leftovers: Vec<String> = std::fs::read_dir(&completions[0])
+    let leftovers: Vec<String> = std::fs::read_dir(&run.completions[0])
         .unwrap()
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
@@ -1159,6 +1190,55 @@ fn an_organize_step_fetches_the_screenshots_its_rule_schedules() {
     assert!(
         leftovers.is_empty(),
         "download staging must not ship in the output: {leftovers:?}"
+    );
+}
+
+/// The other half of the arm: an image that cannot be fetched has to be
+/// *reported*, and reported through the executor's own progress channel
+/// rather than swallowed. Without this, deleting the whole
+/// `on_progress(DownloadWarnings { .. })` call from the `Organize` arm
+/// leaves every other test passing -- the run still succeeds, and the
+/// screenshot is missing either way.
+///
+/// Also pins that a screenshot which never arrives does not cost the
+/// user the reorganization it came with.
+#[cfg(feature = "gameta")]
+#[test]
+fn an_unreachable_screenshot_is_reported_and_the_rest_of_the_run_stands() {
+    let run =
+        run_pipeline_scheduling_one_screenshot(Arc::new(|_| anyhow::bail!("connection refused")));
+
+    assert!(
+        run.failures.is_empty(),
+        "a missing screenshot must not fail the run: {:?}",
+        run.failures
+    );
+    assert_eq!(run.completions.len(), 1, "the run should still complete");
+
+    assert_eq!(
+        run.download_warnings.len(),
+        1,
+        "the Organize step must report the image it could not fetch"
+    );
+    let warning = &run.download_warnings[0];
+    assert!(
+        warning.contains("Root/Screenshots/image_001.jpg"),
+        "the warning must name the destination that stayed empty: {warning}"
+    );
+    assert!(
+        warning.contains("connection refused"),
+        "the warning must carry the reason: {warning}"
+    );
+
+    assert!(
+        !run.completions[0]
+            .join("Root/Screenshots/image_001.jpg")
+            .exists(),
+        "nothing should have been written for a fetch that failed"
+    );
+    assert!(
+        run.completions[0].join("Root/metadata.json").exists(),
+        "the reorganization itself must survive a missing screenshot"
     );
 }
 

@@ -9,6 +9,7 @@
 //! and a fetched image is placed and rolled back with everything else.
 
 use anyhow::{Context, Result};
+use std::io::Read;
 use std::path::Path;
 
 use crate::features::organization::engine::{OrganizationPlan, PendingDownload};
@@ -98,21 +99,60 @@ pub fn stage_plan_downloads(
     })
 }
 
+/// The most this will read for one image, shared with the content
+/// cache's own ceiling so a fetched screenshot and a cached one are
+/// bounded the same way.
+const MAX_DOWNLOAD_BYTES: usize = arclain_data::DEFAULT_MAX_RESOURCE_SIZE_BYTES;
+
 /// One HTTP fetcher for a whole plan's downloads, holding a single
 /// client so a batch from one host reuses its connection rather than
 /// re-handshaking per image.
+///
+/// The URLs come from scraped third-party metadata, so the fetch is
+/// bounded rather than trusting: redirects are refused outright (the
+/// default policy follows up to ten, including to private addresses),
+/// and the body is capped at [`MAX_DOWNLOAD_BYTES`] both by the
+/// advertised `Content-Length` and by the read itself, because a server
+/// can omit or understate that header.
 pub fn http_downloader() -> Result<impl Fn(&PendingDownload) -> Result<Vec<u8>>> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .user_agent("Arclain/1.0")
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
     Ok(move |download: &PendingDownload| {
-        let response = client.get(&download.url).send()?;
+        let mut response = client.get(&download.url).send()?;
         if !response.status().is_success() {
             anyhow::bail!("status {}", response.status());
         }
-        Ok(response.bytes()?.to_vec())
+        // The advertised length rejects an oversized image for the cost
+        // of one header, before any body is transferred.
+        if let Some(length) = response.content_length() {
+            if length > MAX_DOWNLOAD_BYTES as u64 {
+                anyhow::bail!(
+                    "{length} bytes, over the {MAX_DOWNLOAD_BYTES}-byte limit for one image"
+                );
+            }
+        }
+        read_bounded(&mut response)
     })
+}
+
+/// Read a body, refusing anything past [`MAX_DOWNLOAD_BYTES`].
+///
+/// Applied even when `Content-Length` already passed, because that
+/// header is the server's claim rather than a fact: it can be absent
+/// (chunked transfer) or simply understate the body.
+fn read_bounded(body: &mut impl std::io::Read) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    // One byte past the limit, so a body sitting exactly at the limit is
+    // still accepted and anything longer is detectable.
+    body.take(MAX_DOWNLOAD_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_DOWNLOAD_BYTES {
+        anyhow::bail!("body ran past the {MAX_DOWNLOAD_BYTES}-byte limit for one image");
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -137,6 +177,31 @@ mod tests {
             use_standard_layout: false,
             resolved_variables: Default::default(),
         }
+    }
+
+    /// A body sitting exactly on the limit is legitimate and must not be
+    /// rejected by the cap that exists for the byte after it.
+    #[test]
+    fn a_body_at_the_limit_is_read_whole() {
+        let body = vec![b'x'; MAX_DOWNLOAD_BYTES];
+        let read = read_bounded(&mut body.as_slice()).expect("a body at the limit must be read");
+        assert_eq!(read.len(), MAX_DOWNLOAD_BYTES);
+    }
+
+    /// The read cap is the one that matters: a server that omits or
+    /// understates `Content-Length` cannot make the client allocate past
+    /// the limit anyway. `read_bounded` sees only the stream, so this is
+    /// exactly the no-header case.
+    #[test]
+    fn a_body_past_the_limit_is_refused_and_the_error_names_the_limit() {
+        let body = vec![b'x'; MAX_DOWNLOAD_BYTES + 1];
+        let error =
+            read_bounded(&mut body.as_slice()).expect_err("a body past the limit must be refused");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&MAX_DOWNLOAD_BYTES.to_string()),
+            "the reason reaches the user, so it must name the limit: {message}"
+        );
     }
 
     #[test]

@@ -400,7 +400,8 @@ async fn run_pipeline_over_inputs(
     // registered. Pinned by `process_facade.rs::
     // an_archive_less_folder_warns_in_the_preview_and_completes_the_run`.
     let total = inputs.len() as u64;
-    let ctx = build_pipeline_context(inner);
+    let ctx_guard = PipelineContextGuard::new(build_pipeline_context(inner));
+    let ctx = ctx_guard.get();
     let temp_root = std::env::temp_dir();
 
     let mut succeeded = 0u64;
@@ -703,6 +704,53 @@ fn build_pipeline_context(inner: &Arc<AppRuntime>) -> PipelineContext {
     }
 }
 
+/// Holds the per-operation `PipelineContext` and releases the last
+/// reference to it off the async task that built it.
+///
+/// The context owns the download fetcher, the fetcher owns a `reqwest`
+/// blocking client, and that client's teardown joins the thread running
+/// its private runtime. Each per-file `ctx.clone()` is already moved
+/// into a `spawn_blocking` closure and dropped there, but the original
+/// outlives them all, so without this the final drop -- and that join --
+/// would land on the reactor thread. That is the same boundary that
+/// forced construction to be deferred (see `build_download_fetcher`);
+/// this is the other half of it.
+///
+/// Every early return from `run_pipeline_over_inputs` runs this `Drop`,
+/// so the rule lives in one place rather than at each exit.
+struct PipelineContextGuard {
+    ctx: Option<PipelineContext>,
+}
+
+impl PipelineContextGuard {
+    fn new(ctx: PipelineContext) -> Self {
+        Self { ctx: Some(ctx) }
+    }
+
+    fn get(&self) -> &PipelineContext {
+        self.ctx
+            .as_ref()
+            .expect("the context is taken only while dropping the guard")
+    }
+}
+
+impl Drop for PipelineContextGuard {
+    fn drop(&mut self) {
+        let Some(ctx) = self.ctx.take() else {
+            return;
+        };
+        // A plain thread rather than `spawn_blocking`: this can run
+        // while the runtime is stopping, and a `Drop` that panics
+        // during unwinding aborts the process. One short-lived thread
+        // per operation (not per file) is not worth that risk. If the
+        // OS refuses the thread, `ctx` drops here instead -- the same
+        // behavior as before this guard existed.
+        let _ = std::thread::Builder::new()
+            .name("arclain-pipeline-ctx-drop".to_string())
+            .spawn(move || drop(ctx));
+    }
+}
+
 /// The transport an `Organize` step's scheduled screenshots are resolved
 /// through: the app's content cache first, HTTP for anything it doesn't
 /// hold.
@@ -751,10 +799,33 @@ fn build_download_fetcher(
                 .map(|fetch| Box::new(fetch) as Downloader)
                 .map_err(|error| format!("{error:#}"))
         });
-        match http {
-            Ok(fetch) => fetch(download),
+        let bytes = match http {
+            Ok(fetch) => fetch(download)?,
             Err(error) => anyhow::bail!("no HTTP client: {error}"),
+        };
+
+        // Populate the cache the read above consulted, so the next run
+        // over the same product reads these bytes instead of fetching
+        // them again. A failed write costs that next run a re-download
+        // and nothing else, so it must not fail an organize run -- but
+        // it is logged, because a cache that never accepts a write
+        // would otherwise look exactly like one that is working.
+        if let Some(cache) = content_cache.as_ref() {
+            if let Err(error) = cache.put(
+                &download.cache_key,
+                &bytes,
+                arclain_db::CacheType::Screenshot,
+                download.product_id.as_deref(),
+                Some(&download.url),
+            ) {
+                tracing::warn!(
+                    "[pipeline] caching a fetched screenshot failed, \
+                     the next run will fetch it again: {error:#}"
+                );
+            }
         }
+
+        Ok(bytes)
     })
 }
 

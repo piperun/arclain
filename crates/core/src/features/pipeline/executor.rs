@@ -728,35 +728,6 @@ mod tests {
         }
     }
 
-    /// A rule that schedules screenshots must produce them through a
-    /// pipeline, not only through the standalone organize path. Before
-    /// download staging existed, `apply_plan_to_workdir` path-checked
-    /// `plan.downloads` and then ignored them.
-    #[test]
-    fn an_organize_step_writes_the_screenshots_its_plan_schedules() {
-        let work = tempfile::tempdir().unwrap();
-        std::fs::write(work.path().join("a.txt"), b"x").unwrap();
-
-        let ctx = PipelineContext {
-            fetch_download: Some(std::sync::Arc::new(|_| Ok(b"jpegbytes".to_vec()))),
-            ..PipelineContext::minimal(|_| anyhow::bail!("no backend"))
-        };
-
-        let (plan, warnings) =
-            stage_plan_downloads_for(&plan_scheduling_one_screenshot(), work.path(), &ctx)
-                .expect("staging");
-        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-
-        crate::features::pipeline::apply_plan::apply_plan_to_workdir(&plan, work.path())
-            .expect("apply");
-
-        assert_eq!(
-            std::fs::read(work.path().join("Root/screenshots/image_001.jpg")).unwrap(),
-            b"jpegbytes".to_vec(),
-            "a scheduled screenshot must reach its declared destination"
-        );
-    }
-
     /// The pipeline must stay usable with no transport composed — a lean
     /// build, or a context assembled without network access. The
     /// reorganization still lands; only the images are missing, and each
