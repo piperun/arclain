@@ -9,6 +9,7 @@ pub mod pruning_tests;
 pub mod session;
 
 pub mod checks;
+pub mod downloads;
 pub mod flatten;
 pub mod metadata;
 pub mod tasks;
