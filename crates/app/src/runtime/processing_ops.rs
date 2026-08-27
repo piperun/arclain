@@ -68,9 +68,10 @@
 //!   channel, drained concurrently with the `spawn_blocking` call
 //!   producing it. `completed_units`/`total_units` track *which input
 //!   file* (this module's own loop index/total); `message` carries the
-//!   finer per-step detail as human text. `StepWarnings` is reported as
-//!   one `Progress` event *per warning* (not a count) -- see
-//!   `translate_progress`'s own doc comment for why.
+//!   finer per-step detail as human text. `StepWarnings` and
+//!   `DownloadWarnings` are each reported as one `Progress` event *per
+//!   warning* (not a count) -- see `translate_progress`'s own doc
+//!   comment for why.
 //! - **Operation-level terminal state.** Matching `execute_pipeline`'s
 //!   own "keep going, tally the outcome" semantics: a per-file failure
 //!   is folded into this module's running counters and reported in the
@@ -138,7 +139,7 @@
 //!   previewed plan and a library-resolved one routinely differ.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Context as _;
 use arclain_core::backends::BackendSelector;
@@ -148,8 +149,8 @@ use arclain_core::services::OrganizationService;
 use arclain_core::utilities::{auto_password_for, PassRule};
 use arclain_core::{
     execute_pipeline, ArchiveBackend, ArchiveInfo, CompressionLevel, ConvertFormat, GameMetadata,
-    OutputArtifact, OutputCollisionPolicy, Pipeline, PipelineContext, PipelineInput,
-    PipelineOutput, PipelineProgress, PipelineStep, COLLISION_POLICY_CONFIG_KEY,
+    OutputArtifact, OutputCollisionPolicy, PendingDownload, Pipeline, PipelineContext,
+    PipelineInput, PipelineOutput, PipelineProgress, PipelineStep, COLLISION_POLICY_CONFIG_KEY,
 };
 
 use crate::challenge::{Challenge, ChallengeResponse};
@@ -548,7 +549,8 @@ struct FileOutcome {
 /// each call processes exactly one input) are redundant with that and
 /// intentionally not forwarded.
 ///
-/// `StepWarnings` is reported as one `Progress` event *per warning*,
+/// `StepWarnings` and `DownloadWarnings` are each reported as one
+/// `Progress` event *per warning*,
 /// not a count: the pre-facade progress dialog rendered each warning as
 /// its own line (`process_runner.rs`: `for w in warnings { s.warnings.
 /// push(format!("{}: {}", w.mod_folder, w.kind.human())) }`, a `Vec<String>`
@@ -640,6 +642,18 @@ async fn translate_progress(
                 .await;
             }
         }
+        PipelineProgress::DownloadWarnings { warnings } => {
+            for warning in warnings {
+                emit_progress(
+                    inner,
+                    operation_id,
+                    index,
+                    total,
+                    Some(format!("{name}: warning: {warning}")),
+                )
+                .await;
+            }
+        }
     }
 }
 
@@ -685,7 +699,63 @@ fn build_pipeline_context(inner: &Arc<AppRuntime>) -> PipelineContext {
         }),
         config_db: services.config_db.clone(),
         default_collision_policy,
+        fetch_download: Some(build_download_fetcher(inner)),
     }
+}
+
+/// The transport an `Organize` step's scheduled screenshots are resolved
+/// through: the app's content cache first, HTTP for anything it doesn't
+/// hold.
+///
+/// The HTTP client is built once per pipeline run rather than once per
+/// image, so a run pulling a product's whole screenshot set reuses one
+/// connection to the host instead of re-handshaking per file.
+///
+/// It is built *lazily*, on the first download, and that is not an
+/// optimization -- it is required. `reqwest`'s blocking client owns a
+/// private Tokio runtime, and constructing one on an async task poisons
+/// that task: the runtime is later dropped in async context, which
+/// panics with "Cannot drop a runtime in a context where blocking is not
+/// allowed". `build_pipeline_context` runs directly on the calling async
+/// task (see its doc comment), so eager construction here took down
+/// every pipeline run that reached it, screenshots or not. Deferring to
+/// the closure moves construction onto the `spawn_blocking` thread the
+/// executor actually fetches from. Do not hoist it back out.
+///
+/// Building the client can still fail (a broken TLS configuration); that
+/// failure is reported per download rather than propagated, because it
+/// must not stop a pipeline whose other steps need no network at all.
+fn build_download_fetcher(
+    inner: &Arc<AppRuntime>,
+) -> Arc<dyn Fn(&PendingDownload) -> anyhow::Result<Vec<u8>> + Send + Sync> {
+    type Downloader = Box<dyn Fn(&PendingDownload) -> anyhow::Result<Vec<u8>> + Send + Sync>;
+
+    let content_cache = inner.content_cache().cloned();
+    let http: OnceLock<Result<Downloader, String>> = OnceLock::new();
+
+    Arc::new(move |download: &PendingDownload| {
+        if let Some(cache) = content_cache.as_ref() {
+            match cache.get(&download.cache_key) {
+                Ok(Some(bytes)) => return Ok(bytes),
+                Ok(None) => {}
+                // A cache that cannot be read is not a reason to skip
+                // the image -- fall through to the network.
+                Err(error) => tracing::debug!(
+                    "[pipeline] content cache read failed for a scheduled download: {error:#}"
+                ),
+            }
+        }
+
+        let http = http.get_or_init(|| {
+            arclain_core::features::organization::downloads::http_downloader()
+                .map(|fetch| Box::new(fetch) as Downloader)
+                .map_err(|error| format!("{error:#}"))
+        });
+        match http {
+            Ok(fetch) => fetch(download),
+            Err(error) => anyhow::bail!("no HTTP client: {error}"),
+        }
+    })
 }
 
 /// The application-wide `default_collision_policy` setting, or `None`

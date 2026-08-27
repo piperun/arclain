@@ -27,6 +27,9 @@ pub use features::conversion::{
 pub use features::organization::{
     GameMetadata, MoveAction, OrganizationRule, RuleActions, RuleTrigger,
 };
+// Named by `PipelineContext::fetch_download`, so anyone composing a
+// pipeline run has to be able to name it too.
+pub use features::organization::engine::PendingDownload;
 pub use features::pipeline::{
     builtin_presets, default_presets_path, execute_pipeline, load_presets, preview_pipeline,
     preview_pipeline_with_metadata, save_presets, OutputArtifact, OutputCollisionPolicy,

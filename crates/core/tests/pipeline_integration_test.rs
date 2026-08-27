@@ -1027,6 +1027,141 @@ fn folder_output_leaves_extracted_tree_on_disk() {
     assert!(input.exists());
 }
 
+/// The whole claim, end to end: a rule that schedules screenshots must
+/// produce them through a pipeline. The `Organize` step used to build a
+/// plan carrying `PendingDownload`s and hand it straight to the applier,
+/// which path-checks `plan.downloads` and then ignores them -- so a
+/// pipeline run silently produced no screenshots at all, however the
+/// rule was written.
+///
+/// Drives the real executor: a seeded library supplies the screenshot
+/// URLs, a saved rule turns them into scheduled downloads, and the
+/// context's transport returns fixed bytes so the test needs no network.
+/// Folder output keeps it off the 7z CLI too.
+#[cfg(feature = "gameta")]
+#[test]
+fn an_organize_step_fetches_the_screenshots_its_rule_schedules() {
+    use arclain_core::backends::BackendSelector;
+    use std::io::Write;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let input_dir = tmp.path().join("in");
+    let output_dir = tmp.path().join("out");
+    std::fs::create_dir_all(&input_dir).unwrap();
+    std::fs::create_dir_all(&output_dir).unwrap();
+
+    // The product code in the name is what the metadata lookup keys on.
+    let input = input_dir.join("[RJ123456] Placeholder Game.zip");
+    {
+        let file = std::fs::File::create(&input).unwrap();
+        let mut zw = zip::ZipWriter::new(file);
+        zw.start_file("game.exe", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(b"payload").unwrap();
+        zw.finish().unwrap();
+    }
+
+    // A library row carrying one screenshot URL — the only thing that
+    // makes a rule schedule a download at all.
+    let library_service = arclain_core::LibraryService::new(&tmp.path().join("metadata.sqlite"))
+        .expect("LibraryService::new");
+    let mut metadata =
+        gameta_core::ProductMetadata::new(gameta_core::MetadataSource::DLSite, "RJ123456");
+    metadata.title = Some("Placeholder Game".to_string());
+    metadata.creator = Some("Placeholder Circle".to_string());
+    metadata.extras = serde_json::json!({
+        "screenshots": ["https://img.example.test/RJ123456_img_main.jpg"]
+    });
+    library_service
+        .save_metadata(&metadata)
+        .expect("seeding metadata");
+
+    // A rule that only names a root folder: no move actions, so the
+    // screenshot is the one thing the plan schedules.
+    let config_db_path = tmp.path().join("config.sqlite");
+    arclain_db::ConfigDb::open(&config_db_path).expect("config schema");
+    let organization_service = Arc::new(arclain_core::OrganizationService::new(
+        arclain_db::DieselPool::new(&config_db_path).expect("config pool"),
+    ));
+    let rule_id = organization_service
+        .save_rule(&arclain_db::DbOrganizationRule {
+            id: None,
+            name: "Screenshots".to_string(),
+            description: None,
+            category: "test".to_string(),
+            trigger_json: serde_json::json!({}).to_string(),
+            actions_json: serde_json::json!({
+                "root_folder": "Root",
+                "move_files": [],
+                "use_standard_layout": false
+            })
+            .to_string(),
+            priority: 0,
+            is_enabled: true,
+            is_system: false,
+        })
+        .expect("saving the rule");
+
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input.clone()])),
+        steps: vec![PipelineStep::Organize { rule_id }],
+        output: PipelineOutput::NewFolder(output_dir.clone()),
+        collision_policy: Some(OutputCollisionPolicy::Smart),
+        output_artifact: OutputArtifact::Folder,
+    };
+
+    let selector = Arc::new(BackendSelector::default());
+    let selector_cloned = selector.clone();
+    let ctx = PipelineContext {
+        organization_service: Some(organization_service),
+        library_service: Some(Arc::new(library_service)),
+        fetch_download: Some(Arc::new(|_| Ok(b"jpegbytes".to_vec()))),
+        ..PipelineContext::minimal(move |p: &std::path::Path| selector_cloned.select(p))
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut completions: Vec<PathBuf> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |ev| {
+        use arclain_core::PipelineProgress::*;
+        match ev {
+            FileFailed { error } => failures.push(error),
+            FileComplete { output } => completions.push(output),
+            DownloadWarnings { warnings: w } => warnings.extend(w),
+            _ => {}
+        }
+    })
+    .expect("the run should succeed");
+
+    assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+    assert!(
+        warnings.is_empty(),
+        "a transport that answers should report nothing: {warnings:?}"
+    );
+    assert_eq!(completions.len(), 1);
+
+    let screenshot = completions[0].join("Root/Screenshots/image_001.jpg");
+    assert_eq!(
+        std::fs::read(&screenshot).unwrap_or_default(),
+        b"jpegbytes".to_vec(),
+        "the scheduled screenshot must reach {}",
+        screenshot.display()
+    );
+
+    // The staging the fetch needed is an implementation detail of the
+    // run, not something the user asked to keep.
+    let leftovers: Vec<String> = std::fs::read_dir(&completions[0])
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .filter(|name| name.starts_with(".arclain-downloads-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "download staging must not ship in the output: {leftovers:?}"
+    );
+}
+
 #[test]
 fn folder_output_smart_skips_on_rerun() {
     // Second run with same pipeline + pre-existing output folder + DB row

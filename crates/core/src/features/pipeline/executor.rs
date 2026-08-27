@@ -51,6 +51,21 @@ pub enum PipelineProgress {
     StepWarnings {
         warnings: Vec<crate::features::conversion::ModWarning>,
     },
+    /// One line per download an `Organize` step's plan scheduled but
+    /// could not resolve — an unreachable host, a refused request, a
+    /// context with no transport configured. Each names the destination
+    /// that stayed empty as well as the URL, because the reader wants to
+    /// know which screenshot is missing, not only which fetch failed.
+    /// The step succeeded and the rest of the plan was applied; this is
+    /// informational only.
+    ///
+    /// Distinct from `StepWarnings`, which carries the structured
+    /// `ModWarning` diagnostics Flatten produces about a source
+    /// archive's own contents. A download that did not arrive is a
+    /// property of this run, not of the archive.
+    DownloadWarnings {
+        warnings: Vec<String>,
+    },
 }
 
 /// Result of a single-input pipeline run.
@@ -328,6 +343,46 @@ fn run_one(
     run_result.map(RunOutcome::Completed)
 }
 
+/// Resolve the downloads `plan` schedules into files under `work_dir`,
+/// returning the plan the applier should run and one warning line per
+/// download that did not arrive.
+///
+/// The returned plan carries each fetched image as an ordinary move, so
+/// the applier places and rolls back a screenshot with everything else
+/// and performs no network I/O of its own.
+///
+/// A download that fails is reported, not fatal: a missing screenshot
+/// must not cost the user the reorganization it came with. A context
+/// with no `fetch_download` therefore resolves nothing and reports every
+/// scheduled download rather than failing the step.
+fn stage_plan_downloads_for(
+    plan: &crate::features::organization::engine::OrganizationPlan,
+    work_dir: &Path,
+    ctx: &PipelineContext,
+) -> Result<(
+    crate::features::organization::engine::OrganizationPlan,
+    Vec<String>,
+)> {
+    let staged = crate::features::organization::downloads::stage_plan_downloads(
+        plan,
+        work_dir,
+        &|download| match ctx.fetch_download.as_ref() {
+            Some(fetch) => fetch(download),
+            None => anyhow::bail!("no download transport configured"),
+        },
+    )?;
+
+    let warnings = staged
+        .unfetched
+        .iter()
+        .map(|(url, dest_path, reason)| {
+            format!("screenshot not fetched: {dest_path} ({url}): {reason}")
+        })
+        .collect();
+
+    Ok((staged.plan, warnings))
+}
+
 /// The body of `run_one` — extraction + steps + final pack. Split out so the
 /// outer `run_one` can own the DB bookkeeping around it.
 fn run_one_inner(
@@ -416,6 +471,17 @@ fn run_one_inner(
                     output_metadata,
                 )
                 .context("Rule plan failed")?;
+
+                // Resolve the plan's scheduled images to files on disk
+                // before the applier runs, so the applier's transaction
+                // over the work directory never waits on the network.
+                let (plan, download_warnings) = stage_plan_downloads_for(&plan, &work_dir, ctx)
+                    .context("Staging plan downloads failed")?;
+                if !download_warnings.is_empty() {
+                    on_progress(PipelineProgress::DownloadWarnings {
+                        warnings: download_warnings,
+                    });
+                }
 
                 crate::features::pipeline::apply_plan::apply_plan_to_workdir(&plan, &work_dir)
                     .context("Apply plan failed")?;
@@ -638,6 +704,141 @@ fn resolve_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plan scheduling one screenshot, shaped as `RuleEngine::create_plan`
+    /// emits it: the image is a `PendingDownload`, not yet a move.
+    fn plan_scheduling_one_screenshot() -> crate::features::organization::engine::OrganizationPlan {
+        use crate::features::organization::engine::{OrganizationPlan, PendingDownload};
+
+        OrganizationPlan {
+            rule_name: "Test".to_string(),
+            root_folder: "Root".to_string(),
+            root_folder_template: "Root".to_string(),
+            moves: vec![("a.txt".to_string(), "Root/a.txt".to_string())],
+            generated_files: vec![],
+            downloads: vec![PendingDownload {
+                product_id: Some("RJ123456".to_string()),
+                url: "https://img.example.test/RJ123456_img_main.jpg".to_string(),
+                dest_path: "Root/screenshots/image_001.jpg".to_string(),
+                cache_key: "dlsite:RJ123456:screenshot_0".to_string(),
+                cached: false,
+            }],
+            use_standard_layout: false,
+            resolved_variables: Default::default(),
+        }
+    }
+
+    /// A rule that schedules screenshots must produce them through a
+    /// pipeline, not only through the standalone organize path. Before
+    /// download staging existed, `apply_plan_to_workdir` path-checked
+    /// `plan.downloads` and then ignored them.
+    #[test]
+    fn an_organize_step_writes_the_screenshots_its_plan_schedules() {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("a.txt"), b"x").unwrap();
+
+        let ctx = PipelineContext {
+            fetch_download: Some(std::sync::Arc::new(|_| Ok(b"jpegbytes".to_vec()))),
+            ..PipelineContext::minimal(|_| anyhow::bail!("no backend"))
+        };
+
+        let (plan, warnings) =
+            stage_plan_downloads_for(&plan_scheduling_one_screenshot(), work.path(), &ctx)
+                .expect("staging");
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+        crate::features::pipeline::apply_plan::apply_plan_to_workdir(&plan, work.path())
+            .expect("apply");
+
+        assert_eq!(
+            std::fs::read(work.path().join("Root/screenshots/image_001.jpg")).unwrap(),
+            b"jpegbytes".to_vec(),
+            "a scheduled screenshot must reach its declared destination"
+        );
+    }
+
+    /// The pipeline must stay usable with no transport composed — a lean
+    /// build, or a context assembled without network access. The
+    /// reorganization still lands; only the images are missing, and each
+    /// one is named so the user can see which.
+    #[test]
+    fn a_context_with_no_transport_still_applies_the_plan_and_names_each_missing_image() {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("a.txt"), b"x").unwrap();
+
+        let ctx = PipelineContext::minimal(|_| anyhow::bail!("no backend"));
+        assert!(
+            ctx.fetch_download.is_none(),
+            "a minimal context must compose no transport"
+        );
+
+        let (plan, warnings) =
+            stage_plan_downloads_for(&plan_scheduling_one_screenshot(), work.path(), &ctx)
+                .expect("a missing transport must not fail the step");
+
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("Root/screenshots/image_001.jpg"),
+            "the warning must name the destination that stayed empty: {}",
+            warnings[0]
+        );
+        assert!(
+            warnings[0].contains("https://img.example.test/RJ123456_img_main.jpg"),
+            "the warning must name the URL: {}",
+            warnings[0]
+        );
+
+        crate::features::pipeline::apply_plan::apply_plan_to_workdir(&plan, work.path())
+            .expect("the rest of the plan must still apply");
+        assert!(
+            work.path().join("Root/a.txt").exists(),
+            "an unreachable screenshot must not cost the user the reorganization"
+        );
+        assert!(!work.path().join("Root/screenshots/image_001.jpg").exists());
+    }
+
+    /// One screenshot failing must not drop the ones that did arrive,
+    /// and the survivor must still be the image its plan named.
+    #[test]
+    fn a_failed_screenshot_is_reported_while_its_siblings_still_land() {
+        use crate::features::organization::engine::PendingDownload;
+
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("a.txt"), b"x").unwrap();
+
+        let mut plan = plan_scheduling_one_screenshot();
+        plan.downloads.push(PendingDownload {
+            product_id: Some("RJ123456".to_string()),
+            url: "https://img.example.test/RJ123456_img_smp1.jpg".to_string(),
+            dest_path: "Root/screenshots/image_002.jpg".to_string(),
+            cache_key: "dlsite:RJ123456:screenshot_1".to_string(),
+            cached: false,
+        });
+
+        let ctx = PipelineContext {
+            fetch_download: Some(std::sync::Arc::new(|download: &PendingDownload| {
+                if download.dest_path.ends_with("image_002.jpg") {
+                    anyhow::bail!("status 404");
+                }
+                Ok(b"jpegbytes".to_vec())
+            })),
+            ..PipelineContext::minimal(|_| anyhow::bail!("no backend"))
+        };
+
+        let (plan, warnings) = stage_plan_downloads_for(&plan, work.path(), &ctx).expect("staging");
+
+        assert_eq!(warnings.len(), 1, "only the failed image is reported");
+        assert!(warnings[0].contains("image_002.jpg"));
+        assert!(warnings[0].contains("status 404"));
+
+        crate::features::pipeline::apply_plan::apply_plan_to_workdir(&plan, work.path())
+            .expect("apply");
+        assert!(
+            work.path().join("Root/screenshots/image_001.jpg").exists(),
+            "the screenshot that arrived must still be placed"
+        );
+        assert!(!work.path().join("Root/screenshots/image_002.jpg").exists());
+    }
 
     #[test]
     fn executor_rejects_no_input() {

@@ -2,6 +2,7 @@
 //! needed to resolve rules, metadata, and backends.
 
 use crate::archive::ArchiveBackend;
+use crate::features::organization::engine::PendingDownload;
 use crate::features::pipeline::types::OutputCollisionPolicy;
 #[cfg(feature = "gameta")]
 use crate::services::LibraryService;
@@ -26,6 +27,14 @@ pub struct PipelineContext {
     /// `OutputCollisionPolicy::Smart`. Per-pipeline overrides (set on the
     /// `Pipeline` struct) still take precedence over this.
     pub default_collision_policy: Option<OutputCollisionPolicy>,
+    /// How the `Organize` step resolves the downloads its plan schedules.
+    /// The transport is the caller's to choose: the application consults
+    /// its content cache and falls back to HTTP, and tests return fixed
+    /// bytes. `None` fetches nothing and reports every scheduled
+    /// download as unfetched, which is what a run with no network
+    /// configured should do. A download that does not arrive never fails
+    /// the run.
+    pub fetch_download: Option<Arc<dyn Fn(&PendingDownload) -> Result<Vec<u8>> + Send + Sync>>,
 }
 
 impl PipelineContext {
@@ -41,6 +50,7 @@ impl PipelineContext {
             backend_for: Arc::new(backend_for),
             config_db: None,
             default_collision_policy: None,
+            fetch_download: None,
         }
     }
 }
