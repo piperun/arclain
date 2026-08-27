@@ -34,9 +34,9 @@ jobs:
       - name: Clone gameta (path-dep sibling)
         run: |
           git clone --no-checkout https://codeberg.org/0xdev/gameta.git codeberg/gameta
-          git -C codeberg/gameta fetch --depth 1 origin d0932514ff6277dcef067d8e9dcfe1d5dbfe358b
+          git -C codeberg/gameta fetch --depth 1 origin ffc09779e86671b2828f90c990c86393ca2a8e1d
           git -C codeberg/gameta checkout --detach FETCH_HEAD
-          test "$(git -C codeberg/gameta rev-parse HEAD)" = "d0932514ff6277dcef067d8e9dcfe1d5dbfe358b"
+          test "$(git -C codeberg/gameta rev-parse HEAD)" = "ffc09779e86671b2828f90c990c86393ca2a8e1d"
 
       - name: Install system dependencies
         # Matches `.woodpecker.yml` cargo-test step. Needed by

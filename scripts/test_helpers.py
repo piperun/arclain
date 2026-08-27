@@ -259,7 +259,7 @@ class TestOwnedFormatting(unittest.TestCase):
 
 class TestGametaPin(unittest.TestCase):
     VERSION = "=0.5.0"
-    REVISION = "d0932514ff6277dcef067d8e9dcfe1d5dbfe358b"
+    REVISION = "ffc09779e86671b2828f90c990c86393ca2a8e1d"
 
     def test_gameta_dependencies_and_ci_checkouts_are_pinned(self):
         manifests = (
@@ -325,6 +325,28 @@ class TestGametaPin(unittest.TestCase):
                         f'"{self.REVISION}"'
                     )
                 self.assertIn(equality_check, text)
+
+    def test_sibling_gameta_checkout_matches_the_pinned_revision(self):
+        # Cargo.lock is resolved against the sibling gameta working tree;
+        # CI resolves against REVISION. When the two drift apart the lock
+        # records dependencies the pinned manifests never declare, and
+        # every `--locked` command in CI fails re-resolving them.
+        sibling = REPO_ROOT.parent / "gameta"
+        if not (sibling / ".git").exists():
+            self.skipTest(f"no gameta checkout at {sibling}")
+        head = subprocess.run(
+            ["git", "-C", str(sibling), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual(
+            head,
+            self.REVISION,
+            f"{sibling} is at {head}. Either check it out at "
+            f"{self.REVISION}, or move REVISION and every CI checkout "
+            f"to {head} and regenerate Cargo.lock.",
+        )
 
 
 class TestPluginVersions(unittest.TestCase):
