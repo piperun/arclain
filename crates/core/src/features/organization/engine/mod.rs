@@ -498,8 +498,8 @@ mod tests {
             release_date: None,
             creator: None,
             screenshots: vec![
-                ScreenshotData::FilePath("/imgs/main.jpg".into()),
-                ScreenshotData::FilePath("/imgs/sub.jpg".into()),
+                ScreenshotData::Url("https://img.example.test/main.jpg".to_string()),
+                ScreenshotData::Url("https://img.example.test/sub.jpg".to_string()),
             ],
             metadata_json: String::new(),
         };
@@ -537,7 +537,9 @@ mod tests {
             tags: vec![],
             release_date: None,
             creator: None,
-            screenshots: vec![ScreenshotData::FilePath("/imgs/screen.png".into())],
+            screenshots: vec![ScreenshotData::Url(
+                "https://img.example.test/screen.png".to_string(),
+            )],
             metadata_json: String::new(),
         };
 

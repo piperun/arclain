@@ -374,9 +374,10 @@ impl RuleEngine {
         path.replace("//", "/").replace('\\', "/")
     }
 
-    /// Build the screenshot download list. Skips non-file-path
-    /// screenshots (URL-only entries are downloaded by a separate
-    /// path). DLsite uses cache keys keyed by product_id; other
+    /// Build the screenshot download list. Only URL screenshots are
+    /// downloadable; a plugin that already fetched the file, or inlined
+    /// the bytes, reports a form this plan cannot schedule and is
+    /// skipped. DLsite uses cache keys keyed by product_id; other
     /// sources fall back to a generic `screenshot:` prefix.
     fn compute_downloads(
         rule: &OrganizationRule,
@@ -396,13 +397,12 @@ impl RuleEngine {
         };
 
         for (i, screenshot) in gm.screenshots.iter().enumerate() {
-            let crate::features::organization::metadata::ScreenshotData::FilePath(path) =
-                screenshot
+            let crate::features::organization::metadata::ScreenshotData::Url(url) = screenshot
             else {
                 continue;
             };
 
-            let url = path.to_string_lossy().into_owned();
+            let url = url.clone();
             let ext = Path::new(&url)
                 .extension()
                 .map(|e| e.to_string_lossy().into_owned())

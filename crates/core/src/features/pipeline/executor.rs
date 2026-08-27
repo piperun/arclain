@@ -700,6 +700,46 @@ mod tests {
         );
     }
 
+    /// The same contract against the metadata a real library holds.
+    /// gameta stores screenshots in `extras` as a list of source URLs,
+    /// and `to_plugin_json` merges every `extras` key to the top level,
+    /// so every product that has screenshots reaches
+    /// `GameMetadata::from_json` carrying that list. One entry that
+    /// fails to deserialize fails the whole document, and the `.ok()`
+    /// above turns that into `None` -- losing the title, the creator and
+    /// the tags, not just the screenshots. Seeded here with screenshots
+    /// present, because the seed without them cannot see the failure.
+    #[cfg(feature = "gameta")]
+    #[test]
+    fn resolve_metadata_survives_the_screenshot_urls_a_real_product_carries() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("metadata.sqlite");
+        let library_service = crate::services::LibraryService::new(&db_path)
+            .expect("constructing a fresh LibraryService must succeed");
+        let mut metadata =
+            gameta_core::ProductMetadata::new(gameta_core::MetadataSource::DLSite, "RJ123456");
+        metadata.title = Some("Placeholder Test Title".to_string());
+        metadata.extras = serde_json::json!({
+            "screenshots": [
+                "https://img.example.test/RJ123456_img_main.jpg",
+                "https://img.example.test/RJ123456_img_smp1.jpg"
+            ]
+        });
+        library_service
+            .save_metadata(&metadata)
+            .expect("seeding test metadata must succeed");
+
+        let ctx = PipelineContext {
+            library_service: Some(std::sync::Arc::new(library_service)),
+            ..PipelineContext::minimal(|_| anyhow::bail!("no backend"))
+        };
+
+        let resolved = resolve_metadata("[RJ123456] Placeholder Game.zip", &ctx)
+            .expect("metadata carrying screenshot URLs must still resolve");
+        assert_eq!(resolved.title, "Placeholder Test Title");
+        assert_eq!(resolved.screenshots.len(), 2);
+    }
+
     /// The other half of that contract: without the `gameta` feature
     /// there is no store to look the code up in, so the same archive
     /// name resolves nothing at all and naming falls through to the

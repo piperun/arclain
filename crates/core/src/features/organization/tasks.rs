@@ -143,6 +143,9 @@ pub fn process_screenshot(
     filename: &str,
 ) -> Result<()> {
     match screenshot {
+        ScreenshotData::Url(url) => {
+            anyhow::bail!("screenshot '{filename}' is a source URL ({url}) and this path copies local files only");
+        }
         ScreenshotData::FilePath(path) => {
             debug!("Copying screenshot '{}' from {}", filename, path.display());
             let bytes_copied = std::fs::copy(path, dest_path).context("copying screenshot file")?;

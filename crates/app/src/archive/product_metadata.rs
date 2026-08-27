@@ -38,6 +38,9 @@ use arclain_core::features::organization::{GameMetadata, ScreenshotData};
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ScreenshotRef {
+    /// The source URL the plugin reported, the form nearly every
+    /// provider supplies.
+    Url { url: String },
     /// A file the plugin downloaded before reporting it.
     File { path: String },
     /// Base64 image data the plugin supplied inline, reported by the
@@ -54,6 +57,7 @@ impl ScreenshotRef {
     /// inline payload just to describe it.
     pub fn identifier(&self) -> String {
         match self {
+            Self::Url { url } => url.clone(),
             Self::File { path } => path.clone(),
             Self::Inline { encoded_len } => format!("Base64 data ({} bytes)", encoded_len),
         }
@@ -141,6 +145,7 @@ fn summarize_screenshots(screenshots: &[ScreenshotData]) -> Vec<ScreenshotRef> {
         .iter()
         .filter(|data| seen.insert(*data))
         .map(|data| match data {
+            ScreenshotData::Url(url) => ScreenshotRef::Url { url: url.clone() },
             ScreenshotData::FilePath(path) => ScreenshotRef::File {
                 path: path.display().to_string(),
             },

@@ -1708,6 +1708,17 @@ fn start_organize_and_start_pipeline_agree_on_the_metadata_driven_stem() {
     let title = "Placeholder Test Title";
     let mut metadata = ProductMetadata::new(MetadataSource::DLSite, "RJ123456");
     metadata.title = Some(title.to_string());
+    // Screenshots, because a real row has them: gameta stores them in
+    // `extras` as source URLs and `to_plugin_json` merges `extras` to
+    // the top level, so both naming paths parse a document carrying
+    // this list. A seed without it cannot see a screenshot shape that
+    // fails the whole document and drops the title with it.
+    metadata.extras = serde_json::json!({
+        "screenshots": [
+            "https://img.example.test/RJ123456_img_main.jpg",
+            "https://img.example.test/RJ123456_img_smp1.jpg"
+        ]
+    });
     library_service
         .save_metadata(&metadata)
         .expect("seeding test metadata must succeed");

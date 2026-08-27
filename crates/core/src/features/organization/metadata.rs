@@ -101,11 +101,67 @@ impl GameMetadata {
     }
 }
 
-/// Screenshot data provided by plugin
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// Where one screenshot's image lives.
+///
+/// Providers report whichever form they have, and the three arrive in
+/// three different wire shapes:
+///
+/// - `"https://host/a.jpg"` -- a bare string is the source URL. This is
+///   what gameta's `extras.screenshots` holds, so it is what every real
+///   product carries.
+/// - `{"FilePath": "/tmp/a.jpg"}` -- a file the plugin downloaded first.
+/// - `{"Base64": "..."}` -- the encoded image itself.
+///
+/// Read by hand rather than derived, because a derived `Deserialize`
+/// accepts only the two tagged forms and reports a bare string as an
+/// unknown variant -- which fails the whole enclosing document, not the
+/// one field, so a screenshot list used to cost the title and the
+/// creator with it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ScreenshotData {
-    FilePath(PathBuf), // Downloaded by plugin
-    Base64(String),    // Base64-encoded
+    Url(String),
+    FilePath(PathBuf),
+    Base64(String),
+}
+
+impl serde::Serialize for ScreenshotData {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Url(url) => serializer.serialize_str(url),
+            Self::FilePath(path) => {
+                serializer.serialize_newtype_variant("ScreenshotData", 1, "FilePath", path)
+            }
+            Self::Base64(data) => {
+                serializer.serialize_newtype_variant("ScreenshotData", 2, "Base64", data)
+            }
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ScreenshotData {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        enum Tagged {
+            FilePath(PathBuf),
+            Base64(String),
+        }
+
+        // Bare string first: a map cannot deserialize as `String`, so a
+        // tagged entry falls through to `Tagged` and reports its own
+        // unknown-variant error there.
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Url(String),
+            Tagged(Tagged),
+        }
+
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Url(url) => Self::Url(url),
+            Wire::Tagged(Tagged::FilePath(path)) => Self::FilePath(path),
+            Wire::Tagged(Tagged::Base64(data)) => Self::Base64(data),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -224,6 +280,35 @@ mod tests {
         assert_eq!(
             meta.screenshots[1],
             ScreenshotData::Base64("aGVsbG8=".to_string())
+        );
+    }
+    /// The shape every provider actually emits. Screenshots live in
+    /// gameta's `extras` as a list of source URLs, and
+    /// `ProductMetadata::to_plugin_json` merges `extras` to the top
+    /// level, so this is what reaches `from_json` for a real product.
+    /// A screenshot entry that fails to deserialize fails the whole
+    /// document, taking the title and creator with it.
+    #[test]
+    fn bare_screenshot_strings_parse_as_urls() {
+        let json = r#"{
+            "product_id": "RJ123456",
+            "source": "dlsite",
+            "title": "Placeholder Title",
+            "screenshots": [
+                "https://img.example.test/RJ123456_img_main.jpg",
+                "https://img.example.test/RJ123456_img_smp1.jpg"
+            ]
+        }"#;
+
+        let meta = GameMetadata::from_json(json).expect("a URL screenshot list must parse");
+
+        assert_eq!(meta.title, "Placeholder Title");
+        assert_eq!(
+            meta.screenshots,
+            vec![
+                ScreenshotData::Url("https://img.example.test/RJ123456_img_main.jpg".to_string()),
+                ScreenshotData::Url("https://img.example.test/RJ123456_img_smp1.jpg".to_string()),
+            ]
         );
     }
 }
