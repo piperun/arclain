@@ -354,6 +354,23 @@ where
         // side-effect free.
         let original_entries = checked_top_level_entries(work_dir)?;
         let staged_entries = checked_top_level_entries(&staging)?;
+
+        // Promotion replaces the work directory with whatever staging
+        // holds, and commit then deletes the backup. Staging nothing is
+        // therefore not a no-op: it commits as a wipe, and the run packs
+        // an empty archive while reporting success. Three plans reach
+        // here that way — one with no outputs at all, one whose outputs
+        // carry no files, and one whose every move source was missing
+        // and only warned. None of them is a run anyone asked for.
+        if staged_entries.is_empty() {
+            anyhow::bail!(
+                "organization rule {:?} staged nothing: {} output(s) resolved and {} were passed \
+                 over, so applying it would empty the work directory rather than organize it",
+                plan.rule_name,
+                plan.outputs.len(),
+                plan.skipped_outputs.len()
+            );
+        }
         let backup_dir = tempfile::Builder::new()
             .prefix(".arclain-plan-backup-")
             .tempdir_in(work_parent)
@@ -1540,12 +1557,111 @@ mod tests {
     #[test]
     fn apply_plan_skips_missing_sources() {
         let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("present.exe"));
+        // One source the archive holds and one it does not. The missing
+        // one must not fail the run, and the present one must still be
+        // carried — a plan that stages *nothing at all* is refused
+        // instead, so the surviving move is what makes this a test of
+        // the warn-and-continue path rather than of that refusal.
+        let plan = empty_plan(
+            vec![
+                ("ghost.exe".into(), "MyGame/ghost.exe".into()),
+                ("present.exe".into(), "MyGame/present.exe".into()),
+            ],
+            vec![],
+        );
+
+        apply_plan_to_workdir(&plan, tmp.path()).unwrap();
+
+        assert!(tmp.path().join("MyGame/present.exe").exists());
+        assert!(!tmp.path().join("MyGame/ghost.exe").exists());
+    }
+
+    /// Promotion replaces the work directory with whatever staging
+    /// holds, and commit deletes the backup. A plan that staged nothing
+    /// therefore "succeeds" by emptying the work directory, and the run
+    /// packs an empty archive while reporting success. The source
+    /// archive is untouched either way, but a run that writes nothing
+    /// and says it worked is the silent failure this refuses.
+    ///
+    /// Zero outputs is reachable: a marker the archive does not carry,
+    /// or every output skipped because its name would not resolve.
+    #[test]
+    fn a_plan_with_no_outputs_is_refused_rather_than_emptying_the_work_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        fs::write(work.join("game.exe"), b"payload").unwrap();
+
+        let plan = OrganizationPlan {
+            rule_name: "Mod Manager Layout".to_string(),
+            outputs: vec![],
+            skipped_outputs: vec![(
+                "Mod".to_string(),
+                "the name needs $mod_name, which nothing set".to_string(),
+            )],
+        };
+
+        let error = apply_plan_to_workdir(&plan, &work)
+            .expect_err("a plan that stages nothing must not commit as a wipe");
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("Mod Manager Layout"),
+            "the error must name the rule: {error}"
+        );
+
+        assert_eq!(
+            fs::read(work.join("game.exe")).unwrap(),
+            b"payload",
+            "the work directory must be exactly as it was"
+        );
+        assert_no_plan_staging_directories(temp.path());
+    }
+
+    /// The same wipe, reached with an output present. A layout with no
+    /// placements resolves to one named output that carries nothing,
+    /// which is what a rule built from `Layout::default()` produces.
+    #[test]
+    fn a_plan_whose_outputs_carry_nothing_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        fs::write(work.join("game.exe"), b"payload").unwrap();
+
+        let plan = OrganizationPlan {
+            rule_name: "Placeholder Rule".to_string(),
+            outputs: vec![output_rooted_at("Organized", vec![])],
+            skipped_outputs: vec![],
+        };
+
+        apply_plan_to_workdir(&plan, &work)
+            .expect_err("an output carrying nothing produces no folder, not an empty one");
+
+        assert_eq!(fs::read(work.join("game.exe")).unwrap(), b"payload");
+        assert_no_plan_staging_directories(temp.path());
+    }
+
+    /// And the same wipe reached through the warn-and-continue path: a
+    /// plan whose every move source is missing stages nothing, so the
+    /// warnings would be the only trace of a run that emptied the work
+    /// directory.
+    #[test]
+    fn a_plan_whose_every_source_is_missing_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        fs::write(work.join("kept.bin"), b"kept").unwrap();
+
         let plan = empty_plan(
             vec![("ghost.exe".into(), "MyGame/ghost.exe".into())],
             vec![],
         );
-        // Should not error on missing source — just warn
-        apply_plan_to_workdir(&plan, tmp.path()).unwrap();
+
+        apply_plan_to_workdir(&plan, &work)
+            .expect_err("every source missing stages nothing at all");
+
+        assert_eq!(fs::read(work.join("kept.bin")).unwrap(), b"kept");
+        assert_no_plan_staging_directories(temp.path());
     }
 
     #[test]
