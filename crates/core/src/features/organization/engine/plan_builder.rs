@@ -479,6 +479,22 @@ impl RuleEngine {
         result
     }
 
+    /// Whether `path` matches `pattern`. Understands `**`, `*.ext`,
+    /// `dir/**`, an exact path, and a bare filename anywhere in the tree.
+    ///
+    /// The `dir/**` branch is newer than the rest, and widens what
+    /// already-saved rules match. Before it, every `dir/**` pattern
+    /// returned false for every path, so a stored rule written that way
+    /// matched nothing and its files fell through to the `game/` default
+    /// target. They now route where the rule says. No file is dropped
+    /// either way, but a user with such a rule will see their files move
+    /// somewhere new.
+    ///
+    /// That branch folds ASCII case, deliberately, because the `*.ext`
+    /// branch beside it already does and one function answering two ways
+    /// is worse than either answer: `docs/**` matches `Docs/x`. The
+    /// exact and filename branches stay case-sensitive, which is the
+    /// behaviour they shipped with and not something to change here.
     pub(super) fn matches_glob(pattern: &str, path: &str) -> bool {
         // Simple glob implementation or use `glob` crate if available
         // For now, support basic wildcards
@@ -716,8 +732,9 @@ struct DetectedContentRoot {
 ///
 /// Placements are evaluated in order and the first that matches a file
 /// claims it; no later placement sees that file again. A file no
-/// placement matched is not carried into the output at all, and the
-/// count of those lands in `reasoning` so the drop is not silent.
+/// placement matched is not carried into the output at all, and both
+/// what each placement did and what was left behind land in `reasoning`
+/// so neither is silent.
 // Nothing calls this yet — assembling filled outputs into a whole plan
 // is what will. Drop the allow then.
 #[allow(dead_code)]
@@ -733,6 +750,11 @@ fn fill_output(
     let scoped = scope_entries(&output.root, entries);
     let mut claimed = vec![false; scoped.len()];
     let mut moves = Vec::new();
+    // Every destination this output writes to, so two files cannot land
+    // on one path. Nothing validates a `PlannedOutput` on its way out
+    // yet, so this is the only thing standing between a layout that
+    // cannot mean what it says and one file quietly overwriting another.
+    let mut destinations: BTreeMap<String, String> = BTreeMap::new();
 
     for placement in &layout.place {
         // The part of a matched path the placement located rather than
@@ -755,6 +777,7 @@ fn fill_output(
         let (into, unset) = expand(&placement.into, &output.variables);
         note_unset(&mut reasoning, "destination", &placement.into, &unset);
 
+        let mut placed = 0usize;
         for (index, file) in scoped.iter().enumerate() {
             if claimed[index] {
                 continue;
@@ -770,19 +793,47 @@ fn fill_output(
             }
 
             claimed[index] = true;
-            moves.push((
-                file.source.clone(),
-                join_destination(&[&output.name, &into, strip_directory(path, &located)]),
-            ));
+            placed += 1;
+            let destination =
+                join_destination(&[&output.name, &into, strip_directory(path, &located)]);
+            claim_destination(&mut destinations, &destination)?;
+            moves.push((file.source.clone(), destination));
         }
+
+        // Said even when there was nothing to infer. A preview with no
+        // explanation at all is the explainability property failing, and
+        // it would fail on the commonest layout of the lot: one `All`
+        // placement, a name that resolves, nothing left over.
+        reasoning.push(format!(
+            "{} placed {} into {}",
+            describe_source(&placement.from),
+            count_files(placed),
+            describe_destination(&output.name, &into)
+        ));
     }
 
-    let left = claimed.iter().filter(|carried| !**carried).count();
-    if left > 0 {
+    let left: Vec<&str> = scoped
+        .iter()
+        .zip(&claimed)
+        .filter(|(_, carried)| !**carried)
+        .map(|(file, _)| file.relative.path.as_str())
+        .collect();
+    if !left.is_empty() {
+        // Named, not just counted: "47 files were not carried" is a
+        // number a user cannot check, and the first few paths are enough
+        // to tell whether the right ones were dropped.
+        let shown = left.len().min(3);
+        let rest = left.len() - shown;
         reasoning.push(format!(
-            "{left} file{} matched no placement and {} not carried",
-            if left == 1 { "" } else { "s" },
-            if left == 1 { "was" } else { "were" }
+            "{} matched no placement and {} not carried: {}{}",
+            count_files(left.len()),
+            if left.len() == 1 { "was" } else { "were" },
+            left[..shown].join(", "),
+            if rest > 0 {
+                format!(", and {rest} more")
+            } else {
+                String::new()
+            }
         ));
     }
 
@@ -795,7 +846,9 @@ fn fill_output(
                 };
                 let (into, unset) = expand(&generated.into, &output.variables);
                 note_unset(&mut reasoning, "generated file", &generated.into, &unset);
-                generated_files.push((join_destination(&[&output.name, &into]), document));
+                let destination = join_destination(&[&output.name, &into]);
+                claim_destination(&mut destinations, &destination)?;
+                generated_files.push((destination, document));
             }
         }
     }
@@ -823,7 +876,12 @@ fn fill_output(
                     };
 
                     let mut variables = output.variables.clone();
-                    variables.insert("index".to_string(), (index + 1).to_string());
+                    // Padded to three, so ten screenshots still sort in
+                    // order. The extension comes from the URL rather than
+                    // from the template, because a template that spells
+                    // one out renames every `.png` the source serves.
+                    variables.insert("index".to_string(), format!("{:03}", index + 1));
+                    variables.insert("ext".to_string(), url_extension(url));
                     let (name, unset) = expand(&fetched.name, &variables);
                     note_unset(&mut reasoning, "fetched file name", &fetched.name, &unset);
 
@@ -834,10 +892,12 @@ fn fill_output(
                         format!("screenshot:{}:{}", game.product_id, index)
                     };
 
+                    let destination = join_destination(&[&output.name, &into, &name]);
+                    claim_destination(&mut destinations, &destination)?;
                     downloads.push(PendingDownload {
                         product_id: is_dlsite.then(|| game.product_id.clone()),
                         url: url.clone(),
-                        dest_path: join_destination(&[&output.name, &into, &name]),
+                        dest_path: destination,
                         cache_key,
                         cached: false, // Will be checked by UI when loading
                     });
@@ -924,6 +984,65 @@ fn refuse_unreachable_placements(place: &[Placement]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Take a destination for this output, refusing a second file that
+/// wants the same one. Two placements routing into one folder can send
+/// two same-named files to one path, and a plan that does that quietly
+/// loses whichever file the applier writes first.
+///
+/// Compared through `to_uppercase`, the way `OrganizationPlan::validate_paths`
+/// keys destinations. That is nobody's filesystem table, so it refuses a
+/// little more than any one filesystem would merge — the right side to
+/// err on, since refusing a separable pair costs a message and merging
+/// two files costs one of them.
+fn claim_destination(taken: &mut BTreeMap<String, String>, destination: &str) -> Result<()> {
+    let Some(first) = taken.insert(destination.to_uppercase(), destination.to_string()) else {
+        return Ok(());
+    };
+    if first == destination {
+        bail!("two files land on the same destination: {destination:?}");
+    }
+    bail!("two files land on destinations a filesystem may merge: {first:?} and {destination:?}");
+}
+
+/// Where a placement drew its files from, in a line a preview can show.
+fn describe_source(from: &Source) -> String {
+    match from {
+        Source::All => "everything under the output's root".to_string(),
+        Source::Matching(glob) => format!("the glob {glob:?}"),
+        Source::ContentRoot => "the content root".to_string(),
+    }
+}
+
+/// Where a placement put them, naming the output's own root rather than
+/// showing an empty string for it.
+fn describe_destination(name: &str, into: &str) -> String {
+    let destination = join_destination(&[name, into]);
+    if destination.is_empty() {
+        "the output's root".to_string()
+    } else {
+        destination
+    }
+}
+
+/// A file count that reads as a sentence rather than as a number.
+fn count_files(count: usize) -> String {
+    match count {
+        0 => "nothing".to_string(),
+        1 => "1 file".to_string(),
+        many => format!("{many} files"),
+    }
+}
+
+/// The extension a download's source URL carries, or `jpg` when it names
+/// none. Derived from the URL and not from the template, so a source
+/// that serves a `.png` is not saved under a `.jpg` name.
+fn url_extension(url: &str) -> String {
+    Path::new(url)
+        .extension()
+        .map(|extension| extension.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "jpg".to_string())
 }
 
 /// The folders a glob spells out. `assets/**` names `assets` the way a
@@ -1280,6 +1399,123 @@ mod tests {
         );
     }
 
+    /// Two placements routing into one folder can send two same-named
+    /// files to one path, and the applier would write one over the
+    /// other. Nothing validates a filled output on its way out, so
+    /// refusing here is the only thing between a layout that cannot mean
+    /// what it says and a silently lost file.
+    #[test]
+    fn two_placements_landing_on_one_destination_are_refused() {
+        let layout = Layout {
+            place: vec![
+                Placement {
+                    from: Source::Matching("a/**".to_string()),
+                    into: "X".to_string(),
+                },
+                Placement {
+                    from: Source::Matching("b/**".to_string()),
+                    into: "X".to_string(),
+                },
+            ],
+            ..Layout::default()
+        };
+        let entries = vec![entry("a/f.bin"), entry("b/f.bin")];
+
+        let error = fill_output(&layout, &output("Out", ""), &entries, None)
+            .expect_err("one file would overwrite the other");
+        assert!(
+            format!("{error:#}").contains("Out/X/f.bin"),
+            "the error must name the destination: {error:#}"
+        );
+    }
+
+    /// Compared the way the execution boundary keys destinations, so a
+    /// filesystem that folds case cannot merge two files this side of
+    /// the check and lose one on the other side.
+    #[test]
+    fn two_destinations_a_filesystem_would_merge_are_refused() {
+        let layout = Layout {
+            place: vec![
+                Placement {
+                    from: Source::Matching("a/**".to_string()),
+                    into: "X".to_string(),
+                },
+                Placement {
+                    from: Source::Matching("b/**".to_string()),
+                    into: "X".to_string(),
+                },
+            ],
+            ..Layout::default()
+        };
+        let entries = vec![entry("a/File.bin"), entry("b/file.bin")];
+
+        let error = fill_output(&layout, &output("Out", ""), &entries, None)
+            .expect_err("a case-folding filesystem merges the two");
+        let error = format!("{error:#}");
+        assert!(error.contains("Out/X/File.bin"), "{error}");
+        assert!(error.contains("Out/X/file.bin"), "{error}");
+    }
+
+    /// `$mod_name` is read out of a `modinfo.ini` inside the archive and
+    /// substituted verbatim, so a hostile one reaches a destination. It
+    /// is meant to: `CheckedRelativePath` refuses any `..` component and
+    /// every execution path routes through it, which fails the whole
+    /// plan loudly. A softer check here that skipped the one output
+    /// would turn a traversal attempt into a shrug.
+    #[test]
+    fn a_name_that_climbs_out_reaches_the_boundary_that_refuses_it() {
+        let layout = Layout {
+            place: vec![Placement {
+                from: Source::All,
+                into: String::new(),
+            }],
+            ..Layout::default()
+        };
+        let escaping = ResolvedOutput {
+            root: PathBuf::new(),
+            name: "../evil".to_string(),
+            variables: HashMap::new(),
+        };
+
+        let filled = fill_output(&layout, &escaping, &[entry("payload.bin")], None).expect("fill");
+
+        assert_eq!(
+            filled.moves[0].1, "../evil/payload.bin",
+            "nothing here scrubs the name; the boundary refuses it"
+        );
+        assert!(
+            crate::utilities::CheckedRelativePath::new(&filled.moves[0].1).is_err(),
+            "a destination that climbs out must not pass validation"
+        );
+    }
+
+    /// Most archives carry no indicator at all, so the line saying so is
+    /// the one a preview shows most often.
+    #[test]
+    fn a_content_root_nothing_scored_says_so() {
+        let layout = Layout {
+            place: vec![Placement {
+                from: Source::ContentRoot,
+                into: "Game".to_string(),
+            }],
+            ..Layout::default()
+        };
+        let entries = vec![entry("notes/one.txt"), entry("notes/two.txt")];
+
+        let filled = fill_output(&layout, &output("Out", ""), &entries, None).expect("fill");
+
+        let reasoning = filled.reasoning.join("\n");
+        assert!(
+            reasoning.contains("nothing scored as a content root"),
+            "{reasoning}"
+        );
+        assert!(reasoning.contains("notes"), "{reasoning}");
+        assert_eq!(
+            filled.moves[0].1, "Out/Game/one.txt",
+            "the files still land, under the common prefix"
+        );
+    }
+
     /// A detection the preview cannot show its working for is one a user
     /// can only trust or distrust.
     #[test]
@@ -1373,13 +1609,13 @@ mod tests {
             ..Layout::default()
         };
 
-        let layered = metadata(r#"{"maker_id":"RG99001"}"#);
+        let layered = metadata(r#"{"maker_id":"RJ999001"}"#);
         let filled = fill_output(&layout, &output("Out", ""), &[], Some(&layered)).expect("fill");
         assert_eq!(
             filled.generated_files,
             vec![(
                 "Out/metadata.json".to_string(),
-                r#"{"maker_id":"RG99001"}"#.to_string()
+                r#"{"maker_id":"RJ999001"}"#.to_string()
             )]
         );
 
@@ -1399,19 +1635,25 @@ mod tests {
         );
     }
 
-    /// `$index` is a screenshot's position among all of them, not among
-    /// the fetchable ones — the same numbering the cache keys use, so a
-    /// file that cannot be fetched leaves a gap rather than a shift.
-    #[test]
-    fn a_fetched_name_numbers_from_one_over_every_screenshot() {
-        let layout = Layout {
+    fn screenshot_layout(name: &str) -> Layout {
+        Layout {
             fetch: vec![Fetched {
                 into: "screenshots".to_string(),
                 source: FetchSource::Screenshots,
-                name: "image_$index.jpg".to_string(),
+                name: name.to_string(),
             }],
             ..Layout::default()
-        };
+        }
+    }
+
+    /// `$index` is a screenshot's position among all of them, not among
+    /// the fetchable ones — the same numbering the cache keys use, so a
+    /// file that cannot be fetched leaves a gap rather than a shift.
+    /// The shipped `image_$index.$ext` reproduces the name the older
+    /// vocabulary hardcoded, character for character.
+    #[test]
+    fn a_fetched_name_numbers_from_one_over_every_screenshot() {
+        let layout = screenshot_layout("image_$index.$ext");
         let mut game = metadata("{}");
         game.screenshots = vec![
             ScreenshotData::Url("https://example.invalid/a.jpg".to_string()),
@@ -1422,23 +1664,80 @@ mod tests {
         let filled = fill_output(&layout, &output("Out", ""), &[], Some(&game)).expect("fill");
 
         assert_eq!(filled.downloads.len(), 2, "a local file is not fetchable");
-        assert_eq!(filled.downloads[0].dest_path, "Out/screenshots/image_1.jpg");
+        assert_eq!(
+            filled.downloads[0].dest_path,
+            "Out/screenshots/image_001.jpg"
+        );
         assert_eq!(
             filled.downloads[0].cache_key,
             "dlsite:RJ123456:screenshot_0"
         );
         assert_eq!(filled.downloads[0].product_id.as_deref(), Some("RJ123456"));
-        assert_eq!(filled.downloads[1].dest_path, "Out/screenshots/image_3.jpg");
+        assert_eq!(
+            filled.downloads[1].dest_path,
+            "Out/screenshots/image_003.jpg"
+        );
         assert_eq!(
             filled.downloads[1].cache_key,
             "dlsite:RJ123456:screenshot_2"
         );
     }
 
-    /// A file no placement wanted is dropped on purpose, and a drop
-    /// nobody is told about is indistinguishable from a bug.
+    /// Unpadded, ten screenshots sort 1, 10, 2 in every file browser
+    /// there is. Three digits is what the older vocabulary wrote and
+    /// what `$index` has to keep writing.
     #[test]
-    fn an_output_says_how_many_files_it_left_behind() {
+    fn a_fetched_index_is_padded_so_ten_of_them_still_sort() {
+        let layout = screenshot_layout("image_$index.$ext");
+        let mut game = metadata("{}");
+        game.screenshots = (0..10)
+            .map(|_| ScreenshotData::Url("https://example.invalid/a.jpg".to_string()))
+            .collect();
+
+        let filled = fill_output(&layout, &output("Out", ""), &[], Some(&game)).expect("fill");
+
+        let names: Vec<String> = filled
+            .downloads
+            .iter()
+            .map(|download| download.dest_path.clone())
+            .collect();
+        assert_eq!(names.len(), 10);
+        assert_eq!(names[0], "Out/screenshots/image_001.jpg");
+        assert_eq!(names[9], "Out/screenshots/image_010.jpg");
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(sorted, names, "fetch order and sort order are the same");
+    }
+
+    /// A template that spells an extension out renames whatever the
+    /// source actually serves. `$ext` exists so it does not have to.
+    #[test]
+    fn a_fetched_extension_follows_its_source_url() {
+        let layout = screenshot_layout("image_$index.$ext");
+        let mut game = metadata("{}");
+        game.screenshots = vec![
+            ScreenshotData::Url("https://example.invalid/shot.png".to_string()),
+            ScreenshotData::Url("https://example.invalid/no-extension".to_string()),
+        ];
+
+        let filled = fill_output(&layout, &output("Out", ""), &[], Some(&game)).expect("fill");
+
+        assert_eq!(
+            filled.downloads[0].dest_path,
+            "Out/screenshots/image_001.png"
+        );
+        assert_eq!(
+            filled.downloads[1].dest_path, "Out/screenshots/image_002.jpg",
+            "a URL naming no extension still gets a plausible one"
+        );
+    }
+
+    /// A file no placement wanted is dropped on purpose, and a drop
+    /// nobody is told about is indistinguishable from a bug. A count
+    /// alone is not enough: told "47 files were not carried", a user
+    /// cannot tell whether those were the right 47.
+    #[test]
+    fn an_output_names_the_files_it_left_behind() {
         let layout = Layout {
             place: vec![Placement {
                 from: Source::Matching("keep/**".to_string()),
@@ -1454,11 +1753,101 @@ mod tests {
 
         let filled = fill_output(&layout, &output("Out", ""), &entries, None).expect("fill");
 
+        let left = filled
+            .reasoning
+            .iter()
+            .find(|line| line.contains("no placement"))
+            .unwrap_or_else(|| panic!("{:?}", filled.reasoning));
+        assert!(left.contains("2 files"), "{left}");
+        assert!(left.contains("drop/one.bin"), "{left}");
+        assert!(left.contains("drop/two.bin"), "{left}");
+    }
+
+    /// The listing is capped, because a rule that matches nothing leaves
+    /// the whole archive behind and a preview is not a place to print
+    /// ten thousand paths.
+    #[test]
+    fn a_long_list_of_left_behind_files_is_cut_short() {
+        let layout = Layout {
+            place: vec![Placement {
+                from: Source::Matching("keep/**".to_string()),
+                into: String::new(),
+            }],
+            ..Layout::default()
+        };
+        let entries: Vec<_> = (0..7).map(|n| entry(&format!("drop/{n}.bin"))).collect();
+
+        let filled = fill_output(&layout, &output("Out", ""), &entries, None).expect("fill");
+
+        let left = filled
+            .reasoning
+            .iter()
+            .find(|line| line.contains("no placement"))
+            .unwrap_or_else(|| panic!("{:?}", filled.reasoning));
+        assert!(left.contains("7 files"), "{left}");
+        assert!(left.contains("drop/0.bin"), "{left}");
+        assert!(left.contains("and 4 more"), "{left}");
+        assert!(!left.contains("drop/6.bin"), "{left}");
+    }
+
+    /// The layout that will produce the most outputs infers nothing at
+    /// all: one `All` placement, a name that resolves, nothing left
+    /// over. A preview with no explanation on it is the explainability
+    /// property failing exactly where it matters most, so what the
+    /// layout did is recorded even when there was nothing to work out.
+    #[test]
+    fn an_output_that_inferred_nothing_still_says_what_it_did() {
+        let layout = Layout {
+            name: "$mod_name".to_string(),
+            place: vec![Placement {
+                from: Source::All,
+                into: String::new(),
+            }],
+            ..Layout::default()
+        };
+        let entries = vec![
+            entry("Placeholder Mod/one.bin"),
+            entry("Placeholder Mod/two.bin"),
+        ];
+
+        let filled = fill_output(
+            &layout,
+            &output("Placeholder Mod", "Placeholder Mod"),
+            &entries,
+            None,
+        )
+        .expect("fill");
+
+        assert_eq!(filled.moves.len(), 2);
+        assert_eq!(
+            filled.reasoning,
+            vec![
+                "everything under the output's root placed 2 files into Placeholder Mod"
+                    .to_string()
+            ]
+        );
+    }
+
+    /// A placement that matched nothing is the quiet failure a glob
+    /// makes easiest, so it says so rather than leaving a gap.
+    #[test]
+    fn a_placement_that_matched_nothing_says_so() {
+        let layout = Layout {
+            place: vec![Placement {
+                from: Source::Matching("absent/**".to_string()),
+                into: "Docs".to_string(),
+            }],
+            ..Layout::default()
+        };
+
+        let filled =
+            fill_output(&layout, &output("Out", ""), &[entry("a.bin")], None).expect("fill");
+
         assert!(
             filled
                 .reasoning
                 .iter()
-                .any(|line| line.contains("2 files") && line.contains("no placement")),
+                .any(|line| line.contains("absent/**") && line.contains("placed nothing")),
             "{:?}",
             filled.reasoning
         );
@@ -1489,7 +1878,7 @@ mod tests {
             filled
                 .reasoning
                 .iter()
-                .filter(|line| line.contains("$version"))
+                .filter(|line| line.contains("nothing set"))
                 .count(),
             1,
             "{:?}",

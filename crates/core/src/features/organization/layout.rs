@@ -59,7 +59,14 @@ pub enum GeneratedContent {
 pub struct Fetched {
     pub into: String,
     pub source: FetchSource,
-    /// Template for each file's name; `$index` is its position.
+    /// Template for each file's name. Two tokens beyond the output's own
+    /// variables: `$index` is the item's position in the source list,
+    /// counted from one and padded to three digits so ten of them still
+    /// sort in order, and `$ext` is the extension the item's source URL
+    /// carries, or `jpg` when it names none. A name has to be able to
+    /// say `$ext`, because a template that spells an extension out
+    /// renames a `.png` to `.jpg` and no amount of care in the template
+    /// can tell what the URL will be.
     pub name: String,
 }
 
@@ -126,7 +133,7 @@ mod tests {
             fetch: vec![Fetched {
                 into: "screenshots".to_string(),
                 source: FetchSource::Screenshots,
-                name: "image_$index.jpg".to_string(),
+                name: "image_$index.$ext".to_string(),
             }],
         };
 
