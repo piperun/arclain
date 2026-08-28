@@ -81,3 +81,11 @@ tracing-test = "0.2"
 # helper (`crates/app/tests/archive_sessions.rs::build_zip_fixture`)
 # already uses, so this adds no new crate to the dependency tree.
 zip = "7.0.0"
+
+[lints.rust]
+# Warned by default and slated to become an error: an unsuffixed float
+# literal whose type is never pinned falls back to `f32`, and this crate
+# is full of them because egui's geometry is `f32`. Denied so the next
+# one is caught where it is written rather than by a future toolchain
+# turning 47 of them into build failures at once.
+float_literal_f32_fallback = "deny"
