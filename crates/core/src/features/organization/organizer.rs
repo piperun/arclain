@@ -6,7 +6,6 @@ use tracing::debug;
 use crate::utilities::CheckedRelativePath;
 use crate::Archive;
 
-// Re-export items to maintain API compatibility
 pub use super::checks::{check_archive_structure, needs_better_compression, ArchiveStructure};
 pub use super::metadata::{GameMetadata, ScreenshotData};
 pub use super::tasks::*;

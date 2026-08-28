@@ -1,4 +1,3 @@
-use anyhow::Result;
 use std::path::Path;
 
 /// Common archive file extensions
@@ -21,23 +20,4 @@ pub fn is_archive_extension(path: &Path) -> bool {
         }
     }
     false
-}
-
-/// Recursively copy a directory
-pub fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
-    std::fs::create_dir_all(dest)?;
-
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dest_path = dest.join(entry.file_name());
-
-        if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&src_path, &dest_path)?;
-        } else {
-            std::fs::copy(&src_path, &dest_path)?;
-        }
-    }
-
-    Ok(())
 }
