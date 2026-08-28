@@ -483,26 +483,21 @@ pub(crate) fn run(
                         }
                     }
 
-                    // `ensure_default_rules` and `sync_rules` both seed the
-                    // *same* organization_rules table when it is empty, with
-                    // DIFFERENT payloads ("DLsite Standard" vs "DLSite
-                    // Archive") -- whichever runs first wins, so the order
-                    // here is load-bearing and must match the original
-                    // `AppState::new`/`sync_configuration` order exactly:
-                    // `ensure_default_rules` first, then `sync_rules`. Both
-                    // run whenever `open_databases` succeeded, regardless of
-                    // whether `init_db_services` (above) did -- matching the
-                    // original code, which called them unconditionally in
-                    // this same position, outside that branch.
+                    // The one seeder for the organization_rules table. A
+                    // second one used to run straight after with a
+                    // different product rule, so which rules a fresh
+                    // install got depended on which reached the table
+                    // first. It ran whenever the first left the table
+                    // empty, which -- both being "insert if empty" against
+                    // this same pool -- is only when the first failed, and
+                    // then for the same reason.
+                    //
+                    // Runs whenever `open_databases` succeeded, regardless
+                    // of whether `init_db_services` above did.
                     if let Err(error) = arclain_core::config::database::ensure_default_rules(
                         &opened_dbs.config_pool,
                     ) {
                         warn!("Failed to organize default rules: {}", error);
-                    }
-                    if let Err(error) =
-                        arclain_core::config::sync::sync_rules(&opened_dbs.config_pool)
-                    {
-                        warn!("Failed to sync organization rules: {}", error);
                     }
                     // Title filters: seeds system replacements and primes
                     // the in-memory cache -- ported from `AppState::

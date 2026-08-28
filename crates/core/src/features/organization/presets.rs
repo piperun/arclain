@@ -8,7 +8,6 @@ use super::layout::{
     FetchSource, Fetched, FileVariable, Generated, GeneratedContent, Layout, OutputSelector,
     Placement, Source,
 };
-use super::{OrganizationRule, RuleActions, RuleTrigger};
 
 /// One storefront product: the payload under `Game/`, the metadata
 /// document beside it, the store screenshots fetched in. `name` is the
@@ -63,46 +62,4 @@ pub fn mod_manager_layout() -> Layout {
         generate: vec![],
         fetch: vec![],
     }
-}
-
-pub fn get_default_rules() -> Vec<OrganizationRule> {
-    vec![
-        // One storefront product, wrapped and described: the payload
-        // under `Game/`, the metadata document beside it, the store
-        // screenshots fetched in.
-        OrganizationRule {
-            name: "Product Layout".to_string(),
-            priority: 100, // High priority - runs first if matched
-            is_enabled: true,
-            trigger: RuleTrigger {
-                filename_pattern: Some(r"(RJ|BJ|VJ)\d+".to_string()),
-                has_file: None,
-                metadata_source: None,
-            },
-            actions: RuleActions {
-                output_name: None,
-                layout: product_layout("[$product_id][$circle] $title"),
-            },
-            ..Default::default()
-        },
-        // A pack of mods, which is not one thing: every folder holding a
-        // `modinfo.ini` is its own output, named by what that file calls
-        // it, with no wrapper above the set. A mod manager reads the
-        // result as the several mods it is.
-        OrganizationRule {
-            name: "Mod Manager Layout".to_string(),
-            priority: 50,
-            is_enabled: true,
-            trigger: RuleTrigger {
-                filename_pattern: None,
-                has_file: Some("modinfo.ini".to_string()),
-                metadata_source: None,
-            },
-            actions: RuleActions {
-                output_name: None,
-                layout: mod_manager_layout(),
-            },
-            ..Default::default()
-        },
-    ]
 }

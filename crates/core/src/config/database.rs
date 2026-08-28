@@ -327,7 +327,6 @@ mod tests {
         save_org_rule(&pool, &edited).unwrap();
 
         ensure_default_rules(&pool).unwrap();
-        crate::config::sync::sync_rules(&pool).unwrap();
 
         let rules = list_org_rules(&pool).unwrap();
         assert_eq!(rules.len(), 1, "no rule may be added: {rules:?}");

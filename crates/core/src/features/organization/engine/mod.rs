@@ -965,10 +965,12 @@ mod tests {
     // =========================================================================
 
     /// The product rule as a user's database holds it: the exact JSON
-    /// `config::defaults::get_default_rules()` serialized to before this
-    /// change, captured by serializing it rather than written by hand,
-    /// so the fixture is the real stored shape and not an approximation
-    /// of it.
+    /// a shipped rule serialized to before this change, captured by
+    /// serializing it rather than written by hand, so the fixture is the
+    /// real stored shape and not an approximation of it. The rule that
+    /// produced it is no longer seeded, which is why the fixture is
+    /// checked in -- a database written by an older build still holds
+    /// this and still has to translate.
     const SHIPPED_PRODUCT_RULE_JSON: &str = r#"{"id":0,"name":"DLSite Archive","priority":100,"is_enabled":true,"trigger":{"metadata_source":"dlsite","filename_pattern":"\\[(RJ|BJ|VJ)\\d+\\]","has_file":null},"actions":{"root_folder":"[$product_id][$circle] $title","output_name":null,"move_files":[],"use_standard_layout":true}}"#;
 
     /// The tree the engine built from that stored rule before layouts

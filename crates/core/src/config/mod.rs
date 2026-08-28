@@ -8,9 +8,7 @@
 //! - Database configuration
 
 pub mod database;
-pub mod defaults;
 pub mod settings;
-pub mod sync;
 
 pub use arclain_db::DbTitleReplacement;
 pub use database::{open_databases, ConfigDb, ConfigDbs, DbPaths, SecretsDb, SecretsKey};

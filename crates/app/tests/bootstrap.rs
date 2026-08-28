@@ -579,13 +579,13 @@ fn app_runtime_actually_drops_once_every_arclain_app_clone_is_gone() {
     }
 }
 
-/// `ensure_default_rules` and `sync_rules` both seed the organization
-/// rules table only when it is empty, with *different* product rules
-/// ("DLsite Standard" vs. "DLSite Archive") -- whichever runs first
-/// wins. The original `AppState::new`/`sync_configuration` always ran
-/// `ensure_default_rules` first; this proves `bootstrap()` still does,
-/// so a fresh install always gets "DLsite Standard", never
-/// `sync_rules`'s "DLSite Archive" payload, ever again by accident.
+/// What a fresh install actually gets, asserted through a real
+/// `bootstrap()` rather than by calling the seeder directly.
+///
+/// It has to be exactly this set. A second seeder used to run straight
+/// after the first with a different product rule, so which one a first
+/// run got came down to call order; asserting the whole list, in order,
+/// is what would catch another one appearing.
 ///
 /// It also proves the mod-manager layout reaches a real first run.
 /// Nothing else can put one in the database -- a layout is data a rule
@@ -593,7 +593,7 @@ fn app_runtime_actually_drops_once_every_arclain_app_clone_is_gone() {
 /// holding several mods produces sibling folders only if this rule is
 /// seeded here.
 #[test]
-fn first_run_seeds_ensure_default_rules_payload_not_sync_rules_payload() {
+fn a_first_run_seeds_the_product_rule_and_the_mod_manager_rule() {
     let temp = tempfile::tempdir().unwrap();
     let paths = support::temp_paths(temp.path());
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
@@ -617,19 +617,19 @@ fn first_run_seeds_ensure_default_rules_payload_not_sync_rules_payload() {
     assert_eq!(
         names,
         vec!["DLsite Standard", "Mod Manager Layout"],
-        "the seed set of whichever seeder ran first, and only that one's"
+        "the seeded set, whole and in order"
     );
 
     let product = &rules[0];
     assert_eq!(
         product.trigger.filename_pattern.as_deref(),
         Some(r"(RJ|VJ|BJ)\d+"),
-        "this is ensure_default_rules's pattern, not sync_rules's \\[(RJ|BJ|VJ)\\d+\\]"
+        "the shipped product rule's pattern"
     );
     assert_eq!(product.actions.layout.name, "Game");
     assert!(
         product.trigger.metadata_source.is_none(),
-        "sync_rules's product rule is the one that keys on a metadata source"
+        "the shipped product rule keys on the filename, not a metadata source"
     );
 
     let mods = &rules[1];
