@@ -562,6 +562,36 @@ impl RuleEngine {
             *dirs.entry(dir).or_insert(0) += 1;
         }
 
+        // `www`, `data` and `js` are folder names, and a folder never
+        // reaches this function as an entry: `create_plan` scores the
+        // pruned list, and `TreeNode::flatten` keeps files only. Derive
+        // the folders the file paths imply and score them by name, once
+        // each -- crediting per file would let a folder holding five
+        // hundred files outscore the layout it sits in.
+        let mut implied_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        for entry in entries {
+            let mut cursor = Path::new(&entry.path).parent();
+            while let Some(dir) = cursor {
+                if dir.as_os_str().is_empty() {
+                    break;
+                }
+                implied_dirs.insert(dir.to_path_buf());
+                cursor = dir.parent();
+            }
+        }
+        for dir in &implied_dirs {
+            let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+                continue;
+            };
+            let name = name.to_string_lossy();
+            if game_indicators
+                .iter()
+                .any(|indicator| name.eq_ignore_ascii_case(indicator))
+            {
+                *dirs.entry(parent.to_path_buf()).or_insert(0) += 1;
+            }
+        }
+
         // Find dir with >= 2 indicators
         for (dir, score) in dirs {
             if score >= 2 && score > best_score {

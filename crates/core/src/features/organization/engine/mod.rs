@@ -638,4 +638,62 @@ mod tests {
             assert_eq!(parsed["title"], "Placeholder Game");
         }
     }
+    /// Three of the content-root indicators are folder names, and a
+    /// folder never reaches the scorer: `create_plan` scores the pruned
+    /// list, and `TreeNode::flatten` keeps files only. So a layout whose
+    /// only signal is its folder names scored below the threshold and
+    /// fell back to the common prefix, dragging the wrapper along.
+    #[test]
+    fn folder_name_indicators_locate_the_content_root() {
+        use crate::archive::ArchiveEntry;
+
+        fn entry(path: &str) -> ArchiveEntry {
+            ArchiveEntry {
+                path: path.to_string(),
+                size: 10,
+                packed_size: 10,
+                modified: None,
+                is_dir: false,
+                encrypted: false,
+                crc32: None,
+            }
+        }
+
+        let entries = vec![
+            entry("Placeholder Wrapper/www/index.html"),
+            entry("Placeholder Wrapper/www/js/main.js"),
+            entry("Placeholder Wrapper/www/data/System.json"),
+            entry("Placeholder Wrapper/readme.txt"),
+        ];
+
+        let rule = OrganizationRule {
+            name: "Standard".to_string(),
+            is_enabled: true,
+            trigger: RuleTrigger::default(),
+            actions: RuleActions {
+                root_folder: Some("Out".to_string()),
+                use_standard_layout: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let plan = RuleEngine::create_plan(&rule, "placeholder.zip", &entries, None)
+            .expect("plan should build");
+        let destinations: std::collections::BTreeSet<_> =
+            plan.moves.iter().map(|(_, to)| to.clone()).collect();
+
+        assert!(
+            destinations.contains("Out/Game/index.html"),
+            "the www folder is the content root, so its contents sit directly under Game/: {destinations:?}"
+        );
+        assert!(
+            destinations.contains("Out/Game/js/main.js"),
+            "subdirectories of the content root keep their structure: {destinations:?}"
+        );
+        assert!(
+            !destinations.iter().any(|d| d.contains("/www/")),
+            "the wrapper and the www folder itself must not survive into the layout: {destinations:?}"
+        );
+    }
 }
