@@ -21,7 +21,6 @@ fs_extra = "1"
 crc32fast = "1"
 
 zeroize.workspace = true
-base64.workspace = true
 sha2.workspace = true
 blake3 = "1.8"
 arclain_db = { path = "../db", default-features = false }

@@ -450,7 +450,6 @@ dependencies = [
  "arclain_checksum",
  "arclain_data",
  "arclain_db",
- "base64 0.22.1",
  "blake3",
  "chrono",
  "chrono-tz",
