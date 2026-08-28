@@ -2,6 +2,556 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 3.0.0 - 2026-08-28
+### Package updates
+- dlsite-metadata bumped to dlsite-metadata-0.12.0
+### Global changes
+#### Features
+- (**app**) make plugin hosting optional - (11f4c39) - 0xdev
+- (**app**) default-on gameta feature completes the optional metadata stack - (ee63afe) - 0xdev
+- (**app**) add the remaining plugin-management facade surfaces - (664083d) - 0xdev
+- (**app**) read one entry's text through the session that owns it - (7ad7123) - 0xdev
+- (**app**) expose product metadata as a facade read model - (b324e8b) - 0xdev
+- (**app**) own display-image fetching and the host image namespace - (4a522f0) - 0xdev
+- (**app**) make a preview and its run fail to compile when they drift - (f95bded) - 0xdev
+- (**app**) add the Process page's preset, preview and run-history surface - (b93c2b5) - 0xdev
+- (**app**) hand the legacy egui composition the session's archive handle - (c39b47d) - 0xdev
+- (**app**) own the encrypted-CRC backfill behind the facade - (f48455f) - 0xdev
+- (**app**) report archive-level encryption on the session snapshot - (8e5648f) - 0xdev
+- (**app**) list an archive session's whole entry tree - (a8769db) - 0xdev
+- (**app**) add the drag-stage surface for OS drag-out sources - (596481a) - 0xdev
+- (**app**) merge a split archive through the application facade - (9e92a65) - 0xdev
+- (**app**) serve the chrome layout from the application - (65e984f) - 0xdev
+- (**app**) report which organization rules apply to an open archive - (172301c) - 0xdev
+- (**app**) enumerate the output formats a profile may name - (3400331) - 0xdev
+- (**app**) apply the organize plan that was previewed - (1b94365) - 0xdev
+- (**app**) report an open archive's whole file-path list - (677b32b) - 0xdev
+- (**app**) report the computed default vault locations - (484d274) - 0xdev
+- (**app**) broaden narrow auto-saved password rules at bootstrap - (95a4c6c) - 0xdev
+- (**app**) resolve the per-plugin proxy routing map on the network DTO - (99ff6f1) - 0xdev
+- (**app**) carry the pipeline collision default on the settings surface - (40cc12b) - 0xdev
+- (**app**) report the whole network probe, direct path included - (d455c7e) - 0xdev
+- (**app**) probe candidate SOCKS5 proxies, and report what gameta answered - (e8cc906) - 0xdev
+- (**app**) serve domain access and gameta health checks from the facade - (0105907) - 0xdev
+- (**app**) add the organization rule, profile, and preview surface - (7a3f03f) - 0xdev
+- (**app**) expose log locations and archive-extension checks - (60cbcd5) - 0xdev
+- (**app**) resolve interactive RequestFetch through the shared policy - (f23c2e0) - 0xdev
+- (**app**) publish session events from ArchiveContextBridge - (b580e3a) - 0xdev
+- (**app**) add a session-event broadcast channel - (8bf76a5) - 0xdev
+- (**app**) express ad-hoc pipelines in the application contract - (4ff1beb) - 0xdev
+- (**app,ui**) carry every output of a layout to the surfaces - (88d3f76) - 0xdev
+- (**core**) seed the mod-manager layout beside the product one - (9de5d06) - 0xdev
+- (**core**) make a rule's layout data rather than a boolean - (a283eef) - 0xdev
+- (**core**) fill each output from its layout's placements - (33f8205) - 0xdev
+- (**core**) resolve a layout to named outputs - (d4077c9) - 0xdev
+- (**core**) add the layout vocabulary - (a5d2363) - 0xdev
+- (**core**) resolve a plan's downloads before it is applied - (c9a49f8) - 0xdev
+- (**core**) gate LibraryService, dlsite detection and pipeline metadata behind default-on gameta - (4fabad2) - 0xdev
+- (**core**) recover interrupted proxy settings saves - (054922d) - 0xdev
+- (**data**) name why the cache refused to store something - (1f7a5fa) - 0xdev
+- (**data**) stop requesting arclain_db's default features through the edge - (daffc69) - 0xdev
+- (**data**) gate MetadataReader and the metadata resolver behind default-on gameta - (5a716c9) - 0xdev
+- (**db**) make the gameta type re-export an optional default-on feature - (5fc8dad) - 0xdev
+- (**db**) add atomic secret mutation batches - (d39f8f8) - 0xdev
+- (**network**) add a bounded buffered GET that keeps the response type - (b7f842b) - 0xdev
+- (**plugins**) gate the metadata host-function engine behind default-on gameta - (496911d) - 0xdev
+- (**ui**) give a tab a facade-typed whole-archive inventory - (9101c03) - 0xdev
+- (**ui**) route drag-out through the facade drag-stage surface - (2068947) - 0xdev
+- (**ui**) tell an empty archive folder apart from one that failed to list - (9f19a1e) - 0xdev
+- (**ui**) render facade plugin documents as a real tree - (e9f0119) - 0xdev
+- (**ui**) add a facade-backed plugin session registry - (779a9e7) - 0xdev
+- (**ui**) trace session-event metadata delivery - (fb3b226) - 0xdev
+- (**ui**) consume session events alongside operation events - (fc53a92) - 0xdev
+- (**ui**) report the active tab's archive session to the facade - (975dfb3) - 0xdev
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>(**wirt**) a badge names what it means, not what colour to be - (f3f56ab) - 0xdev
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>(**wirt**) a split names how wide its sidebar should be - (78a95a1) - 0xdev
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>(**wirt**) media elements name a size step, not a pixel height - (6e40031) - 0xdev
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>(**wirt**) a label names its role, not its point size - (216dd6d) - 0xdev
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>(**wirt**) spacing is a step the host sizes, not a pixel count - (db7b2c2) - 0xdev
+- expose legacy network settings safely - (7857912) - 0xdev
+- accept host-owned plugin routing - (1c380cb) - 0xdev
+- add transactional plugin uninstall - (43459f5) - 0xdev
+- add bounded persistent plugin data - (61bcc3b) - 0xdev
+- add revisioned plugin settings snapshots - (2543116) - 0xdev
+- package bundled plugins as Wirt archives - (cb11990) - 0xdev
+- quarantine resource-abusing Wirt plugins - (202fbbd) - 0xdev
+- review Wirt permissions before installation - (a76b3e2) - 0xdev
+- install Wirt packages transactionally - (febf37a) - 0xdev
+- add the Wirt developer command - (776285e) - 0xdev
+- add deterministic Wirt package validation - (910d2ff) - 0xdev
+- establish neutral Wirt crate boundary - (9cbc9b8) - 0xdev
+- add atomic password-rule replacement - (c6c6f57) - 0xdev
+- add operational CLI commands - (2802446) - 0xdev
+- add inspect and list CLI commands - (ee9e19d) - 0xdev
+- add cancellable application operation registry - (80652a0) - 0xdev
+- add stable application facade value types - (a7e957e) - 0xdev
+- add session-aware diagnostics logs - (17d6e66) - 0xdev
+#### Bug Fixes
+- (**app**) treat a full disk as the user's to clear, not a retry - (ce26fb1) - 0xdev
+- (**app**) refuse a batch organize input before extracting it - (cc2e5fd) - 0xdev
+- (**app**) bootstrap without 7-Zip instead of refusing to start - (d50369d) - 0xdev
+- (**app**) take a plugin's settings at exit, not only at the next guest entry - (7f0b078) - 0xdev
+- (**app**) close the windows where a disabled plugin still ran - (ee7ca1d) - 0xdev
+- (**app**) persist the settings a plugin writes about itself - (3d5ca04) - 0xdev
+- (**app**) refuse to run a plugin the user disabled - (c5b9cc4) - 0xdev
+- (**app**) name the file a failed plugin install was pointed at - (6c601cc) - 0xdev
+- (**app**) stop preset writes re-persisting stored convert passwords - (9acd24f) - 0xdev
+- (**app**) clamp plugin-declared text before it reaches ui_items - (00d7dbc) - 0xdev
+- (**app**) root the content cache at the bootstrap's own cache_dir - (33480d9) - 0xdev
+- (**app**) make the display-options save atomic - (8afef29) - 0xdev
+- (**app**) stop the launch sync from resetting top-tab customization - (a1fc6cd) - 0xdev
+- (**app**) close the storage-scoped key door into plugin cache rows - (ff6813b) - 0xdev
+- (**app**) keep host images at the ceiling they already had - (63ae2a8) - 0xdev
+- (**app**) stop an empty pipeline batch carrying its own copy of the summary - (9d1680d) - 0xdev
+- (**app**) make a pipeline preview describe the run it predicts - (67d8df6) - 0xdev
+- (**app**) never lose a split archive's parts to a late cancellation - (9df6e66) - 0xdev
+- (**app**) make ArchiveContextBridge's metadata and rename writes real - (f101a1f) - 0xdev
+- (**app**) fix materialization lease-store bugs found in review - (7fd278d) - 0xdev
+- (**app**) dispatch archive-open plugin events only once completion is confirmed - (3b6f5f1) - 0xdev
+- (**app**) stop empty extraction selections widening scope - (7558261) - 0xdev
+- (**app**) add missing extract_runner_override after rebase - (2fd9ac2) - 0xdev
+- (**app,ui,core**) refuse to run a plan that would write nothing - (420a5a9) - 0xdev
+- (**checksum**) validate Merkle UNC and root payloads - (21852d9) - 0xdev
+- (**checksum**) harden Merkle path and decoding boundaries - (0bd8be4) - 0xdev
+- (**checksum**) bind Merkle leaves to file identity - (93d2714) - 0xdev
+- (**checksum**) propagate traversal and hash errors - (280f093) - 0xdev
+- (**ci**) pin the gameta revision Cargo.lock was resolved against - (5bde869) - 0xdev
+- (**ci**) install rustfmt before the format check - (484c51e) - 0xdev
+- (**ci**) align Arclain with Gameta's Rust 1.98 floor - (52df847) - 0xdev
+- (**cli**) scope a test-only import to the tests that use it - (8b6084b) - 0xdev
+- (**cli,ui**) stop pushing metadata into a panel that is not organizing it - (16e9c82) - 0xdev
+- (**core**) report why a pipeline file failed, not only where - (7495d70) - 0xdev
+- (**core**) scope an output by its root spelled exactly - (df177bd) - 0xdev
+- (**core**) report an output that would carry no file - (eff3653) - 0xdev
+- (**core**) refuse to apply a plan that staged nothing - (54ccbfd) - 0xdev
+- (**core**) refuse a marker root nested inside another - (592a9e8) - 0xdev
+- (**core**) refuse a wrapperless output beside a sibling - (9067114) - 0xdev
+- (**core**) reproduce shipped screenshot names, refuse collisions - (1809537) - 0xdev
+- (**core**) resolve a tied content-root score the same way every run - (b89c0dd) - 0xdev
+- (**core**) keep a screenshot fetch on the public internet - (e374172) - 0xdev
+- (**core**) score the folder names the content check was written for - (ddc1282) - 0xdev
+- (**core**) write the layered metadata document, not the struct - (49824f0) - 0xdev
+- (**core**) follow a bounded redirect chain when fetching a screenshot - (c3b98d3) - 0xdev
+- (**core**) bound the screenshot fetch and cache what it downloads - (eb15b73) - 0xdev
+- (**core**) fetch the screenshots a pipeline's organize step schedules - (8f0b6b0) - 0xdev
+- (**core**) randomize download staging directory and tolerate write failures - (a2734ef) - 0xdev
+- (**core**) parse the screenshot URLs every product actually carries - (b556af9) - 0xdev
+- (**core**) flag a 7z entry encrypted only when its block is AES-coded - (85ab9cb) - 0xdev
+- (**core**) store every entry time as the UTC instant it denotes - (5fc247e) - 0xdev
+- (**core**) name the password when no 7-Zip CLI is installed - (65d33cc) - 0xdev
+- (**core**) normalize the times the CLI tiers read back from their tools - (ee96d8d) - 0xdev
+- (**core**) describe RAR entry times per format, not as one encoding - (6243c82) - 0xdev
+- (**core**) fail extraction that writes no file, naming the password - (81217f3) - 0xdev
+- (**core**) report the instant a 7z header records - (7a15b7c) - 0xdev
+- (**core**) report the modification time a RAR header records - (8009762) - 0xdev
+- (**core**) log 7-Zip absence at debug in the detector - (c3e0033) - 0xdev
+- (**core**) stop requiring 7-Zip to select a native archive backend - (9680f93) - 0xdev
+- (**core**) parse product metadata with its plugin json shape - (d6666e3) - 0xdev
+- (**core**) proxy bundled dlsite plugin by default - (a183d6f) - 0xdev
+- (**core**) fail closed when proxy transport is unavailable - (19930b7) - 0xdev
+- (**core**) serialize aliased pipeline destinations - (51ce0a0) - 0xdev
+- (**core**) serialize pipeline output promotion - (f073d5c) - 0xdev
+- (**core**) atomically replace pipeline outputs - (ff05412) - 0xdev
+- (**core**) contain and report organization workspaces - (ad7bc6b) - 0xdev
+- (**core**) own unique organization workspaces - (d38da32) - 0xdev
+- (**core**) finalize organization metadata transactionally - (8ce9291) - 0xdev
+- (**core**) preserve organization staging metadata and cleanup - (c2fdec6) - 0xdev
+- (**core**) make organization application transactional - (4ffac78) - 0xdev
+- (**core**) preserve organization sources on staging failure - (9eaeb08) - 0xdev
+- (**core**) harden organization plan application - (1976929) - 0xdev
+- (**core**) preserve native 7z extraction semantics - (e096ade) - 0xdev
+- (**core**) contain native 7z extraction paths - (a41562f) - 0xdev
+- (**core**) harden checked path containment - (4c03eb5) - 0xdev
+- (**core**) add checked relative path boundary - (a28941b) - 0xdev
+- (**core,app**) keep a blank metadata title out of the output name - (1b81da9) - 0xdev
+- (**core,app**) prove a derived output name is a plain file name - (9bea5f7) - 0xdev
+- (**data**) bound legacy data request retention - (53a9f8e) - 0xdev
+- (**data**) remove completed download locks race-free - (641e5ee) - 0xdev
+- (**data**) revoke resume metadata before append - (7db7ff3) - 0xdev
+- (**data**) serialize and bind resumable downloads - (113da94) - 0xdev
+- (**data**) snapshot resolver registry entries - (038c1ef) - 0xdev
+- (**db**) escape trigger identifiers when dropping stale sync triggers - (9ca95a5) - 0xdev
+- (**db**) repair stale cr-sqlite triggers where the shared database is opened - (bc565de) - 0xdev
+- (**db**) propagate metadata store initialization failures - (3239306) - 0xdev
+- (**db**) reject migration identity collisions - (7568bc3) - 0xdev
+- (**db**) make library migration transactional - (a86ce17) - 0xdev
+- (**network**) bound buffered plugin response bodies - (19286c4) - 0xdev
+- (**network**) centralize proxy authority validation - (83e1587) - 0xdev
+- (**network**) reject proxy address userinfo - (aa2ae42) - 0xdev
+- (**network**) redact proxy credentials - (188ea3d) - 0xdev
+- (**network**) scope DLsite policy to canonical hosts - (2093629) - 0xdev
+- (**network**) authorize exact plugin hostnames - (e285df9) - 0xdev
+- (**network**) close plugin HTTP authority bypasses - (50e2957) - 0xdev
+- (**network**) centralize plugin HTTP authorization - (3a444a1) - 0xdev
+- (**network**) bound partial response writes - (0744012) - 0xdev
+- (**network**) validate resumable response ranges - (789c1c2) - 0xdev
+- (**network**) store request completion state - (9b7febb) - 0xdev
+- (**plugins**) ask for the spacing boldness used to imply - (d3e34f6) - 0xdev
+- (**plugins**) fail closed on quarantine restore errors - (3fe695e) - 0xdev
+- (**plugins**) enforce Wirt adapter shape at compile time - (a73584b) - 0xdev
+- (**plugins**) scale the plugin epoch deadline to a liveness backstop - (7763514) - 0xdev
+- (**plugins**) align bundled manifest versions - (8304582) - 0xdev
+- (**plugins**) route all plugin fetches through checked HTTP - (8933c90) - 0xdev
+- (**plugins**) bound top tab rendering - (05f4c3d) - 0xdev
+- (**plugins**) close WebAssembly quota bypasses - (84dd872) - 0xdev
+- (**plugins**) bound WebAssembly resource consumption - (98f109c) - 0xdev
+- (**plugins**) restrict metadata validation host imports - (3c78c7d) - 0xdev
+- (**plugins**) defer logging until plugin ID validation - (ae317b9) - 0xdev
+- (**plugins**) validate plugin IDs before filesystem use - (f186a77) - 0xdev
+- (**signals**) release signal guard before callbacks - (c430e9d) - 0xdev
+- (**theme**) always register bundled icon font - (0284b5a) - 0xdev
+- (**ui**) stop two more narrow-pane subtractions going negative - (5d738d2) - 0xdev
+- (**ui**) keep a short window from asking egui for a negative height - (b3cb684) - 0xdev
+- (**ui**) suffix the float literals rustc will stop accepting - (34b0961) - 0xdev
+- (**ui**) a sparse sidebar keeps the width the host assigned - (acc760e) - 0xdev
+- (**ui**) show entry times on the viewer's own clock - (395bd4d) - 0xdev
+- (**ui**) release a plugin's main-page session when it is deselected - (2890e32) - 0xdev
+- (**ui**) tell an archive nobody has listed from an empty one - (8c67fd8) - 0xdev
+- (**ui**) draw a failed listing instead of the previous archive's rows - (12ccbd2) - 0xdev
+- (**ui**) keep a Process page click ahead of the frame's own work - (cb3a1ba) - 0xdev
+- (**ui**) surface a rejected preview instead of blanking the panel - (1a79d41) - 0xdev
+- (**ui**) resolve an entry by kind as well as name - (87f9168) - 0xdev
+- (**ui**) stop failed organization loads from re-firing every frame - (39bb8db) - 0xdev
+- (**ui**) stop re-fetching an image the application refused permanently - (3fe2ecc) - 0xdev
+- (**ui**) guard fail against foreign sessions and drop the reader-less archive handle - (b3bb948) - 0xdev
+- (**ui**) drop a superseded listing request's late reply instead of applying it - (44cd777) - 0xdev
+- (**ui**) stop dropping selections past 100 000 entries in one directory - (68f720b) - 0xdev
+- (**ui**) never act on placeholder settings at startup - (18f5fa3) - 0xdev
+- (**ui**) pin the cross-plugin image guards, and pin panels to their own archive - (5369929) - 0xdev
+- (**ui**) give the layout editor a probe, and let a panel follow its archive - (1235d2c) - 0xdev
+- (**ui**) correct plugin panel probing, checkbox revert, and split extent - (40c4ba5) - 0xdev
+- (**ui**) recover plugin actions after a lagged broadcast, and redact their errors - (e879c1c) - 0xdev
+- (**ui**) keep plugin-authored ids out of the session-open trace - (f8f053b) - 0xdev
+- (**ui**) apply archive_path from session events, and reconcile on stamp - (c4546b4) - 0xdev
+- (**ui**) restore both-view invalidation on plugin enable toggle - (f36f735) - 0xdev
+- (**ui**) register materialize actions before the origin, not after - (a9a99b2) - 0xdev
+- (**ui**) wire real shutdown and fix external-open lease edge cases - (3c3e962) - 0xdev
+- (**ui**) harden the operation bridge lifecycle - (555cd4e) - 0xdev
+- (**ui**) fail loudly instead of silently extracting the whole archive - (ab0322d) - 0xdev
+- (**ui**) run archive file edits on workers - (4d8c0ec) - 0xdev
+- (**ui**) route plugin jobs through origin-aware queue - (fc8d346) - 0xdev
+- (**ui**) cache archive tree projections between frames - (156c8c0) - 0xdev
+- (**ui**) show effective plugin proxy routing - (8c024e9) - 0xdev
+- (**ui**) keep live plugin proxy routing atomic - (147b147) - 0xdev
+- (**ui**) limit filtered toolbar deletes to visible rows - (3b80fe4) - 0xdev
+- (**ui**) synchronize live plugin proxy routing - (3a9e8c4) - 0xdev
+- (**ui**) validate proxy before persistence - (80516b6) - 0xdev
+- (**wirt**) pin the Wirt guest toolchain - (c540179) - 0xdev
+- (**wirt**) enforce release and dependency pins - (bfb41b6) - 0xdev
+- (**wirt**) package the fixture from the manifest the repo checks out - (b24728a) - 0xdev
+- (**wirt**) bound the escaped rendering, not the text that feeds it - (6918794) - 0xdev
+- (**wirt**) name the version and the remedy when a plugin is refused - (e9dbb74) - 0xdev
+- (**wirt-cli**) break the manifest the round trip means to reject - (9eddd94) - 0xdev
+- bound plugin discovery - (b3901d9) - 0xdev
+- bound legacy plugin routing inspection - (f6e9a49) - 0xdev
+- skip standalone proxy recovery for host routing - (feb614c) - 0xdev
+- harden legacy storage inspection - (03d5021) - 0xdev
+- document routing facade lint exception - (79f3698) - 0xdev
+- canonicalize every plugin settings writer - (8ba05ea) - 0xdev
+- collapse legacy plugin settings aliases - (e009764) - 0xdev
+- fail closed when uninstall settings rollback fails - (ef1d0df) - 0xdev
+- retain session closes during uninstall rollback - (251a566) - 0xdev
+- canonicalize plugin settings identities - (e90e177) - 0xdev
+- synchronize standalone Wirt SDK lockfile - (21da695) - 0xdev
+- refresh cache classification during upsert - (232c3ed) - 0xdev
+- serialize plugin settings flush snapshots - (457e953) - 0xdev
+- preserve rendered plugin action identity - (5922f0c) - 0xdev
+- reject stale plugin UI actions - (8d0102e) - 0xdev
+- refresh gameta core lock dependencies - (c355436) - 0xdev
+- keep UI independent of Wirt internals - (2c01f1b) - 0xdev
+- confine bundled Wirt compatibility inputs - (5f28f8d) - 0xdev
+- accept canonical Wirt interface subsets - (13ce207) - 0xdev
+- retain Wirt project copy roots - (9b74fa3) - 0xdev
+- confine Wirt developer file operations - (cecbaf7) - 0xdev
+- reject oversized Wirt names before sorting - (529c1de) - 0xdev
+- harden Wirt contract type hashing - (56eda43) - 0xdev
+- bind Wirt contract identities - (d30c047) - 0xdev
+- harden Wirt package preflight - (d40060f) - 0xdev
+- preserve grouped Wirt absolute roots - (2a36843) - 0xdev
+- reject absolute internal Wirt globs - (92c7c07) - 0xdev
+- accept concrete Wirt self globs - (fac75ab) - 0xdev
+- complete Wirt boundary provenance - (4167015) - 0xdev
+- parse Wirt boundary attributes structurally - (32c52de) - 0xdev
+- harden Wirt boundary provenance - (a378e60) - 0xdev
+- tighten Wirt source boundary - (a403acd) - 0xdev
+- simplify Wirt bindgen boundary - (299badb) - 0xdev
+- close Wirt bindgen provenance gaps - (2632a1d) - 0xdev
+- resolve Wirt bindgen aliases - (d31f0e0) - 0xdev
+- parse Wirt boundary declarations - (166c03a) - 0xdev
+- close Wirt WIT guard bypasses - (5fe0ff2) - 0xdev
+- harden Wirt ABI boundary - (8dc0e22) - 0xdev
+- accept valid Rust byte escapes - (ea95aed) - 0xdev
+- complete Rust literal boundary scanning - (e480210) - 0xdev
+- close Wirt boundary bypasses - (529da6b) - 0xdev
+- rebuild malicious fixture for Wirt ABI - (500c817) - 0xdev
+- reject renamed product dependencies - (5620ecd) - 0xdev
+- honor profile overrides in database defaults - (470e4be) - 0xdev
+- publish post-init plugin page document - (9a9672c) - 0xdev
+- make the image recovery write run, and confine it to one namespace - (88dee20) - 0xdev
+- land plugin-originated writes where their readers look - (eef1b15) - 0xdev
+- serve the session bridge from any thread - (d1e01d5) - 0xdev
+- make the CLI cancellable and boundable in every phase - (94ace72) - 0xdev
+- make plugin intents and sessions consumable across renderers - (ebd38e8) - 0xdev
+- never write settings rows from the cache - (c769d7c) - 0xdev
+- re-read config and close vault handles for every owner - (639f665) - 0xdev
+- keep the lease root private and multi-instance safe - (8e22c79) - 0xdev
+- replace leaked temporary files with leases - (1d4a1ec) - 0xdev
+- mark desync before releasing the mutation lock - (9795763) - 0xdev
+- make mutation failure states honest and refreshes single - (65c4a89) - 0xdev
+- restore organize password flow and pipeline artifact fidelity - (918cd70) - 0xdev
+- close superseded archive sessions at the completion choke point - (46b655b) - 0xdev
+- keep entry ids unique across file and directory namespaces - (59196f4) - 0xdev
+- make cancelled opens leak-free and entry ids path-stable - (6ed2c18) - 0xdev
+- keep legacy plugin dispatch until open flow migrates - (6688da0) - 0xdev
+- keep the runtime owner armed through shutdown - (40afee7) - 0xdev
+- preserve first-run seeding order and make shutdown drop-safe - (7afef63) - 0xdev
+- publish operation events under the record lock - (6acfed2) - 0xdev
+- stop flagging egui/eframe mentions inside doc comments - (d6dda4f) - 0xdev
+- harden plugin, cache, and network boundaries - (f7acc10) - 0xdev
+- prevent archive rename collisions - (1df5c28) - 0xdev
+- run warning gate on Rust 1.97 - (4823f12) - 0xdev
+- resolve Rust 1.97 future incompatibilities - (6595145) - 0xdev
+- close archive state and rendering gaps - (e9cff9f) - 0xdev
+- move plugin UI work off the render thread - (b2c9fca) - 0xdev
+- propagate plugin cleanup failures - (6ee2c54) - 0xdev
+- fail closed on unreadable proxy routing - (1559b07) - 0xdev
+- apply proxy routing atomically - (2e99668) - 0xdev
+- recover proxy persistence before activation - (b46d0f4) - 0xdev
+- publish a single release archive - (7b3c9f9) - 0xdev
+- preserve archive entry identity across navigation - (3dc94bd) - 0xdev
+- close checked fetch lifecycle gaps - (3eb3f6a) - 0xdev
+- keep live proxy routing consistent - (595d704) - 0xdev
+- make proxy settings persistence atomic - (88ad1e1) - 0xdev
+- validate organization plan paths - (682da5c) - 0xdev
+- package current host with bundled plugins - (abf7b3e) - 0xdev
+#### Performance Improvements
+- (**app**) only rebuild the entry list for rules that read it - (21c078f) - 0xdev
+- (**network**) avoid cloning completed responses - (71c05c7) - 0xdev
+- (**theme**) retain borrowed icon font bytes - (3406207) - 0xdev
+- (**theme**) avoid cloning system font bytes - (be27534) - 0xdev
+- (**ui**) stop rebuilding what the organize views only read - (eef2898) - 0xdev
+- (**ui**) load and virtualize logs asynchronously - (e1c6505) - 0xdev
+- (**ui**) unify async image asset ownership - (d797919) - 0xdev
+- (**ui**) avoid cloning settled archive search text - (75f2bac) - 0xdev
+- (**ui**) avoid idle archive filter allocation - (3019ca5) - 0xdev
+- (**ui**) make archive selection clones constant time - (b6b8db3) - 0xdev
+- (**ui**) cache archive selection projections - (97627d9) - 0xdev
+- (**ui**) cache archive entry projections - (68f0082) - 0xdev
+#### Documentation
+- (**app**) finish the comment repair for bootstrap-without-7-Zip - (6f7994d) - 0xdev
+- (**app**) correct two claims in the drag-stage worker - (e3e9af8) - 0xdev
+- (**app**) name the probe surface where its tests and report live - (8751ad9) - 0xdev
+- (**app**) name the domain-access read model in the plugins module doc - (c9b7d49) - 0xdev
+- (**app**) reunite file_paths with its doc comment - (dd637f7) - 0xdev
+- (**core**) say that a screenshot path loses a leading ./ - (8947b7c) - 0xdev
+- (**core**) say which file variables arrive unsanitised - (ead3673) - 0xdev
+- (**core**) say what a translated rule stopped doing - (34dfc6e) - 0xdev
+- (**core**) correct comments naming the deleted flatten walk - (e317c61) - 0xdev
+- (**core**) say why the organized screenshots assertion went - (a202063) - 0xdev
+- (**core**) describe the RAR time word by the policy that now reads it - (4714bd3) - 0xdev
+- (**ui**) stop describing a per-tab page the browser no longer holds - (c0ef252) - 0xdev
+- (**ui**) correct comments that still name deleted conversion state - (08b0a62) - 0xdev
+- (**ui**) stop describing the deleted duplicate listing pipeline - (689d3ff) - 0xdev
+- (**ui**) name the one bootstrap copy the test fixture mirrors - (26d79ef) - 0xdev
+- (**ui**) record the per-extension-point plugin migration plan - (bff4fef) - 0xdev
+- (**wirt**) say what the code requires, not what a document said - (1120494) - 0xdev
+- (**wirt**) state the ABI the host actually speaks - (668a2f3) - 0xdev
+- document Wirt development and security contracts - (e435506) - 0xdev
+- add network domains to manifest examples - (1a7e86e) - 0xdev
+- align comments with the optional metadata stack - (3968a8f) - 0xdev
+- clarify legacy composition boundary comment - (912416f) - 0xdev
+#### Tests
+- (**app**) prove archive-only Arclain embedding - (f80a1c9) - 0xdev
+- (**app**) keep the refused-title guard covered without the gameta feature - (b03bcdf) - 0xdev
+- (**app**) pin the exit sweep and the write-then-trap pull - (e67e10b) - 0xdev
+- (**app**) give the fixture a plugin that writes its own settings - (d7ddf51) - 0xdev
+- (**app**) pin what disabling does to a plugin's sessions - (4e44974) - 0xdev
+- (**app**) stop the lease-expiry test racing the sweeper it enables - (b0bfd2b) - 0xdev
+- (**app**) poll for a terminal operation state inside the runtime - (6c8e18d) - 0xdev
+- (**app**) pin the read-back gate that vetoes a cancelled merge's cleanup - (75e3b64) - 0xdev
+- (**app**) pin the wire shape of the two new operation variants - (1aa9c0c) - 0xdev
+- (**app**) pin what a merge does with an encrypted set - (94fc909) - 0xdev
+- (**app**) prove the listing gate fired, and refuse an empty destination - (85c88de) - 0xdev
+- (**app**) verify ArchiveContextBridge degrades safely off-runtime - (8df125f) - 0xdev
+- (**app**) supply the new BootstrapConfig fields in the plugin-session bootstrap helper - (62b0d7d) - 0xdev
+- (**app**) widen a too-tight wait budget found during rebase - (6b100ef) - 0xdev
+- (**app,ui**) stop cache tests failing on the machine's free space - (bdea421) - 0xdev
+- (**core**) tell two outputs apart by content, not by name - (26485c2) - 0xdev
+- (**core**) pin the whole-plan transaction across outputs - (eff4771) - 0xdev
+- (**core**) pin the layout output rules nothing else held - (ac38e75) - 0xdev
+- (**core**) skip when the source archive will not list either - (8ad2398) - 0xdev
+- (**core**) build pipeline test contexts by functional update - (fef7875) - 0xdev
+- (**core**) lock the feature-off fallback tiers with explicit coverage - (57c7571) - 0xdev
+- (**core**) stabilize Windows access-time verification - (d5c0982) - 0xdev
+- (**core**) stabilize Windows timestamp fixture - (e57f29f) - 0xdev
+- (**data**) cover checked streaming resume end to end - (97cb83c) - 0xdev
+- (**network**) budget the routing-race waits for a loaded machine - (76b5965) - 0xdev
+- (**network**) prevent routing test cleanup deadlock - (eb17815) - 0xdev
+- (**network**) cover unavailable routing overlap - (360a1e6) - 0xdev
+- (**network**) measure completion status clones - (299c0b6) - 0xdev
+- (**plugins**) give the facade test fixture a dialog extension point - (c59b5ce) - 0xdev
+- (**plugins**) sharpen the epoch dead-man doctrine and its sizing floor - (dc92ad2) - 0xdev
+- (**plugins**) give the facade fixture a top tab, log line and capabilities - (1c6537f) - 0xdev
+- (**plugins**) cover validation WASI isolation - (3aa85ea) - 0xdev
+- (**signals**) make guard reentry regression deterministic - (064957f) - 0xdev
+- (**theme**) lock system font byte ownership - (809d144) - 0xdev
+- (**ui**) prove the type scale reaches the screen, not just the table - (6728b9e) - 0xdev
+- (**ui**) stabilize dialog facade interactions - (b461c32) - 0xdev
+- (**ui**) enforce image dependency boundary - (684dad5) - 0xdev
+- (**ui**) align MainPage facade fixture - (ab32927) - 0xdev
+- (**ui**) bound the no-manager-lock assertion by scheduling latency - (e882f68) - 0xdev
+- (**ui**) keep the logs harness alive through the blocked-read handshake - (4946104) - 0xdev
+- (**ui**) warm the slot before asserting a disabled plugin draws nothing - (6bc7585) - 0xdev
+- (**ui**) pin the toolbar's facade-backed plugin buttons - (261f942) - 0xdev
+- (**ui**) pin the session-backed relist pipeline end to end - (b559862) - 0xdev
+- (**ui**) pin metadata to the session its panel is organizing - (fec694d) - 0xdev
+- (**ui**) pin the guard on the startup session-deletion path - (2fc468a) - 0xdev
+- (**ui**) drop unused plugin-routing test scaffolding - (7211bba) - 0xdev
+- (**ui**) cover the session-event bridge swap end to end - (0c96fe0) - 0xdev
+- (**ui**) add an on-demand end-to-end smoke test for open-file-from-archive - (2cd2881) - 0xdev
+- (**ui**) stabilize concurrent UI worker tests - (8f93c25) - 0xdev
+- (**ui**) keep proxy test ports reserved - (84ad0ee) - 0xdev
+- (**wirt**) pin the Wirt extraction contract - (ce674c4) - 0xdev
+- cover IPv6 proxy authorities - (c450685) - 0xdev
+- characterize proxy routing before Porxi - (59afeee) - 0xdev
+- use maintained UI plugin fixtures - (8e03dab) - 0xdev
+- use tracked Wirt test fixtures - (a72799a) - 0xdev
+- refresh Wirt CLI starter contract - (e1a7596) - 0xdev
+- prove Wirt ABI round trip through Arclain - (29e15ba) - 0xdev
+- cover neutral Wirt runtime contracts - (277721f) - 0xdev
+- parse component imports structurally - (5973234) - 0xdev
+- budget the two wall-clock waits for a cold, loaded machine - (f3c2794) - 0xdev
+- add gate-lean recipe asserting lean builds exclude the gameta crates - (c598105) - 0xdev
+- strengthen facade boundary regressions - (caa2203) - 0xdev
+- settle async dialog layout before clicks - (2a62110) - 0xdev
+- pin the Process page's facade path and convert cancellation - (844a6d5) - 0xdev
+- cover arclain_cli in the owned-formatting expectations - (266d428) - 0xdev
+- cover arclain_app in the owned-formatting expectations - (154923e) - 0xdev
+- refresh trybuild snapshot for serde diagnostic drift - (aa885d7) - 0xdev
+- add frontend dependency boundary guard - (f765877) - 0xdev
+- enforce fmt-check recipe boundary - (c83f47f) - 0xdev
+- strengthen owned formatting contracts - (13da0b6) - 0xdev
+- prove plugin cleanup continues after failure - (725f017) - 0xdev
+- run non-UI integration tests in CI - (747d1b9) - 0xdev
+#### Build system
+- pin the toolchain every recipe runs against - (ab977a2) - 0xdev
+#### Refactoring
+- (**app**) extract the plugin top-tab ui_items sync from bootstrap - (8f64154) - 0xdev
+- (**app**) read the saved presets through one shared loader - (10ebb1c) - 0xdev
+- (**app**) make the contract own the whole-directory request shape - (0427269) - 0xdev
+- (**app**) keep the proxy probe's diagnostic honest when it has nothing to say - (4868802) - 0xdev
+- (**app**) move processing workflows behind application facade - (a1364e2) - 0xdev
+- (**app**) expose extraction as application operation - (3825bb4) - 0xdev
+- (**app,core**) align the display-options docs and surface with the shipped shape - (f88580d) - 0xdev
+- (**app,ui**) derive retryable from recoverability, not beside it - (60e9875) - 0xdev
+- (**app,ui**) tidy the layout surface after review - (b12a570) - 0xdev
+- (**core**) assert one filled output per located one - (ffa3133) - 0xdev
+- (**core**) parse modinfo from a string, not only a folder - (7b022c1) - 0xdev
+- (**core**) drop the copier the flattener left behind - (6a0a63c) - 0xdev
+- (**core**) remove the second content-root detection - (84e1657) - 0xdev
+- (**core**) drop the organizer nothing reached - (449f88e) - 0xdev
+- (**core**) apply an organization plan in one place - (5ebb569) - 0xdev
+- (**core**) drop an assert that could not fail - (c0575da) - 0xdev
+- (**core**) drop the opener that shared one temp directory - (3c7a7ea) - 0xdev
+- (**core**) keep the primary tier's reason on fallback failure - (b133926) - 0xdev
+- (**core**) pin the container capabilities to the switches themselves - (c748c26) - 0xdev
+- (**core**) validate a derived file name with the one validator - (f1ccceb) - 0xdev
+- (**core,app**) seed the default rules from one place - (d3a1cd8) - 0xdev
+- (**core,app**) decide once whether a plan stages nothing - (4971289) - 0xdev
+- (**core,app**) let the format decide what a container can honour - (75a44a8) - 0xdev
+- (**plugins**) inject the library service post-instantiate like every other optional service - (93dd44d) - 0xdev
+- (**plugins**) give a plugin event the entry paths it can actually read - (bbcac99) - 0xdev
+- (**ui**) move the spacing scale in beside its siblings - (02b271d) - 0xdev
+- (**ui**) give the host's scales their own module - (1c61548) - 0xdev
+- (**ui**) route plugin management through facade - (0b2a003) - 0xdev
+- (**ui**) render plugin pages through the facade - (13d88a8) - 0xdev
+- (**ui**) render the plugin main page through the facade - (437f672) - 0xdev
+- (**ui**) draw the plugin dialog from its facade session - (2e01c6e) - 0xdev
+- (**ui**) draw the toolbar's plugin buttons from their facade session - (9b65769) - 0xdev
+- (**ui**) retire the browser listing's write-only page fetch - (7575207) - 0xdev
+- (**ui**) render the top tab bar from the facade chrome DTOs - (c1a7a1e) - 0xdev
+- (**ui**) drop the legacy pipeline-metadata projection - (1412dcb) - 0xdev
+- (**ui**) run the Process page through the application facade - (73130a6) - 0xdev
+- (**ui**) draw the archive browser from the session's own rows - (6974619) - 0xdev
+- (**ui**) read a file for editing through its archive session - (1ef4d9d) - 0xdev
+- (**ui**) read product metadata through the facade - (6e84769) - 0xdev
+- (**ui**) resolve and fetch images through the application only - (6c23dc6) - 0xdev
+- (**ui**) relist archives through the facade session instead of a second backend listing - (30012e3) - 0xdev
+- (**ui**) split a listing's rows from what its request is doing - (7f0e821) - 0xdev
+- (**ui**) bind a tab's listing to the session whose pages it may seat - (4a2b618) - 0xdev
+- (**ui**) browse a tab's archive through the facade's listing model - (9ff2ac9) - 0xdev
+- (**ui**) key the tree projection on its own entry type - (9101604) - 0xdev
+- (**ui**) merge split archives through the facade - (a67d419) - 0xdev
+- (**ui**) draw and edit the chrome layout through the facade - (c99b226) - 0xdev
+- (**ui**) reach the organization surface through the facade - (84fbb60) - 0xdev
+- (**ui**) read and write settings through the application's own shapes - (e5ad58b) - 0xdev
+- (**ui**) stop running a persisted-secrets migration from the frontend - (feb8b81) - 0xdev
+- (**ui**) render the probe's own trace, and honour the proxy toggle - (0df63a1) - 0xdev
+- (**ui**) send the proxy probe through the facade too - (814e250) - 0xdev
+- (**ui**) reach domain access and the gameta probe through the facade - (c325760) - 0xdev
+- (**ui**) read log paths and archive checks from the facade - (560288f) - 0xdev
+- (**ui**) render the archive-browser plugin panel through the facade - (43a7123) - 0xdev
+- (**ui**) install the facade's active-tab bridge in production - (0704c0c) - 0xdev
+- (**ui**) make session.json the operational tab-restore driver - (4a23fd1) - 0xdev
+- (**ui**) route archive opening and extraction through the facade - (34744ca) - 0xdev
+- (**wirt**) consume the shared Wirt platform - (97826f9) - 0xdev
+- route proxy state through Porxi - (41cebbd) - 0xdev
+- route Wirt execution through messages - (00126d0) - 0xdev
+- establish the canonical Wirt SDK and ABI - (283749d) - 0xdev
+- serve Wirt model through application facade - (2c4c423) - 0xdev
+- move secure plugin loading into Wirt - (ded4577) - 0xdev
+- adapt Arclain host state to Wirt runtime - (ee9cb1e) - 0xdev
+- extract generic Wirt runtime kernel - (45740e9) - 0xdev
+- move neutral plugin model into Wirt - (f7729b7) - 0xdev
+- move plugin ABI under Wirt namespace - (30d09db) - 0xdev
+- collapse invariant checks into `just check <subject>` - (f3af57b) - 0xdev
+- rename gate-lean to check-gameta - (4db018b) - 0xdev
+- remove core dependency from frontend - (0a4f52a) - 0xdev
+- retire legacy frontend composition - (cea9a31) - 0xdev
+- keep saved passwords behind facade - (f297461) - 0xdev
+- move cache maintenance behind facade - (c3ce127) - 0xdev
+- project settings through facade - (30a4f8c) - 0xdev
+- move plugin visibility behind facade - (95dd124) - 0xdev
+- expose frontend support through facade - (415129c) - 0xdev
+- isolate frontend runtime from core services - (9e38ea0) - 0xdev
+- move plugin domain policy behind facade - (6d42568) - 0xdev
+- move plugin bridge ownership behind facade - (aa14089) - 0xdev
+- drop the dead content-cache parameter threading - (5b5f589) - 0xdev
+- correct the parts-ordering contract and drop the last dead field - (eba14ea) - 0xdev
+- tighten the settings surface after review - (abe54d2) - 0xdev
+- remove three direct headless dependencies from arclain_ui - (9f396c3) - 0xdev
+- route every settings writer through the application facade - (90fa673) - 0xdev
+- expose renderer-neutral plugin sessions - (394fdd7) - 0xdev
+- move settings and persistence behind facade - (821593f) - 0xdev
+- expose archive mutations through facade - (2934a31) - 0xdev
+- move archive sessions behind application facade - (e779db0) - 0xdev
+- move runtime composition into application facade - (595a5a3) - 0xdev
+- consolidate release helper behavior - (2bc2658) - 0xdev
+- release.py builds+packages only; CI owns test gating - (b652b83) - 0xdev
+#### Miscellaneous Chores
+- (**core**) drop the base64 dependency nothing uses - (1772492) - 0xdev
+- (**ui**) deny the f32 float-literal fallback in this crate - (2b3aa88) - 0xdev
+- (**ui**) drop the rotted pre-signals navigation module - (77d05e9) - 0xdev
+- (**ui**) drop a dead import comment, restate a doc reference - (024d5d8) - 0xdev
+- drop an unreachable theme and describe tests in their own terms - (a883618) - 0xdev
+- refresh vendored just exclude - (07c216b) - 0xdev
+- vendor just exclude for analyzer worktree exclusions - (a9f09fb) - 0xdev
+- ignore worktree copies in search and language servers - (0a17080) - 0xdev
+- keep the facade test fixture out of release packages - (f0d6b90) - 0xdev
+- cover arclain_app under the shared format gate - (8dd3609) - 0xdev
+- own repository formatting - (dcc75d9) - 0xdev
+- pin gameta revision across builds - (9ff215c) - 0xdev
+- ignore subagent scratch files - (8ad25c9) - 0xdev
+- configure local workspaces - (b082754) - 0xdev
+- adopt shared just library - (565be47) - 0xdev
+- format Rust sources - (ec225f9) - 0xdev
+- remove trailing whitespace - (a331d4e) - 0xdev
+#### Style
+- (**plugins**) rustfmt the epoch deadline test helpers - (545ea2f) - 0xdev
+- apply rustfmt and fix a stale bridge doc reference - (25aa211) - 0xdev
+
+- - -
+
 ## 2.3.2 - 2026-05-28
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.11.0

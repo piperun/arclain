@@ -2,6 +2,34 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## dlsite-metadata-0.12.0 - 2026-08-27
+#### Features
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>(**wirt**) a badge names what it means, not what colour to be - (f3f56ab) - 0xdev
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>(**wirt**) a split names how wide its sidebar should be - (78a95a1) - 0xdev
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>(**wirt**) media elements name a size step, not a pixel height - (6e40031) - 0xdev
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>(**wirt**) a label names its role, not its point size - (216dd6d) - 0xdev
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>(**wirt**) spacing is a step the host sizes, not a pixel count - (db7b2c2) - 0xdev
+- add bounded persistent plugin data - (61bcc3b) - 0xdev
+- package bundled plugins as Wirt archives - (cb11990) - 0xdev
+#### Bug Fixes
+- (**ci**) pin the gameta revision Cargo.lock was resolved against - (5bde869) - 0xdev
+- (**plugins**) a cached-product count reports no status - (37b478a) - 0xdev
+- (**plugins**) ask for the spacing boldness used to imply - (d3e34f6) - 0xdev
+- (**plugins**) align bundled manifest versions - (8304582) - 0xdev
+- confine bundled Wirt compatibility inputs - (5f28f8d) - 0xdev
+- harden plugin, cache, and network boundaries - (f7acc10) - 0xdev
+#### Refactoring
+- (**dlsite-metadata**) drop dead perform_scan - (67e53f0) - 0xdev
+- (**plugins**) drop dead PluginAction/UiElement variants + scaffolds - (4bae967) - 0xdev
+- (**wirt**) consume the shared Wirt platform - (97826f9) - 0xdev
+- establish the canonical Wirt SDK and ABI - (283749d) - 0xdev
+- move plugin ABI under Wirt namespace - (30d09db) - 0xdev
+#### Miscellaneous Chores
+- own repository formatting - (dcc75d9) - 0xdev
+- pin gameta revision across builds - (9ff215c) - 0xdev
+
+- - -
+
 ## dlsite-metadata-0.11.0 - 2026-05-07
 #### Features
 - (**dlsite**) chobit-embed video downloads (off by default) - (7a311db) - piperun
