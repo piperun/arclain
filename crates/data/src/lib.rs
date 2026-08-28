@@ -18,7 +18,7 @@ pub use traits::MetadataReader;
 pub use features::api::{
     DataRequest, DataResult, DataService, DataSource, DataStatus, SourceChain,
 };
-pub use features::content_cache::{CacheLimits, CacheOwner, ContentCache};
+pub use features::content_cache::{CacheCapacityRefusal, CacheLimits, CacheOwner, ContentCache};
 #[cfg(feature = "gameta")]
 pub use features::resolver::MetadataStoreResolver;
 pub use features::resolver::{

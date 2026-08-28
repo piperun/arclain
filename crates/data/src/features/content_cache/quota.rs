@@ -71,6 +71,39 @@ pub(crate) fn parse_scoped_key(key: &str) -> Option<(CacheOwner, &str)> {
     Some((CacheOwner::Plugin(owner.to_string()), raw_key))
 }
 
+/// Why the cache refused to store something.
+///
+/// The write path reports both cases through `anyhow`, so a caller that
+/// does not care keeps treating them as one error. A caller that must
+/// tell them apart -- to say whether the person at the screen can do
+/// anything about it -- downcasts to this rather than matching on the
+/// message text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheCapacityRefusal {
+    /// The filesystem holding the cache has less free space than
+    /// [`CacheLimits::min_free_space_bytes`] requires, and evicting
+    /// everything evictable did not recover enough. Freeing space on that
+    /// filesystem clears it; nothing the cache can do will.
+    FreeSpace,
+    /// A configured ceiling in [`CacheLimits`] is full. Raising the
+    /// ceiling or removing cached content clears it. The filesystem may
+    /// have plenty of room.
+    Quota,
+}
+
+impl std::fmt::Display for CacheCapacityRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // These strings are the ones this path has always reported, and
+        // callers log them.
+        match self {
+            Self::FreeSpace => formatter.write_str("cache free-space headroom exceeded"),
+            Self::Quota => formatter.write_str("cache global quota exceeded"),
+        }
+    }
+}
+
+impl std::error::Error for CacheCapacityRefusal {}
+
 /// Disk-containment limits for cache writes and resumable downloads.
 #[derive(Debug, Clone)]
 pub struct CacheLimits {
@@ -685,7 +718,7 @@ impl CacheQuota {
         reserved_bytes: u64,
     ) -> Result<()> {
         if reserved_bytes > self.limits.max_global_bytes {
-            bail!("cache global quota exceeded");
+            bail!(CacheCapacityRefusal::Quota);
         }
 
         let mut groups = physical_groups_lru(cache_dir, load_entries_lru(index)?);
@@ -722,9 +755,9 @@ impl CacheQuota {
         }
 
         if committed_bytes.saturating_add(reserved_bytes) > self.limits.max_global_bytes {
-            bail!("cache global quota exceeded");
+            bail!(CacheCapacityRefusal::Quota);
         }
-        bail!("cache free-space headroom exceeded")
+        bail!(CacheCapacityRefusal::FreeSpace)
     }
 
     fn global_capacity_fits(

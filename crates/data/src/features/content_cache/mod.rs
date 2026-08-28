@@ -8,4 +8,4 @@ mod quota;
 
 pub use cache::ContentCache;
 pub(crate) use quota::CacheQuota;
-pub use quota::{CacheLimits, CacheOwner};
+pub use quota::{CacheCapacityRefusal, CacheLimits, CacheOwner};
