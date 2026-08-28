@@ -842,6 +842,9 @@ fn describe_destination(name: &str, into: &str) -> String {
 /// go and look at rather than only the one that will not appear.
 fn report_outputs_that_carry_nothing(plan: &mut OrganizationPlan, located: &[ResolvedOutput]) {
     let filled = std::mem::take(&mut plan.outputs);
+    // One filled output per located one, in order. The zip below would
+    // otherwise drop the tail of the longer list without a word.
+    debug_assert_eq!(filled.len(), located.len());
     let mut kept = Vec::with_capacity(filled.len());
 
     for (output, location) in filled.into_iter().zip(located) {
