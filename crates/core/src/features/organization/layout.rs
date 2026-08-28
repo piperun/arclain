@@ -11,13 +11,34 @@ pub enum OutputSelector {
 
 /// Variables read out of files inside the input, resolved once per
 /// output, usable in `name` and in any `into`.
+///
+/// Their values come from a file a stranger wrote, and only one of the
+/// keys is cleaned up on the way in. `name` is sanitised by the
+/// `modinfo.ini` parser, which maps `< > : " / \ | ? *` and control
+/// characters to `_`; `addonfor` and `screenshot` arrive raw, trimmed
+/// and nothing more.
+///
+/// Everything a raw value could do to a path is refused at the
+/// boundary. `CheckedRelativePath` rejects `..`, `.`, an absolute path,
+/// a control character, a reserved device name and a component ending
+/// in a dot or a space, so the resolved path stays inside the output
+/// directory whatever the file said.
+///
+/// One thing gets through: a separator. A `/` — or a `\`, which is
+/// normalised to one — inside a value used in `name` puts the output a
+/// folder deeper than the template reads, and inside an `into` puts a
+/// file deeper than that one reads. Nothing corrupts and nothing
+/// escapes, but the same-name check in `resolve_outputs` compares whole
+/// names, so `"Mod"` and `"Mod/Extra"` are two different names that
+/// nest on disk rather than a collision it can see.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileVariable {
     /// Name the template refers to, without the `$`.
     pub as_name: String,
     /// Path of the file to read, relative to the output's own root.
     pub file: String,
-    /// Key to take from it.
+    /// Key to take from it. One of `name`, `addonfor`, `screenshot`;
+    /// only `name` is sanitised. See this type's own documentation.
     pub key: String,
 }
 
