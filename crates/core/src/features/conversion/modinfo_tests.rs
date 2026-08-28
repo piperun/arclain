@@ -104,3 +104,11 @@ fn parse_addonfor_preserves_case() {
     // addonfor is NOT sanitized — used for raw lookup against name= values.
     assert_eq!(info.addonfor.as_deref(), Some("Parent: With/Illegal Chars"));
 }
+
+#[test]
+fn a_string_parses_without_touching_a_filesystem() {
+    let parsed = parse_str("name = Placeholder Mod\naddonfor=Parent Mod\n; a comment\n");
+    assert_eq!(parsed.name.as_deref(), Some("Placeholder Mod"));
+    assert_eq!(parsed.addonfor.as_deref(), Some("Parent Mod"));
+    assert_eq!(parsed.screenshot, None);
+}

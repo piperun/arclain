@@ -32,15 +32,12 @@ pub struct ModInfo {
     pub screenshot: Option<String>,
 }
 
-/// Parse a folder's `modinfo.ini` if present.
+/// Parse a `modinfo.ini` that is already in memory.
 ///
-/// Returns `None` when the file is missing or unreadable. Returns
-/// `Some(ModInfo)` with per-field `Option`s for present-but-empty vs
-/// missing keys.
-pub fn parse(folder: &Path) -> Option<ModInfo> {
-    let path = folder.join("modinfo.ini");
-    let contents = fs::read_to_string(&path).ok()?;
-
+/// Split from [`parse`] so a caller holding the file's bytes — layout
+/// resolution reads entries out of an archive, not off a disk — can use
+/// the same parser rather than a second copy of these rules.
+pub fn parse_str(contents: &str) -> ModInfo {
     let mut info = ModInfo::default();
 
     for line in contents.lines() {
@@ -71,7 +68,17 @@ pub fn parse(folder: &Path) -> Option<ModInfo> {
         }
     }
 
-    Some(info)
+    info
+}
+
+/// Parse a folder's `modinfo.ini` if present.
+///
+/// Returns `None` when the file is missing or unreadable. Returns
+/// `Some(ModInfo)` with per-field `Option`s for present-but-empty vs
+/// missing keys.
+pub fn parse(folder: &Path) -> Option<ModInfo> {
+    let contents = fs::read_to_string(folder.join("modinfo.ini")).ok()?;
+    Some(parse_str(&contents))
 }
 
 /// Try to extract `value` from a `key=value` (or `key = value`) line.
