@@ -765,7 +765,7 @@ fn test_integration_data_full_workflow() {
 /// 2. Loads rules into ConfigStore (like UI does on startup)
 /// 3. Uses BackendSelector to get proper backend (UnRAR for .rar)
 /// 4. Decompresses the archive with auto-detected password
-/// 5. Flattens the structure using find_and_flatten_game_content
+/// 5. Flattens the structure with this test's own copy of the flatten walk
 /// 6. Verifies the flattened structure (but does NOT compress to 7z)
 #[test]
 fn test_integration_data_decompress_and_flatten() {
@@ -941,9 +941,8 @@ fn test_integration_data_decompress_and_flatten() {
 
     println!("Flattening game content to: {:?}", flattened_dir);
 
-    // Use the internal flattening logic from archive_organizer
-    // We need to import and use find_and_flatten_game_content
-    // Since it's private, we'll replicate the logic here
+    // Production no longer detects a content root by walking the tree, so this
+    // test carries its own copy of that walk to build the expected layout.
     fn find_and_flatten_game_content(source: &Path, dest: &Path) -> anyhow::Result<()> {
         // Game content indicators
         let game_indicators = [

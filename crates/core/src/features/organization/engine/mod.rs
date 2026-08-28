@@ -38,10 +38,10 @@ pub struct OrganizationPlan {
     pub moves: Vec<(String, String)>, // (source_path, dest_path)
     pub generated_files: Vec<(String, String)>, // (path, content)
     pub downloads: Vec<PendingDownload>,
-    /// Set by the rule, and read by nothing since the plan's move list
-    /// became the only thing that decides the layout. Kept because the
-    /// rule action it mirrors is still live; both go together when
-    /// layouts stop being a boolean.
+    /// Set by the rule. Nothing branches on it: the applier works from the
+    /// move list, so the flag survives only as data carried to the preview.
+    /// Kept because the `RuleActions::use_standard_layout` rule action it
+    /// mirrors is still live; both retire when layouts stop being a boolean.
     pub use_standard_layout: bool,
     /// Resolved template variables for UI display (e.g., "code" -> "RJ123456")
     pub resolved_variables: HashMap<String, String>,
