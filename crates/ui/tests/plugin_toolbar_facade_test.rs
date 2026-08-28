@@ -65,12 +65,7 @@ fn shared_state_with_plugin() -> (TempDir, SharedState) {
 
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap the test facade");
     let mut shared = common::create_test_shared_state();

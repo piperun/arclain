@@ -55,31 +55,26 @@ fn dummy_sevenzip(temp: &tempfile::TempDir) -> PathBuf {
 
 /// Bootstraps an `ArclainApp` against an isolated temp profile.
 ///
-/// **The `paths_override` root does not isolate the content cache**, which
-/// is worth stating because it is the opposite of what the call reads
-/// like. `bootstrap` takes the cache root from `CoreServices::cache_dir`,
-/// which `init_db_services` sets from the real per-user cache directory
-/// (`AppDirectories::init("arclain", None)`), ignoring the override. Every
-/// bootstrapped application in every test binary therefore shares one
-/// physical blob store, while each holds its *own* index — and the cache
-/// reconciles blobs against its index at construction, deleting whatever
-/// that index does not reference. See this task's report; the fix belongs
-/// to whoever owns `bootstrap.rs`.
-///
-/// The practical consequence for tests here: never share a cache key or a
-/// body between tests (see [`host_key`]), and treat a "row present, blob
-/// gone" read failure as this, not as a bug in the surface under test.
+/// The content cache is part of that isolation: `bootstrap` roots the
+/// blob store at the resolved `paths.cache_dir`, so it follows
+/// `paths_override` into the temp directory along with everything else.
+/// It did not always -- it took the OS-conventional per-user directory
+/// while each profile kept its own index, so every bootstrap in every
+/// test binary reconciled, and deleted from, one shared store.
 fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
     let paths = support::temp_paths(temp.path());
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        // The floor a real profile keeps free on the user's disk is
+        // 2 GiB, which a temp directory on a small scratch volume may not
+        // have. Zeroed so these fail on what they assert rather than on
+        // how full the machine is.
+        cache_limits_override: Some(arclain_app::CacheLimits {
+            min_free_space_bytes: 0,
+            ..Default::default()
+        }),
+        ..Default::default()
     })
     .expect("bootstrap must succeed")
 }

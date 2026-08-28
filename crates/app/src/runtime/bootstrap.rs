@@ -105,6 +105,14 @@ pub struct BootstrapConfig {
     /// An already-prepared plugin-routing generation owned by the embedding
     /// host. `None` preserves standalone persisted routing behavior.
     pub initial_plugin_network_routing: Option<arclain_network::PreparedPluginNetworkRouting>,
+    /// Test-only seam: overrides the content cache's containment limits.
+    /// `None` uses `CacheLimits::default()`, whose free-space floor is
+    /// 2 GiB -- so a cache write is refused unless the filesystem holding
+    /// the cache has that much to spare. A test writing to a temp
+    /// directory inherits whatever the machine's scratch disk happens to
+    /// have left, and fails on that rather than on what it is asserting.
+    /// Always `None` in `system_default()`.
+    pub cache_limits_override: Option<arclain_data::CacheLimits>,
 }
 
 /// Application-owned fixture overrides that should not require a
@@ -145,13 +153,27 @@ impl std::fmt::Debug for BootstrapConfig {
                 "initial_plugin_network_routing_is_set",
                 &self.initial_plugin_network_routing.is_some(),
             )
+            .field(
+                "cache_limits_override_is_set",
+                &self.cache_limits_override.is_some(),
+            )
             .finish()
+    }
+}
+
+impl Default for BootstrapConfig {
+    fn default() -> Self {
+        Self::system_default()
     }
 }
 
 impl BootstrapConfig {
     /// The configuration a real, non-test launch uses: OS-conventional
     /// paths, default worker thread count, no backend/runner overrides.
+    ///
+    /// Every field is listed rather than deferring to `Default`, because
+    /// `Default` defers to here: this is where a new field's non-test
+    /// value is decided, and leaving one out has to be a compile error.
     pub fn system_default() -> Self {
         Self {
             paths_override: None,
@@ -161,6 +183,7 @@ impl BootstrapConfig {
             materialization_lease_ttl_override: None,
             materialization_cleanup_interval_override: None,
             initial_plugin_network_routing: None,
+            cache_limits_override: None,
         }
     }
 }
@@ -423,10 +446,13 @@ pub(crate) fn run(
                             // bootstrap reconciles -- deletes from -- the one
                             // shared OS-conventional store.
                             let cache_dir = paths.cache_dir.clone();
-                            let resource_config = ResourceConfig {
+                            let mut resource_config = ResourceConfig {
                                 fallback_dir: Some(paths.cache_dir.join("resources")),
                                 ..Default::default()
                             };
+                            if let Some(limits) = config.cache_limits_override.clone() {
+                                resource_config.cache_limits = limits;
+                            }
                             match initialize_resource_services(
                                 cache_dir,
                                 cache_svc as Arc<dyn arclain_core::CacheIndex>,

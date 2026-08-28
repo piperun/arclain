@@ -71,12 +71,9 @@ fn bootstrap_app(
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
         archive_backend_override: Some(backend),
         extract_runner_override: Some(runner),
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed")
 }

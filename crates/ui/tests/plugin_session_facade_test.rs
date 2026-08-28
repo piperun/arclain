@@ -51,12 +51,15 @@ fn bootstrap_with_plugin(temp: &tempfile::TempDir, plugin: &str) -> ArclainApp {
     common::install_plugin_fixture(&paths.plugins_dir, plugin);
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        // The floor a real profile keeps free on the user's disk is
+        // 2 GiB, which a temp directory on a small scratch volume may not
+        // have. Zeroed so these fail on what they assert rather than on
+        // how full the machine is.
+        cache_limits_override: Some(arclain_app::CacheLimits {
+            min_free_space_bytes: 0,
+            ..Default::default()
+        }),
+        ..Default::default()
     })
     .expect("bootstrap with a plugin fixture must succeed")
 }

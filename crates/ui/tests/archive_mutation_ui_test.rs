@@ -116,12 +116,7 @@ fn bootstrap_real_app(temp: &tempfile::TempDir) -> arclain_app::ArclainApp {
     };
     arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed against a bare temp-dir AppPaths")
 }

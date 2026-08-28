@@ -79,11 +79,7 @@ fn bootstrap_archive_only(paths: AppPaths) -> ArclainApp {
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
         worker_threads: Some(1),
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("archive-only bootstrap must succeed")
 }

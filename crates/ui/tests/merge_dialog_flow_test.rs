@@ -44,12 +44,7 @@ fn real_bootstrap_config(temp: &Path) -> arclain_app::BootstrapConfig {
             log_dir: temp.join("logs"),
             plugins_dir: temp.join("plugins"),
         }),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     }
 }
 

@@ -143,12 +143,7 @@ pub fn create_test_shared_state_with_facade() -> (TempDir, SharedState) {
                 log_dir: temp.path().join("logs"),
                 plugins_dir: temp.path().join("plugins"),
             }),
-            worker_threads: None,
-            archive_backend_override: None,
-            extract_runner_override: None,
-            materialization_lease_ttl_override: None,
-            materialization_cleanup_interval_override: None,
-            initial_plugin_network_routing: None,
+            ..Default::default()
         },
         arclain_app::BootstrapOverrides {
             sevenzip_path: Some(sevenzip_path),

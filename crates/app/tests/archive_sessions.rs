@@ -133,12 +133,7 @@ fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed")
 }
@@ -392,12 +387,7 @@ fn an_archive_opens_and_lists_with_no_sevenzip_anywhere() {
     support::seed_working_sevenzip_config(&paths, &nonexistent);
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed with no 7-Zip anywhere");
 
@@ -976,12 +966,8 @@ fn bootstrap_app_with_fake_backend(temp: &tempfile::TempDir, correct_password: &
     });
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
         archive_backend_override: Some(backend),
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed")
 }
@@ -1003,12 +989,8 @@ fn bootstrap_app_with_content_encrypted_backend(
     });
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
         archive_backend_override: Some(backend),
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed")
 }
@@ -1290,12 +1272,8 @@ fn cancelling_while_the_blocking_list_call_is_still_running_leaves_no_session_be
     });
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
         archive_backend_override: Some(backend),
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed");
     let slow_path = temp.path().join("slow.zip");
@@ -1404,12 +1382,8 @@ fn a_seeded_pass_rule_unlocks_automatically_without_ever_raising_a_challenge() {
     });
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
         archive_backend_override: Some(backend),
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed");
     let fake_path = temp.path().join("auto-unlock-fixture.zip");

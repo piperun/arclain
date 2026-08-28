@@ -137,6 +137,10 @@ pub mod process;
 pub mod runtime;
 pub mod settings;
 
+// Re-exported for the same reason as `PreparedPluginNetworkRouting`
+// below it: `BootstrapConfig` has a public field of this type, so a
+// caller cannot fill it in without being able to name it.
+pub use arclain_data::CacheLimits;
 pub use arclain_network::PreparedPluginNetworkRouting;
 pub use image_cache::{ImageBytesDto, MAX_HOST_IMAGE_BYTES};
 pub use legacy_network::inspect_legacy_network_settings;

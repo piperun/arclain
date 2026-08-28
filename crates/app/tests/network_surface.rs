@@ -145,12 +145,7 @@ fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed")
 }
@@ -163,12 +158,8 @@ fn bootstrap_app_with_host_routing(
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
         initial_plugin_network_routing: Some(initial_plugin_network_routing),
+        ..Default::default()
     })
     .expect("host-owned bootstrap must succeed")
 }
@@ -820,12 +811,7 @@ fn host_owned_none_preserves_standalone_persisted_plugin_routing() {
 
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("standalone bootstrap must succeed");
     let legacy = app.take_legacy_composition().expect("legacy composition");
@@ -853,12 +839,8 @@ fn host_owned_direct_overrides_a_legacy_persisted_proxy() {
 
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
         initial_plugin_network_routing: Some(prepared),
+        ..Default::default()
     })
     .expect("host-owned bootstrap must succeed");
     let legacy = app.take_legacy_composition().expect("legacy composition");

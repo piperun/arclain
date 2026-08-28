@@ -198,12 +198,7 @@ fn bootstrap_app_with_plugins(temp: &tempfile::TempDir, plugin_names: &[&str]) -
     }
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap with the plugin fixture must succeed")
 }
@@ -219,12 +214,7 @@ fn bootstrap_app_with_ui_demo_visibility(temp: &tempfile::TempDir, visibility: &
     install_plugin_fixture(&paths.plugins_dir, "ui-demo");
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap with persisted plugin visibility")
 }
@@ -240,12 +230,7 @@ fn bootstrap_app_with_ui_demo_visibility(temp: &tempfile::TempDir, visibility: &
 fn rebootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(support::temp_paths(temp.path())),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("re-bootstrapping over an existing profile must succeed")
 }
@@ -260,12 +245,7 @@ fn bootstrap_app_without_plugins(temp: &tempfile::TempDir) -> ArclainApp {
     std::fs::create_dir_all(&paths.plugins_dir).expect("create plugins dir");
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap with no plugins installed must succeed")
 }
@@ -927,12 +907,7 @@ fn uninstall_rollback_failure_aligns_live_state_with_the_durable_candidate() {
     std::fs::create_dir_all(&paths.plugins_dir).unwrap();
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths.clone()),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .unwrap();
     let http_client = app
@@ -1007,12 +982,7 @@ fn uninstall_plugin_removes_a_package_that_failed_during_startup() {
     install_failing_init_fixture(&paths.plugins_dir);
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths.clone()),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .unwrap();
     let runtime = foreign_runtime();
@@ -2356,12 +2326,7 @@ fn a_plugin_image_blob_lands_under_the_overridden_cache_dir() {
     install_plugin_fixture(&paths.plugins_dir, "ui-demo");
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths.clone()),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap with an overridden profile must succeed");
     let runtime = foreign_runtime();

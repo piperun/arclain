@@ -45,12 +45,7 @@ fn temp_paths(root: &Path) -> AppPaths {
 fn bootstrap_real_facade(temp: &tempfile::TempDir) -> ArclainApp {
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(temp_paths(temp.path())),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap a real ArclainApp for the shutdown-on-exit test")
 }

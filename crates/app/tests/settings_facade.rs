@@ -142,12 +142,7 @@ fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
     support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(temp));
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed")
 }
@@ -177,12 +172,7 @@ fn bootstrap_app_with_ui_demo(temp: &tempfile::TempDir) -> ArclainApp {
     install_ui_demo_fixture(&paths.plugins_dir);
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap with UI-demo fixture must succeed")
 }
@@ -190,12 +180,7 @@ fn bootstrap_app_with_ui_demo(temp: &tempfile::TempDir) -> ArclainApp {
 fn rebootstrap_app_with_ui_demo(temp: &tempfile::TempDir) -> ArclainApp {
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(support::temp_paths(temp.path())),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("rebootstrap with UI-demo fixture must succeed")
 }
@@ -1207,12 +1192,8 @@ fn host_owned_routing_is_not_overwritten_by_standalone_network_settings() {
     .expect("host direct routing must prepare");
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
         initial_plugin_network_routing: Some(prepared),
+        ..Default::default()
     })
     .expect("host-owned bootstrap must succeed");
     let legacy = app.take_legacy_composition().expect("legacy composition");
@@ -1853,12 +1834,7 @@ fn bootstrap_broadens_a_narrow_auto_saved_password_rule() {
 
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths.clone()),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed");
 
@@ -1888,12 +1864,7 @@ fn bootstrap_broadens_a_narrow_auto_saved_password_rule() {
 
     let reopened = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed");
     assert_eq!(reopened.startup_password_rule_upgrades(), 0);
@@ -1927,12 +1898,7 @@ fn bootstrap_broadens_a_narrow_auto_saved_password_rule() {
 
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed");
 
@@ -1973,12 +1939,7 @@ fn bootstrap_leaves_a_hand_written_password_rule_alone() {
 
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed");
 
@@ -2440,12 +2401,7 @@ fn secret_writing_methods_fail_cleanly_and_leak_nothing_when_the_vault_never_ope
     // for this exact scenario.
     let app = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("corrupt config.sqlite must not fail bootstrap");
 
@@ -2707,12 +2663,7 @@ fn settings_and_password_rules_survive_shutdown_and_a_fresh_bootstrap() {
         let runtime = foreign_runtime();
         let app = ArclainApp::bootstrap(BootstrapConfig {
             paths_override: Some(paths.clone()),
-            worker_threads: None,
-            archive_backend_override: None,
-            extract_runner_override: None,
-            materialization_lease_ttl_override: None,
-            materialization_cleanup_interval_override: None,
-            initial_plugin_network_routing: None,
+            ..Default::default()
         })
         .expect("first bootstrap must succeed");
 
@@ -2757,12 +2708,7 @@ fn settings_and_password_rules_survive_shutdown_and_a_fresh_bootstrap() {
     let runtime = foreign_runtime();
     let restarted = ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
-        archive_backend_override: None,
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("second bootstrap against the same profile must succeed");
 

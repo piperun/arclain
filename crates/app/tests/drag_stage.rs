@@ -41,12 +41,8 @@ fn foreign_runtime() -> tokio::runtime::Runtime {
 fn bootstrap_app(paths: AppPaths, backend: Arc<dyn arclain_core::ArchiveBackend>) -> ArclainApp {
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
         archive_backend_override: Some(backend),
-        extract_runner_override: None,
-        materialization_lease_ttl_override: None,
-        materialization_cleanup_interval_override: None,
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed")
 }
@@ -60,12 +56,10 @@ fn bootstrap_app_with_short_lease_lifetime(
 ) -> ArclainApp {
     ArclainApp::bootstrap(BootstrapConfig {
         paths_override: Some(paths),
-        worker_threads: None,
         archive_backend_override: Some(backend),
-        extract_runner_override: None,
         materialization_lease_ttl_override: Some(Duration::from_millis(150)),
         materialization_cleanup_interval_override: Some(Duration::from_millis(20)),
-        initial_plugin_network_routing: None,
+        ..Default::default()
     })
     .expect("bootstrap must succeed")
 }
