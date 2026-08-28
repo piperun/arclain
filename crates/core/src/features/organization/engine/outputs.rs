@@ -76,7 +76,7 @@ pub(crate) fn resolve_outputs(
         wanted.push((variable, key));
     }
 
-    let roots = select_roots(&layout.outputs, entries);
+    let roots = select_roots(&layout.outputs, entries)?;
 
     // An empty name means the output has no wrapper folder, so several
     // outputs sharing one would all unpack into the same place. That is
@@ -172,9 +172,17 @@ impl ModInfoKey {
 
 /// The directories the selector picks out, lexicographically ordered so
 /// one archive resolves to one output order on every run.
-fn select_roots(selector: &OutputSelector, entries: &[ArchiveEntry]) -> Vec<String> {
+///
+/// No selected root may contain another. Outputs are scoped by root and
+/// nothing else, so an outer output's placements claim every file under
+/// it — including the inner output's — and the inner output claims the
+/// same files again. Both copies land on destinations that genuinely
+/// differ, so `OrganizationPlan::validate_paths` sees nothing wrong and
+/// the duplication is silent. It is an invariant of the selector rather
+/// than of any one layout, so it is refused here.
+fn select_roots(selector: &OutputSelector, entries: &[ArchiveEntry]) -> Result<Vec<String>> {
     match selector {
-        OutputSelector::Whole => vec![String::new()],
+        OutputSelector::Whole => Ok(vec![String::new()]),
         OutputSelector::PerDirectoryContaining { marker } => {
             let mut roots = BTreeSet::new();
             for entry in entries {
@@ -195,8 +203,59 @@ fn select_roots(selector: &OutputSelector, entries: &[ArchiveEntry]) -> Vec<Stri
                     roots.insert(root.to_string());
                 }
             }
-            roots.into_iter().collect()
+            refuse_nested_roots(&roots)?;
+            Ok(roots.into_iter().collect())
         }
+    }
+}
+
+/// Refuse a selection where one root sits inside another.
+///
+/// Each root is checked against its own ancestor directories rather than
+/// against its neighbours in sort order. Sort order is not enough: `/`
+/// is not the lowest byte a folder name may start with, so `Mod-Extra`
+/// sorts between `Mod` and `Mod/Inner` and a neighbour scan walks past
+/// the pair. Walking a root's own prefixes cannot be fooled that way,
+/// and the archive's top level — the empty root — is above every other.
+fn refuse_nested_roots(roots: &BTreeSet<String>) -> Result<()> {
+    for root in roots {
+        for ancestor in ancestors_of(root) {
+            if !roots.contains(ancestor) {
+                continue;
+            }
+            bail!(
+                "{} sits inside {}: the outer output would carry the inner one's files and the \
+                 inner output would carry them again, into two folders that never collide",
+                describe_root(root),
+                describe_root(ancestor)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Every directory strictly above `root`, outermost first. The archive's
+/// top level is `""` and is above everything but itself.
+fn ancestors_of(root: &str) -> Vec<&str> {
+    if root.is_empty() {
+        return Vec::new();
+    }
+    let mut ancestors = vec![""];
+    ancestors.extend(
+        root.match_indices('/')
+            .map(|(at, _)| &root[..at])
+            .filter(|ancestor| !ancestor.is_empty()),
+    );
+    ancestors
+}
+
+/// A root as an error should name it. `""` is a real root — the archive's
+/// own top level — and quoting it prints nothing at all.
+fn describe_root(root: &str) -> String {
+    if root.is_empty() {
+        "the archive's top level".to_string()
+    } else {
+        format!("{root:?}")
     }
 }
 
@@ -739,6 +798,101 @@ mod tests {
             "the decoy must not be selected at all, not selected and then skipped: {:?}",
             resolved.skipped
         );
+    }
+
+    /// A marker inside another marker's folder selects both, and the
+    /// outer output's placements claim the inner mod's files while the
+    /// inner output claims them again. `validate_paths` cannot see it:
+    /// the two destinations genuinely differ, so the applier copies the
+    /// same files into both folders and nothing says so.
+    #[test]
+    fn a_marker_root_nested_inside_another_is_refused() {
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            file_variables: vec![FileVariable {
+                as_name: "mod_name".to_string(),
+                file: "modinfo.ini".to_string(),
+                key: "name".to_string(),
+            }],
+            name: "$mod_name".to_string(),
+            ..Layout::default()
+        };
+        let entries = vec![
+            entry("Outer/modinfo.ini"),
+            entry("Outer/Inner/modinfo.ini"),
+            entry("Outer/Inner/natives/body.pak"),
+        ];
+        // Distinct names, so the name-collision check cannot be what
+        // refuses this and the nesting check is the only candidate.
+        let read = |path: &str| -> Option<Vec<u8>> {
+            match path {
+                "Outer/modinfo.ini" => Some(b"name=Placeholder Mod".to_vec()),
+                _ => Some(b"name=Placeholder Addon".to_vec()),
+            }
+        };
+
+        let error = resolve_outputs(&layout, &entries, &HashMap::new(), &read)
+            .expect_err("one mod's files cannot belong to two outputs");
+        let error = format!("{error:#}");
+        assert!(error.contains("Outer"), "{error}");
+        assert!(error.contains("Outer/Inner"), "{error}");
+    }
+
+    /// The same fault with the outer root at the top level, which is the
+    /// shape a repacked mod leaves behind: one `modinfo.ini` beside the
+    /// folders of the mods it was built from. `""` names no folder, so
+    /// the message has to say which end of the pair it is.
+    #[test]
+    fn a_top_level_marker_beside_a_nested_one_is_refused() {
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            name: "$folder".to_string(),
+            ..Layout::default()
+        };
+        let entries = vec![entry("modinfo.ini"), entry("Inner/modinfo.ini")];
+
+        let error = resolve_outputs(&layout, &entries, &HashMap::new(), &no_reads)
+            .expect_err("the top level contains every subdirectory");
+        let error = format!("{error:#}");
+        assert!(error.contains("top level"), "{error}");
+        assert!(error.contains("Inner"), "{error}");
+    }
+
+    /// `/` is not the lowest byte a folder name can start with, so an
+    /// unrelated sibling can sort *between* a root and its own
+    /// descendant. A scan comparing each root only against the one
+    /// before it therefore misses the pair.
+    #[test]
+    fn a_sibling_sorting_between_a_root_and_its_child_does_not_hide_the_pair() {
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            file_variables: vec![FileVariable {
+                as_name: "mod_name".to_string(),
+                file: "modinfo.ini".to_string(),
+                key: "name".to_string(),
+            }],
+            name: "$mod_name".to_string(),
+            ..Layout::default()
+        };
+        // "Mod" < "Mod-Extra" < "Mod/Inner" is the sort order, because
+        // '-' is below '/'. Only "Mod" and "Mod/Inner" nest.
+        let entries = vec![
+            entry("Mod/modinfo.ini"),
+            entry("Mod-Extra/modinfo.ini"),
+            entry("Mod/Inner/modinfo.ini"),
+        ];
+        let read = |path: &str| -> Option<Vec<u8>> { Some(format!("name={path}").into_bytes()) };
+
+        let error = resolve_outputs(&layout, &entries, &HashMap::new(), &read)
+            .expect_err("a sibling sorting between the pair must not hide it");
+        let error = format!("{error:#}");
+        assert!(error.contains("Mod/Inner"), "{error}");
     }
 
     /// An archive that is itself one mod carries the marker at its top
