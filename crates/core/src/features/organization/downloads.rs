@@ -307,7 +307,7 @@ mod tests {
         }
     }
 
-    /// Every plan here has one output; staging is what turns downloads
+    /// Most plans here have one output; staging is what turns downloads
     /// into moves on it, so the assertions read that output's lists.
     fn moves(plan: &OrganizationPlan) -> &[(String, String)] {
         &plan.outputs[0].moves
@@ -315,6 +315,27 @@ mod tests {
 
     fn downloads(plan: &OrganizationPlan) -> &[PendingDownload] {
         &plan.outputs[0].downloads
+    }
+
+    /// One mod folder fetching one screenshot. Two of these is the shape
+    /// a mod pack produces, and the shape a single staging counter has
+    /// to survive.
+    fn output_fetching_one_screenshot(name: &str, index: usize) -> PlannedOutput {
+        PlannedOutput {
+            root_folder: name.to_string(),
+            root_folder_template: "$mod_name".to_string(),
+            moves: vec![(format!("{name}/modinfo.ini"), format!("{name}/modinfo.ini"))],
+            generated_files: vec![],
+            downloads: vec![PendingDownload {
+                product_id: Some("RJ999001".to_string()),
+                url: format!("https://img.example.test/{name}.jpg"),
+                dest_path: format!("{name}/screenshots/image_001.jpg"),
+                cache_key: format!("dlsite:RJ999001:screenshot_{index}"),
+                cached: false,
+            }],
+            resolved_variables: Default::default(),
+            reasoning: vec![],
+        }
     }
 
     /// A body sitting exactly on the limit is legitimate and must not be
@@ -373,6 +394,73 @@ mod tests {
             b"jpegbytes".to_vec(),
             "the fetched bytes must be on disk where the move points"
         );
+    }
+
+    /// The staging directory is one per work dir, so the name inside it
+    /// has to be unique across the whole plan and not just within one
+    /// output. Two mods each fetching their first screenshot would
+    /// otherwise both be staged as `000`, and whichever was written
+    /// second would be the file both moves carried — one mod silently
+    /// wearing the other's picture.
+    #[test]
+    fn two_outputs_fetching_their_first_screenshot_do_not_stage_over_each_other() {
+        let work = tempfile::tempdir().unwrap();
+        let plan = OrganizationPlan {
+            rule_name: "Mods".to_string(),
+            outputs: vec![
+                output_fetching_one_screenshot("Red Mod", 0),
+                output_fetching_one_screenshot("Blue Mod", 1),
+            ],
+            skipped_outputs: vec![],
+        };
+
+        // Each output's bytes are distinct, so a collision shows up as
+        // content and not only as a name.
+        let staged = stage_plan_downloads(&plan, work.path(), &|download| {
+            Ok(download.url.as_bytes().to_vec())
+        })
+        .expect("staging must succeed");
+
+        assert!(staged.unfetched.is_empty());
+        assert_eq!(staged.plan.outputs.len(), 2, "no output was dropped");
+
+        let mut staged_sources = Vec::new();
+        for (output, expected_root) in staged.plan.outputs.iter().zip(["Red Mod", "Blue Mod"]) {
+            assert!(
+                output.downloads.is_empty(),
+                "every output's downloads are consumed"
+            );
+
+            let destination = format!("{expected_root}/screenshots/image_001.jpg");
+            let (source, _) = output
+                .moves
+                .iter()
+                .find(|(_, to)| *to == destination)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{expected_root} must carry its own image: {:?}",
+                        output.moves
+                    )
+                });
+            assert_eq!(
+                std::fs::read(work.path().join(source)).unwrap(),
+                format!("https://img.example.test/{expected_root}.jpg").into_bytes(),
+                "{expected_root} must be moving its own bytes, not its sibling's"
+            );
+            staged_sources.push(source.clone());
+        }
+
+        assert_ne!(
+            staged_sources[0], staged_sources[1],
+            "two outputs' first screenshots must not stage to one path: {staged_sources:?}"
+        );
+
+        // The applier is handed this plan, and it refuses a plan whose
+        // paths do not stand up.
+        staged
+            .plan
+            .validate_paths()
+            .expect("a staged multi-output plan must pass validation");
     }
 
     #[test]

@@ -107,6 +107,36 @@ struct RuleActionsDocument {
 /// fetched into `screenshots` and the explicit path into `Screenshots`,
 /// so making them agree would move files for one existing rule or the
 /// other.
+///
+/// Three things a rule saved under the old vocabulary used to do are
+/// *not* reproduced. None of them can be said in the layout vocabulary,
+/// and each is a visible change to a rule someone may have saved, so
+/// they are written down here rather than left to be discovered.
+///
+/// **` v$version` no longer strips itself.** The retired expander
+/// special-cased that exact string: a template of `"$title v$version"`
+/// became `"Title"` when nothing knew the version, degrading to a
+/// slightly awkward folder name. Expansion is template-driven now and
+/// reports what it could not fill, and an unresolved token in an
+/// output's *name* costs that output — so the same rule on the same
+/// archive produces no folder at all, with `$version` named in the
+/// reason on `OrganizationPlan::skipped_outputs`. That reason is the
+/// whole difference between a loss a user can read and a silent one. A
+/// layout wanting a fallback writes one into its template.
+///
+/// **A `move_files` rule keeps its wrapper folder.** The retired code
+/// stripped the entries' longest common path prefix before appending
+/// the target, so `wrapper/Game.exe` with a target of `bin` landed at
+/// `Out/bin/Game.exe`; it now lands at `Out/bin/wrapper/Game.exe`,
+/// because a placement strips only what its own glob spells out. The
+/// prefix is a property of the archive rather than of the layout, which
+/// is why no field can carry it, and stripping a wrapper is what a
+/// `ContentRoot` placement is for.
+///
+/// **A file no pattern matched is not carried.** It used to fall
+/// through to a `game/` folder. Placements claim files and a file
+/// nothing claimed stays behind, which the output's `reasoning` says by
+/// naming the paths rather than leaving it silent.
 pub fn layout_from_legacy_actions(
     root_folder: Option<String>,
     move_files: Vec<MoveAction>,

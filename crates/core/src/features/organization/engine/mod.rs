@@ -1053,6 +1053,80 @@ mod tests {
         );
     }
 
+    /// The retired expander special-cased ` v$version`, dropping it when
+    /// nothing knew the version so `"$title v$version"` degraded to
+    /// `Title`. Expansion is template-driven now and an unresolved token
+    /// in a name costs its output, so the same stored rule on the same
+    /// archive produces no folder at all.
+    ///
+    /// What makes that a loss a user can act on rather than a silent one
+    /// is the reason, so the reason is what this asserts: the skipped
+    /// output must name `$version`. A test that only counted the outputs
+    /// would pass just as well if the engine skipped it saying nothing.
+    #[test]
+    fn a_version_a_stored_rule_asked_for_and_nothing_set_skips_the_output_by_name() {
+        let stored: OrganizationRule = serde_json::from_str(
+            r#"{"id":0,"name":"Versioned","priority":1,"is_enabled":true,
+                "trigger":{"metadata_source":null,"filename_pattern":null,"has_file":null},
+                "actions":{"root_folder":"$title v$version","output_name":null,
+                    "move_files":[],"use_standard_layout":true}}"#,
+        )
+        .expect("an old versioned rule must still deserialize");
+
+        let meta = GameMetadata {
+            product_id: "RJ999001".to_string(),
+            source: "dlsite".to_string(),
+            title: "Placeholder Game".to_string(),
+            description: None,
+            tags: vec![],
+            release_date: None,
+            creator: None,
+            screenshots: vec![],
+            metadata_json: "{}".to_string(),
+        };
+
+        // Nothing here carries a version: not the archive name, not the
+        // folder the content root sits in.
+        let entries = vec![make_entry("Placeholder Game/Game.exe", 10, false)];
+        let plan = RuleEngine::create_plan(
+            &stored,
+            "Placeholder Game.zip",
+            &entries,
+            Some(&meta),
+            &no_reads,
+        )
+        .expect("an unnameable output is a skip, not a failed plan");
+
+        assert!(
+            plan.outputs.is_empty(),
+            "the name could not be resolved, so there is no folder to put anything in: {:?}",
+            plan.outputs
+                .iter()
+                .map(|o| &o.root_folder)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(plan.skipped_outputs.len(), 1);
+        assert!(
+            plan.skipped_outputs[0].1.contains("$version"),
+            "the reason must name the token that went unset: {:?}",
+            plan.skipped_outputs[0]
+        );
+
+        // And the same rule with a version in the archive name resolves,
+        // so the skip is about the missing value and not about the
+        // template being rejected outright.
+        let named = RuleEngine::create_plan(
+            &stored,
+            "Placeholder Game v1.2.zip",
+            &entries,
+            Some(&meta),
+            &no_reads,
+        )
+        .expect("plan");
+        assert_eq!(named.outputs.len(), 1);
+        assert_eq!(named.outputs[0].root_folder, "Placeholder Game v1.2");
+    }
+
     /// A rule saved after the change carries its layout and is read
     /// back as written, with nothing translated on the way in.
     #[test]
