@@ -1,0 +1,20 @@
+# The toolchain every command in this repository runs against.
+#
+# The workspace floor is 1.98: gameta's crates declare `rust-version =
+# "1.98"`, so a cargo older than that refuses to build anything here.
+# Without this file a developer's rustup default decides, and a default
+# below the floor fails `just fmt`, `just test` and every other recipe
+# with an MSRV error before any work starts.
+#
+# Keep this in step with the release runners, which pin the same version
+# five times in `.woodpecker.yml`, once in `Containerfile`, and once in
+# `.github/workflows/windows-build.yml`. `scripts/test_helpers.py`
+# asserts they agree.
+#
+# Channel only, no `components` list: rustup installs missing components
+# into RUSTUP_HOME on first use, and the CI images own that directory as
+# root while three of their steps run as a non-root user. The one step
+# that needs rustfmt runs `rustup component add rustfmt` as root before
+# dropping privileges.
+[toolchain]
+channel = "1.98.0"

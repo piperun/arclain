@@ -1031,6 +1031,25 @@ class TestReleaseWorkflows(unittest.TestCase):
         self.assertIn("uses: dtolnay/rust-toolchain@1.98.0", windows)
         self.assertNotIn("dtolnay/rust-toolchain@stable", windows)
 
+    def test_the_local_toolchain_pin_matches_the_release_runners(self):
+        # Every `just` recipe shells out to bare `cargo`, so without a
+        # toolchain file the machine's rustup default decides which rustc
+        # runs. The workspace floor is 1.98 and a default below it fails
+        # every recipe with an MSRV error before any work starts. Pin the
+        # same version the release runners use.
+        #
+        # Channel only, deliberately: a `components` list makes rustup
+        # install into RUSTUP_HOME on first use, and the CI images own
+        # that directory as root while three steps run as a non-root
+        # user. The one step that needs rustfmt adds it explicitly.
+        with (REPO_ROOT / "rust-toolchain.toml").open("rb") as handle:
+            toolchain = tomllib.load(handle)["toolchain"]
+        woodpecker = (REPO_ROOT / ".woodpecker.yml").read_text(encoding="utf-8")
+
+        self.assertEqual(toolchain["channel"], "1.98.0")
+        self.assertNotIn("components", toolchain)
+        self.assertEqual(woodpecker.count("image: rust:1.98.0-bookworm"), 5)
+
     def test_headless_ci_runs_all_non_ui_test_targets(self):
         woodpecker = (REPO_ROOT / ".woodpecker.yml").read_text(encoding="utf-8")
         compose = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
