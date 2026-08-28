@@ -121,6 +121,7 @@ pub(crate) fn discard_host_image(
             )
             .with_diagnostic(error.to_string())
             .with_recoverability(Recoverability::Retry)
+            .with_retryable(true)
         })
 }
 
@@ -153,11 +154,7 @@ pub(crate) fn fetch_host_image(
             None,
             Some(url),
         )
-        .map_err(|error| {
-            ApplicationError::new(ApplicationErrorKind::Internal, "failed to cache host image")
-                .with_diagnostic(error.to_string())
-                .with_recoverability(Recoverability::Retry)
-        })?;
+        .map_err(|error| cache_write_error("failed to cache host image", &error))?;
     Ok(ImageBytesDto {
         bytes,
         served_from_cache: false,
@@ -185,7 +182,8 @@ pub(crate) fn fetch_display_image(
             "image fetch returned an unexpected status",
         )
         .with_diagnostic(format!("HTTP status {}", response.status_code))
-        .with_recoverability(Recoverability::Retry));
+        .with_recoverability(Recoverability::Retry)
+        .with_retryable(true));
     }
     if !response
         .content_type
@@ -207,9 +205,36 @@ pub(crate) fn fetch_display_image(
             "{} bytes is at or below the {MIN_FETCHED_IMAGE_BYTES}-byte floor",
             response.body.len()
         ))
-        .with_recoverability(Recoverability::Retry));
+        .with_recoverability(Recoverability::Retry)
+        .with_retryable(true));
     }
     Ok(response.body)
+}
+
+/// Classifies a refusal from the content cache's write path.
+///
+/// A full filesystem and a full quota are not the same answer to "should
+/// anything try this again". Freeing space clears the first, so it is the
+/// user's to act on and a renderer must stop re-attempting it on a timer;
+/// the second is a ceiling this build configured, which the person at the
+/// screen cannot move. Anything else is an I/O failure that may well
+/// succeed on its own next time.
+pub(crate) fn cache_write_error(summary: &str, error: &anyhow::Error) -> ApplicationError {
+    let (kind, recoverability) = match error.downcast_ref::<arclain_data::CacheCapacityRefusal>() {
+        Some(arclain_data::CacheCapacityRefusal::FreeSpace) => (
+            ApplicationErrorKind::Persistence,
+            Recoverability::UserAction,
+        ),
+        Some(arclain_data::CacheCapacityRefusal::Quota) => {
+            (ApplicationErrorKind::Persistence, Recoverability::Fatal)
+        }
+        None => (ApplicationErrorKind::Internal, Recoverability::Retry),
+    };
+    let retryable = recoverability == Recoverability::Retry;
+    ApplicationError::new(kind, summary)
+        .with_diagnostic(error.to_string())
+        .with_recoverability(recoverability)
+        .with_retryable(retryable)
 }
 
 fn image_fetch_error(error: arclain_network::HttpError) -> ApplicationError {

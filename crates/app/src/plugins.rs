@@ -2945,6 +2945,63 @@ mod tests {
         (root, cache)
     }
 
+    /// A cache whose free-space floor is higher than any real filesystem,
+    /// so every write is refused for headroom and the refusal does not
+    /// depend on how full the machine running the test happens to be.
+    fn content_cache_with_no_free_space_headroom() -> (tempfile::TempDir, arclain_data::ContentCache)
+    {
+        let root = tempfile::tempdir().unwrap();
+        let cache = arclain_data::ContentCache::new_with_limits(
+            root.path().join("cache"),
+            Arc::new(InMemoryCacheIndex::default()),
+            arclain_data::CacheLimits {
+                min_free_space_bytes: u64::MAX,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (root, cache)
+    }
+
+    /// An out-of-space refusal is the user's to clear, and a renderer that
+    /// re-attempts on a timer must not.
+    ///
+    /// `recoverability` and `retryable` answer the same question, so a
+    /// caller reading either one has to reach the same verdict: the
+    /// renderer arms its 30-second retry off one of them and decides
+    /// whether to draw a retry button off the other.
+    #[test]
+    fn a_write_refused_for_free_space_is_the_users_to_clear() {
+        let (_root, cache) = content_cache_with_no_free_space_headroom();
+
+        let refusal = cache
+            .put(
+                "host-image",
+                b"some bytes",
+                arclain_core::CacheType::Screenshot,
+                None,
+                None,
+            )
+            .expect_err("a floor above any real disk must refuse the write");
+
+        let error = crate::image_cache::cache_write_error("failed to cache host image", &refusal);
+
+        assert_eq!(
+            error.recoverability,
+            Recoverability::UserAction,
+            "freeing space clears this; waiting does not"
+        );
+        assert!(
+            !error.retryable,
+            "retrying alone cannot make room on a full filesystem"
+        );
+        assert_eq!(
+            error.retryable,
+            error.recoverability == Recoverability::Retry,
+            "the two fields answer the same question and must not disagree"
+        );
+    }
+
     fn simple_layout() -> PluginLayout {
         PluginLayout::Single {
             elements: vec![PluginUiElement::Button {
