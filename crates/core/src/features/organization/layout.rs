@@ -15,8 +15,11 @@ pub enum OutputSelector {
 /// Their values come from a file a stranger wrote, and only one of the
 /// keys is cleaned up on the way in. `name` is sanitised by the
 /// `modinfo.ini` parser, which maps `< > : " / \ | ? *` and control
-/// characters to `_`; `addonfor` and `screenshot` arrive raw, trimmed
-/// and nothing more.
+/// characters to `_`. `addonfor` arrives raw, trimmed and nothing more.
+/// `screenshot` is trimmed and has one leading `./` taken off, which is
+/// how a mod author spells "beside this file"; nothing else about it is
+/// touched, and a `../` is left exactly as written for the boundary
+/// below to refuse.
 ///
 /// Everything a raw value could do to a path is refused at the
 /// boundary. `CheckedRelativePath` rejects `..`, `.`, an absolute path,
