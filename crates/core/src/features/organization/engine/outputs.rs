@@ -217,6 +217,14 @@ fn select_roots(selector: &OutputSelector, entries: &[ArchiveEntry]) -> Result<V
 /// sorts between `Mod` and `Mod/Inner` and a neighbour scan walks past
 /// the pair. Walking a root's own prefixes cannot be fooled that way,
 /// and the archive's top level — the empty root — is above every other.
+///
+/// Ancestry is compared byte for byte, because that is how `plan_builder
+/// ::under_root` decides which files a root claims: `Mod` and
+/// `MOD/Inner` are two disjoint subtrees to both, so neither contains
+/// the other and neither claims the other's files. The two comparisons
+/// have to agree — refuse a pair scoping keeps apart and a legitimate
+/// archive is turned away, allow a pair scoping overlaps and the
+/// duplication this exists to prevent walks straight through.
 fn refuse_nested_roots(roots: &BTreeSet<String>) -> Result<()> {
     for root in roots {
         for ancestor in ancestors_of(root) {

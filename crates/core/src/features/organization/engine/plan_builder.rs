@@ -734,6 +734,10 @@ struct ScopedEntry {
 /// The files under `root`, each rewritten relative to it. Directories
 /// are dropped: a list of files describes the same tree, and an empty
 /// folder is not content anyone asked to carry.
+///
+/// This is where the input is partitioned between outputs, so the
+/// comparison is [`under_root`]'s exact one and not `under_directory`'s
+/// folded one.
 fn scope_entries(root: &Path, entries: &[ArchiveEntry]) -> Vec<ScopedEntry> {
     let root = root.to_string_lossy().replace('\\', "/");
     let mut scoped = Vec::new();
@@ -745,7 +749,7 @@ fn scope_entries(root: &Path, entries: &[ArchiveEntry]) -> Vec<ScopedEntry> {
         let path = entry.path.replace('\\', "/");
         let relative = if root.is_empty() {
             path
-        } else if under_directory(&path, &root) {
+        } else if under_root(&path, &root) {
             path[root.len() + 1..].to_string()
         } else {
             continue;
@@ -922,12 +926,39 @@ fn literal_directory_prefix(glob: &str) -> String {
 /// length-preserving, which is what lets a caller strip exactly what
 /// matched. A folder is not a file inside itself, so `prefix` alone
 /// does not sit under `prefix`.
+///
+/// For a glob's prefix, which a user wrote and may have spelled unlike
+/// the archive. Not for an output's root — see [`under_root`], which
+/// answers the same question about a prefix the archive itself spelled.
 fn under_directory(path: &str, prefix: &str) -> bool {
     let head = prefix.len();
     path.len() > head
         && path.is_char_boundary(head)
         && path[..head].eq_ignore_ascii_case(prefix)
         && path.as_bytes()[head] == b'/'
+}
+
+/// Whether `path` sits inside the output root `root`, compared byte for
+/// byte.
+///
+/// A root is not a pattern. `select_roots` cut it out of an entry path
+/// in this same archive, so byte-for-byte is the only comparison that
+/// answers what the archive actually says. Folding case here decides
+/// that `MOD/body.pak` sits under the root `Mod` as well as under its
+/// own, and the placements of both outputs then claim it: one file
+/// copied into two folders, onto destinations that genuinely differ so
+/// `OrganizationPlan::validate_paths` sees nothing wrong and nothing
+/// says it was carried twice. `refuse_nested_roots` compares roots
+/// exactly for the same reason, and the two have to give one answer or
+/// the invariant it enforces is not the one scoping applies.
+///
+/// The distinction is drawn here rather than at every prefix comparison
+/// because this is the only one that partitions files *between*
+/// outputs. A folded answer anywhere downstream stays inside one output
+/// and lands on a destination collision the plan refuses out loud.
+fn under_root(path: &str, root: &str) -> bool {
+    let head = root.len();
+    path.len() > head && path.starts_with(root) && path.as_bytes()[head] == b'/'
 }
 
 /// Drop `prefix` and its separator from the front of `path`. A path the
@@ -1134,6 +1165,135 @@ mod tests {
             "the reason must name the folder that went missing: {reason}"
         );
         assert_eq!(plan.skipped_outputs.len(), 1);
+    }
+
+    /// Which output a file belongs to is settled by comparing its path
+    /// against each output's root. Folding case there answers that a
+    /// file under `MOD` also sits under `Mod`, so both outputs'
+    /// placements claim it and the applier copies it into both folders.
+    /// The destinations genuinely differ, so `validate_paths` sees
+    /// nothing wrong and nothing says the file was carried twice.
+    #[test]
+    fn two_roots_spelled_in_different_cases_each_carry_only_their_own() {
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            file_variables: vec![crate::features::organization::layout::FileVariable {
+                as_name: "mod_name".to_string(),
+                file: "modinfo.ini".to_string(),
+                key: "name".to_string(),
+            }],
+            name: "$mod_name".to_string(),
+            // Not `All`: the marker is called `modinfo.ini` under either
+            // root, and two of those landing on one destination is a
+            // collision the output already refuses out loud. The silent
+            // fault is the one worth pinning.
+            place: vec![Placement {
+                from: Source::Matching("*.pak".to_string()),
+                into: String::new(),
+            }],
+            ..Layout::default()
+        };
+        let entries = vec![
+            entry("Mod/modinfo.ini"),
+            entry("Mod/lower.pak"),
+            entry("MOD/modinfo.ini"),
+            entry("MOD/upper.pak"),
+        ];
+        // Distinct names, so the two outputs cannot collide on a name and
+        // scoping is the only thing under test.
+        let read = |path: &str| -> Option<Vec<u8>> {
+            match path {
+                "Mod/modinfo.ini" => Some(b"name=Placeholder Mod".to_vec()),
+                "MOD/modinfo.ini" => Some(b"name=Placeholder Addon".to_vec()),
+                _ => None,
+            }
+        };
+
+        let plan = RuleEngine::create_plan(&rule_with(layout), "pack.zip", &entries, None, &read)
+            .expect("two sibling folders are two outputs");
+
+        let mut carried: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for output in &plan.outputs {
+            for (source, _) in &output.moves {
+                carried
+                    .entry(source.as_str())
+                    .or_default()
+                    .push(output.root_folder.as_str());
+            }
+        }
+        let twice: Vec<_> = carried.iter().filter(|(_, into)| into.len() > 1).collect();
+        assert!(
+            twice.is_empty(),
+            "no file may be carried into two outputs: {twice:?}"
+        );
+        assert_eq!(
+            carried.get("Mod/lower.pak").map(Vec::as_slice),
+            Some(["Placeholder Mod"].as_slice())
+        );
+        assert_eq!(
+            carried.get("MOD/upper.pak").map(Vec::as_slice),
+            Some(["Placeholder Addon"].as_slice())
+        );
+    }
+
+    /// The nesting refusal compares roots exactly, so `Mod` and
+    /// `MOD/Inner` are two unrelated subtrees and it lets them through.
+    /// Scoping has to answer the same way: folding case there makes
+    /// `Mod`'s output claim everything under `MOD/Inner` as well, which
+    /// is the duplication the refusal exists to prevent, arriving
+    /// through the door the refusal was told to leave open.
+    #[test]
+    fn a_root_nested_under_another_spelling_is_not_claimed_by_it() {
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            file_variables: vec![crate::features::organization::layout::FileVariable {
+                as_name: "mod_name".to_string(),
+                file: "modinfo.ini".to_string(),
+                key: "name".to_string(),
+            }],
+            name: "$mod_name".to_string(),
+            place: vec![Placement {
+                from: Source::Matching("*.pak".to_string()),
+                into: String::new(),
+            }],
+            ..Layout::default()
+        };
+        let entries = vec![
+            entry("Mod/modinfo.ini"),
+            entry("Mod/outer.pak"),
+            entry("MOD/Inner/modinfo.ini"),
+            entry("MOD/Inner/inner.pak"),
+        ];
+        let read = |path: &str| -> Option<Vec<u8>> {
+            match path {
+                "Mod/modinfo.ini" => Some(b"name=Placeholder Mod".to_vec()),
+                "MOD/Inner/modinfo.ini" => Some(b"name=Placeholder Addon".to_vec()),
+                _ => None,
+            }
+        };
+
+        let plan = RuleEngine::create_plan(&rule_with(layout), "pack.zip", &entries, None, &read)
+            .expect("neither root sits inside the other");
+
+        let sources: Vec<Vec<&str>> = plan
+            .outputs
+            .iter()
+            .map(|output| {
+                output
+                    .moves
+                    .iter()
+                    .map(|(source, _)| source.as_str())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            sources,
+            vec![vec!["MOD/Inner/inner.pak"], vec!["Mod/outer.pak"]]
+        );
     }
 
     /// A rule the shipped editor produces today: a new rule starts from
