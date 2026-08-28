@@ -485,6 +485,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::organization::engine::PlannedOutput;
 
     fn touch(p: &Path) {
         fs::create_dir_all(p.parent().unwrap()).ok();
@@ -617,7 +618,7 @@ mod tests {
     ) -> OrganizationPlan {
         OrganizationPlan {
             rule_name: "test".into(),
-            outputs: vec![crate::features::organization::engine::PlannedOutput {
+            outputs: vec![PlannedOutput {
                 root_folder: "MyGame".into(),
                 root_folder_template: "MyGame".into(),
                 moves,
@@ -627,6 +628,20 @@ mod tests {
                 reasoning: vec![],
             }],
             skipped_outputs: vec![],
+        }
+    }
+
+    /// One rooted output carrying its own files. Several of these in one
+    /// plan is what a mod pack resolves to.
+    fn output_rooted_at(root: &str, moves: Vec<(String, String)>) -> PlannedOutput {
+        PlannedOutput {
+            root_folder: root.to_string(),
+            root_folder_template: "$mod_name".to_string(),
+            moves,
+            generated_files: vec![],
+            downloads: vec![],
+            resolved_variables: Default::default(),
+            reasoning: vec![],
         }
     }
 
@@ -650,6 +665,101 @@ mod tests {
         assert!(tmp.path().join("MyGame/data/sprites.dat").exists());
         assert!(!tmp.path().join("game.exe").exists());
         assert!(!tmp.path().join("data").exists());
+    }
+
+    /// Several rooted outputs are several sibling folders in one work
+    /// directory: the shape a mod pack holding several mods produces.
+    #[test]
+    fn several_outputs_become_several_sibling_folders() {
+        let work = tempfile::tempdir().unwrap();
+        for path in ["Red/modinfo.ini", "Blue/modinfo.ini"] {
+            let full = work.path().join(path);
+            fs::create_dir_all(full.parent().unwrap()).unwrap();
+            fs::write(&full, b"x").unwrap();
+        }
+
+        let plan = OrganizationPlan {
+            rule_name: "Mods".to_string(),
+            outputs: vec![
+                output_rooted_at(
+                    "Red Mod",
+                    vec![("Red/modinfo.ini".into(), "Red Mod/modinfo.ini".into())],
+                ),
+                output_rooted_at(
+                    "Blue Mod",
+                    vec![("Blue/modinfo.ini".into(), "Blue Mod/modinfo.ini".into())],
+                ),
+            ],
+            skipped_outputs: vec![],
+        };
+
+        apply_plan_to_workdir(&plan, work.path()).expect("apply");
+
+        assert!(work.path().join("Red Mod/modinfo.ini").exists());
+        assert!(work.path().join("Blue Mod/modinfo.ini").exists());
+        assert!(
+            !work.path().join("Red").exists(),
+            "the source layout is replaced"
+        );
+    }
+
+    /// The transaction is whole-plan, not one per output. A plan whose
+    /// second output fails to promote must leave the work directory as it
+    /// was, not holding the first output's folder.
+    ///
+    /// The failure is injected at the second root's promotion rather than
+    /// built from bad plan data on purpose: a plan that cannot be staged
+    /// is rejected before the work directory is touched at all, which
+    /// would leave the first output unplaced whether promotion is
+    /// per-plan or per-output. Failing here instead means the first
+    /// output's root is already sitting in the work directory when the
+    /// second one fails, so only a whole-plan rollback puts it back.
+    #[test]
+    fn a_failure_in_the_second_output_leaves_the_first_unplaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        fs::write(work.join("present.bin"), b"present").unwrap();
+        fs::write(work.join("second.bin"), b"second").unwrap();
+
+        let plan = OrganizationPlan {
+            rule_name: "Partial".to_string(),
+            outputs: vec![
+                output_rooted_at(
+                    "First",
+                    vec![("present.bin".into(), "First/present.bin".into())],
+                ),
+                output_rooted_at(
+                    "Second",
+                    vec![("second.bin".into(), "Second/second.bin".into())],
+                ),
+            ],
+            skipped_outputs: vec![],
+        };
+
+        // Staged top-level entries are promoted in sorted order, so
+        // "First" is promoted at index 0 and "Second" at index 1: the
+        // first output's folder is in the work directory when this fires.
+        let error = apply_plan_to_workdir_with_swap_hook(&plan, &work, |point| {
+            if point == PlanSwapPoint::BeforePromote(1) {
+                anyhow::bail!("injected second-output promotion failure");
+            }
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("injected second-output promotion failure"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(fs::read(work.join("present.bin")).unwrap(), b"present");
+        assert_eq!(fs::read(work.join("second.bin")).unwrap(), b"second");
+        assert!(!work.join("First").exists(), "no output was promoted");
+        assert!(
+            !work.join("Second").exists(),
+            "the output that failed left its own folder behind"
+        );
+        assert_no_plan_staging_directories(temp.path());
     }
 
     #[test]
