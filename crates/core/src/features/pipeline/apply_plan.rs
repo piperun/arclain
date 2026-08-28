@@ -672,10 +672,16 @@ mod tests {
     #[test]
     fn several_outputs_become_several_sibling_folders() {
         let work = tempfile::tempdir().unwrap();
-        for path in ["Red/modinfo.ini", "Blue/modinfo.ini"] {
+        // Each source carries its own bytes, so an applier that crossed
+        // the two outputs' files shows up as content and not only as a
+        // pair of folders with the right names.
+        for (path, contents) in [
+            ("Red/modinfo.ini", "red mod"),
+            ("Blue/modinfo.ini", "blue mod"),
+        ] {
             let full = work.path().join(path);
             fs::create_dir_all(full.parent().unwrap()).unwrap();
-            fs::write(&full, b"x").unwrap();
+            fs::write(&full, contents).unwrap();
         }
 
         let plan = OrganizationPlan {
@@ -695,8 +701,16 @@ mod tests {
 
         apply_plan_to_workdir(&plan, work.path()).expect("apply");
 
-        assert!(work.path().join("Red Mod/modinfo.ini").exists());
-        assert!(work.path().join("Blue Mod/modinfo.ini").exists());
+        assert_eq!(
+            fs::read_to_string(work.path().join("Red Mod/modinfo.ini")).unwrap(),
+            "red mod",
+            "each output must hold its own file, not its sibling's"
+        );
+        assert_eq!(
+            fs::read_to_string(work.path().join("Blue Mod/modinfo.ini")).unwrap(),
+            "blue mod",
+            "each output must hold its own file, not its sibling's"
+        );
         assert!(
             !work.path().join("Red").exists(),
             "the source layout is replaced"
@@ -754,11 +768,11 @@ mod tests {
         );
         assert_eq!(fs::read(work.join("present.bin")).unwrap(), b"present");
         assert_eq!(fs::read(work.join("second.bin")).unwrap(), b"second");
+        // The first output's root is the one that was already in the
+        // work directory when the failure fired, so it is the one whose
+        // absence says the rollback covered every output. "Second" never
+        // reached the work directory and asserting on it proves nothing.
         assert!(!work.join("First").exists(), "no output was promoted");
-        assert!(
-            !work.join("Second").exists(),
-            "the output that failed left its own folder behind"
-        );
         assert_no_plan_staging_directories(temp.path());
     }
 
