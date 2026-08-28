@@ -638,12 +638,18 @@ fn app_runtime_actually_drops_once_every_arclain_app_clone_is_gone() {
 }
 
 /// `ensure_default_rules` and `sync_rules` both seed the organization
-/// rules table only when it is empty, with *different* default rules
+/// rules table only when it is empty, with *different* product rules
 /// ("DLsite Standard" vs. "DLSite Archive") -- whichever runs first
 /// wins. The original `AppState::new`/`sync_configuration` always ran
 /// `ensure_default_rules` first; this proves `bootstrap()` still does,
 /// so a fresh install always gets "DLsite Standard", never
 /// `sync_rules`'s "DLSite Archive" payload, ever again by accident.
+///
+/// It also proves the mod-manager layout reaches a real first run.
+/// Nothing else can put one in the database -- a layout is data a rule
+/// carries and the rules editor does not write one -- so an archive
+/// holding several mods produces sibling folders only if this rule is
+/// seeded here.
 #[test]
 fn first_run_seeds_ensure_default_rules_payload_not_sync_rules_payload() {
     let temp = tempfile::tempdir().unwrap();
@@ -670,21 +676,37 @@ fn first_run_seeds_ensure_default_rules_payload_not_sync_rules_payload() {
     let rules = arclain_core::config::database::list_org_rules(&dbs.config_pool)
         .expect("list organization rules");
 
+    let names: Vec<&str> = rules.iter().map(|rule| rule.name.as_str()).collect();
     assert_eq!(
-        rules.len(),
-        1,
-        "exactly one seed rule, from whichever seeder ran first"
+        names,
+        vec!["DLsite Standard", "Mod Manager Layout"],
+        "the seed set of whichever seeder ran first, and only that one's"
     );
+
+    let product = &rules[0];
     assert_eq!(
-        rules[0].name, "DLsite Standard",
-        "ensure_default_rules's payload must win -- it must run before sync_rules"
-    );
-    assert_eq!(
-        rules[0].trigger.filename_pattern.as_deref(),
+        product.trigger.filename_pattern.as_deref(),
         Some(r"(RJ|VJ|BJ)\d+"),
         "this is ensure_default_rules's pattern, not sync_rules's \\[(RJ|BJ|VJ)\\d+\\]"
     );
-    assert_eq!(rules[0].actions.layout.name, "Game");
+    assert_eq!(product.actions.layout.name, "Game");
+    assert!(
+        product.trigger.metadata_source.is_none(),
+        "sync_rules's product rule is the one that keys on a metadata source"
+    );
+
+    let mods = &rules[1];
+    assert!(
+        matches!(
+            mods.actions.layout.outputs,
+            arclain_core::features::organization::layout::OutputSelector::PerDirectoryContaining {
+                ref marker
+            } if marker == "modinfo.ini"
+        ),
+        "the mod-manager layout must reach a first run: {:?}",
+        mods.actions.layout.outputs
+    );
+    assert_eq!(mods.trigger.has_file.as_deref(), Some("modinfo.ini"));
 }
 
 /// A plugins directory that cannot be created must not fail bootstrap,

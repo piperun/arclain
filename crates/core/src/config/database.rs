@@ -116,7 +116,17 @@ pub fn delete_replacement(pool: &DieselPool, id: i64) -> Result<()> {
     pool.with_conn(|conn| delete_title_replacement(conn, id as i32))
 }
 
-/// Ensure default rules exist in the database
+/// Ensure default rules exist in the database.
+///
+/// Runs only on an empty table, so an existing install is neither
+/// re-seeded nor overwritten: adding a rule here changes what a fresh
+/// database gets and nothing else.
+///
+/// Both shipped layouts are seeded. A layout is data a rule carries and
+/// the rules editor does not write one, so a rule carrying the
+/// mod-manager layout either arrives here or does not exist — and
+/// without it an archive holding several mods cannot produce the
+/// sibling folders a mod manager reads.
 pub fn ensure_default_rules(pool: &DieselPool) -> Result<()> {
     let rules = list_org_rules(pool)?;
     if !rules.is_empty() {
@@ -140,8 +150,29 @@ pub fn ensure_default_rules(pool: &DieselPool) -> Result<()> {
         ..Default::default()
     };
 
+    // A pack of mods is not one thing: every folder holding a
+    // `modinfo.ini` becomes its own output. Lower priority than the
+    // product rule, because a storefront product that happens to ship
+    // mods inside it is still a product and should be wrapped as one.
+    let mod_manager_rule = OrganizationRule {
+        name: "Mod Manager Layout".to_string(),
+        priority: 50,
+        is_enabled: true,
+        trigger: crate::features::organization::RuleTrigger {
+            filename_pattern: None,
+            has_file: Some("modinfo.ini".to_string()),
+            metadata_source: None,
+        },
+        actions: crate::features::organization::RuleActions {
+            output_name: None,
+            layout: crate::features::organization::presets::mod_manager_layout(),
+        },
+        ..Default::default()
+    };
+
     save_org_rule(pool, &dlsite_rule)?;
-    tracing::info!("Seeded default DLsite rule");
+    save_org_rule(pool, &mod_manager_rule)?;
+    tracing::info!("Seeded default DLsite and mod-manager rules");
 
     Ok(())
 }
@@ -214,12 +245,95 @@ mod tests {
 
         // 3. Verify rules exist
         let rules = list_org_rules(&pool).unwrap();
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].name, "DLsite Standard");
+        let names: Vec<&str> = rules.iter().map(|rule| rule.name.as_str()).collect();
+        assert!(names.contains(&"DLsite Standard"), "{names:?}");
 
         // 4. Run again, should not duplicate
+        let seeded = rules.len();
         ensure_default_rules(&pool).unwrap();
         let rules = list_org_rules(&pool).unwrap();
-        assert_eq!(rules.len(), 1);
+        assert_eq!(rules.len(), seeded);
+    }
+
+    /// Both layouts this repository ships have to reach a fresh install.
+    /// The mod-manager layout is the whole point of an archive resolving
+    /// to several outputs, and nothing else can put one in the database:
+    /// the rules editor does not write layouts, so a rule carrying this
+    /// one either arrives seeded or never exists.
+    #[test]
+    fn a_fresh_install_is_seeded_with_both_shipped_layouts() {
+        use crate::features::organization::layout::OutputSelector;
+
+        let temp_file = NamedTempFile::new().unwrap();
+        let pool = DieselPool::new(temp_file.path()).unwrap();
+        setup_org_rules_table(&pool);
+
+        ensure_default_rules(&pool).unwrap();
+
+        let rules = list_org_rules(&pool).unwrap();
+        let product = rules
+            .iter()
+            .find(|rule| matches!(rule.actions.layout.outputs, OutputSelector::Whole))
+            .expect("the product layout must be seeded");
+        assert_eq!(product.name, "DLsite Standard");
+
+        let mods = rules
+            .iter()
+            .find(|rule| {
+                matches!(
+                    rule.actions.layout.outputs,
+                    OutputSelector::PerDirectoryContaining { .. }
+                )
+            })
+            .expect("the mod-manager layout must be seeded too");
+        assert_eq!(
+            mods.trigger.has_file.as_deref(),
+            Some("modinfo.ini"),
+            "the rule must fire on the marker its layout selects by"
+        );
+        assert!(
+            mods.priority < product.priority,
+            "a storefront product that happens to contain mods is still a product"
+        );
+        assert!(mods.is_enabled);
+    }
+
+    /// Seeding is additive in the only sense that matters: neither
+    /// seeder runs once the table holds anything, so an existing install
+    /// gains no duplicate and loses no rule it edited. Adding a rule to
+    /// the seed set therefore changes what a *fresh* database gets and
+    /// nothing else.
+    #[test]
+    fn seeding_leaves_an_existing_installs_rules_alone() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let pool = DieselPool::new(temp_file.path()).unwrap();
+        setup_org_rules_table(&pool);
+
+        // An install whose one rule shares a seeded rule's name and has
+        // been edited away from it. Sharing the name matters:
+        // `save_org_rule` matches on it, so a seeder that ran anyway
+        // would overwrite this rather than duplicate it.
+        let edited = OrganizationRule {
+            name: "DLsite Standard".to_string(),
+            priority: 7,
+            is_enabled: false,
+            trigger: crate::features::organization::RuleTrigger::default(),
+            actions: crate::features::organization::RuleActions {
+                output_name: None,
+                layout: crate::features::organization::presets::product_layout("My Own Folder"),
+            },
+            ..Default::default()
+        };
+        save_org_rule(&pool, &edited).unwrap();
+
+        ensure_default_rules(&pool).unwrap();
+        crate::config::sync::sync_rules(&pool).unwrap();
+
+        let rules = list_org_rules(&pool).unwrap();
+        assert_eq!(rules.len(), 1, "no rule may be added: {rules:?}");
+        assert_eq!(rules[0].name, "DLsite Standard");
+        assert_eq!(rules[0].priority, 7, "the edited rule is not overwritten");
+        assert!(!rules[0].is_enabled);
+        assert_eq!(rules[0].actions.layout.name, "My Own Folder");
     }
 }
