@@ -93,8 +93,15 @@ impl TreeNode {
             }
         }
 
-        for child in self.children.values() {
-            result.extend(child.flatten());
+        // Sort children by name to ensure deterministic flattening order.
+        // HashMap iteration is not stable between runs, so flattening
+        // would return entries in different order each time.
+        let mut sorted_names: Vec<_> = self.children.keys().collect();
+        sorted_names.sort();
+        for name in sorted_names {
+            if let Some(child) = self.children.get(name) {
+                result.extend(child.flatten());
+            }
         }
         result
     }

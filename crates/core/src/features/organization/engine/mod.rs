@@ -696,4 +696,63 @@ mod tests {
             "the wrapper and the www folder itself must not survive into the layout: {destinations:?}"
         );
     }
+
+    /// Two folders scoring identically must resolve the same way on
+    /// every run. The scorer iterates a HashMap, so before the tie-break
+    /// this passed or failed depending on hash order.
+    #[test]
+    fn a_tied_content_root_score_resolves_to_the_same_folder_every_run() {
+        use crate::archive::ArchiveEntry;
+
+        fn entry(path: &str) -> ArchiveEntry {
+            ArchiveEntry {
+                path: path.to_string(),
+                size: 10,
+                packed_size: 10,
+                modified: None,
+                is_dir: false,
+                encrypted: false,
+                crc32: None,
+            }
+        }
+
+        // Both candidates score 2: an index.html and a js/ folder each.
+        let entries = vec![
+            entry("alpha/index.html"),
+            entry("alpha/js/main.js"),
+            entry("beta/index.html"),
+            entry("beta/js/main.js"),
+        ];
+
+        let rule = OrganizationRule {
+            name: "Standard".to_string(),
+            is_enabled: true,
+            trigger: RuleTrigger::default(),
+            actions: RuleActions {
+                root_folder: Some("Out".to_string()),
+                use_standard_layout: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let first =
+            RuleEngine::create_plan(&rule, "placeholder.zip", &entries, None).expect("plan");
+        for _ in 0..20 {
+            let again =
+                RuleEngine::create_plan(&rule, "placeholder.zip", &entries, None).expect("plan");
+            assert_eq!(
+                again.moves, first.moves,
+                "a tie must not depend on hash order"
+            );
+        }
+        assert!(
+            first
+                .moves
+                .iter()
+                .any(|(from, _)| from.starts_with("alpha/")),
+            "the lexicographically first candidate wins a tie: {:?}",
+            first.moves
+        );
+    }
 }

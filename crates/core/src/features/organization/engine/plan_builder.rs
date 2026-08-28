@@ -592,9 +592,16 @@ impl RuleEngine {
             }
         }
 
-        // Find dir with >= 2 indicators
-        for (dir, score) in dirs {
-            if score >= 2 && score > best_score {
+        // Sort first: the map's iteration order is not stable between
+        // runs, so `>` alone would let two directories tied at the best
+        // score resolve differently each time. Ties go to the
+        // lexicographically smallest path.
+        let mut scored: Vec<(PathBuf, usize)> = dirs.into_iter().collect();
+        scored.sort_by(|(left_path, left), (right_path, right)| {
+            right.cmp(left).then_with(|| left_path.cmp(right_path))
+        });
+        if let Some((dir, score)) = scored.into_iter().next() {
+            if score >= 2 {
                 best_score = score;
                 best_root = dir;
             }
