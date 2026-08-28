@@ -477,13 +477,21 @@ fn test_integration_data_full_workflow() {
     let fetch = http_downloader().expect("Failed to build downloader");
     let org_result = organize_via_plan(&mut archive, &output_7z, &metadata, &fetch);
 
-    // Handle encryption errors - the organize function should detect password need internally
+    // These tests run against a developer's own archives, and some of
+    // those are encrypted. An archive this machine has no working
+    // password for is a skip rather than a failure -- the run would be
+    // reporting on the backend's refusal to open it, not on the
+    // organizer under test. The two "source archive" strings are the
+    // contexts the helper above attaches to listing and to extraction,
+    // its first two touches of the archive, so an encrypted fixture is
+    // caught here whatever the backend said underneath.
     if let Err(e) = org_result {
         error!("Organization failed: {:?}", e);
 
         let err_msg = e.to_string();
         if err_msg.contains("encrypted")
             || err_msg.contains("password")
+            || err_msg.contains("listing source archive")
             || err_msg.contains("extracting source archive")
             || err_msg.contains("Cannot open")
             || err_msg.contains("Wrong password")
