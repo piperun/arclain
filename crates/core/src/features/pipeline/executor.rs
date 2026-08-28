@@ -124,7 +124,10 @@ pub fn execute_pipeline(
             Err(e) => {
                 failed += 1;
                 on_progress(PipelineProgress::FileFailed {
-                    error: e.to_string(),
+                    // `{:#}` and not `to_string`: every stage wraps what
+                    // it calls, and `Display` alone prints the wrapper
+                    // and drops the reason underneath it.
+                    error: format!("{e:#}"),
                 });
             }
         }

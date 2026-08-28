@@ -1456,3 +1456,62 @@ fn apply_plan_reorganizes_files() {
     // Old empty top-level data/ folder should be gone after flatten
     assert!(!tmp.path().join("data").exists());
 }
+
+/// A failure has to say what actually went wrong, not just which step was
+/// holding the bag.
+///
+/// `anyhow`'s `Display` prints only the outermost context, so reporting a
+/// failure with `to_string` threw away every `caused by` beneath it. The
+/// executor wraps each stage -- "Create work dir", "Extract", "Apply plan
+/// failed" -- so a run that fell over inside one reported the wrapper and
+/// nothing else, and the reason never reached the progress log.
+#[test]
+fn a_failure_reports_its_cause_and_not_only_the_step_that_wrapped_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let input_dir = temp.path().join("input");
+    let output_dir = temp.path().join("output");
+    std::fs::create_dir_all(&input_dir).unwrap();
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let input = input_dir.join("game.zip");
+    std::fs::write(&input, b"source").unwrap();
+
+    // A regular file where the run wants to put its working directories,
+    // so creating one fails and the executor wraps the OS error.
+    let blocked_root = temp.path().join("blocked");
+    std::fs::write(&blocked_root, b"not a directory").unwrap();
+
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input])),
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::Zip,
+            compression: CompressionLevel::Normal,
+            password: None,
+        }],
+        output: PipelineOutput::NewFolder(output_dir),
+        collision_policy: Some(OutputCollisionPolicy::Overwrite),
+        output_artifact: OutputArtifact::Archive,
+    };
+    let ctx = PipelineContext::minimal(|_| anyhow::bail!("unused"));
+
+    let mut failures: Vec<String> = Vec::new();
+    execute_pipeline(&pipeline, &blocked_root, &ctx, |event| {
+        if let arclain_core::PipelineProgress::FileFailed { error } = event {
+            failures.push(error);
+        }
+    })
+    .unwrap();
+
+    assert_eq!(failures.len(), 1);
+    let reported = &failures[0];
+    assert!(
+        reported.contains("Create work dir"),
+        "the reported failure must name the stage, got: {reported}"
+    );
+    // Every `io::Error` from the OS renders "(os error N)", on both
+    // platforms, so this asserts the cause survived without pinning
+    // either one's wording.
+    assert!(
+        reported.contains("os error"),
+        "the reported failure must carry the cause under the stage, got: {reported}"
+    );
+}
