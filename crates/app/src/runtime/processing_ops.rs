@@ -1662,6 +1662,39 @@ fn pack_organize_input(
         &read_entry,
     )?;
 
+    // A folder the layout would have made an output of but could not
+    // name produces nothing, and this run reports one line per input --
+    // so without this the archive quietly comes out short. Said before
+    // the refusal below, so that when a run is refused for planning
+    // nothing, the folders it passed over are already in the log.
+    for (root, reason) in &plan.skipped_outputs {
+        tracing::warn!("[organize] output skipped: {root:?}: {reason}");
+    }
+
+    // Applying a plan promotes what it staged over the whole work
+    // directory, so a plan that would write nothing does not no-op: it
+    // empties the work directory and the run then packs an empty result.
+    // The applier refuses one that reaches it, so nothing here is
+    // destroyed -- but that refusal arrives only after this input's
+    // destination folder has been created and the whole archive
+    // extracted into a work directory, and it reads as a fault in the
+    // apply rather than in the rule. The rule editor's own default
+    // layout plans exactly this, so it is a plan a user reaches without
+    // trying.
+    //
+    // Worded as the pipeline's Organize step words it: the two surfaces
+    // refuse the same plan, and a user meeting it through either should
+    // be told the same thing.
+    if plan.stages_nothing() {
+        anyhow::bail!(
+            "rule {:?} planned nothing to write for this input: {} output(s) resolved and {} \
+             were passed over, so the run would empty the work directory rather than organize it",
+            plan.rule_name,
+            plan.outputs.len(),
+            plan.skipped_outputs.len()
+        );
+    }
+
     let stem = stem_from(input, metadata.as_ref());
     let ext = profile.format.extension();
     let dest_path = destination.join(format!("{}.{ext}", stem.to_string_lossy()));
@@ -1703,13 +1736,6 @@ fn pack_organize_input(
     .context("staging plan downloads")?;
     for (url, dest_path, reason) in &staged.unfetched {
         tracing::warn!("[organize] screenshot not fetched: {dest_path} ({url}): {reason}");
-    }
-
-    // A folder the layout would have made an output of but could not
-    // name produces nothing, and this run reports one line per input --
-    // so without this the archive quietly comes out short.
-    for (root, reason) in &plan.skipped_outputs {
-        tracing::warn!("[organize] output skipped: {root:?}: {reason}");
     }
 
     arclain_core::features::pipeline::apply_plan::apply_plan_to_workdir(

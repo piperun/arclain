@@ -230,6 +230,60 @@ fn seed_rule_and_profile(app: &ArclainApp) -> (i64, i64) {
     (rule_id, profile_id)
 }
 
+/// [`seed_rule_and_profile`] carrying a layout with no placements
+/// instead: a named output that nothing is ever put into. It is the
+/// layout the rule editor gives a brand-new rule, and it plans a run
+/// that would write nothing at all. Returns `(rule_id, profile_id)`.
+fn seed_rule_that_places_nothing_and_profile(app: &ArclainApp) -> (i64, i64) {
+    let legacy = app
+        .take_legacy_composition()
+        .expect("take_legacy_composition must succeed for a freshly bootstrapped app");
+    let organization_service = legacy
+        .core_services
+        .organization_service
+        .clone()
+        .expect("organization_service must be composed for a freshly bootstrapped app");
+    let rule = arclain_core::OrganizationRule {
+        id: 0,
+        name: "places-nothing".to_string(),
+        priority: 0,
+        is_enabled: true,
+        trigger: arclain_core::RuleTrigger::default(),
+        actions: arclain_core::RuleActions {
+            output_name: None,
+            layout: arclain_core::features::organization::layout::Layout {
+                name: "Organized".to_string(),
+                place: Vec::new(),
+                ..Default::default()
+            },
+        },
+    };
+    let rule_id = organization_service
+        .save_domain_rule(&rule)
+        .expect("seeding the places-nothing organization rule must succeed");
+
+    let dbs = legacy
+        .dbs
+        .expect("dbs must be available on the first take_legacy_composition call");
+    let mut conn = dbs.config_pool.get().expect("get a pooled connection");
+    let profile = arclain_core::features::organization::ArchiveProfile {
+        id: 0,
+        name: "places-nothing-profile".to_string(),
+        description: None,
+        format: arclain_core::features::organization::ArchiveFormat::Zip,
+        compression_level: 1,
+        compression_method: None,
+        solid_archive: false,
+        encrypt_headers: false,
+        is_default: false,
+        is_system: false,
+    };
+    let profile_id = arclain_core::save_profile(&mut conn, &profile.to_db())
+        .expect("seed the places-nothing archive profile");
+
+    (rule_id, profile_id)
+}
+
 /// [`seed_rule_and_profile`] carrying the shipped product layout
 /// instead: the detected content root rehomed under `Game/`, the
 /// metadata document written beside it, the screenshots fetched in, and
@@ -1126,6 +1180,73 @@ fn start_organize_dry_run_reports_a_real_preview_and_never_touches_the_filesyste
     assert!(
         !destination.exists(),
         "dry_run must never create the destination"
+    );
+}
+
+/// The panel and the pipeline's Organize step both ask whether a plan
+/// would write anything before they run it; batch organize did not. The
+/// applier refuses one that reaches it, so nothing was destroyed, but
+/// the refusal arrived only after the destination folder had been made
+/// and the whole archive extracted into a work directory -- work for a
+/// run that could never happen, reported as an apply fault rather than
+/// as the rule fault it is.
+///
+/// A layout with no placements is what the shipped editor produces for
+/// a new rule, so this is a plan a user can reach without doing anything
+/// unusual.
+#[test]
+fn start_organize_refuses_a_rule_that_plans_nothing_before_it_extracts_anything() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
+    let (rule_id, profile_id) = seed_rule_that_places_nothing_and_profile(&app);
+
+    let alpha = temp.path().join("alpha.zip");
+    std::fs::write(&alpha, b"placeholder content for hashing").unwrap();
+    let destination = temp.path().join("out");
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![alpha],
+                destination: destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+                archive_session_id: None,
+            })
+            .await
+            .expect("start_organize must be accepted");
+
+        let (messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            },
+            "one refused input is a failed input, not a failed operation"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("1 failed")),
+            "expected the summary to count the refusal, got: {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("planned nothing to write")),
+            "the refusal must name the rule as the fault, the way the \
+             pipeline's Organize step does, got: {messages:?}"
+        );
+    });
+
+    // The gate sits in front of every side effect this input would have
+    // had, so the destination folder the run would have written into was
+    // never made -- and neither was the work directory it would have
+    // extracted the archive into.
+    assert!(
+        !destination.exists(),
+        "a run that cannot happen must not create its destination"
     );
 }
 
