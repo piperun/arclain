@@ -120,6 +120,81 @@ const MAX_DOWNLOAD_BYTES: usize = arclain_data::DEFAULT_MAX_RESOURCE_SIZE_BYTES;
 /// a hop leads.
 const MAX_DOWNLOAD_REDIRECTS: usize = 3;
 
+/// True when an address is somewhere a screenshot has no business
+/// living: the host itself, a private network, a link-local range, or
+/// the unspecified address.
+///
+/// Screenshot URLs come from scraped third-party metadata, so the host
+/// one names is chosen by whoever controls that metadata rather than by
+/// the user. Refusing these stops a scraped URL turning an organize run
+/// into a request against the machine it runs on, or the network that
+/// machine sits in.
+fn is_off_public_internet(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+        }
+        std::net::IpAddr::V6(v6) => {
+            // An IPv4 address wearing an IPv6 mapping is the same host,
+            // so unwrap it and judge it by the rules above.
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_off_public_internet(mapped.into());
+            }
+            let segments = v6.segments();
+            v6.is_loopback()
+                || v6.is_unspecified()
+                // Unique local, fc00::/7. `is_unique_local` is not
+                // stable, so match the prefix directly.
+                || (segments[0] & 0xfe00) == 0xfc00
+                // Link local, fe80::/10.
+                || (segments[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// A DNS resolver that answers only with addresses on the public
+/// internet.
+///
+/// Installed on the fetch client rather than run as a check before the
+/// request, because this is the resolution reqwest performs: every hop
+/// of a redirect chain passes through it, and there is no gap between
+/// the check and the connect for an answer to change in.
+#[derive(Debug)]
+struct PublicOnlyResolver;
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let lookup = host.clone();
+            let resolved = tokio::task::spawn_blocking(move || {
+                std::net::ToSocketAddrs::to_socket_addrs(&(lookup.as_str(), 0))
+                    .map(|addrs| addrs.collect::<Vec<_>>())
+            })
+            .await
+            .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?
+            .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
+
+            let public: Vec<std::net::SocketAddr> = resolved
+                .into_iter()
+                .filter(|addr| !is_off_public_internet(addr.ip()))
+                .collect();
+
+            if public.is_empty() {
+                let refused: Box<dyn std::error::Error + Send + Sync> =
+                    format!("{host} resolves only to addresses off the public internet").into();
+                return Err(refused);
+            }
+            Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 /// One HTTP fetcher for a whole plan's downloads, holding a single
 /// client so a batch from one host reuses its connection rather than
 /// re-handshaking per image.
@@ -133,16 +208,18 @@ const MAX_DOWNLOAD_REDIRECTS: usize = 3;
 ///   omit or understate that header, so a hostile or merely mis-sized
 ///   image cannot exhaust memory. This is the bound that matters.
 ///
-/// Neither the initial URL nor any redirect target is checked against an
-/// address policy: the URLs come from scraped third-party metadata, and
-/// nothing here stops one from naming a private or loopback address.
-/// That is a known open question rather than an oversight — do not read
-/// the bounds above as making the destination safe, only the response.
+/// - The destination is capped to the public internet by
+///   [`PublicOnlyResolver`], so a URL naming a private, loopback or
+///   link-local address cannot be reached. The check lives in the
+///   resolver reqwest itself uses, which is what makes it hold for the
+///   initial request and for every redirect hop alike, with no window
+///   between judging an address acceptable and connecting to it.
 pub fn http_downloader() -> Result<impl Fn(&PendingDownload) -> Result<Vec<u8>>> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .user_agent("Arclain/1.0")
         .redirect(reqwest::redirect::Policy::limited(MAX_DOWNLOAD_REDIRECTS))
+        .dns_resolver(std::sync::Arc::new(PublicOnlyResolver))
         .build()?;
     Ok(move |download: &PendingDownload| {
         // The one place the production limit enters a fetch, so
@@ -412,5 +489,46 @@ mod tests {
             .plan
             .validate_paths()
             .expect("staged plan must pass validation");
+    }
+    #[test]
+    fn addresses_off_the_public_internet_are_refused() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+        let refused: Vec<IpAddr> = vec![
+            Ipv4Addr::new(127, 0, 0, 1).into(),
+            Ipv4Addr::new(10, 0, 0, 5).into(),
+            Ipv4Addr::new(172, 16, 3, 4).into(),
+            Ipv4Addr::new(192, 168, 1, 1).into(),
+            Ipv4Addr::new(169, 254, 169, 254).into(),
+            Ipv4Addr::new(0, 0, 0, 0).into(),
+            Ipv6Addr::LOCALHOST.into(),
+            Ipv6Addr::UNSPECIFIED.into(),
+            "fc00::1".parse::<Ipv6Addr>().unwrap().into(),
+            "fe80::1".parse::<Ipv6Addr>().unwrap().into(),
+            // An IPv4 loopback wearing an IPv6 mapping is the same host.
+            "::ffff:127.0.0.1".parse::<Ipv6Addr>().unwrap().into(),
+            // TEST-NET-3, a documentation range: reachable on nobody's
+            // network, so a screenshot URL naming one is not a fetch
+            // worth attempting.
+            Ipv4Addr::new(203, 0, 113, 7).into(),
+        ];
+        for address in refused {
+            assert!(
+                is_off_public_internet(address),
+                "{address} must not be reachable from a scraped screenshot URL"
+            );
+        }
+
+        let allowed: Vec<IpAddr> = vec![
+            Ipv4Addr::new(1, 1, 1, 1).into(),
+            Ipv4Addr::new(8, 8, 8, 8).into(),
+            "2606:4700::1111".parse::<Ipv6Addr>().unwrap().into(),
+        ];
+        for address in allowed {
+            assert!(
+                !is_off_public_internet(address),
+                "{address} is an ordinary public address and must resolve"
+            );
+        }
     }
 }
