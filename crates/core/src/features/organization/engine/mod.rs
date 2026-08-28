@@ -96,11 +96,24 @@ impl OrganizationPlan {
         };
         let mut destinations = HashSet::new();
 
-        for output in &self.outputs {
+        for (index, output) in self.outputs.iter().enumerate() {
             // An empty root folder means the output has no wrapper and
-            // its content sits at the top level, which resolution only
-            // permits for a lone output. There is no path to check.
-            if !output.root_folder.is_empty() {
+            // its content sits at the top level. There is no path to
+            // check, but there is an invariant: only a lone output may
+            // do this. Among siblings its files would land as top-level
+            // entries beside the other outputs' folders, which is not a
+            // layout anything asked for. `resolve_outputs` refuses to
+            // build such a plan; this is the boundary that catches one
+            // built any other way.
+            if output.root_folder.is_empty() {
+                if self.outputs.len() > 1 {
+                    anyhow::bail!(
+                        "output {index} has no root folder, which puts its files at the top \
+                         level; only a lone output may do that, and this plan has {} outputs",
+                        self.outputs.len()
+                    );
+                }
+            } else {
                 crate::utilities::CheckedRelativePath::new(&output.root_folder)
                     .context("invalid organization root_folder")?;
             }
@@ -589,6 +602,50 @@ mod tests {
         plan_with(output)
             .validate_paths()
             .expect("no wrapper is legal");
+    }
+
+    /// An output with no wrapper puts its files at the top level of the
+    /// work directory. Beside a sibling's folder that is not a layout
+    /// anyone asked for -- one mod's files loose among the other mods'
+    /// folders -- so it is legal only when the output is alone.
+    /// `resolve_outputs` will not build this, which is exactly why the
+    /// boundary has to refuse it: a plan that arrived another way is the
+    /// one nothing else has checked.
+    #[test]
+    fn validate_paths_rejects_an_output_with_no_wrapper_beside_a_sibling() {
+        let mut loose = output_holding(
+            vec![("wrapper/Game.exe".into(), "Game.exe".into())],
+            vec![],
+            vec![],
+        );
+        loose.root_folder = String::new();
+        loose.root_folder_template = String::new();
+        let mut wrapped = output_holding(
+            vec![("other/Game.exe".into(), "Other/Game.exe".into())],
+            vec![],
+            vec![],
+        );
+        wrapped.root_folder = "Other".into();
+
+        let plan = OrganizationPlan {
+            rule_name: "unsafe".into(),
+            outputs: vec![loose, wrapped],
+            skipped_outputs: vec![],
+        };
+
+        let error = plan
+            .validate_paths()
+            .expect_err("a wrapperless output may not sit beside a sibling");
+        let error = format!("{error:#}");
+
+        assert!(
+            error.contains("output 0"),
+            "the reason must name which output: {error}"
+        );
+        assert!(
+            error.contains("root folder"),
+            "the reason must say what is missing: {error}"
+        );
     }
 
     /// Regression: screenshot cache keys must use `gm.product_id` directly
