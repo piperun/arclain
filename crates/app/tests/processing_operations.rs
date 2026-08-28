@@ -2095,18 +2095,18 @@ fn folder_entry_paths(root: &Path) -> Vec<String> {
 /// pipeline's organize step. The two used to apply the same plan by
 /// different means: the pipeline applied its move list, while organize
 /// discarded the moves whenever the rule set `use_standard_layout` and
-/// ran `find_and_flatten_game_content` over the extracted tree instead,
-/// from a second, independent content-root detection.
+/// walked the extracted tree with a second, independent content-root
+/// detection instead.
 ///
 /// The fixture is what makes the two disagree, and the disagreement is
 /// not subtle: a launcher `.exe` sitting in the wrapper folder beside
 /// the real game folder. The plan's detection scores each directory by
 /// the indicators of the files directly in it, so `[v1.2] Placeholder
 /// Game` (a named `Game.exe` plus a `data` folder) outscores the wrapper
-/// and the moves strip the wrapper away. The flattener walks down and
-/// stops at the *first* directory holding any `.exe` at all, which is
-/// the wrapper -- so it keeps `[v1.2] Placeholder Game` as a directory
-/// inside `Game/`, and sweeps `setup.exe` and `readme.txt` in with it.
+/// and the moves strip the wrapper away. The tree walk descended and
+/// stopped at the *first* directory holding any `.exe` at all, which is
+/// the wrapper -- so it kept `[v1.2] Placeholder Game` as a directory
+/// inside `Game/`, and swept `setup.exe` and `readme.txt` in with it.
 #[test]
 fn organize_and_pipeline_produce_the_same_tree_for_one_rule() {
     let runtime = foreign_runtime();

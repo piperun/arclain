@@ -7,10 +7,7 @@ use crate::utilities::CheckedRelativePath;
 use crate::Archive;
 
 // Re-export items to maintain API compatibility
-pub use super::checks::{
-    check_archive_structure, needs_better_compression, verify_archive_encryption, ArchiveStructure,
-};
-pub use super::flatten::find_and_flatten_game_content; // Kept as pub if needed by engine?
+pub use super::checks::{check_archive_structure, needs_better_compression, ArchiveStructure};
 pub use super::metadata::{GameMetadata, ScreenshotData};
 pub use super::tasks::*;
 

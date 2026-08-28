@@ -515,7 +515,6 @@ impl RuleEngine {
     }
 
     /// Helper to find the "game content" root folder in entries
-    /// Mimics logic from flatten.rs::find_and_flatten_game_content
     fn find_game_content_root_in_entries(entries: &[ArchiveEntry]) -> PathBuf {
         let game_indicators = [
             "Game.exe",

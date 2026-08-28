@@ -1,6 +1,6 @@
 use crate::Archive;
 use anyhow::Result;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 /// Expected archive structure
 #[derive(Debug, Clone)]
@@ -95,43 +95,3 @@ pub fn needs_better_compression(archive: &Archive) -> Result<bool> {
     debug!("Assuming 7z archive may need recompression for optimal settings");
     Ok(true)
 }
-
-/// Verify archive encryption status and password availability
-pub fn verify_archive_encryption(archive: &Archive) -> Result<()> {
-    info!(
-        "Verifying archive encryption status for: {}",
-        archive.path().display()
-    );
-
-    let archive_info = archive
-        .backend()
-        .list(archive.path(), archive.password_ref())
-        .context("listing archive contents")?;
-
-    debug!(
-        "Archive encryption status: encrypted={}, headers_encrypted={}, method={:?}",
-        archive_info.encrypted, archive_info.headers_encrypted, archive_info.encryption_method
-    );
-
-    if archive_info.encrypted && !archive.has_password() {
-        error!(
-            "Archive is encrypted but no password provided: {}",
-            archive.path().display()
-        );
-        return Err(anyhow::anyhow!(
-            "Archive '{}' contains encrypted files but no password was provided.",
-            archive.path().display()
-        ));
-    }
-
-    if archive_info.encrypted {
-        info!("Archive is encrypted and password is available");
-    } else {
-        info!("Archive is not encrypted");
-    }
-
-    Ok(())
-}
-
-// Need to import Context for the anyhow context usage
-use anyhow::Context;
