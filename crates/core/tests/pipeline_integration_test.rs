@@ -1027,6 +1027,115 @@ fn folder_output_leaves_extracted_tree_on_disk() {
     assert!(input.exists());
 }
 
+/// A rule whose layout places nothing plans no output at all, and the
+/// applier promotes what it staged over the whole work directory — so
+/// running that plan empties the work directory and the run packs an
+/// empty folder while reporting success.
+///
+/// The step refuses it before staging any download, and the message is
+/// about the rule rather than about the apply, because the rule is what
+/// is wrong. The applier's own refusal stands behind this one; both are
+/// needed, since a plan can also arrive at the applier having staged
+/// nothing for reasons the step could not see.
+#[test]
+fn an_organize_step_whose_rule_plans_nothing_fails_the_run() {
+    use arclain_core::backends::BackendSelector;
+    use std::io::Write;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let input_dir = tmp.path().join("in");
+    let output_dir = tmp.path().join("out");
+    std::fs::create_dir_all(&input_dir).unwrap();
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let input = input_dir.join("pack.zip");
+    {
+        let file = std::fs::File::create(&input).unwrap();
+        let mut zw = zip::ZipWriter::new(file);
+        zw.start_file("readme.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(b"hello").unwrap();
+        zw.finish().unwrap();
+    }
+
+    // A layout that names a folder and places nothing into it: what a
+    // rule built from the editor's blank layout carries.
+    let config_db_path = tmp.path().join("config.sqlite");
+    arclain_db::ConfigDb::open(&config_db_path).expect("config schema");
+    let organization_service = Arc::new(arclain_core::OrganizationService::new(
+        arclain_db::DieselPool::new(&config_db_path).expect("config pool"),
+    ));
+    let rule_id = organization_service
+        .save_rule(&arclain_db::DbOrganizationRule {
+            id: None,
+            name: "Places Nothing".to_string(),
+            description: None,
+            category: "test".to_string(),
+            trigger_json: serde_json::json!({}).to_string(),
+            actions_json: serde_json::json!({
+                "output_name": null,
+                "layout": {
+                    "outputs": "Whole",
+                    "file_variables": [],
+                    "name": "Organized",
+                    "place": [],
+                    "generate": [],
+                    "fetch": []
+                }
+            })
+            .to_string(),
+            priority: 0,
+            is_enabled: true,
+            is_system: false,
+        })
+        .expect("saving the rule");
+
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input.clone()])),
+        steps: vec![PipelineStep::Organize { rule_id }],
+        output: PipelineOutput::NewFolder(output_dir.clone()),
+        collision_policy: Some(OutputCollisionPolicy::Smart),
+        output_artifact: OutputArtifact::Folder,
+    };
+
+    let selector = Arc::new(BackendSelector::default());
+    let selector_cloned = selector.clone();
+    let ctx = PipelineContext {
+        organization_service: Some(organization_service),
+        ..PipelineContext::minimal(move |p: &std::path::Path| selector_cloned.select(p))
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut completions: Vec<PathBuf> = Vec::new();
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |event| {
+        use arclain_core::PipelineProgress::*;
+        match event {
+            FileFailed { error } => failures.push(error),
+            FileComplete { output } => completions.push(output),
+            _ => {}
+        }
+    })
+    .expect("the run itself completes; the file inside it fails");
+
+    assert!(
+        completions.is_empty(),
+        "nothing may be reported complete: {completions:?}"
+    );
+    let error = failures.join("; ");
+    assert!(
+        error.contains("planned nothing"),
+        "the step must refuse the rule, not leave it to the applier: {error}"
+    );
+    assert!(
+        error.contains("Places Nothing"),
+        "the failure must name the rule: {error}"
+    );
+    assert!(
+        !output_dir.join("pack").exists(),
+        "no output folder may be produced"
+    );
+    assert!(input.exists(), "the input is never touched");
+}
+
 /// What one run of the screenshot fixture below reported.
 #[cfg(feature = "gameta")]
 struct OrganizeRun {

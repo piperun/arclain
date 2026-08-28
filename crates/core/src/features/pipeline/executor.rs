@@ -510,6 +510,30 @@ fn run_one_inner(
                     });
                 }
 
+                // Applying a plan promotes what it staged over the whole
+                // work directory, so a plan that would write nothing
+                // does not no-op: it empties the work directory and the
+                // run then packs an empty result while reporting
+                // success. A rule whose layout places nothing produces
+                // exactly that plan, and it plans without complaint.
+                //
+                // Refused here rather than left to the applier, which
+                // refuses it too: this is a fault in the rule, it is
+                // worth saying so before any image is fetched for a run
+                // that cannot happen, and the folders the plan passed
+                // over have just been reported so the reason is already
+                // on screen.
+                if plan.stages_nothing() {
+                    anyhow::bail!(
+                        "rule {:?} planned nothing to write for this input: {} output(s) \
+                         resolved and {} were passed over, so the run would empty the work \
+                         directory rather than organize it",
+                        rule.name,
+                        plan.outputs.len(),
+                        plan.skipped_outputs.len()
+                    );
+                }
+
                 // Resolve the plan's scheduled images to files on disk
                 // before the applier runs, so the applier's transaction
                 // over the work directory never waits on the network.

@@ -295,6 +295,62 @@ fn a_rule_that_cannot_plan_renders_the_reason_and_drops_the_stale_plan() {
     assert!(panel.can_apply(), "and Apply comes back with it");
 }
 
+/// A rule whose layout places nothing plans no output at all. The
+/// preview succeeds -- there is nothing wrong with the rule, it simply
+/// describes a run that would write nothing -- so Apply is live by the
+/// old rule of "a current plan is on screen". Applying it empties the
+/// work directory and packs an empty archive, which is why a plan on
+/// screen is not on its own enough.
+///
+/// Reachable from the shipped editor: a new rule starts from a default
+/// layout, which has no placements.
+#[test]
+fn a_plan_that_would_write_nothing_is_not_applyable() {
+    let (_temp, shared) = create_test_shared_state_with_facade();
+    let archive = build_zip_fixture(_temp.path(), "fixture.zip", &[("game.exe", b"payload")]);
+    let rules = save_rule(
+        &shared,
+        OrganizationRuleInput {
+            id: None,
+            name: "Empty Rule".to_string(),
+            priority: 10,
+            enabled: true,
+            trigger: OrganizationRuleTriggerDto::default(),
+            actions: OrganizationRuleActionsDto {
+                output_name: None,
+                layout: LayoutDto {
+                    name: "Organized".to_string(),
+                    ..LayoutDto::default()
+                },
+            },
+        },
+    );
+    let rules: Vec<_> = rules
+        .into_iter()
+        .filter(|rule| rule.name == "Empty Rule")
+        .collect();
+    let session_id = open_session(&shared, &archive);
+    let mut panel = panel_for(session_id, "fixture.zip", rules);
+
+    refresh_preview(&mut panel, &shared);
+
+    let preview = panel.preview().expect("the preview itself succeeds");
+    assert!(
+        preview.outputs.is_empty(),
+        "a layout that places nothing produces no output: {:?}",
+        preview.outputs
+    );
+    assert!(
+        !preview.skipped_outputs.is_empty(),
+        "and the panel must have something to show the user for it"
+    );
+    assert_eq!(panel.preview_error(), None);
+    assert!(
+        !panel.can_apply(),
+        "Apply must be off for a plan that would write nothing"
+    );
+}
+
 /// Metadata arriving for the session invalidates the plan (the plan is
 /// a function of it), and the recomputed plan reflects the new value.
 /// Changing the *profile* does not: it decides the output container,

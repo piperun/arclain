@@ -509,6 +509,26 @@ pub struct OrganizePlanPreview {
     pub integrity: OrganizeIntegrityDto,
 }
 
+impl OrganizePlanPreview {
+    /// Whether running this plan would put nothing on disk.
+    ///
+    /// Not a plan that does nothing: applying one promotes what it
+    /// staged over the whole work directory, so a plan staging nothing
+    /// empties it and the run then packs an empty archive while
+    /// reporting success. A surface offering Apply has to ask this as
+    /// well as whether a plan is on screen -- a rule with no placements
+    /// previews perfectly well and describes exactly that run. Mirrors
+    /// `arclain_core`'s `OrganizationPlan::stages_nothing`, over the
+    /// same three lists.
+    pub fn stages_nothing(&self) -> bool {
+        self.outputs.iter().all(|output| {
+            output.moves.is_empty()
+                && output.generated_files.is_empty()
+                && output.downloads.is_empty()
+        })
+    }
+}
+
 /// One folder an organize run would produce.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct PlannedOutputDto {

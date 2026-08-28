@@ -298,13 +298,24 @@ impl OrganizePanel {
     }
 
     /// Whether Apply is offered. There must be a plan on screen, it must
-    /// be the selected rule's, and the rule must not be waiting on
-    /// metadata this session does not have -- applying is running
-    /// exactly the plan the panel is showing, so there has to be one.
+    /// be the selected rule's, the rule must not be waiting on metadata
+    /// this session does not have -- applying is running exactly the
+    /// plan the panel is showing, so there has to be one -- and that
+    /// plan must actually write something.
+    ///
+    /// The last of those is not implied by the first. A rule whose
+    /// layout places nothing previews without complaint and describes a
+    /// run that writes nothing; applying it empties the work directory
+    /// and packs an empty archive. The reason is on screen either way:
+    /// the plan's passed-over folders say which folder went missing and
+    /// why.
     pub fn can_apply(&self) -> bool {
         !self.is_dlsite_rule_without_metadata()
-            && self.preview.is_some()
             && self.preview_is_current()
+            && self
+                .preview
+                .as_ref()
+                .is_some_and(|preview| !preview.stages_nothing())
     }
 
     pub fn render(
