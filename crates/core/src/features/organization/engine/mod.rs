@@ -5,11 +5,14 @@
 //!
 //! - This file: shared types ([`PendingDownload`], [`OrganizationPlan`],
 //!   the [`RuleEngine`] marker struct) and the test suite.
+//! - [`outputs`] — resolving a `Layout` to its named outputs: how many
+//!   there are, where each one's content starts, what each is called.
 //! - [`plan_builder`] — the `impl RuleEngine` block (rule matching,
 //!   plan generation, screenshot download list, glob/template helpers).
 //! - [`tree`] — the `TreeNode` path tree used by `prune_entries` and
 //!   `find_game_content_root_in_entries`.
 
+mod outputs;
 mod plan_builder;
 mod tree;
 
