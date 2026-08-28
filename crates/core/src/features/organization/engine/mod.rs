@@ -59,6 +59,20 @@ pub struct PlannedOutput {
     pub reasoning: Vec<String>,
 }
 
+impl PlannedOutput {
+    /// Whether this output would put nothing on disk.
+    ///
+    /// An output's folder is built by writing the files that go into it,
+    /// so one carrying no file, no generated document and no fetched
+    /// image is not an empty folder — it is no folder at all, and
+    /// nothing downstream would say it went missing. Its `root_folder`
+    /// does not enter into it: a named output that carries nothing
+    /// produces exactly as much as an unnamed one, which is nothing.
+    pub fn stages_nothing(&self) -> bool {
+        self.moves.is_empty() && self.generated_files.is_empty() && self.downloads.is_empty()
+    }
+}
+
 /// Everything one run of a rule will produce.
 ///
 /// An archive is not one output: a mod pack is one folder per mod. The
@@ -76,6 +90,18 @@ pub struct OrganizationPlan {
 }
 
 impl OrganizationPlan {
+    /// Whether applying this plan would put nothing on disk.
+    ///
+    /// The applier promotes what it staged over the whole work
+    /// directory, so this is not a plan that does nothing — it is a plan
+    /// that empties the work directory and reports success. Every
+    /// surface offering to run a plan gates on this, and the applier
+    /// refuses one that reached it anyway. A plan with no outputs at all
+    /// stages nothing by the same reasoning.
+    pub fn stages_nothing(&self) -> bool {
+        self.outputs.iter().all(PlannedOutput::stages_nothing)
+    }
+
     /// Validate every filesystem path carried by this plan before it reaches
     /// an execution boundary.
     ///
@@ -459,6 +485,11 @@ mod tests {
     // screenshot cache keys (regression)
     // =========================================================================
 
+    /// The layout places nothing, so this output carries no file and is
+    /// reported rather than planned — which is exactly why validation
+    /// has to run over every resolved output *before* any of them is set
+    /// aside. Reordering those two steps turns a root that escapes the
+    /// work directory into a quiet "produced nothing".
     #[test]
     fn create_plan_rejects_escaping_root_folder() {
         let rule = rule_named(

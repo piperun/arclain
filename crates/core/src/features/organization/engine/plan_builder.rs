@@ -166,13 +166,19 @@ impl RuleEngine {
             outputs.push(fill_output(layout, output, entries, game_metadata)?);
         }
 
-        let plan = OrganizationPlan {
+        let mut plan = OrganizationPlan {
             rule_name: rule.name.clone(),
             outputs,
             skipped_outputs: resolved.skipped,
         };
+        // Validated over every output the layout resolved to, before any
+        // of them is set aside below. An output that carries no file
+        // still names a root folder, and a root reaching out of the work
+        // directory is a fault in the layout whether or not anything
+        // would have been written through it.
         plan.validate_paths()
             .context("organization plan path validation")?;
+        report_outputs_that_carry_nothing(&mut plan, &resolved.outputs);
         Ok(plan)
     }
 
@@ -819,6 +825,54 @@ fn describe_destination(name: &str, into: &str) -> String {
     }
 }
 
+/// Move every output that would put nothing on disk onto the plan's
+/// `skipped_outputs`, with the folder it would have been.
+///
+/// An output's folder is written by writing the files that go into it,
+/// so one carrying no file, no generated document and no fetched image
+/// produces no folder at all. Left among the outputs it is a promise of
+/// a folder nobody will find, with nothing anywhere saying why — and a
+/// plan whose every output is like that empties the work directory when
+/// applied. Its siblings are unaffected, which is why this reports
+/// rather than fails: a mod pack with one bare folder still organizes
+/// the rest, and says which one it passed over.
+///
+/// `located` is the outputs resolution produced, in the same order, so
+/// each report can name the folder *inside the input* the user should
+/// go and look at rather than only the one that will not appear.
+fn report_outputs_that_carry_nothing(plan: &mut OrganizationPlan, located: &[ResolvedOutput]) {
+    let filled = std::mem::take(&mut plan.outputs);
+    let mut kept = Vec::with_capacity(filled.len());
+
+    for (output, location) in filled.into_iter().zip(located) {
+        if !output.stages_nothing() {
+            kept.push(output);
+            continue;
+        }
+        plan.skipped_outputs.push((
+            location.root.to_string_lossy().replace('\\', "/"),
+            format!(
+                "nothing was placed into {}, and the layout generates and fetches nothing into \
+                 it, so the run would produce no such folder",
+                describe_output_folder(&output.root_folder)
+            ),
+        ));
+    }
+
+    plan.outputs = kept;
+}
+
+/// An output's folder as a reason should name it. An empty name is a
+/// real answer — the output has no wrapper and its content sits at the
+/// top level — and quoting it prints nothing at all.
+fn describe_output_folder(name: &str) -> String {
+    if name.is_empty() {
+        "the top level of the result".to_string()
+    } else {
+        format!("{name:?}")
+    }
+}
+
 /// A file count that reads as a sentence rather than as a number.
 fn count_files(count: usize) -> String {
     match count {
@@ -983,6 +1037,24 @@ mod tests {
         }
     }
 
+    fn rule_with(layout: Layout) -> OrganizationRule {
+        OrganizationRule {
+            name: "Placeholder Rule".to_string(),
+            priority: 10,
+            is_enabled: true,
+            trigger: RuleTrigger::default(),
+            actions: crate::features::organization::RuleActions {
+                output_name: None,
+                layout,
+            },
+            ..Default::default()
+        }
+    }
+
+    fn no_reads(_: &str) -> Option<Vec<u8>> {
+        None
+    }
+
     fn metadata(document: &str) -> GameMetadata {
         GameMetadata {
             product_id: "RJ123456".to_string(),
@@ -995,6 +1067,103 @@ mod tests {
             screenshots: vec![],
             metadata_json: document.to_string(),
         }
+    }
+
+    /// Staging builds an output's folder by writing the files that go
+    /// into it, so an output carrying none is not an empty folder — it
+    /// is no folder at all, and until now nothing anywhere said so. It
+    /// belongs beside the outputs that could not be named: reported, and
+    /// not planned.
+    #[test]
+    fn an_output_that_carries_no_file_is_reported_rather_than_vanishing() {
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            file_variables: vec![crate::features::organization::layout::FileVariable {
+                as_name: "mod_name".to_string(),
+                file: "modinfo.ini".to_string(),
+                key: "name".to_string(),
+            }],
+            name: "$mod_name".to_string(),
+            place: vec![Placement {
+                from: Source::Matching("natives/**".to_string()),
+                into: String::new(),
+            }],
+            ..Layout::default()
+        };
+        let entries = vec![
+            entry("Full/modinfo.ini"),
+            entry("Full/natives/body.pak"),
+            // Carries the marker, so it resolves and is named, but the
+            // layout's one placement claims nothing inside it.
+            entry("Bare/modinfo.ini"),
+        ];
+        let read = |path: &str| -> Option<Vec<u8>> {
+            match path {
+                "Full/modinfo.ini" => Some(b"name=Placeholder Mod".to_vec()),
+                "Bare/modinfo.ini" => Some(b"name=Placeholder Addon".to_vec()),
+                _ => None,
+            }
+        };
+
+        let plan = RuleEngine::create_plan(&rule_with(layout), "pack.zip", &entries, None, &read)
+            .expect("plan");
+
+        let planned: Vec<_> = plan
+            .outputs
+            .iter()
+            .map(|output| output.root_folder.clone())
+            .collect();
+        assert_eq!(
+            planned,
+            vec!["Placeholder Mod".to_string()],
+            "an output that would produce no folder must not be planned"
+        );
+
+        let (root, reason) = plan
+            .skipped_outputs
+            .first()
+            .expect("the empty output must be reported");
+        assert_eq!(root, "Bare");
+        assert!(
+            reason.contains("Placeholder Addon"),
+            "the reason must name the folder that went missing: {reason}"
+        );
+        assert_eq!(plan.skipped_outputs.len(), 1);
+    }
+
+    /// A rule the shipped editor produces today: a new rule starts from
+    /// a default layout, which has no placements at all. It resolves to
+    /// one named output carrying nothing, and applying that plan used to
+    /// empty the work directory.
+    #[test]
+    fn a_layout_that_places_nothing_plans_no_output_at_all() {
+        let layout = Layout {
+            name: "Organized".to_string(),
+            ..Layout::default()
+        };
+        let entries = vec![entry("game.exe")];
+
+        let plan =
+            RuleEngine::create_plan(&rule_with(layout), "game.zip", &entries, None, &no_reads)
+                .expect("plan");
+
+        assert!(
+            plan.outputs.is_empty(),
+            "a layout placing nothing produces nothing: {:?}",
+            plan.outputs
+        );
+        assert!(plan.stages_nothing());
+        let (root, reason) = plan
+            .skipped_outputs
+            .first()
+            .expect("the run must say why it produces nothing");
+        assert_eq!(root, "", "the whole input was the candidate");
+        assert!(
+            reason.contains("Organized"),
+            "the reason must name the folder nobody will find: {reason}"
+        );
     }
 
     #[test]
