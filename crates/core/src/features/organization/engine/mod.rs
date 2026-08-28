@@ -549,4 +549,89 @@ mod tests {
         assert_eq!(plan.downloads.len(), 1);
         assert_eq!(plan.downloads[0].cache_key, "screenshot:12345:0");
     }
+
+    // =========================================================================
+    // generated metadata.json
+    // =========================================================================
+
+    fn placeholder_metadata(metadata_json: &str) -> GameMetadata {
+        GameMetadata {
+            product_id: "RJ123456".to_string(),
+            source: "dlsite".to_string(),
+            title: "Placeholder Game".to_string(),
+            description: None,
+            tags: vec![],
+            release_date: None,
+            creator: Some("Placeholder Circle".to_string()),
+            screenshots: vec![],
+            metadata_json: metadata_json.to_string(),
+        }
+    }
+
+    fn metadata_rule() -> OrganizationRule {
+        OrganizationRule {
+            name: "Standard".to_string(),
+            is_enabled: true,
+            trigger: RuleTrigger::default(),
+            actions: RuleActions {
+                root_folder: Some("$product_id".to_string()),
+                use_standard_layout: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn generated_metadata_json(plan: &OrganizationPlan) -> &str {
+        plan.generated_files
+            .iter()
+            .find(|(path, _)| path == "RJ123456/metadata.json")
+            .map(|(_, contents)| contents.as_str())
+            .expect("plan should generate metadata.json")
+    }
+
+    /// The layered document a plugin produced is written through
+    /// unchanged. Serializing `GameMetadata` instead would drop every
+    /// source-specific field, because `metadata_json` is
+    /// `#[serde(skip)]` and the nested object lives only in there.
+    #[test]
+    fn create_plan_writes_the_layered_metadata_document_verbatim() {
+        let layered = r#"{
+  "product_id": "RJ123456",
+  "title": "Placeholder Game",
+  "dlsite": {
+    "circle": "Placeholder Circle",
+    "work_format": "Placeholder Format"
+  }
+}"#;
+        let meta = placeholder_metadata(layered);
+
+        let plan = RuleEngine::create_plan(&metadata_rule(), "RJ123456.zip", &[], Some(&meta))
+            .expect("plan should succeed");
+        let contents = generated_metadata_json(&plan);
+
+        assert_eq!(contents, layered);
+        assert!(
+            contents.contains("work_format"),
+            "the source-specific fields the struct does not carry were dropped: {contents}"
+        );
+    }
+
+    /// Metadata that arrived without a raw document still gets a
+    /// metadata.json: the extracted struct is the fallback.
+    #[test]
+    fn create_plan_falls_back_to_the_struct_when_no_document_came_with_the_metadata() {
+        for empty in ["", "   \n"] {
+            let meta = placeholder_metadata(empty);
+
+            let plan = RuleEngine::create_plan(&metadata_rule(), "RJ123456.zip", &[], Some(&meta))
+                .expect("plan should succeed");
+            let contents = generated_metadata_json(&plan);
+
+            let parsed: serde_json::Value =
+                serde_json::from_str(contents).expect("fallback metadata.json should parse");
+            assert_eq!(parsed["product_id"], "RJ123456");
+            assert_eq!(parsed["title"], "Placeholder Game");
+        }
+    }
 }

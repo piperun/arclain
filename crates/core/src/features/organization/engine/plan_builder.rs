@@ -136,8 +136,18 @@ impl RuleEngine {
 
         let mut generated_files = Vec::new();
         if let Some(gm) = game_metadata {
-            if let Ok(json_str) = serde_json::to_string_pretty(gm) {
-                generated_files.push((format!("{}/metadata.json", root_folder), json_str));
+            // The layered document the plugin produced, which carries the
+            // source-specific fields the extracted struct does not keep --
+            // `metadata_json` is `#[serde(skip)]`, so serializing the struct
+            // silently drops them. Fall back to the struct only when no raw
+            // document came with the metadata.
+            let contents = if gm.metadata_json.trim().is_empty() {
+                serde_json::to_string_pretty(gm).ok()
+            } else {
+                Some(gm.metadata_json.clone())
+            };
+            if let Some(contents) = contents {
+                generated_files.push((format!("{}/metadata.json", root_folder), contents));
             }
         }
 
