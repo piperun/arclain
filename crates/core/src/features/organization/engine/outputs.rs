@@ -115,9 +115,13 @@ pub(crate) fn resolve_outputs(
     }
 
     // Two outputs claiming one name is two mods unpacking into one
-    // folder, and the second silently wins. Names are compared
-    // case-insensitively because Windows merges the folders anyway,
-    // which is how `OrganizationPlan::validate_paths` keys destinations.
+    // folder, with the second silently winning. Compared through
+    // `to_uppercase`, which is how `OrganizationPlan::validate_paths`
+    // keys destinations. That is nobody's filesystem table — it folds ß
+    // to SS and ς to Σ where NTFS does not — so it refuses a little
+    // more than any one filesystem would merge. That is the right side
+    // to err on: refusing a separable pair costs a message, merging two
+    // mods into one folder costs the contents of one of them.
     // `claimed` is only ever inserted into and looked up, never
     // iterated, so it cannot reorder the result.
     let mut claimed: BTreeMap<String, String> = BTreeMap::new();
@@ -127,7 +131,7 @@ pub(crate) fn resolve_outputs(
                 bail!("two outputs resolved to the same name: {:?}", output.name);
             }
             bail!(
-                "two outputs resolved to names a filesystem cannot tell apart: {first:?} and {:?}",
+                "two outputs resolved to names a filesystem may merge: {first:?} and {:?}",
                 output.name
             );
         }
@@ -385,24 +389,40 @@ mod tests {
             name: "$mod_name".to_string(),
             ..Layout::default()
         };
+        // Each folder's name sorts against its root, so the assertions
+        // below say which of the two the order follows. Listed with the
+        // later root first, so input order is a third answer.
         let entries = vec![
-            entry("Variant Red/modinfo.ini"),
-            entry("Variant Red/natives/body.pak"),
-            entry("Variant Blue/modinfo.ini"),
-            entry("Variant Blue/natives/body.pak"),
+            entry("Variant Zulu/modinfo.ini"),
+            entry("Variant Zulu/natives/body.pak"),
+            entry("Variant Alpha/modinfo.ini"),
+            entry("Variant Alpha/natives/body.pak"),
         ];
         let read = |path: &str| -> Option<Vec<u8>> {
             match path {
-                "Variant Red/modinfo.ini" => Some(b"name=Red Mod".to_vec()),
-                "Variant Blue/modinfo.ini" => Some(b"name=Blue Mod".to_vec()),
+                "Variant Zulu/modinfo.ini" => Some(b"name=Anvil Mod".to_vec()),
+                "Variant Alpha/modinfo.ini" => Some(b"name=Zebra Mod".to_vec()),
                 _ => None,
             }
         };
 
         let resolved = resolve_outputs(&layout, &entries, &HashMap::new(), &read).expect("resolve");
 
+        let roots: Vec<_> = resolved.outputs.iter().map(|o| o.root.clone()).collect();
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("Variant Alpha"),
+                PathBuf::from("Variant Zulu")
+            ],
+            "outputs come out in root order"
+        );
         let names: Vec<_> = resolved.outputs.iter().map(|o| o.name.clone()).collect();
-        assert_eq!(names, vec!["Blue Mod".to_string(), "Red Mod".to_string()]);
+        assert_eq!(
+            names,
+            vec!["Zebra Mod".to_string(), "Anvil Mod".to_string()],
+            "each folder is named from its own marker, and the names do not sort"
+        );
         assert!(resolved.skipped.is_empty());
     }
 
@@ -513,5 +533,254 @@ mod tests {
         let error = resolve_outputs(&layout, &entries, &HashMap::new(), &no_reads)
             .expect_err("several unwrapped outputs collide by construction");
         assert!(format!("{error:#}").contains("wrapper"), "{error:#}");
+    }
+
+    /// A skipped output is only useful if its reason says what to go and
+    /// look at. An empty string satisfies "there is a reason".
+    #[test]
+    fn every_skipped_output_says_which_variable_failed_and_where() {
+        // The variable is called `preview` and takes the `screenshot`
+        // key, so a reason naming both names two different things.
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            file_variables: vec![FileVariable {
+                as_name: "preview".to_string(),
+                file: "modinfo.ini".to_string(),
+                key: "screenshot".to_string(),
+            }],
+            name: "$preview".to_string(),
+            ..Layout::default()
+        };
+        let entries = vec![entry("Absent/modinfo.ini"), entry("Nameless/modinfo.ini")];
+        let read = |path: &str| -> Option<Vec<u8>> {
+            match path {
+                // Listed in the archive, but nothing comes back.
+                "Absent/modinfo.ini" => None,
+                // Read, parsed, and it sets no screenshot.
+                _ => Some(b"name=Placeholder Mod".to_vec()),
+            }
+        };
+
+        let resolved = resolve_outputs(&layout, &entries, &HashMap::new(), &read).expect("resolve");
+
+        assert!(resolved.outputs.is_empty());
+        assert_eq!(resolved.skipped.len(), 2);
+
+        let (root, reason) = &resolved.skipped[0];
+        assert_eq!(root, "Absent");
+        assert!(reason.contains("$preview"), "{reason}");
+        assert!(reason.contains("Absent/modinfo.ini"), "{reason}");
+
+        let (root, reason) = &resolved.skipped[1];
+        assert_eq!(root, "Nameless");
+        assert!(reason.contains("$preview"), "{reason}");
+        assert!(reason.contains("Nameless/modinfo.ini"), "{reason}");
+        assert!(reason.contains("screenshot"), "{reason}");
+    }
+
+    /// Names are compared case-insensitively, because a filesystem that
+    /// folds case merges the two folders and the second mod silently
+    /// wins. Nothing else covers that branch.
+    #[test]
+    fn two_outputs_whose_names_differ_only_in_case_are_refused() {
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            file_variables: vec![FileVariable {
+                as_name: "mod_name".to_string(),
+                file: "modinfo.ini".to_string(),
+                key: "name".to_string(),
+            }],
+            name: "$mod_name".to_string(),
+            ..Layout::default()
+        };
+        let entries = vec![entry("Lower/modinfo.ini"), entry("Upper/modinfo.ini")];
+        let read = |path: &str| -> Option<Vec<u8>> {
+            match path {
+                "Lower/modinfo.ini" => Some(b"name=placeholder mod".to_vec()),
+                "Upper/modinfo.ini" => Some(b"name=Placeholder Mod".to_vec()),
+                _ => None,
+            }
+        };
+
+        let error = resolve_outputs(&layout, &entries, &HashMap::new(), &read)
+            .expect_err("a filesystem that folds case merges the two");
+        let error = format!("{error:#}");
+        assert!(error.contains("placeholder mod"), "{error}");
+        assert!(error.contains("Placeholder Mod"), "{error}");
+    }
+
+    /// A key no modinfo.ini carries is a mistake in the layout. Reading
+    /// it as an empty variable would turn that into a skipped output on
+    /// every archive, which blames the wrong thing.
+    #[test]
+    fn a_file_variable_asking_for_a_key_a_modinfo_has_no_such_thing_as_is_refused() {
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            file_variables: vec![FileVariable {
+                as_name: "author".to_string(),
+                file: "modinfo.ini".to_string(),
+                key: "author".to_string(),
+            }],
+            name: "$author".to_string(),
+            ..Layout::default()
+        };
+        let entries = vec![entry("One/modinfo.ini")];
+
+        // `no_reads` would make any variable unresolvable, so a skipped
+        // output rather than an error would mean the key went unchecked.
+        let error = resolve_outputs(&layout, &entries, &HashMap::new(), &no_reads)
+            .expect_err("a modinfo.ini has no author key");
+        let error = format!("{error:#}");
+        assert!(error.contains("author"), "{error}");
+        assert!(
+            error.contains("addonfor"),
+            "the error should say which keys there are: {error}"
+        );
+    }
+
+    /// Expanding by walking the variable map and calling `replace` per
+    /// key lets `$mod` rewrite the front of `$mod_name` whenever the map
+    /// yields `mod` first. A `HashMap`'s order is not fixed, so that bug
+    /// hides about half the time — repeat, in both insertion orders, so
+    /// it cannot. This is why the expander here walks the template.
+    #[test]
+    fn a_variable_whose_name_prefixes_another_does_not_eat_it() {
+        let layout = Layout {
+            name: "$mod_name for $mod".to_string(),
+            ..Layout::default()
+        };
+
+        for _ in 0..32 {
+            for order in [["mod", "mod_name"], ["mod_name", "mod"]] {
+                let mut base = HashMap::new();
+                for key in order {
+                    let value = if key == "mod" {
+                        "Placeholder Game"
+                    } else {
+                        "Placeholder Mod"
+                    };
+                    base.insert(key.to_string(), value.to_string());
+                }
+
+                let resolved = resolve_outputs(&layout, &[], &base, &no_reads).expect("resolve");
+
+                assert_eq!(
+                    resolved.outputs[0].name, "Placeholder Mod for Placeholder Game",
+                    "inserted {order:?} first"
+                );
+            }
+        }
+    }
+
+    /// The wrapper rule is checked twice: once on the template, which
+    /// costs nothing, and once on what the template resolved to, which
+    /// is the only place this case shows up.
+    #[test]
+    fn a_name_that_resolves_to_nothing_leaves_several_outputs_unwrapped() {
+        // A template with something in it, so the check on the template
+        // itself passes and only the check on the result can fire.
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            name: "$suffix".to_string(),
+            ..Layout::default()
+        };
+        let mut base = HashMap::new();
+        base.insert("suffix".to_string(), String::new());
+        let entries = vec![entry("One/modinfo.ini"), entry("Two/modinfo.ini")];
+
+        let error = resolve_outputs(&layout, &entries, &base, &no_reads)
+            .expect_err("a name that resolves to nothing wraps nothing");
+        assert!(format!("{error:#}").contains("wrapper"), "{error:#}");
+    }
+
+    /// The marker names a file. A directory called `modinfo.ini` would
+    /// otherwise select an output that then had nothing to read.
+    #[test]
+    fn a_directory_named_like_the_marker_selects_nothing() {
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            file_variables: vec![FileVariable {
+                as_name: "mod_name".to_string(),
+                file: "modinfo.ini".to_string(),
+                key: "name".to_string(),
+            }],
+            name: "$mod_name".to_string(),
+            ..Layout::default()
+        };
+        let entries = vec![
+            ArchiveEntry {
+                path: "Decoy/modinfo.ini".to_string(),
+                size: 0,
+                packed_size: 0,
+                modified: None,
+                is_dir: true,
+                encrypted: false,
+                crc32: None,
+            },
+            entry("Real/modinfo.ini"),
+        ];
+        let read = |path: &str| -> Option<Vec<u8>> {
+            match path {
+                "Real/modinfo.ini" => Some(b"name=Placeholder Mod".to_vec()),
+                _ => None,
+            }
+        };
+
+        let resolved = resolve_outputs(&layout, &entries, &HashMap::new(), &read).expect("resolve");
+
+        assert_eq!(resolved.outputs.len(), 1);
+        assert_eq!(resolved.outputs[0].root, PathBuf::from("Real"));
+        assert!(
+            resolved.skipped.is_empty(),
+            "the decoy must not be selected at all, not selected and then skipped: {:?}",
+            resolved.skipped
+        );
+    }
+
+    /// An archive that is itself one mod carries the marker at its top
+    /// level, and the output is rooted where the content already sits.
+    #[test]
+    fn a_marker_at_the_top_level_makes_the_input_itself_one_output() {
+        use std::cell::RefCell;
+
+        let layout = Layout {
+            outputs: OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string(),
+            },
+            file_variables: vec![FileVariable {
+                as_name: "mod_name".to_string(),
+                file: "modinfo.ini".to_string(),
+                key: "name".to_string(),
+            }],
+            name: "$mod_name".to_string(),
+            ..Layout::default()
+        };
+        let entries = vec![entry("modinfo.ini"), entry("natives/body.pak")];
+        let asked: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let read = |path: &str| -> Option<Vec<u8>> {
+            asked.borrow_mut().push(path.to_string());
+            Some(b"name=Placeholder Mod".to_vec())
+        };
+
+        let resolved = resolve_outputs(&layout, &entries, &HashMap::new(), &read).expect("resolve");
+
+        assert_eq!(resolved.outputs.len(), 1);
+        assert_eq!(resolved.outputs[0].root, PathBuf::new());
+        assert_eq!(resolved.outputs[0].name, "Placeholder Mod");
+        assert_eq!(
+            asked.into_inner(),
+            vec!["modinfo.ini".to_string()],
+            "a file variable of an output rooted at the top carries no leading separator"
+        );
     }
 }
