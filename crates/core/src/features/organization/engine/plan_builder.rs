@@ -6,14 +6,25 @@
 //! construction. `expand_variables` and `matches_glob` are
 //! `pub(super)` so the test suite in `mod.rs` can exercise them
 //! directly without duplicating fixtures.
+//!
+//! [`fill_output`] is the second half of resolving a layout: given an
+//! output that [`super::outputs`] has already located and named, it
+//! works out what goes into it. The two halves are separate because
+//! naming reads a handful of files out of the archive and filling reads
+//! none — a folder name must never wait on a payload.
 
+use super::outputs::{expand, ResolvedOutput};
 use super::tree::TreeNode;
-use super::{OrganizationPlan, PendingDownload, RuleEngine};
+use super::{OrganizationPlan, PendingDownload, PlannedOutput, RuleEngine};
+use crate::features::organization::layout::{
+    FetchSource, GeneratedContent, Layout, Placement, Source,
+};
+use crate::features::organization::metadata::{GameMetadata, ScreenshotData};
 use crate::features::organization::{OrganizationRule, RuleTrigger};
 use crate::ArchiveEntry;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 impl RuleEngine {
@@ -482,6 +493,15 @@ impl RuleEngine {
             return path.to_lowercase().ends_with(&ext.to_lowercase());
         }
 
+        // `dir/**` — everything under a named folder. Without this a
+        // glob naming a folder falls through to the exact and filename
+        // checks, neither of which an entry inside that folder can
+        // satisfy, so a placement written this way would place nothing
+        // and say nothing about why.
+        if let Some(directory) = pattern.strip_suffix("/**") {
+            return under_directory(&path.replace('\\', "/"), directory);
+        }
+
         // Exact match
         if pattern == path {
             return true;
@@ -516,6 +536,12 @@ impl RuleEngine {
 
     /// Helper to find the "game content" root folder in entries
     fn find_game_content_root_in_entries(entries: &[ArchiveEntry]) -> PathBuf {
+        Self::detect_content_root(entries).path
+    }
+
+    /// The same detection, keeping what convinced it. One scorer, so a
+    /// preview can never describe a folder the plan did not pick.
+    fn detect_content_root(entries: &[ArchiveEntry]) -> DetectedContentRoot {
         let game_indicators = [
             "Game.exe",
             "game.exe",
@@ -527,13 +553,12 @@ impl RuleEngine {
             "js",
         ];
 
-        let mut best_root = PathBuf::new();
-        let mut best_score = 0;
-
         // Group entries by parent directory - track both standard indicators and any .exe
-        let mut dirs: HashMap<PathBuf, usize> = HashMap::new();
-        let mut dirs_with_exe: std::collections::HashSet<PathBuf> =
-            std::collections::HashSet::new();
+        let mut named: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+        // One executable per directory, the lexicographically smallest,
+        // so the evidence names a fixed file rather than whichever the
+        // iteration order reached first.
+        let mut executables: BTreeMap<PathBuf, String> = BTreeMap::new();
 
         for entry in entries {
             let path = Path::new(&entry.path);
@@ -546,20 +571,25 @@ impl RuleEngine {
                         .iter()
                         .any(|i| fname_str.eq_ignore_ascii_case(i))
                     {
-                        *dirs.entry(parent.to_path_buf()).or_insert(0) += 1;
+                        named
+                            .entry(parent.to_path_buf())
+                            .or_default()
+                            .push(fname_str.to_string());
                     }
 
                     // Check for any .exe file (flexible indicator)
                     if !entry.is_dir && fname_str.to_lowercase().ends_with(".exe") {
-                        dirs_with_exe.insert(parent.to_path_buf());
+                        executables
+                            .entry(parent.to_path_buf())
+                            .and_modify(|smallest| {
+                                if fname_str.as_ref() < smallest.as_str() {
+                                    *smallest = fname_str.to_string();
+                                }
+                            })
+                            .or_insert_with(|| fname_str.to_string());
                     }
                 }
             }
-        }
-
-        // Any .exe file counts as +1 indicator for that directory
-        for dir in dirs_with_exe {
-            *dirs.entry(dir).or_insert(0) += 1;
         }
 
         // `www`, `data` and `js` are folder names, and a folder never
@@ -568,7 +598,7 @@ impl RuleEngine {
         // the folders the file paths imply and score them by name, once
         // each -- crediting per file would let a folder holding five
         // hundred files outscore the layout it sits in.
-        let mut implied_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        let mut implied_dirs: BTreeSet<PathBuf> = BTreeSet::new();
         for entry in entries {
             let mut cursor = Path::new(&entry.path).parent();
             while let Some(dir) = cursor {
@@ -579,6 +609,22 @@ impl RuleEngine {
                 cursor = dir.parent();
             }
         }
+
+        // Each indicator is worth one, so the evidence list is the score
+        // written out. Assembled in three passes rather than in entry
+        // order, and sorted within each, so the same archive reads the
+        // same way every run.
+        let mut scored: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+        for (dir, mut names) in named {
+            names.sort();
+            scored.entry(dir).or_default().extend(names);
+        }
+        for (dir, executable) in executables {
+            scored
+                .entry(dir)
+                .or_default()
+                .push(format!("an executable ({executable})"));
+        }
         for dir in &implied_dirs {
             let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
                 continue;
@@ -588,50 +634,866 @@ impl RuleEngine {
                 .iter()
                 .any(|indicator| name.eq_ignore_ascii_case(indicator))
             {
-                *dirs.entry(parent.to_path_buf()).or_insert(0) += 1;
+                scored
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .push(format!("a {name}/ folder"));
             }
         }
 
-        // Sort first: the map's iteration order is not stable between
-        // runs, so `>` alone would let two directories tied at the best
-        // score resolve differently each time. Ties go to the
+        // Sort first: `>` alone would let two directories tied at the
+        // best score resolve differently each time. Ties go to the
         // lexicographically smallest path.
-        let mut scored: Vec<(PathBuf, usize)> = dirs.into_iter().collect();
-        scored.sort_by(|(left_path, left), (right_path, right)| {
-            right.cmp(left).then_with(|| left_path.cmp(right_path))
+        let mut ranked: Vec<(PathBuf, Vec<String>)> = scored.into_iter().collect();
+        ranked.sort_by(|(left_path, left), (right_path, right)| {
+            right
+                .len()
+                .cmp(&left.len())
+                .then_with(|| left_path.cmp(right_path))
         });
-        if let Some((dir, score)) = scored.into_iter().next() {
-            if score >= 2 {
-                best_score = score;
-                best_root = dir;
+        if let Some((dir, evidence)) = ranked.into_iter().next() {
+            if evidence.len() >= 2 {
+                return DetectedContentRoot {
+                    path: dir,
+                    score: evidence.len(),
+                    evidence,
+                };
             }
         }
 
         // If no definitive root found (score < 2), fallback to common root or just root
-        if best_score < 2 {
-            // Find common root logic could be reused here or simple fallback
-            // For now, if we can't find game content, we assume content is at root
-            // of the *entries* (common prefix)
-            let paths: Vec<&Path> = entries.iter().map(|e| Path::new(&e.path)).collect();
-            if !paths.is_empty() {
-                let mut iter = paths.iter();
-                let mut root = iter
-                    .next()
-                    .unwrap()
-                    .parent()
-                    .unwrap_or(Path::new(""))
-                    .to_path_buf();
-                for path in iter {
-                    while !path.starts_with(&root) {
-                        if !root.pop() {
-                            break;
-                        }
+        // Find common root logic could be reused here or simple fallback
+        // For now, if we can't find game content, we assume content is at root
+        // of the *entries* (common prefix)
+        let paths: Vec<&Path> = entries.iter().map(|e| Path::new(&e.path)).collect();
+        let mut common = PathBuf::new();
+        if !paths.is_empty() {
+            let mut iter = paths.iter();
+            common = iter
+                .next()
+                .unwrap()
+                .parent()
+                .unwrap_or(Path::new(""))
+                .to_path_buf();
+            for path in iter {
+                while !path.starts_with(&common) {
+                    if !common.pop() {
+                        break;
                     }
                 }
-                return root;
             }
         }
 
-        best_root
+        DetectedContentRoot {
+            path: common,
+            score: 0,
+            evidence: Vec::new(),
+        }
+    }
+}
+
+/// The folder that looks like the payload, and what made it look that
+/// way. The evidence is what a preview shows, so a detection a user
+/// disagrees with is one they can check rather than only distrust.
+struct DetectedContentRoot {
+    path: PathBuf,
+    /// How many indicators the folder scored. Below two nothing was
+    /// convincing enough to call a payload: the path is then the common
+    /// prefix of the entries and the evidence is empty.
+    score: usize,
+    evidence: Vec<String>,
+}
+
+/// What goes into one output: every file placed in it, every file
+/// written into it, every image fetched into it, and the reasoning
+/// behind all three. The other half of resolving a layout, which named
+/// the output and located it, is [`super::outputs`].
+///
+/// `entries` is the whole input. Scoping it to `output.root` happens
+/// here, so two outputs of one archive answer every question — which
+/// glob matches, where the content root is — about their own contents
+/// and never about each other's.
+///
+/// Placements are evaluated in order and the first that matches a file
+/// claims it; no later placement sees that file again. A file no
+/// placement matched is not carried into the output at all, and the
+/// count of those lands in `reasoning` so the drop is not silent.
+// Nothing calls this yet — assembling filled outputs into a whole plan
+// is what will. Drop the allow then.
+#[allow(dead_code)]
+fn fill_output(
+    layout: &Layout,
+    output: &ResolvedOutput,
+    entries: &[ArchiveEntry],
+    metadata: Option<&GameMetadata>,
+) -> Result<PlannedOutput> {
+    refuse_unreachable_placements(&layout.place)?;
+
+    let mut reasoning = Vec::new();
+    let scoped = scope_entries(&output.root, entries);
+    let mut claimed = vec![false; scoped.len()];
+    let mut moves = Vec::new();
+
+    for placement in &layout.place {
+        // The part of a matched path the placement located rather than
+        // carried: `into` stands in for it and the rest is appended.
+        let located = match &placement.from {
+            Source::All => String::new(),
+            Source::Matching(glob) => literal_directory_prefix(glob),
+            Source::ContentRoot => {
+                // Scored over this output's entries only. Run across the
+                // whole input, two mod folders would compete and one of
+                // them would end up carrying nothing.
+                let within: Vec<ArchiveEntry> =
+                    scoped.iter().map(|file| file.relative.clone()).collect();
+                let detected = RuleEngine::detect_content_root(&within);
+                reasoning.push(describe_content_root(&detected));
+                detected.path.to_string_lossy().replace('\\', "/")
+            }
+        };
+
+        let (into, unset) = expand(&placement.into, &output.variables);
+        note_unset(&mut reasoning, "destination", &placement.into, &unset);
+
+        for (index, file) in scoped.iter().enumerate() {
+            if claimed[index] {
+                continue;
+            }
+            let path = &file.relative.path;
+            let matched = match &placement.from {
+                Source::All => true,
+                Source::Matching(glob) => RuleEngine::matches_glob(glob, path),
+                Source::ContentRoot => located.is_empty() || under_directory(path, &located),
+            };
+            if !matched {
+                continue;
+            }
+
+            claimed[index] = true;
+            moves.push((
+                file.source.clone(),
+                join_destination(&[&output.name, &into, strip_directory(path, &located)]),
+            ));
+        }
+    }
+
+    let left = claimed.iter().filter(|carried| !**carried).count();
+    if left > 0 {
+        reasoning.push(format!(
+            "{left} file{} matched no placement and {} not carried",
+            if left == 1 { "" } else { "s" },
+            if left == 1 { "was" } else { "were" }
+        ));
+    }
+
+    let mut generated_files = Vec::new();
+    for generated in &layout.generate {
+        match generated.content {
+            GeneratedContent::MetadataDocument => {
+                let Some(document) = metadata.and_then(metadata_document) else {
+                    continue;
+                };
+                let (into, unset) = expand(&generated.into, &output.variables);
+                note_unset(&mut reasoning, "generated file", &generated.into, &unset);
+                generated_files.push((join_destination(&[&output.name, &into]), document));
+            }
+        }
+    }
+
+    let mut downloads = Vec::new();
+    for fetched in &layout.fetch {
+        match fetched.source {
+            FetchSource::Screenshots => {
+                let Some(game) = metadata else {
+                    continue;
+                };
+                let is_dlsite = game.source.eq_ignore_ascii_case("dlsite");
+                let (into, unset) = expand(&fetched.into, &output.variables);
+                note_unset(&mut reasoning, "fetch destination", &fetched.into, &unset);
+
+                for (index, screenshot) in game.screenshots.iter().enumerate() {
+                    // Only URL screenshots are downloadable; a plugin
+                    // that already fetched the file, or inlined the
+                    // bytes, reports a form this plan cannot schedule.
+                    // Its position is spent all the same, so names and
+                    // cache keys stay lined up with the list the
+                    // provider handed over.
+                    let ScreenshotData::Url(url) = screenshot else {
+                        continue;
+                    };
+
+                    let mut variables = output.variables.clone();
+                    variables.insert("index".to_string(), (index + 1).to_string());
+                    let (name, unset) = expand(&fetched.name, &variables);
+                    note_unset(&mut reasoning, "fetched file name", &fetched.name, &unset);
+
+                    // Cache key must match gameta's cache_keys format.
+                    let cache_key = if is_dlsite {
+                        format!("dlsite:{}:screenshot_{}", game.product_id, index)
+                    } else {
+                        format!("screenshot:{}:{}", game.product_id, index)
+                    };
+
+                    downloads.push(PendingDownload {
+                        product_id: is_dlsite.then(|| game.product_id.clone()),
+                        url: url.clone(),
+                        dest_path: join_destination(&[&output.name, &into, &name]),
+                        cache_key,
+                        cached: false, // Will be checked by UI when loading
+                    });
+                }
+            }
+        }
+    }
+
+    // Reasoning is read, not counted. Two placements that fail to
+    // resolve the same token have one thing to say between them.
+    let mut said = BTreeSet::new();
+    reasoning.retain(|line| said.insert(line.clone()));
+
+    Ok(PlannedOutput {
+        root_folder: output.name.clone(),
+        root_folder_template: layout.name.clone(),
+        moves,
+        generated_files,
+        downloads,
+        resolved_variables: output.variables.clone(),
+        reasoning,
+    })
+}
+
+/// One file under an output's root.
+struct ScopedEntry {
+    /// Its path in the archive, which is what a move reads from.
+    source: String,
+    /// The same file with the output's root taken off, which is what
+    /// placements match and what destinations are built from. Carried
+    /// as an entry because content-root detection scores a list of them.
+    relative: ArchiveEntry,
+}
+
+/// The files under `root`, each rewritten relative to it. Directories
+/// are dropped: a list of files describes the same tree, and an empty
+/// folder is not content anyone asked to carry.
+fn scope_entries(root: &Path, entries: &[ArchiveEntry]) -> Vec<ScopedEntry> {
+    let root = root.to_string_lossy().replace('\\', "/");
+    let mut scoped = Vec::new();
+
+    for entry in entries {
+        if entry.is_dir {
+            continue;
+        }
+        let path = entry.path.replace('\\', "/");
+        let relative = if root.is_empty() {
+            path
+        } else if under_directory(&path, &root) {
+            path[root.len() + 1..].to_string()
+        } else {
+            continue;
+        };
+
+        scoped.push(ScopedEntry {
+            source: entry.path.clone(),
+            relative: ArchiveEntry {
+                path: relative,
+                ..entry.clone()
+            },
+        });
+    }
+
+    scoped
+}
+
+/// A placement after one that takes everything can never match. Refusing
+/// the layout says so once, where leaving it in would quietly drop
+/// whatever the author meant to route through it.
+fn refuse_unreachable_placements(place: &[Placement]) -> Result<()> {
+    for (index, placement) in place.iter().enumerate() {
+        let after = place.len() - index - 1;
+        if matches!(placement.from, Source::All) && after > 0 {
+            bail!(
+                "placement {} takes everything under the output's root, which leaves the {} \
+                 after it unreachable",
+                index + 1,
+                if after == 1 {
+                    "placement".to_string()
+                } else {
+                    format!("{after} placements")
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The folders a glob spells out. `assets/**` names `assets` the way a
+/// content root names a folder — `into` stands in for it and what the
+/// wildcards matched is appended — so two files of the same name in
+/// different folders stay apart. A glob with no folder in it, `*.pdf`
+/// or `readme.txt`, names none and nothing is stripped.
+fn literal_directory_prefix(glob: &str) -> String {
+    let Some((directories, _)) = glob.rsplit_once('/') else {
+        return String::new();
+    };
+
+    let mut spelled = Vec::new();
+    for segment in directories.split('/') {
+        if segment.contains('*') || segment.contains('?') {
+            break;
+        }
+        spelled.push(segment);
+    }
+    spelled.join("/")
+}
+
+/// Whether `path` sits inside the directory `prefix`. ASCII case folds,
+/// as it already does in `matches_glob`'s extension branch, so one glob
+/// does not answer two ways depending on how an archive happened to
+/// spell a folder. Folding only ASCII keeps the comparison
+/// length-preserving, which is what lets a caller strip exactly what
+/// matched. A folder is not a file inside itself, so `prefix` alone
+/// does not sit under `prefix`.
+fn under_directory(path: &str, prefix: &str) -> bool {
+    let head = prefix.len();
+    path.len() > head
+        && path.is_char_boundary(head)
+        && path[..head].eq_ignore_ascii_case(prefix)
+        && path.as_bytes()[head] == b'/'
+}
+
+/// Drop `prefix` and its separator from the front of `path`. A path the
+/// prefix does not cover comes back whole rather than mangled.
+fn strip_directory<'a>(path: &'a str, prefix: &str) -> &'a str {
+    if prefix.is_empty() || !under_directory(path, prefix) {
+        return path;
+    }
+    &path[prefix.len() + 1..]
+}
+
+/// Join the pieces of a destination, dropping every one that names
+/// nothing. An empty output name means no wrapper folder and an empty
+/// `into` means the output's own root, so either may collapse rather
+/// than leave a doubled or leading separator; `.` is what the older
+/// vocabulary wrote for the same thing, and a `.` component is refused
+/// outright where the plan meets the filesystem.
+fn join_destination(parts: &[&str]) -> String {
+    let mut joined = String::new();
+
+    for part in parts {
+        for segment in part.split(['/', '\\']) {
+            if segment.is_empty() || segment == "." {
+                continue;
+            }
+            if !joined.is_empty() {
+                joined.push('/');
+            }
+            joined.push_str(segment);
+        }
+    }
+
+    joined
+}
+
+/// The document a `MetadataDocument` writes: the layered document the
+/// provider produced, which carries the source-specific fields the
+/// extracted struct does not keep -- `metadata_json` is
+/// `#[serde(skip)]`, so serializing the struct silently drops them.
+/// Fall back to the struct only when no raw document came with it.
+fn metadata_document(metadata: &GameMetadata) -> Option<String> {
+    if metadata.metadata_json.trim().is_empty() {
+        serde_json::to_string_pretty(metadata).ok()
+    } else {
+        Some(metadata.metadata_json.clone())
+    }
+}
+
+/// Record a template that could not be filled in. A name that will not
+/// resolve costs its output, because a folder nobody can trace back to
+/// a mod is worse than a reported gap. A destination inside an output
+/// is not that: the files are still traceable, so the token is left
+/// standing where a preview shows it and the reason is written down.
+fn note_unset(reasoning: &mut Vec<String>, what: &str, template: &str, unset: &[String]) {
+    if unset.is_empty() {
+        return;
+    }
+    let tokens: Vec<String> = unset.iter().map(|token| format!("${token}")).collect();
+    reasoning.push(format!(
+        "the {what} {template:?} needs {}, which nothing set",
+        tokens.join(", ")
+    ));
+}
+
+/// What a content-root detection found, in a line a preview can show.
+fn describe_content_root(detected: &DetectedContentRoot) -> String {
+    let shown = detected.path.display().to_string();
+    let folder = if shown.is_empty() {
+        "the output's root".to_string()
+    } else {
+        shown
+    };
+
+    if detected.evidence.is_empty() {
+        return format!("nothing scored as a content root, so {folder} is the payload");
+    }
+    format!(
+        "content root {folder} scored {} on {}",
+        detected.score,
+        detected.evidence.join(", ")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::archive::ArchiveEntry;
+    use crate::features::organization::layout::{
+        FetchSource, Fetched, Generated, GeneratedContent, Layout, Placement, Source,
+    };
+    use crate::features::organization::metadata::{GameMetadata, ScreenshotData};
+
+    fn entry(path: &str) -> ArchiveEntry {
+        ArchiveEntry {
+            path: path.to_string(),
+            size: 10,
+            packed_size: 10,
+            modified: None,
+            is_dir: false,
+            encrypted: false,
+            crc32: None,
+        }
+    }
+
+    fn output(name: &str, root: &str) -> ResolvedOutput {
+        ResolvedOutput {
+            root: PathBuf::from(root),
+            name: name.to_string(),
+            variables: HashMap::new(),
+        }
+    }
+
+    fn metadata(document: &str) -> GameMetadata {
+        GameMetadata {
+            product_id: "RJ123456".to_string(),
+            source: "dlsite".to_string(),
+            title: "Placeholder Game".to_string(),
+            description: None,
+            tags: vec![],
+            release_date: None,
+            creator: Some("Placeholder Circle".to_string()),
+            screenshots: vec![],
+            metadata_json: document.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_first_placement_that_matches_claims_a_file() {
+        // Two placements both match `docs/manual.pdf`; the first wins and
+        // the file is not also copied by the second.
+        let layout = Layout {
+            name: "Out".to_string(),
+            place: vec![
+                Placement {
+                    from: Source::Matching("docs/**".to_string()),
+                    into: "Docs".to_string(),
+                },
+                Placement {
+                    from: Source::All,
+                    into: "Everything".to_string(),
+                },
+            ],
+            ..Layout::default()
+        };
+        let entries = vec![entry("docs/manual.pdf"), entry("bin/app.exe")];
+        let output = ResolvedOutput {
+            root: PathBuf::new(),
+            name: "Out".to_string(),
+            variables: HashMap::new(),
+        };
+
+        let filled = fill_output(&layout, &output, &entries, None).expect("fill");
+        let destinations: Vec<_> = filled.moves.iter().map(|(_, to)| to.clone()).collect();
+
+        assert!(destinations.contains(&"Out/Docs/manual.pdf".to_string()));
+        assert!(destinations.contains(&"Out/Everything/bin/app.exe".to_string()));
+        assert_eq!(
+            destinations
+                .iter()
+                .filter(|d| d.ends_with("manual.pdf"))
+                .count(),
+            1,
+            "a file claimed by the first placement must not be placed twice: {destinations:?}"
+        );
+    }
+
+    #[test]
+    fn a_placement_after_an_all_placement_is_refused() {
+        let layout = Layout {
+            name: "Out".to_string(),
+            place: vec![
+                Placement {
+                    from: Source::All,
+                    into: String::new(),
+                },
+                Placement {
+                    from: Source::Matching("*.pdf".to_string()),
+                    into: "Docs".to_string(),
+                },
+            ],
+            ..Layout::default()
+        };
+        let output = ResolvedOutput {
+            root: PathBuf::new(),
+            name: "Out".to_string(),
+            variables: HashMap::new(),
+        };
+
+        let error = fill_output(&layout, &output, &[entry("a.pdf")], None)
+            .expect_err("a placement after All can never match");
+        assert!(format!("{error:#}").contains("unreachable"), "{error:#}");
+    }
+
+    #[test]
+    fn a_file_matched_by_no_placement_is_not_carried() {
+        let layout = Layout {
+            name: "Out".to_string(),
+            place: vec![Placement {
+                from: Source::Matching("keep/**".to_string()),
+                into: String::new(),
+            }],
+            ..Layout::default()
+        };
+        let entries = vec![entry("keep/wanted.bin"), entry("drop/unwanted.bin")];
+        let output = ResolvedOutput {
+            root: PathBuf::new(),
+            name: "Out".to_string(),
+            variables: HashMap::new(),
+        };
+
+        let filled = fill_output(&layout, &output, &entries, None).expect("fill");
+        assert_eq!(filled.moves.len(), 1);
+        assert!(filled.moves[0].1.ends_with("wanted.bin"));
+    }
+
+    /// A glob that spells a folder out locates a subtree the way a
+    /// content root does, so `into` renames that folder rather than
+    /// nesting under it — and everything below it keeps its shape. The
+    /// alternative, flattening to the file name, would collide two
+    /// same-named files from different folders into one destination.
+    #[test]
+    fn a_glob_that_names_a_folder_replaces_it_and_keeps_the_tree_under_it() {
+        let layout = Layout {
+            name: "Out".to_string(),
+            place: vec![Placement {
+                from: Source::Matching("assets/**".to_string()),
+                into: "Media".to_string(),
+            }],
+            ..Layout::default()
+        };
+        let entries = vec![entry("assets/art/logo.png"), entry("assets/sfx/hit.wav")];
+
+        let filled = fill_output(&layout, &output("Out", ""), &entries, None).expect("fill");
+        let destinations: Vec<_> = filled.moves.iter().map(|(_, to)| to.clone()).collect();
+
+        assert_eq!(
+            destinations,
+            vec![
+                "Out/Media/art/logo.png".to_string(),
+                "Out/Media/sfx/hit.wav".to_string()
+            ]
+        );
+    }
+
+    /// The counterpart: a glob with no folder in it names no subtree, so
+    /// there is nothing to replace and the whole relative path is kept.
+    #[test]
+    fn a_glob_with_no_folder_in_it_strips_nothing() {
+        let layout = Layout {
+            name: "Out".to_string(),
+            place: vec![Placement {
+                from: Source::Matching("*.pdf".to_string()),
+                into: "Docs".to_string(),
+            }],
+            ..Layout::default()
+        };
+
+        let filled = fill_output(
+            &layout,
+            &output("Out", ""),
+            &[entry("deep/inside/manual.pdf")],
+            None,
+        )
+        .expect("fill");
+
+        assert_eq!(filled.moves[0].1, "Out/Docs/deep/inside/manual.pdf");
+    }
+
+    /// Detection runs inside one output's root, never across the input.
+    /// Scored over everything at once these two payload folders tie, the
+    /// tie-break picks one, and the other output would carry nothing.
+    #[test]
+    fn a_content_root_is_detected_inside_its_own_output() {
+        let layout = Layout {
+            name: "$mod_name".to_string(),
+            place: vec![Placement {
+                from: Source::ContentRoot,
+                into: "Game".to_string(),
+            }],
+            ..Layout::default()
+        };
+        let entries = vec![
+            entry("Mod A/readme.txt"),
+            entry("Mod A/payload/Game.exe"),
+            entry("Mod A/payload/data/pack.bin"),
+            entry("Mod B/bundle/nw.exe"),
+            entry("Mod B/bundle/www/index.html"),
+        ];
+
+        let first = fill_output(&layout, &output("A", "Mod A"), &entries, None).expect("fill");
+        let second = fill_output(&layout, &output("B", "Mod B"), &entries, None).expect("fill");
+
+        let destinations = |filled: &PlannedOutput| -> Vec<String> {
+            filled.moves.iter().map(|(_, to)| to.clone()).collect()
+        };
+        assert_eq!(
+            destinations(&first),
+            vec![
+                "A/Game/Game.exe".to_string(),
+                "A/Game/data/pack.bin".to_string()
+            ],
+            "the first output's payload is found under its own root"
+        );
+        assert_eq!(
+            destinations(&second),
+            vec![
+                "B/Game/nw.exe".to_string(),
+                "B/Game/www/index.html".to_string()
+            ],
+            "and so is the second's"
+        );
+        assert!(
+            first
+                .moves
+                .iter()
+                .all(|(from, _)| from.starts_with("Mod A/")),
+            "an output must not carry a sibling's files: {:?}",
+            first.moves
+        );
+    }
+
+    /// A detection the preview cannot show its working for is one a user
+    /// can only trust or distrust.
+    #[test]
+    fn a_content_root_placement_says_what_it_scored_on() {
+        let layout = Layout {
+            name: "Out".to_string(),
+            place: vec![Placement {
+                from: Source::ContentRoot,
+                into: "Game".to_string(),
+            }],
+            ..Layout::default()
+        };
+        let entries = vec![
+            entry("payload/Game.exe"),
+            entry("payload/data/pack.bin"),
+            entry("readme.txt"),
+        ];
+
+        let filled = fill_output(&layout, &output("Out", ""), &entries, None).expect("fill");
+        let reasoning = filled.reasoning.join("\n");
+
+        assert!(reasoning.contains("payload"), "{reasoning}");
+        assert!(reasoning.contains("scored 3"), "{reasoning}");
+        assert!(reasoning.contains("Game.exe"), "{reasoning}");
+        assert!(reasoning.contains("an executable"), "{reasoning}");
+        assert!(reasoning.contains("a data/ folder"), "{reasoning}");
+    }
+
+    /// `.` and the empty string both mean "the output's own root", and a
+    /// `.` component is refused outright at the execution boundary — so
+    /// a destination that names nothing has to collapse here.
+    #[test]
+    fn a_destination_that_names_nothing_collapses() {
+        let layout = Layout {
+            place: vec![Placement {
+                from: Source::All,
+                into: ".".to_string(),
+            }],
+            ..Layout::default()
+        };
+
+        let unwrapped =
+            fill_output(&layout, &output("", ""), &[entry("sub/x.bin")], None).expect("fill");
+        assert_eq!(unwrapped.moves[0].1, "sub/x.bin");
+
+        let trailing = Layout {
+            place: vec![Placement {
+                from: Source::All,
+                into: "Data/".to_string(),
+            }],
+            ..Layout::default()
+        };
+        let wrapped =
+            fill_output(&trailing, &output("Out", ""), &[entry("sub/x.bin")], None).expect("fill");
+        assert_eq!(wrapped.moves[0].1, "Out/Data/sub/x.bin");
+    }
+
+    /// An unresolved token costs an output its name, because a folder
+    /// nobody can trace back to a mod is worse than a reported gap. A
+    /// destination inside an output is not that: the files are still
+    /// traceable, so the token is left standing where the user can see
+    /// it and the reason is recorded rather than the output dropped.
+    #[test]
+    fn a_destination_template_that_will_not_resolve_is_left_standing_and_said_so() {
+        let layout = Layout {
+            place: vec![Placement {
+                from: Source::All,
+                into: "$version/data".to_string(),
+            }],
+            ..Layout::default()
+        };
+
+        let filled =
+            fill_output(&layout, &output("Out", ""), &[entry("x.bin")], None).expect("fill");
+
+        assert_eq!(filled.moves[0].1, "Out/$version/data/x.bin");
+        let reasoning = filled.reasoning.join("\n");
+        assert!(reasoning.contains("$version"), "{reasoning}");
+        assert!(reasoning.contains("nothing set"), "{reasoning}");
+    }
+
+    /// The layered document carries the source-specific fields the
+    /// extracted struct drops, so it wins whenever there is one.
+    #[test]
+    fn the_metadata_document_falls_back_to_the_struct_only_when_there_is_none() {
+        let layout = Layout {
+            generate: vec![Generated {
+                into: "metadata.json".to_string(),
+                content: GeneratedContent::MetadataDocument,
+            }],
+            ..Layout::default()
+        };
+
+        let layered = metadata(r#"{"maker_id":"RG99001"}"#);
+        let filled = fill_output(&layout, &output("Out", ""), &[], Some(&layered)).expect("fill");
+        assert_eq!(
+            filled.generated_files,
+            vec![(
+                "Out/metadata.json".to_string(),
+                r#"{"maker_id":"RG99001"}"#.to_string()
+            )]
+        );
+
+        let bare = metadata("  ");
+        let filled = fill_output(&layout, &output("Out", ""), &[], Some(&bare)).expect("fill");
+        assert_eq!(filled.generated_files[0].0, "Out/metadata.json");
+        assert!(
+            filled.generated_files[0].1.contains("Placeholder Game"),
+            "{:?}",
+            filled.generated_files[0].1
+        );
+
+        let filled = fill_output(&layout, &output("Out", ""), &[], None).expect("fill");
+        assert!(
+            filled.generated_files.is_empty(),
+            "there is no document to write when there is no metadata"
+        );
+    }
+
+    /// `$index` is a screenshot's position among all of them, not among
+    /// the fetchable ones — the same numbering the cache keys use, so a
+    /// file that cannot be fetched leaves a gap rather than a shift.
+    #[test]
+    fn a_fetched_name_numbers_from_one_over_every_screenshot() {
+        let layout = Layout {
+            fetch: vec![Fetched {
+                into: "screenshots".to_string(),
+                source: FetchSource::Screenshots,
+                name: "image_$index.jpg".to_string(),
+            }],
+            ..Layout::default()
+        };
+        let mut game = metadata("{}");
+        game.screenshots = vec![
+            ScreenshotData::Url("https://example.invalid/a.jpg".to_string()),
+            ScreenshotData::FilePath(PathBuf::from("local/b.jpg")),
+            ScreenshotData::Url("https://example.invalid/c.jpg".to_string()),
+        ];
+
+        let filled = fill_output(&layout, &output("Out", ""), &[], Some(&game)).expect("fill");
+
+        assert_eq!(filled.downloads.len(), 2, "a local file is not fetchable");
+        assert_eq!(filled.downloads[0].dest_path, "Out/screenshots/image_1.jpg");
+        assert_eq!(
+            filled.downloads[0].cache_key,
+            "dlsite:RJ123456:screenshot_0"
+        );
+        assert_eq!(filled.downloads[0].product_id.as_deref(), Some("RJ123456"));
+        assert_eq!(filled.downloads[1].dest_path, "Out/screenshots/image_3.jpg");
+        assert_eq!(
+            filled.downloads[1].cache_key,
+            "dlsite:RJ123456:screenshot_2"
+        );
+    }
+
+    /// A file no placement wanted is dropped on purpose, and a drop
+    /// nobody is told about is indistinguishable from a bug.
+    #[test]
+    fn an_output_says_how_many_files_it_left_behind() {
+        let layout = Layout {
+            place: vec![Placement {
+                from: Source::Matching("keep/**".to_string()),
+                into: String::new(),
+            }],
+            ..Layout::default()
+        };
+        let entries = vec![
+            entry("keep/wanted.bin"),
+            entry("drop/one.bin"),
+            entry("drop/two.bin"),
+        ];
+
+        let filled = fill_output(&layout, &output("Out", ""), &entries, None).expect("fill");
+
+        assert!(
+            filled
+                .reasoning
+                .iter()
+                .any(|line| line.contains("2 files") && line.contains("no placement")),
+            "{:?}",
+            filled.reasoning
+        );
+    }
+
+    /// Reasoning is read, not counted. The same sentence twice tells a
+    /// reader nothing the first one did not.
+    #[test]
+    fn one_reason_is_not_repeated() {
+        let layout = Layout {
+            place: vec![
+                Placement {
+                    from: Source::Matching("a/**".to_string()),
+                    into: "$version".to_string(),
+                },
+                Placement {
+                    from: Source::Matching("b/**".to_string()),
+                    into: "$version".to_string(),
+                },
+            ],
+            ..Layout::default()
+        };
+        let entries = vec![entry("a/one.bin"), entry("b/two.bin")];
+
+        let filled = fill_output(&layout, &output("Out", ""), &entries, None).expect("fill");
+
+        assert_eq!(
+            filled
+                .reasoning
+                .iter()
+                .filter(|line| line.contains("$version"))
+                .count(),
+            1,
+            "{:?}",
+            filled.reasoning
+        );
     }
 }

@@ -33,6 +33,32 @@ pub struct PendingDownload {
     pub cached: bool,
 }
 
+/// One output of an organized archive, filled in: every file that goes
+/// into it, every file written into it, and every image fetched into it.
+///
+/// An archive can produce several of these — a mod pack is one folder
+/// per mod — so the paths here are complete destinations rather than
+/// anything relative to a plan-wide root.
+#[derive(Debug, Clone)]
+pub struct PlannedOutput {
+    /// The output's folder name, resolved. Empty means no wrapper.
+    pub root_folder: String,
+    /// The template `root_folder` came from, kept so a preview can show
+    /// what was asked for next to what it turned into.
+    pub root_folder_template: String,
+    /// `(source_path, dest_path)` per file carried into this output.
+    pub moves: Vec<(String, String)>,
+    /// `(path, content)` per file written into this output.
+    pub generated_files: Vec<(String, String)>,
+    pub downloads: Vec<PendingDownload>,
+    /// The variables this output's templates were expanded against.
+    pub resolved_variables: HashMap<String, String>,
+    /// Why this output looks the way it does, for the preview to show.
+    /// A verdict without its evidence is a thing a user can only trust
+    /// or distrust; with it they can check.
+    pub reasoning: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct OrganizationPlan {
     pub rule_name: String,
@@ -337,6 +363,23 @@ mod tests {
         assert!(RuleEngine::matches_glob(
             "Game.exe",
             "folder/subfolder/Game.exe"
+        ));
+    }
+
+    /// `dir/**` is how a placement names a folder. Case is folded the
+    /// way the `*.ext` branch already folds it, so one glob does not
+    /// answer two ways depending on how an archive happened to spell a
+    /// folder; and the folder's own name is not a file under it.
+    #[test]
+    fn test_matches_glob_names_a_folder() {
+        assert!(RuleEngine::matches_glob("docs/**", "docs/manual.pdf"));
+        assert!(RuleEngine::matches_glob("docs/**", "docs/deep/manual.pdf"));
+        assert!(RuleEngine::matches_glob("docs/**", "Docs/manual.pdf"));
+        assert!(!RuleEngine::matches_glob("docs/**", "docs"));
+        assert!(!RuleEngine::matches_glob("docs/**", "documents/manual.pdf"));
+        assert!(!RuleEngine::matches_glob(
+            "docs/**",
+            "other/docs/manual.pdf"
         ));
     }
 

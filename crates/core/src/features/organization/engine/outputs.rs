@@ -13,9 +13,10 @@
 //! templates drive their own expansion.
 
 // Naming outputs is half of resolving a layout, and the half that fills
-// them is what calls in here — so outside the tests below nothing does
-// yet, and every item in the file reads as dead. Narrow this back to
-// nothing once the placing half calls `resolve_outputs`.
+// them is what calls in here. That half now reads `ResolvedOutput` and
+// borrows `expand`, but nothing calls either half yet, so `resolve_outputs`
+// and everything only it reaches still read as dead. Narrow this back to
+// nothing once a plan is assembled from both halves.
 #![allow(dead_code)]
 
 use crate::archive::ArchiveEntry;
@@ -302,7 +303,7 @@ fn join(root: &str, relative: &str) -> String {
 /// and a value that itself contains a `$` is not rescanned as a token.
 /// An unresolved token is left standing so a caller that ignores the
 /// second return value gets a visibly broken name, not a plausible one.
-fn expand(template: &str, variables: &HashMap<String, String>) -> (String, Vec<String>) {
+pub(super) fn expand(template: &str, variables: &HashMap<String, String>) -> (String, Vec<String>) {
     let mut expanded = String::with_capacity(template.len());
     let mut missing: Vec<String> = Vec::new();
     let mut rest = template;
