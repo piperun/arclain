@@ -178,7 +178,7 @@ mod rules_page {
             rule.enabled = true;
             rule.priority = 42;
             rule.trigger.filename_pattern = Some(r"^RJ\d+".to_string());
-            rule.actions.root_folder = Some("[$product_id] $title".to_string());
+            rule.actions.layout.name = "[$product_id] $title".to_string();
         }
         page.save_editor_rule(&shared)
             .expect("the save must succeed");
@@ -208,8 +208,7 @@ mod rules_page {
         assert_eq!(reloaded.id.as_deref(), Some(saved.id.as_str()));
         assert_eq!(reloaded.name, "Round Trip");
         assert_eq!(
-            reloaded.actions.root_folder.as_deref(),
-            Some("[$product_id] $title"),
+            reloaded.actions.layout.name, "[$product_id] $title",
             "every edited field must survive the round trip"
         );
     }

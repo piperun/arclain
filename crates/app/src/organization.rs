@@ -38,9 +38,12 @@
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::ids::ArchiveSessionId;
 
+use arclain_core::features::organization::layout::{
+    FetchSource, Fetched, FileVariable, Generated, GeneratedContent, Layout, OutputSelector,
+    Placement, Source,
+};
 use arclain_core::features::organization::{
-    ArchiveFormat, ArchiveProfile, GameMetadata, MoveAction, OrganizationRule, RuleActions,
-    RuleTrigger,
+    ArchiveFormat, ArchiveProfile, GameMetadata, OrganizationRule, RuleActions, RuleTrigger,
 };
 
 /// The highest compression level any profile may store.
@@ -112,27 +115,131 @@ pub struct OrganizationRuleTriggerDto {
 }
 
 /// What a rule does once it applies.
+///
+/// Everything about the *shape* of the result lives in [`Self::layout`];
+/// `output_name` is outside it because it names the output archive's
+/// container rather than the arrangement inside it. Mirrors
+/// `arclain_core::features::organization::RuleActions` field for field.
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct OrganizationRuleActionsDto {
-    /// The organized output's top folder, as a `$variable` template.
-    /// `None` means the literal `"Game"` (`RuleEngine::create_plan`'s own
-    /// fallback).
-    pub root_folder: Option<String>,
     /// Template for the output archive's name. Stored and round-tripped
     /// by this facade; consumed elsewhere in `arclain_core`.
     pub output_name: Option<String>,
-    /// Glob-to-target routing, applied in order; the first matching
-    /// pattern wins. Ignored entirely when `use_standard_layout` is set.
-    pub move_files: Vec<OrganizationMoveActionDto>,
-    /// Detect the archive's inner game-content root and rehome it under
-    /// `{root_folder}/Game`, instead of applying `move_files`.
-    pub use_standard_layout: bool,
+    pub layout: LayoutDto,
 }
 
+/// How an archive is arranged into one or more organized folders.
+/// Mirrors `arclain_core::features::organization::layout::Layout`.
+///
+/// A rule saved under the retired vocabulary (`root_folder`,
+/// `move_files`, `use_standard_layout`) is translated to this shape as
+/// it is read from the config database, so a summary always reports a
+/// layout even for a rule that never stored one.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct OrganizationMoveActionDto {
-    pub pattern: String,
-    pub target: String,
+pub struct LayoutDto {
+    /// What counts as one output. An archive is not necessarily one
+    /// folder: a mod pack produces one per mod.
+    pub outputs: OutputSelectorDto,
+    /// Variables read out of files inside the input, resolved once per
+    /// output, usable in `name` and in any `into`.
+    pub file_variables: Vec<FileVariableDto>,
+    /// Template for each output's root folder name. Empty means the
+    /// output has no wrapper and its content sits at the top level.
+    pub name: String,
+    /// Where each output's content goes. Evaluated in order; the first
+    /// placement that matches a file claims it.
+    pub place: Vec<PlacementDto>,
+    /// Files written into each output.
+    pub generate: Vec<GeneratedFileDto>,
+    /// Images fetched into each output.
+    pub fetch: Vec<FetchedFileDto>,
+}
+
+impl Default for LayoutDto {
+    /// One unnamed output that places nothing -- the same default
+    /// `Layout` carries, so a blank rule built here and a blank rule
+    /// built in core describe the same (empty) arrangement.
+    fn default() -> Self {
+        Self {
+            outputs: OutputSelectorDto::Whole,
+            file_variables: Vec::new(),
+            name: String::new(),
+            place: Vec::new(),
+            generate: Vec::new(),
+            fetch: Vec::new(),
+        }
+    }
+}
+
+/// What counts as one output.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum OutputSelectorDto {
+    /// The whole input is one output.
+    Whole,
+    /// One output per directory that directly contains `marker`.
+    PerDirectoryContaining { marker: String },
+}
+
+/// One variable read out of a file inside the input.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct FileVariableDto {
+    /// Name a template refers to, without the leading `$`.
+    pub as_name: String,
+    /// Path of the file to read, relative to the output's own root.
+    pub file: String,
+    /// Key to take from it.
+    pub key: String,
+}
+
+/// Where one group of an output's files goes.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PlacementDto {
+    pub from: PlacementSourceDto,
+    /// Destination inside the output. Empty means the output's root.
+    pub into: String,
+}
+
+/// The source of files a placement carries.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum PlacementSourceDto {
+    /// Everything under this output's root.
+    All,
+    /// Paths matching a glob, relative to the output's root.
+    Matching(String),
+    /// The folder that looks like the payload, by indicator scoring.
+    ContentRoot,
+}
+
+/// A file written into each output.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct GeneratedFileDto {
+    pub into: String,
+    pub content: GeneratedContentDto,
+}
+
+/// The kind of file content to generate.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum GeneratedContentDto {
+    /// The layered document the metadata provider produced.
+    MetadataDocument,
+}
+
+/// An image fetched into each output.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct FetchedFileDto {
+    pub into: String,
+    pub source: FetchSourceDto,
+    /// Template for each fetched file's name. Two tokens beyond the
+    /// output's own variables: `$index` is the item's position counted
+    /// from one and padded to three digits, and `$ext` is the extension
+    /// the source URL carries (`jpg` when it names none).
+    pub name: String,
+}
+
+/// The source of images to fetch into an output.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum FetchSourceDto {
+    Screenshots,
 }
 
 /// A rule create/update request.
@@ -389,23 +496,54 @@ pub struct OrganizePlanPreview {
     /// be mistaken for the currently selected rule's preview.
     pub rule_id: String,
     pub rule_name: String,
-    /// The output's top folder with every `$variable` already expanded.
+    /// Every folder the run would produce, in the order the plan
+    /// resolved them. One archive is not one output: a mod pack is one
+    /// folder per mod, so a surface that renders only the first
+    /// describes a fraction of the run.
+    pub outputs: Vec<PlannedOutputDto>,
+    /// Every folder that could *not* be named, and why. A passed-over
+    /// folder is not an error -- the run simply produces nothing for it
+    /// -- but it is the only place a user learns that it happened, so it
+    /// travels with the plan rather than being dropped.
+    pub skipped_outputs: Vec<SkippedOutputDto>,
+    pub integrity: OrganizeIntegrityDto,
+}
+
+/// One folder an organize run would produce.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PlannedOutputDto {
+    /// This output's top folder with every `$variable` already expanded.
+    /// Empty means the output has no wrapper and its content sits at the
+    /// top level (only ever true of a lone output).
     pub root_folder: String,
-    /// The same folder before expansion, as the rule stores it.
+    /// The same folder before expansion, as the rule's layout stores it.
     pub root_folder_template: String,
-    pub use_standard_layout: bool,
     pub moves: Vec<PlannedMoveDto>,
-    /// Paths of files the organize run would synthesize (today, the
-    /// metadata sidecar). Deliberately paths only: the generated
-    /// *content* is never displayed, is regenerated at execution time
-    /// anyway, and would put a serialized metadata blob on a path a
-    /// frontend recomputes on every rule change.
+    /// Paths of files the organize run would synthesize into this output
+    /// (today, the metadata sidecar). Deliberately paths only: the
+    /// generated *content* is never displayed, is regenerated at
+    /// execution time anyway, and would put a serialized metadata blob on
+    /// a path a frontend recomputes on every rule change.
     pub generated_files: Vec<String>,
     pub downloads: Vec<PlannedDownloadDto>,
     /// Sorted by `name`, so two previews of the same plan compare and
     /// serialize identically (the underlying map has no stable order).
     pub resolved_variables: Vec<ResolvedVariableDto>,
-    pub integrity: OrganizeIntegrityDto,
+    /// Why this output looks the way it does: which folder was taken as
+    /// the payload and on what evidence, what each placement claimed,
+    /// which files nothing carried. Rendered, not merely carried -- a
+    /// preview that says what will happen without saying why leaves a
+    /// user unable to tell a good inference from a bad one.
+    pub reasoning: Vec<String>,
+}
+
+/// A folder the plan passed over, with the reason it could not be named.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct SkippedOutputDto {
+    /// The folder inside the archive that would have become an output.
+    /// Empty when the whole input was the candidate.
+    pub root: String,
+    pub reason: String,
 }
 
 // ============================================================================
@@ -443,19 +581,126 @@ pub(crate) fn summarize_rule(rule: &OrganizationRule) -> OrganizationRuleSummary
             has_file: rule.trigger.has_file.clone(),
         },
         actions: OrganizationRuleActionsDto {
-            root_folder: rule.actions.root_folder.clone(),
             output_name: rule.actions.output_name.clone(),
-            move_files: rule
-                .actions
-                .move_files
-                .iter()
-                .map(|action| OrganizationMoveActionDto {
-                    pattern: action.pattern.clone(),
-                    target: action.target.clone(),
-                })
-                .collect(),
-            use_standard_layout: rule.actions.use_standard_layout,
+            layout: layout_to_dto(&rule.actions.layout),
         },
+    }
+}
+
+/// A stored layout as the facade reports it. Total: every core shape has
+/// a DTO counterpart, so a summary never has to omit part of a layout it
+/// cannot describe.
+fn layout_to_dto(layout: &Layout) -> LayoutDto {
+    LayoutDto {
+        outputs: match &layout.outputs {
+            OutputSelector::Whole => OutputSelectorDto::Whole,
+            OutputSelector::PerDirectoryContaining { marker } => {
+                OutputSelectorDto::PerDirectoryContaining {
+                    marker: marker.clone(),
+                }
+            }
+        },
+        file_variables: layout
+            .file_variables
+            .iter()
+            .map(|variable| FileVariableDto {
+                as_name: variable.as_name.clone(),
+                file: variable.file.clone(),
+                key: variable.key.clone(),
+            })
+            .collect(),
+        name: layout.name.clone(),
+        place: layout
+            .place
+            .iter()
+            .map(|placement| PlacementDto {
+                from: match &placement.from {
+                    Source::All => PlacementSourceDto::All,
+                    Source::Matching(glob) => PlacementSourceDto::Matching(glob.clone()),
+                    Source::ContentRoot => PlacementSourceDto::ContentRoot,
+                },
+                into: placement.into.clone(),
+            })
+            .collect(),
+        generate: layout
+            .generate
+            .iter()
+            .map(|generated| GeneratedFileDto {
+                into: generated.into.clone(),
+                content: match generated.content {
+                    GeneratedContent::MetadataDocument => GeneratedContentDto::MetadataDocument,
+                },
+            })
+            .collect(),
+        fetch: layout
+            .fetch
+            .iter()
+            .map(|fetched| FetchedFileDto {
+                into: fetched.into.clone(),
+                source: match fetched.source {
+                    FetchSource::Screenshots => FetchSourceDto::Screenshots,
+                },
+                name: fetched.name.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// The reverse of [`layout_to_dto`], so an untouched rule loaded into an
+/// editor and saved again stores exactly what it started with.
+fn layout_to_core(layout: &LayoutDto) -> Layout {
+    Layout {
+        outputs: match &layout.outputs {
+            OutputSelectorDto::Whole => OutputSelector::Whole,
+            OutputSelectorDto::PerDirectoryContaining { marker } => {
+                OutputSelector::PerDirectoryContaining {
+                    marker: marker.clone(),
+                }
+            }
+        },
+        file_variables: layout
+            .file_variables
+            .iter()
+            .map(|variable| FileVariable {
+                as_name: variable.as_name.clone(),
+                file: variable.file.clone(),
+                key: variable.key.clone(),
+            })
+            .collect(),
+        name: layout.name.clone(),
+        place: layout
+            .place
+            .iter()
+            .map(|placement| Placement {
+                from: match &placement.from {
+                    PlacementSourceDto::All => Source::All,
+                    PlacementSourceDto::Matching(glob) => Source::Matching(glob.clone()),
+                    PlacementSourceDto::ContentRoot => Source::ContentRoot,
+                },
+                into: placement.into.clone(),
+            })
+            .collect(),
+        generate: layout
+            .generate
+            .iter()
+            .map(|generated| Generated {
+                into: generated.into.clone(),
+                content: match generated.content {
+                    GeneratedContentDto::MetadataDocument => GeneratedContent::MetadataDocument,
+                },
+            })
+            .collect(),
+        fetch: layout
+            .fetch
+            .iter()
+            .map(|fetched| Fetched {
+                into: fetched.into.clone(),
+                source: match fetched.source {
+                    FetchSourceDto::Screenshots => FetchSource::Screenshots,
+                },
+                name: fetched.name.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -493,12 +738,18 @@ pub(crate) fn rule_to_core(
             ));
         }
     }
-    for action in &input.actions.move_files {
-        if action.pattern.trim().is_empty() {
-            return Err(invalid_input_error(
-                "actions.move_files.pattern",
-                "move pattern must not be empty",
-            ));
+    // A glob nothing can match is the layout equivalent of the empty
+    // move pattern this used to reject: the placement claims no file,
+    // silently, and the files it was meant to carry fall through to
+    // whatever comes after it.
+    for placement in &input.actions.layout.place {
+        if let PlacementSourceDto::Matching(glob) = &placement.from {
+            if glob.trim().is_empty() {
+                return Err(invalid_input_error(
+                    "actions.layout.place.from",
+                    "a matching placement's glob must not be empty",
+                ));
+            }
         }
     }
     Ok(OrganizationRule {
@@ -512,18 +763,8 @@ pub(crate) fn rule_to_core(
             has_file: input.trigger.has_file.clone(),
         },
         actions: RuleActions {
-            root_folder: input.actions.root_folder.clone(),
             output_name: input.actions.output_name.clone(),
-            move_files: input
-                .actions
-                .move_files
-                .iter()
-                .map(|action| MoveAction {
-                    pattern: action.pattern.clone(),
-                    target: action.target.clone(),
-                })
-                .collect(),
-            use_standard_layout: input.actions.use_standard_layout,
+            layout: layout_to_core(&input.actions.layout),
         },
     })
 }
@@ -685,13 +926,29 @@ mod tests {
                 has_file: None,
             },
             actions: OrganizationRuleActionsDto {
-                root_folder: Some("[$product_id] $title".to_string()),
                 output_name: None,
-                move_files: vec![OrganizationMoveActionDto {
-                    pattern: "*.exe".to_string(),
-                    target: "bin".to_string(),
-                }],
-                use_standard_layout: false,
+                layout: LayoutDto {
+                    outputs: OutputSelectorDto::Whole,
+                    file_variables: vec![FileVariableDto {
+                        as_name: "mod_name".to_string(),
+                        file: "modinfo.ini".to_string(),
+                        key: "name".to_string(),
+                    }],
+                    name: "[$product_id] $title".to_string(),
+                    place: vec![PlacementDto {
+                        from: PlacementSourceDto::Matching("*.exe".to_string()),
+                        into: "bin".to_string(),
+                    }],
+                    generate: vec![GeneratedFileDto {
+                        into: "metadata.json".to_string(),
+                        content: GeneratedContentDto::MetadataDocument,
+                    }],
+                    fetch: vec![FetchedFileDto {
+                        into: "screenshots".to_string(),
+                        source: FetchSourceDto::Screenshots,
+                        name: "image_$index.$ext".to_string(),
+                    }],
+                },
             },
         }
     }
@@ -741,13 +998,44 @@ mod tests {
         assert_eq!(core.trigger.filename_pattern.as_deref(), Some("   "));
     }
 
+    /// A glob nothing can match claims no file and says nothing about
+    /// it, so the placement that was meant to route those files is
+    /// simply absent from the result.
     #[test]
-    fn an_empty_move_pattern_is_rejected() {
+    fn an_empty_placement_glob_is_rejected() {
         let mut input = rule_input();
-        input.actions.move_files[0].pattern = String::new();
+        input.actions.layout.place[0].from = PlacementSourceDto::Matching(String::new());
         let error = rule_to_core(&input, 0).unwrap_err();
         assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
-        assert_eq!(error.field.as_deref(), Some("actions.move_files.pattern"));
+        assert_eq!(error.field.as_deref(), Some("actions.layout.place.from"));
+    }
+
+    /// Every shape the layout vocabulary can express survives the trip
+    /// out to a frontend and back, so an editor that round-trips a rule
+    /// it did not touch cannot silently flatten part of its layout.
+    #[test]
+    fn every_layout_shape_survives_the_trip_through_core() {
+        let mut input = rule_input();
+        input.actions.layout.outputs = OutputSelectorDto::PerDirectoryContaining {
+            marker: "modinfo.ini".to_string(),
+        };
+        input.actions.layout.place = vec![
+            PlacementDto {
+                from: PlacementSourceDto::ContentRoot,
+                into: "Game".to_string(),
+            },
+            PlacementDto {
+                from: PlacementSourceDto::Matching("*.txt".to_string()),
+                into: "docs".to_string(),
+            },
+            PlacementDto {
+                from: PlacementSourceDto::All,
+                into: String::new(),
+            },
+        ];
+
+        let core = rule_to_core(&input, 1).expect("valid rule input");
+        assert_eq!(summarize_rule(&core).actions, input.actions);
     }
 
     // ── profile conversion/validation ───────────────────────────────────
@@ -922,8 +1210,10 @@ mod tests {
         assert_eq!(round_trip(&summary.trigger), summary.trigger);
         assert_eq!(round_trip(&summary.actions), summary.actions);
         assert_eq!(
-            round_trip(&summary.actions.move_files[0]),
-            summary.actions.move_files[0]
+            round_trip(&summary.actions.layout),
+            summary.actions.layout,
+            "a layout is the half of a rule a bridge is most likely to \
+             drop: it is the only nested, enum-bearing shape here"
         );
     }
 
@@ -943,21 +1233,27 @@ mod tests {
             revision: 3,
             rule_id: "11".to_string(),
             rule_name: "Standard".to_string(),
-            root_folder: "[RJ1] Title".to_string(),
-            root_folder_template: "[$product_id] $title".to_string(),
-            use_standard_layout: true,
-            moves: vec![PlannedMoveDto {
-                source: "inner/game.exe".to_string(),
-                destination: "[RJ1] Title/Game/game.exe".to_string(),
+            outputs: vec![PlannedOutputDto {
+                root_folder: "[RJ123456] Placeholder Game".to_string(),
+                root_folder_template: "[$product_id] $title".to_string(),
+                moves: vec![PlannedMoveDto {
+                    source: "inner/game.exe".to_string(),
+                    destination: "[RJ123456] Placeholder Game/Game/game.exe".to_string(),
+                }],
+                generated_files: vec!["[RJ123456] Placeholder Game/metadata.json".to_string()],
+                downloads: vec![PlannedDownloadDto {
+                    destination: "[RJ123456] Placeholder Game/screenshots/0.jpg".to_string(),
+                    cached: true,
+                }],
+                resolved_variables: vec![ResolvedVariableDto {
+                    name: "product_id".to_string(),
+                    value: "RJ123456".to_string(),
+                }],
+                reasoning: vec!["the content root is inner, on 2 indicators".to_string()],
             }],
-            generated_files: vec!["[RJ1] Title/metadata.json".to_string()],
-            downloads: vec![PlannedDownloadDto {
-                destination: "[RJ1] Title/screenshots/0.jpg".to_string(),
-                cached: true,
-            }],
-            resolved_variables: vec![ResolvedVariableDto {
-                name: "product_id".to_string(),
-                value: "RJ1".to_string(),
+            skipped_outputs: vec![SkippedOutputDto {
+                root: "extras".to_string(),
+                reason: "$title was not set".to_string(),
             }],
             integrity: OrganizeIntegrityDto {
                 original_files: 2,
@@ -975,12 +1271,18 @@ mod tests {
             },
         };
 
+        let output = &preview.outputs[0];
         assert_eq!(round_trip(&preview), preview);
-        assert_eq!(round_trip(&preview.moves[0]), preview.moves[0]);
-        assert_eq!(round_trip(&preview.downloads[0]), preview.downloads[0]);
+        assert_eq!(round_trip(output), *output);
+        assert_eq!(round_trip(&output.moves[0]), output.moves[0]);
+        assert_eq!(round_trip(&output.downloads[0]), output.downloads[0]);
         assert_eq!(
-            round_trip(&preview.resolved_variables[0]),
-            preview.resolved_variables[0]
+            round_trip(&output.resolved_variables[0]),
+            output.resolved_variables[0]
+        );
+        assert_eq!(
+            round_trip(&preview.skipped_outputs[0]),
+            preview.skipped_outputs[0]
         );
         assert_eq!(round_trip(&preview.integrity), preview.integrity);
     }

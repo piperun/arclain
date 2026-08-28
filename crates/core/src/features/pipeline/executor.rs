@@ -66,6 +66,18 @@ pub enum PipelineProgress {
     DownloadWarnings {
         warnings: Vec<String>,
     },
+    /// One line per folder an `Organize` step's layout would have made
+    /// an output of but could not name -- a `$mod_name` nothing set, a
+    /// name that collided with a sibling's. The step succeeded and every
+    /// output it *could* name was written; this is informational only.
+    ///
+    /// Reported rather than dropped for the same reason
+    /// [`Self::DownloadWarnings`] is: the run produced less than the
+    /// archive held, and this is the only place a reader learns which
+    /// folder went missing and why.
+    SkippedOutputs {
+        outputs: Vec<String>,
+    },
 }
 
 /// Result of a single-input pipeline run.
@@ -481,6 +493,22 @@ fn run_one_inner(
                     &read_entry,
                 )
                 .context("Rule plan failed")?;
+
+                if !plan.skipped_outputs.is_empty() {
+                    on_progress(PipelineProgress::SkippedOutputs {
+                        outputs: plan
+                            .skipped_outputs
+                            .iter()
+                            .map(|(root, reason)| {
+                                if root.is_empty() {
+                                    reason.clone()
+                                } else {
+                                    format!("{root}: {reason}")
+                                }
+                            })
+                            .collect(),
+                    });
+                }
 
                 // Resolve the plan's scheduled images to files on disk
                 // before the applier runs, so the applier's transaction

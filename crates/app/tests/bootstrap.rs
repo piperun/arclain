@@ -684,7 +684,7 @@ fn first_run_seeds_ensure_default_rules_payload_not_sync_rules_payload() {
         Some(r"(RJ|VJ|BJ)\d+"),
         "this is ensure_default_rules's pattern, not sync_rules's \\[(RJ|BJ|VJ)\\d+\\]"
     );
-    assert_eq!(rules[0].actions.root_folder.as_deref(), Some("Game"));
+    assert_eq!(rules[0].actions.layout.name, "Game");
 }
 
 /// A plugins directory that cannot be created must not fail bootstrap,

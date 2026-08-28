@@ -1,9 +1,87 @@
 use super::OrganizePanel;
 use crate::shared::components::preview_tree::{self, PreviewFilter};
 use crate::shared::theme::AppTheme;
+use arclain_app::organization::PlannedOutputDto;
 use arclain_widgets::ThemedDropdown;
 use eframe::egui::{self, RichText};
 use egui_extras::{Size, StripBuilder};
+
+/// What to call an output on screen. An empty root folder is a real
+/// layout -- a lone output with no wrapper, its content at the top level
+/// -- and rendering it as an empty string would read as a bug.
+fn display_root(output: &PlannedOutputDto) -> &str {
+    if output.root_folder.is_empty() {
+        "(no wrapper folder)"
+    } else {
+        &output.root_folder
+    }
+}
+
+/// One planned output: its resolved folder name, what lands in it, and
+/// why it looks the way it does.
+///
+/// The reasoning is the point rather than decoration. A preview that
+/// says what will happen without saying why leaves the user unable to
+/// tell a good inference from a bad one -- which folder was taken as the
+/// payload and on what evidence is exactly the judgement worth checking.
+fn render_output(ui: &mut egui::Ui, theme: &AppTheme, index: usize, output: &PlannedOutputDto) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(egui_phosphor::regular::FOLDER_OPEN).color(theme.colors.warning));
+        ui.add(
+            egui::Label::new(
+                RichText::new(display_root(output))
+                    .monospace()
+                    .color(theme.colors.info),
+            )
+            .truncate(),
+        );
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button(RichText::new(format!("{} Copy", egui_phosphor::regular::COPY)).size(11.0))
+                .on_hover_text("Copy folder name to clipboard")
+                .clicked()
+            {
+                ui.ctx().copy_text(output.root_folder.clone());
+            }
+        });
+    });
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            RichText::new(format!(
+                "{} moved, {} generated, {} fetched",
+                output.moves.len(),
+                output.generated_files.len(),
+                output.downloads.len()
+            ))
+            .size(11.0)
+            .weak(),
+        );
+        if output.root_folder_template != output.root_folder {
+            ui.label(
+                RichText::new(format!("from {}", output.root_folder_template))
+                    .monospace()
+                    .size(11.0)
+                    .weak(),
+            );
+        }
+    });
+
+    if !output.reasoning.is_empty() {
+        // Salted by position, so two outputs of one plan do not share a
+        // collapsing state and toggle together.
+        egui::CollapsingHeader::new(RichText::new("Why").size(11.0))
+            .id_salt(("organize_output_reasoning", index))
+            .default_open(false)
+            .show(ui, |ui| {
+                for line in &output.reasoning {
+                    ui.label(RichText::new(line).size(11.0).weak());
+                }
+            });
+    }
+}
 
 impl OrganizePanel {
     pub(super) fn render_preview_tab(&mut self, ui: &mut egui::Ui, theme: &AppTheme) {
@@ -29,28 +107,15 @@ impl OrganizePanel {
                             RichText::new(egui_phosphor::regular::FOLDER)
                                 .color(theme.colors.warning),
                         );
-                        ui.label(RichText::new("Output:").strong());
                         ui.label(
-                            RichText::new(&plan.root_folder)
-                                .monospace()
-                                .color(theme.colors.info),
+                            RichText::new(match plan.outputs.len() {
+                                1 => "Output:".to_string(),
+                                count => format!("{count} outputs:"),
+                            })
+                            .strong(),
                         );
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // Copy button
-                            if ui
-                                .button(RichText::new(format!(
-                                    "{} Copy",
-                                    egui_phosphor::regular::COPY
-                                )))
-                                .on_hover_text("Copy folder name to clipboard")
-                                .clicked()
-                            {
-                                ui.ctx().copy_text(plan.root_folder.clone());
-                            }
-
-                            ui.add_space(8.0);
-
                             // Export Tree Button
                             if ui
                                 .button(RichText::new(format!(
@@ -63,6 +128,43 @@ impl OrganizePanel {
                             }
                         });
                     });
+
+                    // Every output, never just the first: an archive is
+                    // not one folder, and a panel that silently showed
+                    // one of three would describe a run the user is not
+                    // about to get.
+                    if plan.outputs.is_empty() {
+                        ui.label(
+                            RichText::new("this rule produces no output folder for this archive")
+                                .color(theme.colors.warning),
+                        );
+                    }
+                    for (index, output) in plan.outputs.iter().enumerate() {
+                        render_output(ui, theme, index, output);
+                    }
+
+                    // A folder the plan passed over is not an error, but
+                    // it is the only place the user learns it happened.
+                    for skipped in &plan.skipped_outputs {
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(egui_phosphor::regular::WARNING)
+                                    .color(theme.colors.warning),
+                            );
+                            ui.label(
+                                RichText::new(if skipped.root.is_empty() {
+                                    "skipped".to_string()
+                                } else {
+                                    format!("skipped {}", skipped.root)
+                                })
+                                .monospace()
+                                .size(12.0)
+                                .color(theme.colors.warning),
+                            );
+                            ui.label(RichText::new(&skipped.reason).size(12.0).weak());
+                        });
+                    }
                 });
 
             ui.add_space(4.0);
@@ -317,7 +419,13 @@ impl OrganizePanel {
                                 ui.vertical(|ui| {
                                     ui.set_height(available.y - 40.0);
 
-                                    let organized_title = format!("Modified: {}", plan.root_folder);
+                                    let organized_title = match plan.outputs.as_slice() {
+                                        [] => "Modified: nothing".to_string(),
+                                        [only] => format!("Modified: {}", display_root(only)),
+                                        outputs => {
+                                            format!("Modified: {} folders", outputs.len())
+                                        }
+                                    };
                                     ui.add(
                                         egui::Label::new(
                                             arclain_widgets::Text::new(&organized_title)

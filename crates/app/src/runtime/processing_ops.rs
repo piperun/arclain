@@ -653,6 +653,18 @@ async fn translate_progress(
                 .await;
             }
         }
+        PipelineProgress::SkippedOutputs { outputs } => {
+            for skipped in outputs {
+                emit_progress(
+                    inner,
+                    operation_id,
+                    index,
+                    total,
+                    Some(format!("{name}: skipped output: {skipped}")),
+                )
+                .await;
+            }
+        }
     }
 }
 
@@ -1622,6 +1634,24 @@ fn pack_organize_input(
         .to_string();
     let metadata = plan_metadata.resolve(&archive_name, ctx);
 
+    // Threads whichever password `resolve_organize_listing` resolved
+    // (auto-matched or supplied via an interactive challenge) into the
+    // archive handle -- listing, planning, extraction and packing must
+    // agree on the same password, the same way `archive_ops::
+    // run_open_archive` builds `Archive::with_password` from its own
+    // resolved `password_used`.
+    //
+    // Built before planning rather than after: a layout can name an
+    // output after a key inside a file, so `create_plan` reads through
+    // this same handle.
+    let archive = match password {
+        Some(password) => {
+            arclain_core::Archive::with_password(backend, input.to_path_buf(), password)
+        }
+        None => arclain_core::Archive::new(backend, input.to_path_buf()),
+    };
+
+    let read_entry = entry_reader(&archive);
     let (plan, profile) = build_plan_and_profile(
         &archive_name,
         &info.entries,
@@ -1629,6 +1659,7 @@ fn pack_organize_input(
         rule_id,
         profile_id,
         ctx,
+        &read_entry,
     )?;
 
     let stem = stem_from(input, metadata.as_ref());
@@ -1649,18 +1680,6 @@ fn pack_organize_input(
             destination.display()
         )
     })?;
-
-    // Threads whichever password `resolve_organize_listing` resolved
-    // (auto-matched or supplied via an interactive challenge) into the
-    // archive handle -- listing and extraction/packing must agree on the
-    // same password, the same way `archive_ops::run_open_archive` builds
-    // `Archive::with_password` from its own resolved `password_used`.
-    let archive = match password {
-        Some(password) => {
-            arclain_core::Archive::with_password(backend, input.to_path_buf(), password)
-        }
-        None => arclain_core::Archive::new(backend, input.to_path_buf()),
-    };
 
     // Extract -> stage the plan's downloads -> apply the plan -> pack.
     // The middle two steps are `arclain_core`'s single applier, the one
@@ -1686,6 +1705,13 @@ fn pack_organize_input(
         tracing::warn!("[organize] screenshot not fetched: {dest_path} ({url}): {reason}");
     }
 
+    // A folder the layout would have made an output of but could not
+    // name produces nothing, and this run reports one line per input --
+    // so without this the archive quietly comes out short.
+    for (root, reason) in &plan.skipped_outputs {
+        tracing::warn!("[organize] output skipped: {root:?}: {reason}");
+    }
+
     arclain_core::features::pipeline::apply_plan::apply_plan_to_workdir(
         &staged.plan,
         work_dir.path(),
@@ -1702,10 +1728,36 @@ fn pack_organize_input(
     Ok(dest_path)
 }
 
+/// Reads one entry's bytes straight out of an archive, for the file
+/// variables a layout names (a `modinfo.ini` behind `$mod_name`).
+///
+/// Streams through the backend rather than extracting the archive:
+/// planning must not pull a payload onto disk to decide a folder name.
+/// A backend that cannot stream a single entry, or an entry that is not
+/// there, answers `None` -- the layout then reports the variable as
+/// unset and the output it named is skipped with a reason, which is the
+/// loud failure rather than a folder called `$mod_name`.
+fn entry_reader(archive: &arclain_core::Archive) -> impl Fn(&str) -> Option<Vec<u8>> + '_ {
+    |path: &str| {
+        let mut bytes = Vec::new();
+        archive
+            .backend()
+            .extract_entry_to_writer(archive.path(), path, archive.password_ref(), &mut bytes)
+            .ok()?;
+        Some(bytes)
+    }
+}
+
 /// Resolves the rule + builds its plan, and separately resolves the
 /// output profile -- shared by [`pack_organize_input`] and
 /// [`preview_organize_input`] so a dry-run preview and a real run build
 /// the identical plan/profile.
+///
+/// `read_entry` is the layout's window into the archive (see
+/// [`entry_reader`]). Both callers hand it a real one over the same
+/// archive handle: a preview that could not read a file variable would
+/// name its outputs differently from the run that follows it, which is
+/// the divergence a dry run exists to rule out.
 fn build_plan_and_profile(
     archive_name: &str,
     entries: &[arclain_core::ArchiveEntry],
@@ -1713,6 +1765,7 @@ fn build_plan_and_profile(
     rule_id: i64,
     profile_id: i64,
     ctx: &OrganizeContext,
+    read_entry: &dyn Fn(&str) -> Option<Vec<u8>>,
 ) -> anyhow::Result<(
     arclain_core::features::organization::engine::OrganizationPlan,
     arclain_core::features::organization::ArchiveProfile,
@@ -1730,6 +1783,7 @@ fn build_plan_and_profile(
         archive_name,
         entries,
         metadata,
+        read_entry,
     )
     .context("building organization plan")?;
 
@@ -1778,7 +1832,10 @@ async fn run_organize_dry_run(
             .unwrap_or("<unknown>")
             .to_string();
 
-        let info = match resolve_organize_listing(
+        // The backend and password are kept, not discarded: planning
+        // reads a layout's file variables straight out of the archive,
+        // so the dry run needs the same handle the real run builds.
+        let (backend, info, password_used) = match resolve_organize_listing(
             inner,
             operation_id,
             &input,
@@ -1787,7 +1844,11 @@ async fn run_organize_dry_run(
         )
         .await
         {
-            OrganizeListingOutcome::Resolved { info, .. } => info,
+            OrganizeListingOutcome::Resolved {
+                backend,
+                info,
+                password_used,
+            } => (backend, info, password_used),
             OrganizeListingOutcome::Cancelled => return,
             OrganizeListingOutcome::Failed(error) => {
                 emit_progress(
@@ -1818,7 +1879,9 @@ async fn run_organize_dry_run(
                     rule_id,
                     profile_id,
                     &ctx_for_blocking,
+                    backend,
                     &info,
+                    password_used,
                     &metadata_for_blocking,
                 )
             })
@@ -1858,16 +1921,21 @@ async fn run_organize_dry_run(
 /// resolved listing [`resolve_organize_listing`] produced for it (see
 /// [`pack_organize_input`]'s identical split, for the identical reason:
 /// the password challenge/retry loop cannot run inside `spawn_blocking`).
-/// No password/backend parameter is needed here -- unlike a real
-/// organize, a preview never builds an `Archive` handle at all (it never
-/// extracts or packs), only `info.entries`.
+///
+/// Takes the same backend and password a real organize takes and builds
+/// the same `Archive` handle from them -- not to extract or pack, which
+/// a preview still never does, but because a layout's file variables are
+/// read out of the archive while planning. A preview that could not read
+/// them would report folder names a real run does not produce.
 fn preview_organize_input(
     input: &Path,
     destination: &Path,
     rule_id: i64,
     profile_id: i64,
     ctx: &OrganizeContext,
+    backend: Arc<dyn ArchiveBackend>,
     info: &ArchiveInfo,
+    password: Option<String>,
     plan_metadata: &PlanMetadata,
 ) -> anyhow::Result<String> {
     let archive_name = input
@@ -1877,6 +1945,14 @@ fn preview_organize_input(
         .to_string();
     let metadata = plan_metadata.resolve(&archive_name, ctx);
 
+    let archive = match password {
+        Some(password) => {
+            arclain_core::Archive::with_password(backend, input.to_path_buf(), password)
+        }
+        None => arclain_core::Archive::new(backend, input.to_path_buf()),
+    };
+
+    let read_entry = entry_reader(&archive);
     let (plan, profile) = build_plan_and_profile(
         &archive_name,
         &info.entries,
@@ -1884,20 +1960,55 @@ fn preview_organize_input(
         rule_id,
         profile_id,
         ctx,
+        &read_entry,
     )?;
 
     let stem = stem_from(input, metadata.as_ref());
     let ext = profile.format.extension();
     let dest_path = destination.join(format!("{}.{ext}", stem.to_string_lossy()));
 
-    Ok(format!(
-        "{}: organize via rule {:?} -> {} ({} file move(s), profile {:?})",
+    // Says how many folders the run produces, not just how many files
+    // move: one archive is not one output, and a mod pack organized into
+    // three folders reads as one indistinguishable line otherwise. A
+    // folder the plan passed over is named too -- it is the only place
+    // this flow reports that something was left out.
+    let moves: usize = plan.outputs.iter().map(|output| output.moves.len()).sum();
+    let mut message = format!(
+        "{}: organize via rule {:?} -> {} ({}, {} file move(s), profile {:?})",
         archive_name,
         plan.rule_name,
         dest_path.display(),
-        plan.moves.len(),
+        describe_outputs(&plan),
+        moves,
         profile.name,
-    ))
+    );
+    for (root, reason) in &plan.skipped_outputs {
+        message.push_str(&format!("; skipped {root:?}: {reason}"));
+    }
+    Ok(message)
+}
+
+/// The folders a plan produces, named when there are few enough to read
+/// and counted when there are not.
+fn describe_outputs(
+    plan: &arclain_core::features::organization::engine::OrganizationPlan,
+) -> String {
+    let named: Vec<&str> = plan
+        .outputs
+        .iter()
+        .map(|output| {
+            if output.root_folder.is_empty() {
+                "<no wrapper>"
+            } else {
+                output.root_folder.as_str()
+            }
+        })
+        .collect();
+    match named.len() {
+        0 => "no output folder".to_string(),
+        1..=3 => format!("into {}", named.join(", ")),
+        count => format!("into {count} folders"),
+    }
 }
 
 // ─── error helpers ──────────────────────────────────────────────────────

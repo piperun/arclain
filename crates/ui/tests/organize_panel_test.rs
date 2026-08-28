@@ -22,8 +22,8 @@ use std::time::Duration;
 use arclain_app::archive::OpenArchiveRequest;
 use arclain_app::ids::ArchiveSessionId;
 use arclain_app::organization::{
-    OrganizationMoveActionDto, OrganizationRuleActionsDto, OrganizationRuleInput,
-    OrganizationRuleSummary, OrganizationRuleTriggerDto,
+    LayoutDto, OrganizationRuleActionsDto, OrganizationRuleInput, OrganizationRuleSummary,
+    OrganizationRuleTriggerDto, PlacementDto, PlacementSourceDto,
 };
 use arclain_app::ArclainApp;
 use arclain_ui::features::organization::presentation::ui::refresh_preview;
@@ -84,6 +84,8 @@ fn save_rule(shared: &SharedState, input: OrganizationRuleInput) -> Vec<Organiza
         .expect("saving the test rule must succeed")
 }
 
+/// A rule whose layout is one output called `root_folder`, with a
+/// single glob placement into `target`.
 fn rule_input(name: &str, root_folder: &str, pattern: &str, target: &str) -> OrganizationRuleInput {
     OrganizationRuleInput {
         id: None,
@@ -92,15 +94,30 @@ fn rule_input(name: &str, root_folder: &str, pattern: &str, target: &str) -> Org
         enabled: true,
         trigger: OrganizationRuleTriggerDto::default(),
         actions: OrganizationRuleActionsDto {
-            root_folder: Some(root_folder.to_string()),
             output_name: None,
-            move_files: vec![OrganizationMoveActionDto {
-                pattern: pattern.to_string(),
-                target: target.to_string(),
-            }],
-            use_standard_layout: false,
+            layout: LayoutDto {
+                name: root_folder.to_string(),
+                place: vec![PlacementDto {
+                    from: PlacementSourceDto::Matching(pattern.to_string()),
+                    into: target.to_string(),
+                }],
+                ..LayoutDto::default()
+            },
         },
     }
+}
+
+/// The plan's one output. Every rule here describes a whole-input
+/// layout, which resolves to exactly one folder.
+fn only_output(
+    preview: &arclain_app::organization::OrganizePlanPreview,
+) -> &arclain_app::organization::PlannedOutputDto {
+    assert_eq!(
+        preview.outputs.len(),
+        1,
+        "a whole-input layout resolves to one output"
+    );
+    &preview.outputs[0]
 }
 
 /// Reports plugin metadata for `session_id` exactly as a plugin's
@@ -165,15 +182,22 @@ fn a_refresh_installs_the_plan_for_the_selected_rule() {
     let preview = panel.preview().expect("a plan must be installed");
     assert_eq!(preview.session_id, session_id);
     assert_eq!(preview.rule_name, "Panel Rule");
-    assert_eq!(preview.root_folder, "Organized");
-    let destinations: Vec<&str> = preview
+    let output = only_output(preview);
+    assert_eq!(output.root_folder, "Organized");
+    // A placement strips only what its own glob spells out, so the
+    // wrapper folder travels with the files under it.
+    let destinations: Vec<&str> = output
         .moves
         .iter()
         .map(|planned| planned.destination.as_str())
         .collect();
     assert_eq!(
         destinations,
-        vec!["Organized/Game.exe", "Organized/readme.txt"]
+        vec!["Organized/wrapper/Game.exe", "Organized/wrapper/readme.txt"]
+    );
+    assert!(
+        !output.reasoning.is_empty(),
+        "the plan must say how it arrived at this output"
     );
     assert_eq!(panel.preview_error(), None);
 
@@ -300,10 +324,22 @@ fn metadata_arrival_invalidates_the_plan_and_a_profile_change_does_not() {
     let mut panel = panel_for(session_id, "[RJ123456] Placeholder.zip", rules);
 
     refresh_preview(&mut panel, &shared);
-    assert_eq!(
-        panel.preview().expect("a plan").root_folder,
-        "[$product_id] $title",
-        "with no metadata there is nothing to expand the template from"
+    // With no metadata there is nothing to expand the template from, and
+    // an output whose *name* cannot be resolved is not produced at all --
+    // it is reported as passed over, with the tokens that stayed unset
+    // named in the reason.
+    let before = panel.preview().expect("a plan");
+    assert!(
+        before.outputs.is_empty(),
+        "an unresolvable name must not produce a folder: {:?}",
+        before.outputs
+    );
+    assert_eq!(before.skipped_outputs.len(), 1);
+    assert!(
+        before.skipped_outputs[0].reason.contains("product_id")
+            || before.skipped_outputs[0].reason.contains("title"),
+        "the reason must name what stayed unset: {:?}",
+        before.skipped_outputs[0]
     );
 
     // A profile change must not invalidate the plan: the panel asks for
@@ -324,7 +360,7 @@ fn metadata_arrival_invalidates_the_plan_and_a_profile_change_does_not() {
 
     refresh_preview(&mut panel, &shared);
     assert_eq!(
-        panel.preview().expect("a plan").root_folder,
+        only_output(panel.preview().expect("a plan")).root_folder,
         "[RJ123456] Plugin Title",
         "the recomputed plan must use the metadata the session now holds"
     );
@@ -473,7 +509,7 @@ fn metadata_for_another_session_never_reaches_the_panel() {
 
     refresh_preview(&mut page.panel, &shared);
     assert_eq!(
-        page.panel.preview().expect("a plan").root_folder,
+        only_output(page.panel.preview().expect("a plan")).root_folder,
         "[RJ123456] Panel Archive Title",
         "and the recomputed plan is this session's, not the other tab's"
     );
@@ -493,4 +529,129 @@ fn render_once(panel: &mut OrganizePanel) -> Vec<OrganizePanelAction> {
         });
     });
     actions
+}
+
+/// A plan with several outputs must reach the screen whole. A panel
+/// showing the first of three mod folders, silently, describes a run the
+/// user is not about to get -- so this drives a real (headless) frame
+/// and asserts every root, and every folder the plan passed over, is in
+/// what was rendered.
+#[test]
+fn every_output_and_every_skipped_folder_reaches_the_rendered_frame() {
+    use arclain_app::organization::{
+        OrganizeIntegrityDto, OrganizePlanPreview, PlannedMoveDto, PlannedOutputDto,
+        SkippedOutputDto,
+    };
+    use egui_kittest::kittest::Queryable as _;
+
+    let output = |name: &str| PlannedOutputDto {
+        root_folder: name.to_string(),
+        root_folder_template: "$mod_name".to_string(),
+        moves: vec![PlannedMoveDto {
+            source: format!("pack/{name}/mod.esp"),
+            destination: format!("{name}/mod.esp"),
+        }],
+        generated_files: Vec::new(),
+        downloads: Vec::new(),
+        resolved_variables: Vec::new(),
+        reasoning: vec![format!("all files placed 1 file into {name}")],
+    };
+
+    let mut panel = panel_for(ArchiveSessionId::from_raw(1), "pack.zip", Vec::new());
+    panel.set_preview(OrganizePlanPreview {
+        session_id: ArchiveSessionId::from_raw(1),
+        revision: 1,
+        rule_id: "1".to_string(),
+        rule_name: "Mods".to_string(),
+        outputs: vec![output("Red Mod"), output("Blue Mod")],
+        skipped_outputs: vec![SkippedOutputDto {
+            root: "pack/green".to_string(),
+            reason: "$mod_name was not set".to_string(),
+        }],
+        integrity: OrganizeIntegrityDto {
+            original_files: 3,
+            original_folders: 3,
+            moved_files: 2,
+            generated_files: 0,
+            expected_screenshots: 0,
+            planned_screenshots: 0,
+            expected_modified_files: 2,
+            file_discrepancy: -1,
+            missing_original_files: vec!["pack/green/mod.esp".to_string()],
+            original_hash: 1,
+            result_hash: 2,
+            content_match: false,
+        },
+    });
+
+    // Both outputs' files are in the one tree, because that is what the
+    // result looks like on disk: three siblings, not one folder.
+    let roots: Vec<&str> = panel
+        .ui_state
+        .organized_tree
+        .iter()
+        .map(|node| node.name.as_str())
+        .collect();
+    assert_eq!(roots, vec!["Blue Mod", "Red Mod"]);
+
+    // A window-sized surface, because that is what the panel occupies.
+    // Its dual-pane view sizes itself from the space it is given and
+    // asks egui for `available.y - 40.0`, which egui rejects outright
+    // below 40 logical points.
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(eframe::egui::vec2(900.0, 700.0))
+        .build_ui_state(
+            |ui, panel: &mut OrganizePanel| {
+                let ctx = ui.ctx().clone();
+                let theme = arclain_ui::shared::theme::AppTheme::new(false);
+                panel.render(ui, &ctx, &theme);
+            },
+            panel,
+        );
+    harness.run();
+
+    for expected in [
+        // The count, so a truncated list cannot pass by showing one
+        // output and calling it the whole plan.
+        "2 outputs:",
+        "Red Mod",
+        "Blue Mod",
+        // The folder the plan passed over, and the reason -- the only
+        // place a user learns either.
+        "skipped pack/green",
+        "$mod_name was not set",
+    ] {
+        assert!(
+            harness
+                .query_all_by_label_contains(expected)
+                .next()
+                .is_some(),
+            "the rendered frame must contain {expected:?}"
+        );
+    }
+    // The two assertions that actually discriminate a truncated render.
+    // Everything above is satisfiable without the loop having run twice:
+    // the count comes from `outputs.len()` directly, and both root names
+    // also appear in the merged tree in the right-hand pane. These two
+    // are counted, and count what the per-output section emits.
+    //
+    // Two of them, because each covers for the other's blind spot. The
+    // `Why` header is skipped when an output has no reasoning, so a
+    // layout that produced none would leave that check green against a
+    // panel showing one output of three; the summary line is emitted
+    // unconditionally. It in turn cannot tell two outputs apart when
+    // their tallies match -- which is exactly the case here, and why it
+    // is counted rather than merely found.
+    assert_eq!(
+        harness
+            .query_all_by_label_contains("1 moved, 0 generated, 0 fetched")
+            .count(),
+        2,
+        "every output must render its own summary line, not just the first"
+    );
+    assert_eq!(
+        harness.query_all_by_label("Why").count(),
+        2,
+        "each output's reasoning must be reachable from the frame"
+    );
 }

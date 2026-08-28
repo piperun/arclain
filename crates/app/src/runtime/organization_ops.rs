@@ -54,7 +54,7 @@ use crate::ids::ArchiveSessionId;
 use crate::organization::{
     self, OrganizationProfileInput, OrganizationProfileSummary, OrganizationRuleInput,
     OrganizationRuleSummary, OrganizeIntegrityDto, OrganizePlanPreview, PlannedDownloadDto,
-    PlannedMoveDto, ResolvedVariableDto,
+    PlannedMoveDto, PlannedOutputDto, ResolvedVariableDto, SkippedOutputDto,
 };
 
 use super::AppRuntime;
@@ -535,8 +535,43 @@ pub(super) async fn run_preview_organize_plan(
             // `organization::session_metadata_for_planning`).
             let metadata = organization::session_metadata_for_planning(session.metadata());
 
-            let plan = RuleEngine::create_plan(&rule, &archive_name, &entries, metadata.as_ref())
-                .map_err(|error| unusable_plan_error(&error))?;
+            // A layout can name an output after a key inside a file --
+            // a `modinfo.ini` behind a file variable -- so planning has
+            // to be able to read one entry out of the archive. The
+            // handle is the session's own, so the preview resolves the
+            // same names the organize that applies this plan will: a
+            // closure answering `None` here would make an unnameable
+            // output look like a broken layout in the panel and work on
+            // Apply.
+            //
+            // The lock is taken per read rather than held across
+            // `create_plan`, which is CPU-bound over the whole entry
+            // list: an archive-wide plan must not block every other
+            // operation bound to this session for its duration.
+            let archive = session.archive_arc();
+            let read_entry = |path: &str| -> Option<Vec<u8>> {
+                let mut bytes = Vec::new();
+                let archive = archive.lock();
+                archive
+                    .backend()
+                    .extract_entry_to_writer(
+                        archive.path(),
+                        path,
+                        archive.password_ref(),
+                        &mut bytes,
+                    )
+                    .ok()?;
+                Some(bytes)
+            };
+
+            let plan = RuleEngine::create_plan(
+                &rule,
+                &archive_name,
+                &entries,
+                metadata.as_ref(),
+                &read_entry,
+            )
+            .map_err(|error| unusable_plan_error(&error))?;
             let report = IntegrityReport::calculate(&entries, Some(&plan), metadata.as_ref());
 
             Ok(build_preview(
@@ -566,47 +601,6 @@ fn build_preview(
     plan: &arclain_core::features::organization::engine::OrganizationPlan,
     report: IntegrityReport,
 ) -> OrganizePlanPreview {
-    let mut moves: Vec<PlannedMoveDto> = plan
-        .moves
-        .iter()
-        .map(|(source, destination)| PlannedMoveDto {
-            source: source.clone(),
-            destination: destination.clone(),
-        })
-        .collect();
-    moves.sort_by(|a, b| {
-        a.source
-            .cmp(&b.source)
-            .then_with(|| a.destination.cmp(&b.destination))
-    });
-
-    let mut generated_files: Vec<String> = plan
-        .generated_files
-        .iter()
-        .map(|(path, _content)| path.clone())
-        .collect();
-    generated_files.sort();
-
-    let mut downloads: Vec<PlannedDownloadDto> = plan
-        .downloads
-        .iter()
-        .map(|download| PlannedDownloadDto {
-            destination: download.dest_path.clone(),
-            cached: download.cached,
-        })
-        .collect();
-    downloads.sort_by(|a, b| a.destination.cmp(&b.destination));
-
-    let mut resolved_variables: Vec<ResolvedVariableDto> = plan
-        .resolved_variables
-        .iter()
-        .map(|(name, value)| ResolvedVariableDto {
-            name: name.clone(),
-            value: value.clone(),
-        })
-        .collect();
-    resolved_variables.sort_by(|a, b| a.name.cmp(&b.name));
-
     let mut missing_original_files = report.missing_original_files;
     missing_original_files.sort();
 
@@ -615,13 +609,19 @@ fn build_preview(
         revision,
         rule_id,
         rule_name: plan.rule_name.clone(),
-        root_folder: plan.root_folder.clone(),
-        root_folder_template: plan.root_folder_template.clone(),
-        use_standard_layout: plan.use_standard_layout,
-        moves,
-        generated_files,
-        downloads,
-        resolved_variables,
+        // Every output, in the order the plan resolved them. A plan that
+        // produces one folder per mod produces several, and a preview
+        // showing only the first would describe a fraction of the run
+        // without saying so.
+        outputs: plan.outputs.iter().map(planned_output).collect(),
+        skipped_outputs: plan
+            .skipped_outputs
+            .iter()
+            .map(|(root, reason)| SkippedOutputDto {
+                root: root.clone(),
+                reason: reason.clone(),
+            })
+            .collect(),
         integrity: OrganizeIntegrityDto {
             original_files: report.original_files as u64,
             original_folders: report.original_folders as u64,
@@ -636,6 +636,66 @@ fn build_preview(
             result_hash: report.result_hash,
             content_match: report.content_match,
         },
+    }
+}
+
+/// One planned output as the DTO carries it, with every list sorted for
+/// the reason [`build_preview`] gives -- except `reasoning`, whose order
+/// is its meaning: it reads as the account of how the output was
+/// arrived at, and sorting it alphabetically would shuffle that account
+/// into nonsense.
+fn planned_output(
+    output: &arclain_core::features::organization::engine::PlannedOutput,
+) -> PlannedOutputDto {
+    let mut moves: Vec<PlannedMoveDto> = output
+        .moves
+        .iter()
+        .map(|(source, destination)| PlannedMoveDto {
+            source: source.clone(),
+            destination: destination.clone(),
+        })
+        .collect();
+    moves.sort_by(|a, b| {
+        a.source
+            .cmp(&b.source)
+            .then_with(|| a.destination.cmp(&b.destination))
+    });
+
+    let mut generated_files: Vec<String> = output
+        .generated_files
+        .iter()
+        .map(|(path, _content)| path.clone())
+        .collect();
+    generated_files.sort();
+
+    let mut downloads: Vec<PlannedDownloadDto> = output
+        .downloads
+        .iter()
+        .map(|download| PlannedDownloadDto {
+            destination: download.dest_path.clone(),
+            cached: download.cached,
+        })
+        .collect();
+    downloads.sort_by(|a, b| a.destination.cmp(&b.destination));
+
+    let mut resolved_variables: Vec<ResolvedVariableDto> = output
+        .resolved_variables
+        .iter()
+        .map(|(name, value)| ResolvedVariableDto {
+            name: name.clone(),
+            value: value.clone(),
+        })
+        .collect();
+    resolved_variables.sort_by(|a, b| a.name.cmp(&b.name));
+
+    PlannedOutputDto {
+        root_folder: output.root_folder.clone(),
+        root_folder_template: output.root_folder_template.clone(),
+        moves,
+        generated_files,
+        downloads,
+        resolved_variables,
+        reasoning: output.reasoning.clone(),
     }
 }
 
@@ -714,4 +774,100 @@ fn shutdown_mid_request_error() -> ApplicationError {
 fn internal_join_error(join_error: tokio::task::JoinError) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::Internal, "internal task failed")
         .with_diagnostic(join_error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arclain_core::features::organization::engine::{OrganizationPlan, PlannedOutput};
+
+    /// A named output with nothing in it, so a test about how many
+    /// outputs survive the DTO is not also a test about their contents.
+    fn output_named(name: &str) -> PlannedOutput {
+        PlannedOutput {
+            root_folder: name.to_string(),
+            root_folder_template: name.to_string(),
+            moves: Vec::new(),
+            generated_files: Vec::new(),
+            downloads: Vec::new(),
+            resolved_variables: Default::default(),
+            reasoning: Vec::new(),
+        }
+    }
+
+    /// The preview a panel renders must describe every output the run
+    /// will produce, not just the first.
+    #[test]
+    fn the_preview_dto_carries_every_output() {
+        let plan = OrganizationPlan {
+            rule_name: "Mods".to_string(),
+            outputs: vec![output_named("Red Mod"), output_named("Blue Mod")],
+            skipped_outputs: Vec::new(),
+        };
+
+        let preview = build_preview(
+            ArchiveSessionId::from_raw(1),
+            1,
+            "1".to_string(),
+            &plan,
+            IntegrityReport::default(),
+        );
+
+        assert_eq!(preview.outputs.len(), 2);
+        assert_eq!(preview.outputs[0].root_folder, "Red Mod");
+        assert_eq!(preview.outputs[1].root_folder, "Blue Mod");
+    }
+
+    /// A folder the plan passed over is the only place a user learns
+    /// that it happened, so the reason travels with the preview rather
+    /// than being dropped on the way out of core.
+    #[test]
+    fn the_preview_dto_carries_the_outputs_the_plan_skipped() {
+        let plan = OrganizationPlan {
+            rule_name: "Mods".to_string(),
+            outputs: vec![output_named("Red Mod")],
+            skipped_outputs: vec![("pack/blue".to_string(), "$mod_name was not set".to_string())],
+        };
+
+        let preview = build_preview(
+            ArchiveSessionId::from_raw(1),
+            1,
+            "1".to_string(),
+            &plan,
+            IntegrityReport::default(),
+        );
+
+        assert_eq!(preview.skipped_outputs.len(), 1);
+        assert_eq!(preview.skipped_outputs[0].root, "pack/blue");
+        assert_eq!(preview.skipped_outputs[0].reason, "$mod_name was not set");
+    }
+
+    /// `reasoning` reads as an account of how the output was arrived at,
+    /// so it reaches the DTO in the order core recorded it -- unlike
+    /// every other list here, which is sorted for stable rendering.
+    #[test]
+    fn an_outputs_reasoning_keeps_the_order_core_recorded_it_in() {
+        let mut output = output_named("Red Mod");
+        output.reasoning = vec![
+            "content root is pack/red, on 3 indicators".to_string(),
+            "all files placed 12 files into Red Mod".to_string(),
+            "1 file matched no placement and was not carried: pack/notes.txt".to_string(),
+        ];
+        let recorded = output.reasoning.clone();
+        let plan = OrganizationPlan {
+            rule_name: "Mods".to_string(),
+            outputs: vec![output],
+            skipped_outputs: Vec::new(),
+        };
+
+        let preview = build_preview(
+            ArchiveSessionId::from_raw(1),
+            1,
+            "1".to_string(),
+            &plan,
+            IntegrityReport::default(),
+        );
+
+        assert_eq!(preview.outputs[0].reasoning, recorded);
+    }
 }

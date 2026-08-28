@@ -172,11 +172,11 @@ fn write_garbage_file(path: &Path, byte: u8) {
 /// *one* `take_legacy_composition` call -- `dbs` is a one-time-take
 /// field, so a test needing both the rule and the profile must seed them
 /// from the same call rather than two separate ones). The rule moves
-/// every top-level file into `Organized/<name>` unconditionally
-/// (`pattern: "**"`, `target: ""`, `use_standard_layout: false`) --
-/// enough to prove the organize operation's wiring without depending on
-/// metadata-driven rule matching. The profile is zip, low compression.
-/// Returns `(rule_id, profile_id)`.
+/// every file into `Organized/` unconditionally (one `Source::All`
+/// placement into the output's own root) -- enough to prove the organize
+/// operation's wiring without depending on metadata-driven rule
+/// matching. The profile is zip, low compression. Returns
+/// `(rule_id, profile_id)`.
 fn seed_rule_and_profile(app: &ArclainApp) -> (i64, i64) {
     let legacy = app
         .take_legacy_composition()
@@ -193,17 +193,15 @@ fn seed_rule_and_profile(app: &ArclainApp) -> (i64, i64) {
         is_enabled: true,
         trigger: arclain_core::RuleTrigger::default(),
         actions: arclain_core::RuleActions {
-            root_folder: Some("Organized".to_string()),
             output_name: None,
-            move_files: vec![arclain_core::MoveAction {
-                // `"**"` is the one pattern `RuleEngine::matches_glob`
-                // treats as "match everything" -- a bare `"*"` is *not*
-                // special-cased there, so it would fall through to an
-                // exact/filename match and never match a real file name.
-                pattern: "**".to_string(),
-                target: String::new(),
-            }],
-            use_standard_layout: false,
+            layout: arclain_core::features::organization::layout::Layout {
+                name: "Organized".to_string(),
+                place: vec![arclain_core::features::organization::layout::Placement {
+                    from: arclain_core::features::organization::layout::Source::All,
+                    into: String::new(),
+                }],
+                ..Default::default()
+            },
         },
     };
     let rule_id = organization_service
@@ -232,18 +230,18 @@ fn seed_rule_and_profile(app: &ArclainApp) -> (i64, i64) {
     (rule_id, profile_id)
 }
 
-/// [`seed_rule_and_profile`] with the two fields the standard-layout
-/// path turns on: `use_standard_layout: true` and a templated
-/// `root_folder`. Everything else -- the `"**"` move rule (which
-/// standard layout ignores: the plan's moves come from the detected
-/// content root instead), the zip profile -- is identical, so a test can
-/// swap one seeder for the other and change only the layout mode.
+/// [`seed_rule_and_profile`] carrying the shipped product layout
+/// instead: the detected content root rehomed under `Game/`, the
+/// metadata document written beside it, the screenshots fetched in, and
+/// a literal folder name. Everything else -- the zip profile -- is
+/// identical, so a test can swap one seeder for the other and change
+/// only the arrangement.
 ///
-/// No metadata row is seeded against `$product_id`, so the template
-/// stays literal and the organized root folder is named `$product_id`.
-/// That is deliberate: the comparison below is between two code paths
-/// applying *the same* plan, and an unexpanded template is the same on
-/// both. Returns `(rule_id, profile_id)`.
+/// The folder name is a literal rather than a template because no
+/// metadata is seeded here: a name whose variables cannot be resolved
+/// costs the output entirely, and the comparison this seeds is between
+/// two code paths applying *the same* plan, not between two ways of
+/// producing nothing. Returns `(rule_id, profile_id)`.
 fn seed_standard_layout_rule(app: &ArclainApp) -> (i64, i64) {
     let legacy = app
         .take_legacy_composition()
@@ -260,13 +258,8 @@ fn seed_standard_layout_rule(app: &ArclainApp) -> (i64, i64) {
         is_enabled: true,
         trigger: arclain_core::RuleTrigger::default(),
         actions: arclain_core::RuleActions {
-            root_folder: Some("$product_id".to_string()),
             output_name: None,
-            move_files: vec![arclain_core::MoveAction {
-                pattern: "**".to_string(),
-                target: String::new(),
-            }],
-            use_standard_layout: true,
+            layout: arclain_core::features::organization::presets::product_layout("Organized"),
         },
     };
     let rule_id = organization_service
@@ -2919,13 +2912,15 @@ fn start_pipeline_rollback_removes_partial_output_after_a_genuine_post_write_fai
 
 // ─── organize: applying exactly what was previewed ─────────────────────
 
-/// Seeds a rule whose organized root folder is *metadata-driven*
-/// (`[$product_id] $title`), plus a zip profile -- unlike
-/// [`seed_rule_and_profile`]'s deliberately metadata-free rule, this one
-/// produces a visibly different plan depending on which metadata
-/// resolved, which is exactly what the session-binding tests below
-/// measure. Returns `(rule_id, profile_id)`.
-fn seed_metadata_driven_rule_and_profile(app: &ArclainApp) -> (i64, i64) {
+/// Seeds a rule whose organized root folder is `folder_name`, plus a zip
+/// profile. Pass a metadata-driven template (`[$product_id] $title`) to
+/// get a plan that looks visibly different depending on which metadata
+/// resolved, which is what most of the session-binding tests below
+/// measure; pass a literal where the test needs a plan that resolves
+/// with no metadata at all, since a name whose variables stay unset
+/// costs the output rather than standing unexpanded.
+/// Returns `(rule_id, profile_id)`.
+fn seed_metadata_driven_rule_and_profile(app: &ArclainApp, folder_name: &str) -> (i64, i64) {
     let legacy = app
         .take_legacy_composition()
         .expect("take_legacy_composition must succeed for a freshly bootstrapped app");
@@ -2941,13 +2936,15 @@ fn seed_metadata_driven_rule_and_profile(app: &ArclainApp) -> (i64, i64) {
         is_enabled: true,
         trigger: arclain_core::RuleTrigger::default(),
         actions: arclain_core::RuleActions {
-            root_folder: Some("[$product_id] $title".to_string()),
             output_name: None,
-            move_files: vec![arclain_core::MoveAction {
-                pattern: "**".to_string(),
-                target: String::new(),
-            }],
-            use_standard_layout: false,
+            layout: arclain_core::features::organization::layout::Layout {
+                name: folder_name.to_string(),
+                place: vec![arclain_core::features::organization::layout::Placement {
+                    from: arclain_core::features::organization::layout::Source::All,
+                    into: String::new(),
+                }],
+                ..Default::default()
+            },
         },
     };
     let rule_id = organization_service
@@ -3067,7 +3064,7 @@ fn a_session_bound_organize_applies_the_previewed_plan_not_the_library_metadata(
     let runtime = foreign_runtime();
     let temp = scratch_tempdir();
     let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
-    let (rule_id, profile_id) = seed_metadata_driven_rule_and_profile(&app);
+    let (rule_id, profile_id) = seed_metadata_driven_rule_and_profile(&app, "[$product_id] $title");
     seed_library_title(&app, "Library Title");
 
     // Carries the placeholder product code the library row is keyed by,
@@ -3146,8 +3143,9 @@ fn a_session_bound_organize_applies_the_previewed_plan_not_the_library_metadata(
         preview
     });
 
+    let previewed_root = preview.outputs[0].root_folder.clone();
     assert_eq!(
-        preview.root_folder, "[RJ123456] Plugin Title",
+        previewed_root, "[RJ123456] Plugin Title",
         "the preview must plan from the session's own plugin metadata"
     );
 
@@ -3163,7 +3161,7 @@ fn a_session_bound_organize_applies_the_previewed_plan_not_the_library_metadata(
     assert!(
         std::fs::read_to_string(&applied_output)
             .unwrap()
-            .contains(&preview.root_folder),
+            .contains(&previewed_root),
         "the packed layout must be the exact root folder the preview reported"
     );
 }
@@ -3176,13 +3174,18 @@ fn a_session_bound_organize_applies_the_previewed_plan_not_the_library_metadata(
 /// Seeds the library it must not fall back to, and expects the
 /// code-stemmed output only the detection tier produces, so both halves
 /// need the feature.
+///
+/// The rule's folder name is a literal here, unlike its metadata-driven
+/// siblings: a template whose variables stay unset costs the output, so
+/// a metadata-driven name would leave nothing to pack and the question
+/// this asks -- which metadata named the *file* -- would go untested.
 #[cfg(feature = "gameta")]
 #[test]
 fn a_session_with_no_plugin_metadata_never_falls_back_to_the_library() {
     let runtime = foreign_runtime();
     let temp = scratch_tempdir();
     let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
-    let (rule_id, profile_id) = seed_metadata_driven_rule_and_profile(&app);
+    let (rule_id, profile_id) = seed_metadata_driven_rule_and_profile(&app, "Organized");
     seed_library_title(&app, "Library Title");
 
     let input = temp.path().join("[RJ123456] Placeholder.zip");
@@ -3219,10 +3222,15 @@ fn a_session_with_no_plugin_metadata_never_falls_back_to_the_library() {
         preview
     });
 
-    // With no metadata at all there is nothing to expand `$product_id`
-    // or `$title` from, so the rule engine leaves both placeholders
-    // standing -- an ugly folder name, but the one the preview showed.
-    assert_eq!(preview.root_folder, "[$product_id] $title");
+    // The plan is the metadata-less one the preview showed: one output,
+    // named by the layout's literal, and nothing passed over.
+    let previewed_root = preview.outputs[0].root_folder.clone();
+    assert_eq!(previewed_root, "Organized");
+    assert!(
+        preview.skipped_outputs.is_empty(),
+        "nothing was passed over: {:?}",
+        preview.skipped_outputs
+    );
     assert!(
         !destination.join("Library Title.zip").exists(),
         "the library title must not leak into a metadata-less session's organize"
@@ -3241,7 +3249,7 @@ fn a_session_with_no_plugin_metadata_never_falls_back_to_the_library() {
     assert!(
         std::fs::read_to_string(&applied_output)
             .unwrap()
-            .contains(&preview.root_folder),
+            .contains(&previewed_root),
         "the packed layout must be the exact root folder the preview reported"
     );
 }
@@ -3684,7 +3692,7 @@ fn metadata_written_after_registration_does_not_change_the_executed_plan() {
     let (backend, arm_listing_gate, listing_gate_fired, release_listing) =
         FakeExtractBackend::listing_gated(input.clone());
     let app = bootstrap_app_ex(&temp, Some(backend));
-    let (rule_id, profile_id) = seed_metadata_driven_rule_and_profile(&app);
+    let (rule_id, profile_id) = seed_metadata_driven_rule_and_profile(&app, "[$product_id] $title");
     let destination = temp.path().join("out");
 
     runtime.block_on(async {

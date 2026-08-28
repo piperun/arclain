@@ -28,9 +28,10 @@ use arclain_app::error::ApplicationErrorKind;
 use arclain_app::event::{OperationResult, OperationState};
 use arclain_app::ids::ArchiveSessionId;
 use arclain_app::organization::{
-    has_dlsite_product_code, OrganizationMoveActionDto, OrganizationProfileInput,
-    OrganizationProfileSummary, OrganizationRuleActionsDto, OrganizationRuleInput,
-    OrganizationRuleSummary, OrganizationRuleTriggerDto,
+    has_dlsite_product_code, FetchSourceDto, FetchedFileDto, GeneratedContentDto, GeneratedFileDto,
+    LayoutDto, OrganizationProfileInput, OrganizationProfileSummary, OrganizationRuleActionsDto,
+    OrganizationRuleInput, OrganizationRuleSummary, OrganizationRuleTriggerDto, PlacementDto,
+    PlacementSourceDto, PlannedOutputDto,
 };
 use arclain_app::{ArclainApp, BootstrapConfig};
 
@@ -148,15 +149,63 @@ fn base_rule_input(name: &str) -> OrganizationRuleInput {
         enabled: true,
         trigger: OrganizationRuleTriggerDto::default(),
         actions: OrganizationRuleActionsDto {
-            root_folder: Some("Organized".to_string()),
             output_name: None,
-            move_files: vec![OrganizationMoveActionDto {
-                pattern: "*.exe".to_string(),
-                target: "bin".to_string(),
-            }],
-            use_standard_layout: false,
+            layout: LayoutDto {
+                name: "Organized".to_string(),
+                // Routes the executables into `bin/` and carries
+                // everything else along beside them. The trailing `All`
+                // is what keeps the archive whole: a placement claims
+                // the files it matches and a file nothing claimed is
+                // left behind entirely.
+                place: vec![
+                    PlacementDto {
+                        from: PlacementSourceDto::Matching("*.exe".to_string()),
+                        into: "bin".to_string(),
+                    },
+                    PlacementDto {
+                        from: PlacementSourceDto::All,
+                        into: String::new(),
+                    },
+                ],
+                ..LayoutDto::default()
+            },
         },
     }
+}
+
+/// The arrangement a rule used to ask for with `use_standard_layout`:
+/// detect the payload folder, rehome it under `Game/`, write the
+/// metadata document beside it and fetch the screenshots.
+fn standard_layout() -> LayoutDto {
+    LayoutDto {
+        name: "Organized".to_string(),
+        place: vec![PlacementDto {
+            from: PlacementSourceDto::ContentRoot,
+            into: "Game".to_string(),
+        }],
+        generate: vec![GeneratedFileDto {
+            into: "metadata.json".to_string(),
+            content: GeneratedContentDto::MetadataDocument,
+        }],
+        fetch: vec![FetchedFileDto {
+            into: "screenshots".to_string(),
+            source: FetchSourceDto::Screenshots,
+            name: "image_$index.$ext".to_string(),
+        }],
+        ..LayoutDto::default()
+    }
+}
+
+/// The plan's one output. Every preview in this file describes a
+/// whole-input layout, which resolves to exactly one folder; a test
+/// about several outputs lives where the resolution does.
+fn only_output(preview: &arclain_app::organization::OrganizePlanPreview) -> &PlannedOutputDto {
+    assert_eq!(
+        preview.outputs.len(),
+        1,
+        "a whole-input layout resolves to one output"
+    );
+    &preview.outputs[0]
 }
 
 fn base_profile_input(name: &str) -> OrganizationProfileInput {
@@ -233,9 +282,9 @@ fn a_rule_round_trips_through_create_update_and_delete() {
     assert_eq!(created.priority, 50);
     assert!(created.enabled);
     assert_eq!(created.trigger.filename_pattern.as_deref(), Some(r"RJ\d+"));
-    assert_eq!(created.actions.root_folder.as_deref(), Some("Organized"));
-    assert_eq!(created.actions.move_files.len(), 1);
-    assert_eq!(created.actions.move_files[0].target, "bin");
+    assert_eq!(created.actions.layout.name, "Organized");
+    assert_eq!(created.actions.layout.place.len(), 2);
+    assert_eq!(created.actions.layout.place[0].into, "bin");
 
     // Update by id: every field the editor can change survives.
     let mut update = input.clone();
@@ -243,8 +292,7 @@ fn a_rule_round_trips_through_create_update_and_delete() {
     update.name = "Round Trip Renamed".to_string();
     update.priority = 5;
     update.enabled = false;
-    update.actions.use_standard_layout = true;
-    update.actions.move_files.clear();
+    update.actions.layout = standard_layout();
 
     let after_update = runtime
         .block_on(app.upsert_organization_rule(update))
@@ -255,8 +303,11 @@ fn a_rule_round_trips_through_create_update_and_delete() {
     assert_eq!(updated.id, created_id, "an update must not mint a new id");
     assert_eq!(updated.priority, 5);
     assert!(!updated.enabled);
-    assert!(updated.actions.use_standard_layout);
-    assert!(updated.actions.move_files.is_empty());
+    assert_eq!(
+        updated.actions.layout,
+        standard_layout(),
+        "the whole layout survives an update, enums and all"
+    );
     assert!(find_rule(&after_update, "Round Trip").is_none());
 
     let after_delete = runtime
@@ -824,18 +875,23 @@ fn preview_plans_every_file_in_the_open_archive() {
     assert_eq!(preview.session_id, session_id);
     assert_eq!(preview.rule_id, rule_id);
     assert_eq!(preview.rule_name, "Preview Rule");
-    assert_eq!(preview.root_folder, "Organized");
-    assert_eq!(preview.root_folder_template, "Organized");
-    assert!(!preview.use_standard_layout);
+    let output = only_output(&preview);
+    assert_eq!(output.root_folder, "Organized");
+    assert_eq!(output.root_folder_template, "Organized");
+    assert!(
+        preview.skipped_outputs.is_empty(),
+        "nothing was passed over"
+    );
     assert_eq!(
         preview.revision, 1,
         "a freshly opened session is revision 1"
     );
 
-    // Every file is planned; the `*.exe` move rule routes one of them
-    // into `bin/`, the rest fall through to the `game/` default. The
-    // wrapper directory is stripped as the plan's common root.
-    let destinations: Vec<&str> = preview
+    // Every file is planned; the `*.exe` placement routes one of them
+    // into `bin/`, the trailing `All` carries the rest. A placement
+    // strips only what its own glob spells out, so the wrapper
+    // directory travels with the files under it.
+    let destinations: Vec<&str> = output
         .moves
         .iter()
         .map(|planned| planned.destination.as_str())
@@ -843,12 +899,12 @@ fn preview_plans_every_file_in_the_open_archive() {
     assert_eq!(
         destinations,
         vec![
-            "Organized/bin/Game.exe",
-            "Organized/game/data/pack.bin",
-            "Organized/game/readme.txt",
+            "Organized/bin/wrapper/Game.exe",
+            "Organized/wrapper/data/pack.bin",
+            "Organized/wrapper/readme.txt",
         ]
     );
-    let sources: Vec<&str> = preview
+    let sources: Vec<&str> = output
         .moves
         .iter()
         .map(|planned| planned.source.as_str())
@@ -873,10 +929,21 @@ fn preview_plans_every_file_in_the_open_archive() {
     );
     assert_eq!(preview.integrity.expected_modified_files, 3);
 
+    // Every placement says what it did, whether or not there was
+    // anything to infer -- a preview that describes an outcome without
+    // saying how it was reached is one a user can only trust or
+    // distrust.
+    assert_eq!(
+        output.reasoning.len(),
+        2,
+        "one line per placement: {:?}",
+        output.reasoning
+    );
+
     // No plugin metadata has been reported for this session, so nothing
     // is generated and nothing is scheduled for download.
-    assert!(preview.generated_files.is_empty());
-    assert!(preview.downloads.is_empty());
+    assert!(output.generated_files.is_empty());
+    assert!(output.downloads.is_empty());
     assert_eq!(preview.integrity.generated_files, 0);
     assert_eq!(preview.integrity.expected_screenshots, 0);
     assert_eq!(preview.integrity.planned_screenshots, 0);
@@ -911,8 +978,7 @@ fn preview_names_the_files_no_move_covers() {
     );
 
     let mut input = base_rule_input("Standard Layout");
-    input.actions.use_standard_layout = true;
-    input.actions.move_files.clear();
+    input.actions.layout = standard_layout();
     let created = runtime
         .block_on(app.upsert_organization_rule(input))
         .expect("creating a rule must succeed");
@@ -928,15 +994,31 @@ fn preview_names_the_files_no_move_covers() {
             .expect("preview must succeed")
     });
 
-    assert!(preview.use_standard_layout);
+    let output = only_output(&preview);
     assert_eq!(
-        preview
+        output
             .moves
             .iter()
             .map(|planned| planned.destination.as_str())
             .collect::<Vec<_>>(),
         vec!["Organized/Game/Game.exe", "Organized/Game/data.bin"],
         "only the detected content root is rehomed"
+    );
+    // The same fact the missing list carries, said where a user reading
+    // the plan will see it: which folder was taken as the payload, and
+    // which file that decision left behind.
+    assert!(
+        output.reasoning.iter().any(|line| line.contains("inner")),
+        "the reasoning must name the folder it took as the payload: {:?}",
+        output.reasoning
+    );
+    assert!(
+        output
+            .reasoning
+            .iter()
+            .any(|line| line.contains("outside/readme.txt")),
+        "and the file no placement carried: {:?}",
+        output.reasoning
     );
 
     assert_eq!(preview.integrity.original_files, 4);
@@ -1018,7 +1100,7 @@ fn a_rule_that_cannot_produce_a_plan_reports_invalid_input() {
     let archive = build_zip_fixture(temp.path(), "small.zip", &[("only.txt", b"content")]);
 
     let mut input = base_rule_input("Escaping Root");
-    input.actions.root_folder = Some("../outside".to_string());
+    input.actions.layout.name = "../outside".to_string();
     let created = runtime
         .block_on(app.upsert_organization_rule(input))
         .expect("creating the rule must succeed");
@@ -1123,7 +1205,7 @@ fn repeated_previews_register_no_operations() {
 fn constructs_every_public_organization_dto() {
     use arclain_app::organization::{
         OrganizeIntegrityDto, OrganizePlanPreview, PlannedDownloadDto, PlannedMoveDto,
-        ResolvedVariableDto,
+        ResolvedVariableDto, SkippedOutputDto,
     };
 
     let rule_input = base_rule_input("dto");
@@ -1163,21 +1245,27 @@ fn constructs_every_public_organization_dto() {
         revision: 1,
         rule_id: "1".to_string(),
         rule_name: "dto".to_string(),
-        root_folder: "Out".to_string(),
-        root_folder_template: "Out".to_string(),
-        use_standard_layout: false,
-        moves: vec![PlannedMoveDto {
-            source: "a".to_string(),
-            destination: "Out/a".to_string(),
+        outputs: vec![PlannedOutputDto {
+            root_folder: "Out".to_string(),
+            root_folder_template: "Out".to_string(),
+            moves: vec![PlannedMoveDto {
+                source: "a".to_string(),
+                destination: "Out/a".to_string(),
+            }],
+            generated_files: vec!["Out/metadata.json".to_string()],
+            downloads: vec![PlannedDownloadDto {
+                destination: "Out/0.jpg".to_string(),
+                cached: false,
+            }],
+            resolved_variables: vec![ResolvedVariableDto {
+                name: "title".to_string(),
+                value: "T".to_string(),
+            }],
+            reasoning: vec!["all files placed 1 file into Out".to_string()],
         }],
-        generated_files: vec!["Out/metadata.json".to_string()],
-        downloads: vec![PlannedDownloadDto {
-            destination: "Out/0.jpg".to_string(),
-            cached: false,
-        }],
-        resolved_variables: vec![ResolvedVariableDto {
-            name: "title".to_string(),
-            value: "T".to_string(),
+        skipped_outputs: vec![SkippedOutputDto {
+            root: "extras".to_string(),
+            reason: "$title was not set".to_string(),
         }],
         integrity: OrganizeIntegrityDto {
             original_files: 1,

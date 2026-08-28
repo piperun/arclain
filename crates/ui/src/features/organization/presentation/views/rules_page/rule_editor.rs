@@ -5,7 +5,8 @@
 use crate::shared::components::{Form, TemplateVariable, VariableGroup, VariablePicker};
 use crate::shared::theme::AppTheme;
 use arclain_app::organization::{
-    OrganizationRuleActionsDto, OrganizationRuleInput, OrganizationRuleTriggerDto,
+    FetchSourceDto, GeneratedContentDto, LayoutDto, OrganizationRuleActionsDto,
+    OrganizationRuleInput, OrganizationRuleTriggerDto, OutputSelectorDto, PlacementSourceDto,
 };
 use arclain_widgets::{TextInput, ToggleSwitch};
 use eframe::egui;
@@ -33,10 +34,13 @@ pub struct RuleEditorState {
     pub target_field: Option<RuleField>,
 }
 
-/// Fields that can receive variable insertions
+/// Fields that can receive variable insertions.
+///
+/// Only the archive name: the layout's own templates (the output folder
+/// name, each destination, each fetched file's name) are rendered
+/// read-only here, so there is nothing to insert into yet.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RuleField {
-    FolderName,
     ArchiveName,
 }
 
@@ -100,11 +104,6 @@ pub fn render_rule_editor(
     if let Some(var) = state.variable_picker.show(ui.ctx(), theme) {
         if let Some(field) = state.target_field {
             match field {
-                RuleField::FolderName => {
-                    let current = state.rule.actions.root_folder.clone().unwrap_or_default();
-                    state.rule.actions.root_folder = Some(format!("{}{}", current, var));
-                    state.is_dirty = true;
-                }
                 RuleField::ArchiveName => {
                     let current = state.rule.actions.output_name.clone().unwrap_or_default();
                     state.rule.actions.output_name = Some(format!("{}{}", current, var));
@@ -231,64 +230,8 @@ fn render_rule_form(ui: &mut egui::Ui, theme: &AppTheme, state: &mut RuleEditorS
         Some("Configure what happens when this rule matches"),
     );
 
-    let consolidate_changed = ui
-        .horizontal(|ui| {
-            let resp = ui.add(
-                ToggleSwitch::new(&mut state.rule.actions.use_standard_layout)
-                    .with_theme_colors(&theme.colors),
-            );
-            ui.label("Consolidate into single folder");
-            resp.changed()
-        })
-        .inner;
-    if consolidate_changed {
-        state.is_dirty = true;
-    }
+    render_layout_detail(ui, theme, &state.rule.actions.layout);
     ui.add_space(12.0);
-
-    // Folder name (only shown when organization is enabled)
-    if state.rule.actions.use_standard_layout {
-        // Label
-        ui.label(
-            egui::RichText::new("Folder Name")
-                .size(12.0)
-                .color(theme.colors.on_surface),
-        );
-        ui.add_space(4.0);
-        // Input + button row
-        ui.horizontal(|ui| {
-            let mut root = state
-                .rule
-                .actions
-                .root_folder
-                .clone()
-                .unwrap_or_else(|| "Game".to_string());
-            if TextInput::new(&mut root)
-                .hint("e.g. {title} or Game")
-                .width(FIELD_WIDTH - 40.0)
-                .with_theme_colors(&theme.colors)
-                .show(ui)
-                .changed()
-            {
-                state.rule.actions.root_folder = Some(root);
-                state.is_dirty = true;
-            }
-
-            if ui
-                .add(
-                    arclain_widgets::IconButton::new(egui_phosphor::regular::BRACKETS_CURLY)
-                        .size(arclain_widgets::IconButtonSize::Medium)
-                        .with_theme_colors(&theme.colors),
-                )
-                .on_hover_text("Insert variable")
-                .clicked()
-            {
-                state.target_field = Some(RuleField::FolderName);
-                state.variable_picker.open();
-            }
-        });
-        ui.add_space(12.0);
-    }
 
     // Archive name - Label
     ui.label(
@@ -336,20 +279,124 @@ fn render_rule_form(ui: &mut egui::Ui, theme: &AppTheme, state: &mut RuleEditorS
     );
 
     // Copy folder name button
-    let has_folder =
-        state.rule.actions.root_folder.is_some() && state.rule.actions.use_standard_layout;
-    if has_folder {
+    if !state.rule.actions.layout.name.is_empty() {
         ui.add_space(8.0);
         if ui
             .small_button("Copy folder name to archive name")
             .clicked()
         {
-            if let Some(folder) = &state.rule.actions.root_folder {
-                state.rule.actions.output_name = Some(folder.clone());
-                state.is_dirty = true;
-            }
+            state.rule.actions.output_name = Some(state.rule.actions.layout.name.clone());
+            state.is_dirty = true;
         }
     }
+}
+
+/// The saved layout, read-only: what counts as one output, what each is
+/// called, where its files go, and what is written or fetched into it.
+///
+/// Read-only on purpose. A layout is a nested, enum-bearing shape and
+/// editing it needs a real editor; a half-built one that silently
+/// flattened the parts it could not express would be worse than none,
+/// because a rule would then be saved as something other than what its
+/// author loaded. What a rule already carries is shown in full so
+/// nothing about it is invisible in the meantime.
+fn render_layout_detail(ui: &mut egui::Ui, theme: &AppTheme, layout: &LayoutDto) {
+    let detail = |ui: &mut egui::Ui, label: &str, value: String| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new(label)
+                    .size(12.0)
+                    .color(theme.colors.on_surface_variant),
+            );
+            ui.label(
+                egui::RichText::new(value)
+                    .size(12.0)
+                    .monospace()
+                    .color(theme.colors.on_surface),
+            );
+        });
+    };
+
+    ui.label(
+        egui::RichText::new("Layout")
+            .size(12.0)
+            .strong()
+            .color(theme.colors.on_surface),
+    );
+    ui.add_space(4.0);
+
+    detail(
+        ui,
+        "One output per: ",
+        match &layout.outputs {
+            OutputSelectorDto::Whole => "the whole archive".to_string(),
+            OutputSelectorDto::PerDirectoryContaining { marker } => {
+                format!("folder containing {marker}")
+            }
+        },
+    );
+    detail(
+        ui,
+        "Folder name: ",
+        if layout.name.is_empty() {
+            "(no wrapper folder)".to_string()
+        } else {
+            layout.name.clone()
+        },
+    );
+
+    for variable in &layout.file_variables {
+        detail(
+            ui,
+            "Reads: ",
+            format!(
+                "${} from {} key {}",
+                variable.as_name, variable.file, variable.key
+            ),
+        );
+    }
+
+    if layout.place.is_empty() {
+        detail(ui, "Places: ", "nothing".to_string());
+    }
+    for placement in &layout.place {
+        let source = match &placement.from {
+            PlacementSourceDto::All => "everything".to_string(),
+            PlacementSourceDto::Matching(glob) => format!("files matching {glob}"),
+            PlacementSourceDto::ContentRoot => "the detected content folder".to_string(),
+        };
+        let destination = if placement.into.is_empty() {
+            "the output root".to_string()
+        } else {
+            placement.into.clone()
+        };
+        detail(ui, "Places: ", format!("{source} into {destination}"));
+    }
+
+    for generated in &layout.generate {
+        let what = match generated.content {
+            GeneratedContentDto::MetadataDocument => "the metadata document",
+        };
+        detail(ui, "Writes: ", format!("{what} to {}", generated.into));
+    }
+
+    for fetched in &layout.fetch {
+        let what = match fetched.source {
+            FetchSourceDto::Screenshots => "screenshots",
+        };
+        detail(
+            ui,
+            "Fetches: ",
+            format!("{what} into {} as {}", fetched.into, fetched.name),
+        );
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("Editing a layout is not available here yet.")
+            .size(11.0)
+            .color(theme.colors.on_surface_variant),
+    );
 }
 
 /// Render a section header with title and optional description

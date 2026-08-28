@@ -441,21 +441,43 @@ impl OrganizePanel {
 /// The organized side of the preview as a tree. Takes the DTO's own
 /// lists, which the facade already sorted, rather than the plan's
 /// internal maps the pre-facade panel walked.
+///
+/// Every output's files go into the one tree, because the tree is what
+/// the result looks like on disk and a plan producing three mod folders
+/// produces three siblings there. Each output's paths already start
+/// with its own root folder, so they land in the right branch without
+/// anything here having to prefix them.
 fn build_organized_tree_from(preview: &OrganizePlanPreview) -> Vec<preview_tree::PreviewTreeNode> {
-    let moves: Vec<(String, String)> = preview
-        .moves
-        .iter()
-        .map(|planned| (planned.source.clone(), planned.destination.clone()))
-        .collect();
-    let downloads: Vec<String> = preview
-        .downloads
-        .iter()
-        .map(|download| download.destination.clone())
-        .collect();
-    let variables: Vec<(String, String)> = preview
-        .resolved_variables
-        .iter()
-        .map(|variable| (variable.name.clone(), variable.value.clone()))
-        .collect();
-    build_organized_tree(&moves, &preview.generated_files, &downloads, &variables)
+    let mut moves: Vec<(String, String)> = Vec::new();
+    let mut generated_files: Vec<String> = Vec::new();
+    let mut downloads: Vec<String> = Vec::new();
+    let mut variables: Vec<(String, String)> = Vec::new();
+
+    for output in &preview.outputs {
+        moves.extend(
+            output
+                .moves
+                .iter()
+                .map(|planned| (planned.source.clone(), planned.destination.clone())),
+        );
+        generated_files.extend(output.generated_files.iter().cloned());
+        downloads.extend(
+            output
+                .downloads
+                .iter()
+                .map(|download| download.destination.clone()),
+        );
+        // Two outputs resolve two different values for the same name --
+        // that is the whole point of a per-mod layout -- but this list
+        // only feeds a textual `$var` substitution over destinations
+        // that are already resolved, so a duplicate name is inert.
+        variables.extend(
+            output
+                .resolved_variables
+                .iter()
+                .map(|variable| (variable.name.clone(), variable.value.clone())),
+        );
+    }
+
+    build_organized_tree(&moves, &generated_files, &downloads, &variables)
 }
