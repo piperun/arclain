@@ -711,3 +711,68 @@ fn every_output_and_every_skipped_folder_reaches_the_rendered_frame() {
         "each output's reasoning must be reachable from the frame"
     );
 }
+
+/// A window can be dragged shorter than the preview's own chrome, and the
+/// panel has to draw something rather than bring the process down.
+///
+/// The dual-pane strip sized its panes by subtracting a constant from the
+/// space it was given, which goes negative once that space is smaller than
+/// the constant. egui refuses a negative height by panicking, so a short
+/// enough window took the whole application with it rather than clipping a
+/// pane.
+#[test]
+fn the_preview_survives_a_window_shorter_than_its_own_chrome() {
+    use arclain_app::organization::{
+        OrganizeIntegrityDto, OrganizePlanPreview, PlannedMoveDto, PlannedOutputDto,
+    };
+
+    let mut panel = panel_for(ArchiveSessionId::from_raw(1), "pack.zip", Vec::new());
+    panel.set_preview(OrganizePlanPreview {
+        session_id: ArchiveSessionId::from_raw(1),
+        revision: 1,
+        rule_id: "1".to_string(),
+        rule_name: "Mods".to_string(),
+        outputs: vec![PlannedOutputDto {
+            root_folder: "Red Mod".to_string(),
+            root_folder_template: "$mod_name".to_string(),
+            moves: vec![PlannedMoveDto {
+                source: "pack/red/mod.esp".to_string(),
+                destination: "Red Mod/mod.esp".to_string(),
+            }],
+            generated_files: Vec::new(),
+            downloads: Vec::new(),
+            resolved_variables: Vec::new(),
+            reasoning: Vec::new(),
+        }],
+        skipped_outputs: Vec::new(),
+        integrity: OrganizeIntegrityDto {
+            original_files: 1,
+            original_folders: 1,
+            moved_files: 1,
+            generated_files: 0,
+            expected_screenshots: 0,
+            planned_screenshots: 0,
+            expected_modified_files: 1,
+            file_discrepancy: 0,
+            missing_original_files: Vec::new(),
+            original_hash: 1,
+            result_hash: 1,
+            content_match: true,
+        },
+    });
+
+    // Shorter than the 40 points the panes subtract, so the subtraction
+    // lands below zero and egui is asked for a negative height.
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(eframe::egui::vec2(900.0, 24.0))
+        .build_ui_state(
+            |ui, panel: &mut OrganizePanel| {
+                let ctx = ui.ctx().clone();
+                let theme = arclain_ui::shared::theme::AppTheme::new(false);
+                panel.render(ui, &ctx, &theme);
+            },
+            panel,
+        );
+
+    harness.run();
+}

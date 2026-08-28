@@ -6,6 +6,11 @@ use arclain_widgets::ThemedDropdown;
 use eframe::egui::{self, RichText};
 use egui_extras::{Size, StripBuilder};
 
+/// Vertical space each preview pane reserves for its own chrome before
+/// sizing its tree: the frame's 8pt inner margin at top and bottom, the
+/// title line, and the separator beneath it.
+const PANE_CHROME_HEIGHT: f32 = 40.0;
+
 /// What to call an output on screen. An empty root folder is a real
 /// layout -- a lone output with no wrapper, its content at the top level
 /// -- and rendering it as an empty string would read as a bug.
@@ -353,6 +358,16 @@ impl OrganizePanel {
 
             // DUAL PANE TREE VIEW
             let available = ui.available_size();
+            // What each pane gives up to its own chrome: the frame's 8pt
+            // margin top and bottom, the title line, and the separator
+            // under it. `set_height` sets a maximum as well as a minimum,
+            // so a pane that did not reserve this would size itself to
+            // the whole cell and then overflow it by its own margins.
+            //
+            // Clamped because a window can be shorter than the chrome:
+            // egui takes a negative height as a bug and, in a build with
+            // debug assertions, panics rather than clipping.
+            let pane_height = (available.y - PANE_CHROME_HEIGHT).max(0.0);
 
             StripBuilder::new(ui)
                 .size(Size::remainder().at_least(100.0)) // Left Pane
@@ -367,7 +382,7 @@ impl OrganizePanel {
                             .corner_radius(4.0)
                             .show(ui, |ui| {
                                 ui.vertical(|ui| {
-                                    ui.set_height(available.y - 40.0);
+                                    ui.set_height(pane_height);
 
                                     let original_title = format!("Original: {}", archive_name);
                                     ui.add(
@@ -400,7 +415,7 @@ impl OrganizePanel {
                     // ARROW
                     strip.cell(|ui| {
                         ui.vertical_centered(|ui| {
-                            ui.add_space(available.y / 2.0 - 20.0);
+                            ui.add_space((available.y / 2.0 - 20.0).max(0.0));
                             ui.label(
                                 RichText::new(egui_phosphor::regular::ARROW_RIGHT)
                                     .size(20.0)
@@ -417,7 +432,7 @@ impl OrganizePanel {
                             .corner_radius(4.0)
                             .show(ui, |ui| {
                                 ui.vertical(|ui| {
-                                    ui.set_height(available.y - 40.0);
+                                    ui.set_height(pane_height);
 
                                     let organized_title = match plan.outputs.as_slice() {
                                         [] => "Modified: nothing".to_string(),
