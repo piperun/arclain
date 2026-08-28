@@ -502,7 +502,6 @@ pub(crate) async fn run_drag_stage(
                 )
                 .with_diagnostic(diagnostic)
                 .with_recoverability(Recoverability::Retry)
-                .with_retryable(true)
             };
             fail(&inner, operation_id, error).await;
             return;

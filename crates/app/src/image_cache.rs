@@ -121,7 +121,6 @@ pub(crate) fn discard_host_image(
             )
             .with_diagnostic(error.to_string())
             .with_recoverability(Recoverability::Retry)
-            .with_retryable(true)
         })
 }
 
@@ -182,8 +181,7 @@ pub(crate) fn fetch_display_image(
             "image fetch returned an unexpected status",
         )
         .with_diagnostic(format!("HTTP status {}", response.status_code))
-        .with_recoverability(Recoverability::Retry)
-        .with_retryable(true));
+        .with_recoverability(Recoverability::Retry));
     }
     if !response
         .content_type
@@ -205,8 +203,7 @@ pub(crate) fn fetch_display_image(
             "{} bytes is at or below the {MIN_FETCHED_IMAGE_BYTES}-byte floor",
             response.body.len()
         ))
-        .with_recoverability(Recoverability::Retry)
-        .with_retryable(true));
+        .with_recoverability(Recoverability::Retry));
     }
     Ok(response.body)
 }
@@ -230,11 +227,9 @@ pub(crate) fn cache_write_error(summary: &str, error: &anyhow::Error) -> Applica
         }
         None => (ApplicationErrorKind::Internal, Recoverability::Retry),
     };
-    let retryable = recoverability == Recoverability::Retry;
     ApplicationError::new(kind, summary)
         .with_diagnostic(error.to_string())
         .with_recoverability(recoverability)
-        .with_retryable(retryable)
 }
 
 fn image_fetch_error(error: arclain_network::HttpError) -> ApplicationError {
@@ -247,7 +242,6 @@ fn image_fetch_error(error: arclain_network::HttpError) -> ApplicationError {
         .with_recoverability(Recoverability::Fatal),
         other => ApplicationError::new(ApplicationErrorKind::Backend, "image fetch failed")
             .with_diagnostic(other.to_string())
-            .with_recoverability(Recoverability::Retry)
-            .with_retryable(true),
+            .with_recoverability(Recoverability::Retry),
     }
 }

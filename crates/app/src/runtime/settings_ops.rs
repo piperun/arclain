@@ -172,7 +172,6 @@ fn cache_maintenance_error(context: &str, error: impl std::fmt::Display) -> Appl
     )
     .with_diagnostic(format!("{context}: {error}"))
     .with_recoverability(Recoverability::Retry)
-    .with_retryable(true)
     .with_suggested_action(SuggestedAction::Retry)
 }
 
@@ -2096,7 +2095,6 @@ fn gameta_unreachable_error(server_url: &str, error: impl std::fmt::Display) -> 
     )
     .with_diagnostic(error.to_string())
     .with_recoverability(Recoverability::Retry)
-    .with_retryable(true)
     .with_suggested_action(SuggestedAction::Retry)
     .with_field("server_url")
 }

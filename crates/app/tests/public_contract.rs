@@ -55,7 +55,6 @@ fn constructs_every_public_dto() {
     let error = ApplicationError::new(ApplicationErrorKind::NotFound, "not found")
         .with_diagnostic("diagnostic")
         .with_recoverability(Recoverability::UserAction)
-        .with_retryable(false)
         .with_suggested_action(SuggestedAction::Retry)
         .with_operation_id(operation_id)
         .with_archive_session_id(archive_session_id)
@@ -256,17 +255,31 @@ mod error_envelope {
         );
     }
 
+    /// `retryable` is not a field a caller sets; it is what
+    /// `recoverability` already said, so the two cannot contradict each
+    /// other. They could once, and did, at a quarter of the sites that
+    /// set either.
     #[test]
-    fn recoverability_and_retryable_default_conservatively_then_round_trip() {
+    fn retryable_is_whether_recoverability_says_retry() {
         let default_error = ApplicationError::new(ApplicationErrorKind::Internal, "summary");
         assert_eq!(default_error.recoverability, Recoverability::Fatal);
         assert!(!default_error.retryable);
 
-        let retryable_error = ApplicationError::new(ApplicationErrorKind::Busy, "summary")
-            .with_recoverability(Recoverability::Retry)
-            .with_retryable(true);
-        assert_eq!(retryable_error.recoverability, Recoverability::Retry);
-        assert!(retryable_error.retryable);
+        for (recoverability, expected) in [
+            (Recoverability::Retry, true),
+            // The caller has to do something first, so a bare retry is
+            // not what this is telling them to do.
+            (Recoverability::UserAction, false),
+            (Recoverability::Fatal, false),
+        ] {
+            let error = ApplicationError::new(ApplicationErrorKind::Busy, "summary")
+                .with_recoverability(recoverability.clone());
+            assert_eq!(error.recoverability, recoverability);
+            assert_eq!(
+                error.retryable, expected,
+                "{recoverability:?} must report retryable={expected}"
+            );
+        }
     }
 
     #[test]
@@ -339,7 +352,6 @@ mod serialization_snapshots {
         let error = ApplicationError::new(ApplicationErrorKind::PermissionDenied, "denied")
             .with_diagnostic("diagnostic text")
             .with_recoverability(Recoverability::UserAction)
-            .with_retryable(true)
             .with_suggested_action(SuggestedAction::CheckPermissions)
             .with_operation_id(OperationId::from_raw(1))
             .with_archive_session_id(ArchiveSessionId::from_raw(2))
@@ -355,7 +367,7 @@ mod serialization_snapshots {
                 "summary": "denied",
                 "diagnostic": "diagnostic text",
                 "recoverability": "user_action",
-                "retryable": true,
+                "retryable": false,
                 "suggested_action": "check_permissions",
                 "correlation_id": error.correlation_id.into_raw(),
                 "operation_id": 1,

@@ -74,8 +74,7 @@ fn inspection_error(error: LegacyInspectionError) -> ApplicationError {
             "legacy network storage changed or is currently in use",
         )
         .with_diagnostic(error.to_string())
-        .with_recoverability(Recoverability::Retry)
-        .with_retryable(true),
+        .with_recoverability(Recoverability::Retry),
         LegacyInspectionErrorKind::PermissionDenied => ApplicationError::new(
             ApplicationErrorKind::PermissionDenied,
             "legacy network storage cannot be read safely",

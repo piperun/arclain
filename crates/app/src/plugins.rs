@@ -1504,7 +1504,6 @@ fn stale_document_action(expected_revision: u64, actual_revision: u64) -> Applic
         "expected revision {expected_revision}, current revision {actual_revision}"
     ))
     .with_recoverability(Recoverability::Retry)
-    .with_retryable(true)
 }
 
 // ============================================================================

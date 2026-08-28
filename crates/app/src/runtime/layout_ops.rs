@@ -282,7 +282,6 @@ fn backend_error(context: &'static str, error: anyhow::Error) -> ApplicationErro
     ApplicationError::new(ApplicationErrorKind::Backend, "layout storage failed")
         .with_diagnostic(format!("{context}: {error:#}"))
         .with_recoverability(Recoverability::Retry)
-        .with_retryable(true)
 }
 
 fn shutdown_mid_request_error() -> ApplicationError {

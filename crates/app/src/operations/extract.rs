@@ -212,7 +212,6 @@ fn cli_spawn_error(error: anyhow::Error) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::Backend, "failed to start extraction")
         .with_diagnostic(format!("{error:#}"))
         .with_recoverability(Recoverability::Retry)
-        .with_retryable(true)
 }
 
 /// Classifies one finished CLI extraction attempt: `Some(percent)`
@@ -240,7 +239,6 @@ fn classify_cli_exit(
         ApplicationError::new(ApplicationErrorKind::Backend, "extraction process failed")
             .with_diagnostic(diagnostic)
             .with_recoverability(Recoverability::Retry)
-            .with_retryable(true)
     }
 }
 

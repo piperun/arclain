@@ -327,7 +327,6 @@ fn set_changed_error(first_part: &Path) -> ApplicationError {
         "this split archive changed since the merge was prepared -- re-detect it and try again",
     )
     .with_recoverability(Recoverability::Retry)
-    .with_retryable(true)
     .with_path(first_part.to_path_buf())
 }
 
@@ -373,7 +372,6 @@ fn merge_backend_error(error: anyhow::Error) -> ApplicationError {
     )
     .with_diagnostic(format!("{error:#}"))
     .with_recoverability(Recoverability::Retry)
-    .with_retryable(true)
 }
 
 fn internal_join_error(join_error: tokio::task::JoinError) -> ApplicationError {

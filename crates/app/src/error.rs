@@ -152,13 +152,23 @@ impl ApplicationError {
         self
     }
 
+    /// Sets `recoverability`, and `retryable` with it.
+    ///
+    /// The two answer the same question, so they are one decision rather
+    /// than two: `retryable` is true exactly when retrying on its own may
+    /// succeed, which is what [`Recoverability::Retry`] means.
+    /// [`Recoverability::UserAction`] is false because the caller has to
+    /// do something first, and [`Recoverability::Fatal`] because nothing
+    /// helps.
+    ///
+    /// They used to be set independently, and drifted apart at a quarter
+    /// of the sites that set either: an envelope would tell a caller to
+    /// retry through one field and not to through the other. The frontend
+    /// that reads them worked around it by computing its own answer from
+    /// `recoverability` and ignoring `retryable` entirely.
     pub fn with_recoverability(mut self, recoverability: Recoverability) -> Self {
+        self.retryable = recoverability == Recoverability::Retry;
         self.recoverability = recoverability;
-        self
-    }
-
-    pub fn with_retryable(mut self, retryable: bool) -> Self {
-        self.retryable = retryable;
         self
     }
 

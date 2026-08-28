@@ -254,7 +254,6 @@ fn revision_conflict_error(
         "expected revision {expected}, current revision {actual}"
     ))
     .with_recoverability(Recoverability::Retry)
-    .with_retryable(true)
     .with_archive_session_id(session_id)
 }
 
@@ -279,7 +278,6 @@ fn mutation_backend_error(action: &str, error: anyhow::Error) -> ApplicationErro
     ApplicationError::new(ApplicationErrorKind::Backend, format!("failed to {action}"))
         .with_diagnostic(format!("{error:#}"))
         .with_recoverability(Recoverability::Retry)
-        .with_retryable(true)
 }
 
 /// Distinct from [`mutation_backend_error`]: the mutation itself already

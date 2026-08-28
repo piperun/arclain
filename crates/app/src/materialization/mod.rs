@@ -501,8 +501,7 @@ pub(crate) async fn run_materialize(
                             "failed to materialize the requested entry",
                         )
                         .with_diagnostic(diagnostic)
-                        .with_recoverability(Recoverability::Retry)
-                        .with_retryable(true),
+                        .with_recoverability(Recoverability::Retry),
                     )
                     .await;
                     return;

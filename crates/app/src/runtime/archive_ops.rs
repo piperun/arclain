@@ -76,7 +76,6 @@ fn backend_error(source_path: &Path, error: anyhow::Error) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::Backend, "failed to open archive")
         .with_diagnostic(format!("{error:#}"))
         .with_recoverability(Recoverability::Retry)
-        .with_retryable(true)
         .with_path(source_path.to_path_buf())
 }
 

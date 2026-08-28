@@ -317,12 +317,13 @@ impl ImageBytes for FacadeImageBytes {
         };
         fetched.map(|_| ()).map_err(|error| ImageFetchError {
             message: error.summary,
-            // `recoverability`, not `retryable`: the envelope's boolean
-            // defaults to false and is not kept in step with the
-            // classification, so reading it would make every transient
-            // backend failure look permanent and silently stop the
-            // retries this must preserve.
-            retryable: error.recoverability != arclain_app::error::Recoverability::Fatal,
+            // The envelope derives this from its own classification, so
+            // it is the answer rather than a second opinion. It reads
+            // narrower than the recoverability check that stood here
+            // while the two could disagree: an error the user has to
+            // clear -- a full disk -- is no longer re-attempted on the
+            // renderer's timer, which is what it was asking for.
+            retryable: error.retryable,
         })
     }
 
