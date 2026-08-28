@@ -3,11 +3,19 @@
 mod content_verification;
 use content_verification::ContentHashMap;
 
+use anyhow::Context;
 use arclain_core::backends::selector::BackendSelector;
 use arclain_core::backends::sevenz_cli::SevenZipCli;
-use arclain_core::features::organization::{organizer::organize_archive, GameMetadata};
+use arclain_core::features::organization::downloads::{http_downloader, stage_plan_downloads};
+use arclain_core::features::organization::engine::RuleEngine;
+use arclain_core::features::organization::organizer::pack_work_dir;
+use arclain_core::features::organization::GameMetadata;
+use arclain_core::features::pipeline::apply_plan::apply_plan_to_workdir;
 use arclain_core::utilities::logging::init_test_logging;
-use arclain_core::{Archive, ArchiveBackend, ConfigStore, PassRule};
+use arclain_core::{
+    Archive, ArchiveBackend, ConfigStore, OrganizationRule, PassRule, PendingDownload, RuleActions,
+    RuleTrigger,
+};
 use arclain_db::{DbPaths, SecretsDb, SecretsKey};
 use serde::Deserialize;
 use std::fs;
@@ -195,6 +203,57 @@ fn get_dummy_metadata(product_id: &str) -> GameMetadata {
     }
 }
 
+/// Lay `archive` out into `dest` the way the application does: build a
+/// standard-layout plan from the rule engine, extract, resolve the
+/// plan's downloads, apply the plan to the work directory, then pack
+/// what is left.
+///
+/// `fetch` is the caller's downloader so one HTTP client is built per
+/// test rather than per screenshot; with metadata that carries no
+/// screenshots the plan schedules no downloads and it is never called.
+fn organize_via_plan(
+    archive: &mut Archive,
+    dest: &Path,
+    metadata: &GameMetadata,
+    fetch: &dyn Fn(&PendingDownload) -> anyhow::Result<Vec<u8>>,
+) -> anyhow::Result<()> {
+    let rule = OrganizationRule {
+        name: "Standard".to_string(),
+        is_enabled: true,
+        trigger: RuleTrigger::default(),
+        actions: RuleActions {
+            root_folder: Some("$product_id".to_string()),
+            use_standard_layout: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let archive_name = archive
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_string();
+    let info = archive.list().context("listing source archive")?;
+    let plan = RuleEngine::create_plan(&rule, &archive_name, &info.entries, Some(metadata))
+        .context("building organization plan")?;
+
+    let work = tempfile::tempdir().context("creating organize work directory")?;
+    archive
+        .extract_all(work.path())
+        .context("extracting source archive")?;
+
+    let staged =
+        stage_plan_downloads(&plan, work.path(), fetch).context("staging plan downloads")?;
+    for (url, dest_path, reason) in &staged.unfetched {
+        warn!("screenshot not fetched: {dest_path} ({url}): {reason}");
+    }
+
+    apply_plan_to_workdir(&staged.plan, work.path()).context("applying organization plan")?;
+    pack_work_dir(archive, dest, work.path(), None).context("packing organized archive")
+}
+
 /// Test that organizing already-organized content (expected_result) stays the same
 #[test]
 fn test_expected_result_idempotency() {
@@ -235,8 +294,9 @@ fn test_expected_result_idempotency() {
     let metadata = get_dummy_metadata("RJ_TEST");
 
     let backend_arc = std::sync::Arc::new(backend);
-    let archive = Archive::new(backend_arc.clone(), &archive_path);
-    organize_archive(&archive, &output_7z, &metadata, temp.path())
+    let mut archive = Archive::new(backend_arc.clone(), &archive_path);
+    let fetch = http_downloader().expect("Failed to build downloader");
+    organize_via_plan(&mut archive, &output_7z, &metadata, &fetch)
         .expect("Failed to organize archive");
 
     // Verify: Extract the created 7z and check structure
@@ -407,15 +467,15 @@ fn test_integration_data_full_workflow() {
         if has_password { "provided" } else { "None" }
     );
 
-    let archive = if let Some(pwd) = password {
+    let mut archive = if let Some(pwd) = password {
         Archive::with_password(backend, &archive_path, pwd)
     } else {
         Archive::new(backend, &archive_path)
     };
 
-    // === CALL ORGANIZE (clean dependency injection API) ===
-    // We'll intercept the organize process to test before compression
-    let org_result = organize_archive(&archive, &output_7z, &metadata, temp.path());
+    // === CALL ORGANIZE (the same plan applier the application runs) ===
+    let fetch = http_downloader().expect("Failed to build downloader");
+    let org_result = organize_via_plan(&mut archive, &output_7z, &metadata, &fetch);
 
     // Handle encryption errors - the organize function should detect password need internally
     if let Err(e) = org_result {
@@ -487,8 +547,13 @@ fn test_integration_data_full_workflow() {
     // Use first extraction for main test
     let extract_dir = extract_dir1;
 
-    // Verify structure: Game/, screenshots/, metadata.json
-    // The archive organizer creates: {product_id}/Game/...
+    // Verify structure: Game/, metadata.json
+    // A standard-layout plan creates: {product_id}/Game/...
+    //
+    // There is no `screenshots/` to assert on: the plan applier only
+    // creates that folder for screenshots it was asked to place, and
+    // this metadata carries none. The organizer this test used to call
+    // made an empty one unconditionally.
     let product_dir = extract_dir.join(&test_meta.product_id);
     if !product_dir.exists() {
         println!("Expected product directory not found. Looking for actual structure...");
@@ -503,7 +568,6 @@ fn test_integration_data_full_workflow() {
     }
 
     let game_dir = product_dir.join("Game");
-    let screenshots_dir = product_dir.join("screenshots");
     let metadata_json = product_dir.join("metadata.json");
 
     assert!(
@@ -512,10 +576,6 @@ fn test_integration_data_full_workflow() {
         test_meta.product_id
     );
     assert!(game_dir.exists(), "Game folder must exist in output");
-    assert!(
-        screenshots_dir.exists(),
-        "screenshots folder must exist in output"
-    );
     assert!(metadata_json.exists(), "metadata.json must exist in output");
 
     // === DIAGNOSTIC LOGGING FOR PATH COMPARISON ===
@@ -611,7 +671,6 @@ fn test_integration_data_full_workflow() {
     println!("\n=== Final Structure Verification ===");
     println!("✓ {}/", metadata.product_id);
     println!("  ✓ Game/ ({} files)", actual_hashes.hashes.len());
-    println!("  ✓ screenshots/ (directory created)");
     println!("  ✓ metadata.json (exists)");
     println!(
         "  {} Content verification: {}",
@@ -636,7 +695,7 @@ fn test_integration_data_full_workflow() {
     println!("✓ Integration test PASSED");
     println!("  ✓ Archive decrypted with production password");
     println!(
-        "  ✓ Proper structure: {}/Game/, /screenshots/, /metadata.json",
+        "  ✓ Proper structure: {}/Game/, /metadata.json",
         metadata.product_id
     );
 
@@ -1053,6 +1112,7 @@ fn test_multiple_expected_result_copies() {
     }
 
     let backend = SevenZipCli::detect(None).expect("Failed to init 7z");
+    let fetch = http_downloader().expect("Failed to build downloader");
 
     // Create 3 test copies
     for i in 1..=3 {
@@ -1075,8 +1135,8 @@ fn test_multiple_expected_result_copies() {
         let metadata = get_dummy_metadata(&format!("RJ_TEST_{}", i));
 
         let backend_arc = std::sync::Arc::new(backend.clone());
-        let archive = Archive::new(backend_arc.clone(), &archive_path);
-        organize_archive(&archive, &output_7z, &metadata, temp.path()).expect("Failed to organize");
+        let mut archive = Archive::new(backend_arc.clone(), &archive_path);
+        organize_via_plan(&mut archive, &output_7z, &metadata, &fetch).expect("Failed to organize");
 
         // Extract and verify
         let extract_dir = temp.path().join(&test_name).join("extracted");

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::Path;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::utilities::CheckedRelativePath;
 use crate::Archive;
@@ -292,50 +292,6 @@ pub(crate) fn apply_deferred_plan_metadata(
             })?;
     }
 
-    Ok(())
-}
-
-/// Organize archive with game metadata using Archive (dependency injection pattern)
-///
-/// This is the primary API for organizing archives. Pass in an Archive handle
-/// which encapsulates the backend, file path, and any necessary credentials.
-pub fn organize_archive(
-    archive: &Archive,
-    dest: &Path,
-    metadata: &GameMetadata,
-    temp_dir: &Path,
-) -> Result<()> {
-    info!(
-        "Organizing archive {} with {} metadata for {}",
-        archive.path().display(),
-        metadata.source,
-        metadata.product_id
-    );
-
-    // Step 1: Create work directory with cleanup guard
-    let work_dir = create_work_directory(temp_dir, "arclain_organize")?;
-    let root_dir = work_dir.path().join(&metadata.product_id);
-    std::fs::create_dir_all(&root_dir).context("creating root dir")?;
-
-    // Step 2: Verify encryption status
-    verify_archive_encryption(archive)?;
-
-    // Step 3: Extract archive
-    let extract_temp = extract_archive_to_temp(archive, work_dir.path())?;
-
-    // Step 4: Organize game content
-    organize_game_content(&extract_temp, &root_dir)?;
-
-    // Step 5: Create metadata file
-    create_metadata_file(&root_dir, metadata)?;
-
-    // Step 6: Process screenshots
-    create_screenshots_directory(&root_dir, metadata)?;
-
-    // Step 7: Create final archive
-    create_final_archive(archive, dest, &root_dir)?;
-
-    info!("Archive organization completed successfully");
     Ok(())
 }
 
