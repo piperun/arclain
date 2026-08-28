@@ -41,10 +41,18 @@ impl IntegrityReport {
         let original_file_count = entries.iter().filter(|e| !e.is_dir).count();
         let original_folder_count = entries.iter().filter(|e| e.is_dir).count();
 
+        // Counted over every output, because a plan that produces one
+        // folder per mod carries its files on the outputs and nothing on
+        // the plan itself.
+        let total = |count: fn(&crate::features::organization::engine::PlannedOutput) -> usize| {
+            plan.map(|p| p.outputs.iter().map(count).sum::<usize>())
+                .unwrap_or(0)
+        };
+
         let expected_screenshots = metadata.map(|m| m.screenshots.len()).unwrap_or(0);
-        let planned_screenshots = plan.map(|p| p.downloads.len()).unwrap_or(0);
-        let generated_files_count = plan.map(|p| p.generated_files.len()).unwrap_or(0);
-        let moved_files = plan.map(|p| p.moves.len()).unwrap_or(0);
+        let planned_screenshots = total(|output| output.downloads.len());
+        let generated_files_count = total(|output| output.generated_files.len());
+        let moved_files = total(|output| output.moves.len());
 
         let expected_modified_files = moved_files + generated_files_count + planned_screenshots;
 
@@ -68,8 +76,9 @@ impl IntegrityReport {
 
         // 2. Covered paths from plan
         let mut plan_sources: Vec<String> = if let Some(p) = plan {
-            p.moves
+            p.outputs
                 .iter()
+                .flat_map(|output| output.moves.iter())
                 .map(|(src, _)| src.replace('\\', "/"))
                 .collect()
         } else {
@@ -175,25 +184,43 @@ mod tests {
         assert_eq!(report.expected_screenshots, 0);
     }
 
+    /// A plan holding one output, which is what a product layout
+    /// produces. The report counts over every output, and these tests
+    /// are about the counting, not about how many there are.
+    fn one_output_plan(
+        root: &str,
+        moves: Vec<(String, String)>,
+        generated_files: Vec<(String, String)>,
+    ) -> OrganizationPlan {
+        OrganizationPlan {
+            rule_name: "Test".to_string(),
+            outputs: vec![crate::features::organization::engine::PlannedOutput {
+                root_folder: root.to_string(),
+                root_folder_template: root.to_string(),
+                moves,
+                generated_files,
+                downloads: vec![],
+                resolved_variables: std::collections::HashMap::new(),
+                reasoning: vec![],
+            }],
+            skipped_outputs: vec![],
+        }
+    }
+
     #[test]
     fn test_integrity_report_with_plan() {
         let entries = vec![
             make_entry("Game.exe", 1024, false),
             make_entry("readme.txt", 100, false),
         ];
-        let plan = OrganizationPlan {
-            rule_name: "Test".to_string(),
-            root_folder: "Output".to_string(),
-            root_folder_template: "Output".to_string(),
-            moves: vec![
+        let plan = one_output_plan(
+            "Output",
+            vec![
                 ("Game.exe".to_string(), "Output/Game/Game.exe".to_string()),
                 ("readme.txt".to_string(), "Output/readme.txt".to_string()),
             ],
-            generated_files: vec![("Output/metadata.json".to_string(), "{}".to_string())],
-            downloads: vec![],
-            use_standard_layout: true,
-            resolved_variables: std::collections::HashMap::new(),
-        };
+            vec![("Output/metadata.json".to_string(), "{}".to_string())],
+        );
         let report = IntegrityReport::calculate(&entries, Some(&plan), None);
         assert_eq!(report.original_files, 2);
         assert_eq!(report.moved_files, 2);
@@ -209,16 +236,11 @@ mod tests {
             make_entry("b.txt", 20, false),
             make_entry("c.txt", 30, false),
         ];
-        let plan = OrganizationPlan {
-            rule_name: "Test".to_string(),
-            root_folder: "Out".to_string(),
-            root_folder_template: "Out".to_string(),
-            moves: vec![("a.txt".to_string(), "Out/a.txt".to_string())],
-            generated_files: vec![],
-            downloads: vec![],
-            use_standard_layout: false,
-            resolved_variables: std::collections::HashMap::new(),
-        };
+        let plan = one_output_plan(
+            "Out",
+            vec![("a.txt".to_string(), "Out/a.txt".to_string())],
+            vec![],
+        );
         let report = IntegrityReport::calculate(&entries, Some(&plan), None);
         assert_eq!(report.moved_files, 1);
         assert_eq!(report.missing_original_files.len(), 2);

@@ -247,12 +247,29 @@ where
 {
     plan.validate_paths()?;
 
-    let root_folder = CheckedRelativePath::new(&plan.root_folder)?;
-    root_folder.resolve_under(work_dir)?;
+    // Every output's work, flattened. The transaction is whole-plan and
+    // stays that way: staging builds every output's root before anything
+    // is promoted, so a run that fails partway leaves the work directory
+    // as it was rather than holding two of three folders.
+    let generated_files: Vec<&(String, String)> = plan
+        .outputs
+        .iter()
+        .flat_map(|output| output.generated_files.iter())
+        .collect();
+
+    for output in &plan.outputs {
+        // An output with no wrapper puts its content at the top level of
+        // the work directory, and there is no folder to resolve.
+        if output.root_folder.is_empty() {
+            continue;
+        }
+        CheckedRelativePath::new(&output.root_folder)?.resolve_under(work_dir)?;
+    }
 
     let checked_moves = plan
-        .moves
+        .outputs
         .iter()
+        .flat_map(|output| output.moves.iter())
         .map(|(source, destination)| {
             Ok((
                 CheckedRelativePath::new(source)?,
@@ -260,14 +277,14 @@ where
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    let checked_generated = plan
-        .generated_files
+    let checked_generated = generated_files
         .iter()
         .map(|(path, _)| CheckedRelativePath::new(path))
         .collect::<Result<Vec<_>>>()?;
     let checked_downloads = plan
-        .downloads
+        .outputs
         .iter()
+        .flat_map(|output| output.downloads.iter())
         .map(|download| CheckedRelativePath::new(&download.dest_path))
         .collect::<Result<Vec<_>>>()?;
 
@@ -328,7 +345,7 @@ where
                 }
             }
         }
-        for ((_, content), checked_path) in plan.generated_files.iter().zip(&checked_generated) {
+        for ((_, content), checked_path) in generated_files.iter().zip(&checked_generated) {
             let mut bytes = std::io::Cursor::new(content.as_bytes());
             persist_plan_output(&staging, checked_path, &mut bytes)
                 .with_context(|| format!("stage generated output {:?}", checked_path.as_path()))?;
@@ -600,13 +617,16 @@ mod tests {
     ) -> OrganizationPlan {
         OrganizationPlan {
             rule_name: "test".into(),
-            root_folder: "MyGame".into(),
-            root_folder_template: "MyGame".into(),
-            moves,
-            generated_files: generated,
-            downloads: vec![],
-            use_standard_layout: true,
-            resolved_variables: Default::default(),
+            outputs: vec![crate::features::organization::engine::PlannedOutput {
+                root_folder: "MyGame".into(),
+                root_folder_template: "MyGame".into(),
+                moves,
+                generated_files: generated,
+                downloads: vec![],
+                resolved_variables: Default::default(),
+                reasoning: vec![],
+            }],
+            skipped_outputs: vec![],
         }
     }
 
@@ -1457,7 +1477,7 @@ mod tests {
         fs::create_dir(&work).unwrap();
         touch(&work.join("game.exe"));
         let mut plan = empty_plan(vec![], vec![]);
-        plan.downloads.push(PendingDownload {
+        plan.outputs[0].downloads.push(PendingDownload {
             product_id: None,
             url: "https://example.invalid/file".into(),
             dest_path: "../download.bin".into(),
@@ -1482,7 +1502,7 @@ mod tests {
         touch(&work.join("game.exe"));
         symlink_dir_for_test(&outside, &work.join("linked"));
         let mut plan = empty_plan(vec![("game.exe".into(), "MyGame/game.exe".into())], vec![]);
-        plan.downloads.push(PendingDownload {
+        plan.outputs[0].downloads.push(PendingDownload {
             product_id: None,
             url: "https://example.invalid/image.jpg".into(),
             dest_path: "linked/image.jpg".into(),
@@ -1522,7 +1542,7 @@ mod tests {
             vec![("game.exe".into(), r"MyGame\output.bin".into())],
             vec![],
         );
-        plan.downloads.push(PendingDownload {
+        plan.outputs[0].downloads.push(PendingDownload {
             product_id: None,
             url: "https://example.invalid/file".into(),
             dest_path: "MyGame/output.bin".into(),

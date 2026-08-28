@@ -1,11 +1,9 @@
-//! `RuleEngine` impl — rule matching, plan generation, screenshot
-//! download list, template-variable expansion, glob matching.
+//! `RuleEngine` impl — rule matching, plan generation, glob matching.
 //!
 //! Was the bulk of the old single-file `engine.rs`. Helpers like the
 //! tree pruner live in [`super::tree`]; this file focuses on plan
-//! construction. `expand_variables` and `matches_glob` are
-//! `pub(super)` so the test suite in `mod.rs` can exercise them
-//! directly without duplicating fixtures.
+//! construction. `matches_glob` is `pub(super)` so the test suite in
+//! `mod.rs` can exercise it directly without duplicating fixtures.
 //!
 //! [`fill_output`] is the second half of resolving a layout: given an
 //! output that [`super::outputs`] has already located and named, it
@@ -13,11 +11,11 @@
 //! naming reads a handful of files out of the archive and filling reads
 //! none — a folder name must never wait on a payload.
 
-use super::outputs::{expand, ResolvedOutput};
+use super::outputs::{expand, resolve_outputs, ResolvedOutput};
 use super::tree::TreeNode;
 use super::{OrganizationPlan, PendingDownload, PlannedOutput, RuleEngine};
 use crate::features::organization::layout::{
-    FetchSource, GeneratedContent, Layout, Placement, Source,
+    FetchSource, GeneratedContent, Layout, OutputSelector, Placement, Source,
 };
 use crate::features::organization::metadata::{GameMetadata, ScreenshotData};
 use crate::features::organization::{OrganizationRule, RuleTrigger};
@@ -108,90 +106,86 @@ impl RuleEngine {
         true
     }
 
-    /// Generate an organization plan based on a rule
+    /// Generate an organization plan based on a rule.
+    ///
+    /// The two halves of resolving a layout meet here: [`resolve_outputs`]
+    /// works out how many outputs there are and what each is called, and
+    /// [`fill_output`] works out what goes into each one.
+    ///
+    /// `read_entry` is handed the archive-relative path of a file a
+    /// layout named — a `modinfo.ini` behind a file variable — and
+    /// returns its bytes. Nothing else is read: planning must not pull a
+    /// payload out of an archive to decide a folder name. Taking a
+    /// closure rather than an `Archive` is what lets a directory be a new
+    /// input rather than a new engine.
     pub fn create_plan(
         rule: &OrganizationRule,
-        archive_name: &str,
+        input_name: &str,
         entries: &[ArchiveEntry],
         game_metadata: Option<&crate::features::organization::metadata::GameMetadata>,
+        read_entry: &dyn Fn(&str) -> Option<Vec<u8>>,
     ) -> Result<OrganizationPlan> {
         // Prune unnecessary files/folders before any analysis.
         let pruned_entries = Self::prune_entries(entries);
         let entries = &pruned_entries;
+        let layout = &rule.actions.layout;
 
-        // Detect the inner content root early — its folder name is one
-        // of the metadata sources (version + tags), and the move
-        // computation needs it too.
-        let content_root = if rule.actions.use_standard_layout {
-            Some(Self::find_game_content_root_in_entries(entries))
-        } else {
-            None
-        };
+        // A content root's folder name is one of the variable sources —
+        // `$version`, `$root_tags`, `$folder_name` are read out of it —
+        // and an output's name is resolved before anything is placed, so
+        // the detection has to happen here as well as inside each
+        // output.
+        //
+        // Only when the whole input is one output, though. Detection
+        // across the input is scoped to nothing in particular, and
+        // feeding that into a per-folder output's *name* would let one
+        // mod's folder name be decided by what its siblings contain.
+        // Placement does not have this problem: `fill_output` detects
+        // within each output. A marker layout wanting `$version` in a
+        // name therefore finds it unset and says so, which is the loud
+        // failure rather than the quiet wrong answer.
+        //
+        // The two conditions together are exactly what the retired
+        // `use_standard_layout` boolean expressed, since it only ever
+        // existed alongside one output.
+        let names_a_content_root = layout
+            .place
+            .iter()
+            .any(|placement| matches!(placement.from, Source::ContentRoot));
+        let content_root = (names_a_content_root
+            && matches!(layout.outputs, OutputSelector::Whole))
+        .then(|| Self::find_game_content_root_in_entries(entries));
 
-        let metadata = Self::build_metadata_map(rule, archive_name, game_metadata, &content_root);
+        let base_variables =
+            Self::build_metadata_map(rule, input_name, game_metadata, &content_root);
 
-        let root_folder = rule
-            .actions
-            .root_folder
-            .as_deref()
-            .map(|tpl| Self::expand_variables(tpl, &metadata))
-            .unwrap_or_else(|| "Game".to_string());
+        let resolved = resolve_outputs(layout, entries, &base_variables, read_entry)?;
 
-        let moves = Self::compute_moves(
-            rule,
-            entries,
-            content_root.as_ref(),
-            &metadata,
-            &root_folder,
-        );
-
-        let mut generated_files = Vec::new();
-        if let Some(gm) = game_metadata {
-            // The layered document the plugin produced, which carries the
-            // source-specific fields the extracted struct does not keep --
-            // `metadata_json` is `#[serde(skip)]`, so serializing the struct
-            // silently drops them. Fall back to the struct only when no raw
-            // document came with the metadata.
-            let contents = if gm.metadata_json.trim().is_empty() {
-                serde_json::to_string_pretty(gm).ok()
-            } else {
-                Some(gm.metadata_json.clone())
-            };
-            if let Some(contents) = contents {
-                generated_files.push((format!("{}/metadata.json", root_folder), contents));
-            }
+        let mut outputs = Vec::with_capacity(resolved.outputs.len());
+        for output in &resolved.outputs {
+            outputs.push(fill_output(layout, output, entries, game_metadata)?);
         }
-
-        let downloads = Self::compute_downloads(rule, game_metadata, &root_folder);
-
-        let root_folder_template = rule
-            .actions
-            .root_folder
-            .clone()
-            .unwrap_or_else(|| "Game".to_string());
 
         let plan = OrganizationPlan {
             rule_name: rule.name.clone(),
-            root_folder,
-            root_folder_template,
-            moves,
-            generated_files,
-            downloads,
-            use_standard_layout: rule.actions.use_standard_layout,
-            resolved_variables: metadata,
+            outputs,
+            skipped_outputs: resolved.skipped,
         };
         plan.validate_paths()
             .context("organization plan path validation")?;
         Ok(plan)
     }
 
-    /// Build the variable map used for expanding `$name` placeholders
-    /// in the rule's `root_folder` and per-file move targets. Pulls
-    /// from (in order, last write wins): GameMetadata fields,
-    /// flattened `metadata_json`, named captures from
-    /// `trigger.filename_pattern`, the archive filename version regex,
-    /// and the inner content-root folder name (version + bracketed
-    /// tags).
+    /// Build the variable map every one of a layout's templates starts
+    /// from — the output name and each `into`. Pulls from (in order,
+    /// last write wins): GameMetadata fields, flattened
+    /// `metadata_json`, named captures from `trigger.filename_pattern`,
+    /// the archive filename version regex, and the inner content-root
+    /// folder name (version + bracketed tags).
+    ///
+    /// A layout's own file variables are resolved per output on top of
+    /// this map, because two outputs of one input read two different
+    /// files and so cannot share them.
     fn build_metadata_map(
         rule: &OrganizationRule,
         archive_name: &str,
@@ -279,204 +273,6 @@ impl RuleEngine {
         }
 
         metadata
-    }
-
-    /// Generate the (source_path, dest_path) move list. Three
-    /// branches:
-    ///
-    /// * `content_root.is_some()` (sanitization mode) — flatten the
-    ///   archive's wrapper folder, putting everything under
-    ///   `{root_folder}/Game/...`.
-    /// * `!use_standard_layout` (explicit-rule mode) — strip the
-    ///   common parent path, then route each file through
-    ///   `actions.move_files` glob rules into `{root_folder}/{target}/...`.
-    /// * Otherwise — empty (caller has standard layout but no content
-    ///   root was found).
-    fn compute_moves(
-        rule: &OrganizationRule,
-        entries: &[ArchiveEntry],
-        content_root: Option<&PathBuf>,
-        metadata: &HashMap<String, String>,
-        root_folder: &str,
-    ) -> Vec<(String, String)> {
-        let mut moves = Vec::new();
-
-        if let Some(content_root) = content_root {
-            let content_root_path = Path::new(content_root);
-
-            for entry in entries {
-                if entry.is_dir {
-                    continue;
-                }
-
-                // Only include files inside the content root
-                // (filters out junk wrappers efficiently).
-                if let Ok(relative_content_path) =
-                    Path::new(&entry.path).strip_prefix(content_root_path)
-                {
-                    let dest_path = format!(
-                        "{}/Game/{}",
-                        root_folder,
-                        relative_content_path.to_string_lossy()
-                    );
-                    moves.push((entry.path.clone(), Self::normalize_dest(&dest_path)));
-                }
-            }
-        } else if !rule.actions.use_standard_layout {
-            let common_root = Self::common_parent(entries);
-
-            for entry in entries {
-                if entry.is_dir {
-                    continue;
-                }
-
-                let mut target_dir = "game/".to_string(); // Default fallback
-                for move_rule in &rule.actions.move_files {
-                    if Self::matches_glob(&move_rule.pattern, &entry.path) {
-                        target_dir = move_rule.target.clone();
-                        break;
-                    }
-                }
-                target_dir = Self::expand_variables(&target_dir, metadata);
-
-                // Strip the common root so nested archives don't
-                // double-up the wrapper folder; preserve the
-                // remaining subdirectory structure.
-                let relative_path = Path::new(&entry.path)
-                    .strip_prefix(&common_root)
-                    .unwrap_or(Path::new(&entry.path));
-
-                let dest_path = if target_dir.is_empty() || target_dir == "." {
-                    format!("{}/{}", root_folder, relative_path.to_string_lossy())
-                } else {
-                    format!(
-                        "{}/{}/{}",
-                        root_folder,
-                        target_dir,
-                        relative_path.to_string_lossy()
-                    )
-                };
-                moves.push((entry.path.clone(), Self::normalize_dest(&dest_path)));
-            }
-        }
-
-        moves
-    }
-
-    /// Longest path prefix shared by every entry, used to strip the
-    /// outer wrapper folder in explicit-rule mode.
-    fn common_parent(entries: &[ArchiveEntry]) -> PathBuf {
-        let paths: Vec<&Path> = entries.iter().map(|e| Path::new(&e.path)).collect();
-        if paths.is_empty() {
-            return PathBuf::new();
-        }
-
-        let mut iter = paths.iter();
-        let mut root = iter
-            .next()
-            .unwrap()
-            .parent()
-            .unwrap_or(Path::new(""))
-            .to_path_buf();
-
-        for path in iter {
-            while !path.starts_with(&root) {
-                if !root.pop() {
-                    break;
-                }
-            }
-        }
-        root
-    }
-
-    /// Forward-slashify and collapse double slashes so plans built on
-    /// Windows match the layout produced on Unix.
-    fn normalize_dest(path: &str) -> String {
-        path.replace("//", "/").replace('\\', "/")
-    }
-
-    /// Build the screenshot download list. Only URL screenshots are
-    /// downloadable; a plugin that already fetched the file, or inlined
-    /// the bytes, reports a form this plan cannot schedule and is
-    /// skipped. DLsite uses cache keys keyed by product_id; other
-    /// sources fall back to a generic `screenshot:` prefix.
-    fn compute_downloads(
-        rule: &OrganizationRule,
-        game_metadata: Option<&crate::features::organization::metadata::GameMetadata>,
-        root_folder: &str,
-    ) -> Vec<PendingDownload> {
-        let mut downloads = Vec::new();
-
-        let Some(gm) = game_metadata else {
-            return downloads;
-        };
-        let is_dlsite = gm.source.eq_ignore_ascii_case("dlsite");
-        let screenshots_folder = if rule.actions.use_standard_layout {
-            "screenshots"
-        } else {
-            "Screenshots"
-        };
-
-        for (i, screenshot) in gm.screenshots.iter().enumerate() {
-            let crate::features::organization::metadata::ScreenshotData::Url(url) = screenshot
-            else {
-                continue;
-            };
-
-            let url = url.clone();
-            let ext = Path::new(&url)
-                .extension()
-                .map(|e| e.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "jpg".to_string());
-
-            let filename = format!("image_{:03}.{}", i + 1, ext);
-            let dest_path = format!("{}/{}/{}", root_folder, screenshots_folder, filename);
-
-            // Cache key must match gameta's cache_keys format.
-            let cache_key = if is_dlsite {
-                format!("dlsite:{}:screenshot_{}", gm.product_id, i)
-            } else {
-                format!("screenshot:{}:{}", gm.product_id, i)
-            };
-
-            downloads.push(PendingDownload {
-                product_id: if is_dlsite {
-                    Some(gm.product_id.clone())
-                } else {
-                    None
-                },
-                url,
-                dest_path,
-                cache_key,
-                cached: false, // Will be checked by UI when loading
-            });
-        }
-
-        downloads
-    }
-
-    pub(super) fn expand_variables(template: &str, metadata: &HashMap<String, String>) -> String {
-        let mut result = template.to_string();
-
-        // Special handling for version prefix " v$version"
-        if result.contains(" v$version") {
-            if let Some(ver) = metadata.get("version") {
-                result = result.replace(" v$version", &format!(" v{}", ver));
-            } else {
-                result = result.replace(" v$version", "");
-            }
-        }
-
-        for (key, value) in metadata {
-            let placeholder = format!("${}", key);
-            result = result.replace(&placeholder, value);
-        }
-
-        // Clean up any remaining unreplaced variables if needed?
-        // For now, leave them or maybe strip them?
-        // User might want to see if something failed.
-
-        result
     }
 
     /// Whether `path` matches `pattern`. Understands `**`, `*.ext`,
@@ -735,9 +531,6 @@ struct DetectedContentRoot {
 /// placement matched is not carried into the output at all, and both
 /// what each placement did and what was left behind land in `reasoning`
 /// so neither is silent.
-// Nothing calls this yet — assembling filled outputs into a whole plan
-// is what will. Drop the allow then.
-#[allow(dead_code)]
 fn fill_output(
     layout: &Layout,
     output: &ResolvedOutput,

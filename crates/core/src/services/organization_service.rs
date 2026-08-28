@@ -139,7 +139,8 @@ impl std::fmt::Debug for OrganizationService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::organization::{MoveAction, RuleActions, RuleTrigger};
+    use crate::features::organization::layout::{Layout, OutputSelector, Placement, Source};
+    use crate::features::organization::{RuleActions, RuleTrigger};
 
     /// Test that OrganizationRule can be serialized to DbOrganizationRule and back
     #[test]
@@ -151,13 +152,18 @@ mod tests {
             is_enabled: true,
             trigger: RuleTrigger::default(),
             actions: RuleActions {
-                root_folder: Some("games/{circle}".to_string()),
                 output_name: None,
-                move_files: vec![MoveAction {
-                    pattern: "*.exe".to_string(),
-                    target: "bin/".to_string(),
-                }],
-                use_standard_layout: true,
+                layout: Layout {
+                    outputs: OutputSelector::Whole,
+                    file_variables: vec![],
+                    name: "games/$circle".to_string(),
+                    place: vec![Placement {
+                        from: Source::Matching("*.exe".to_string()),
+                        into: "bin".to_string(),
+                    }],
+                    generate: vec![],
+                    fetch: vec![],
+                },
             },
         };
 
@@ -181,11 +187,7 @@ mod tests {
         assert_eq!(original.name, restored.name);
         assert_eq!(original.priority, restored.priority);
         assert_eq!(original.is_enabled, restored.is_enabled);
-        assert_eq!(original.actions.root_folder, restored.actions.root_folder);
-        assert_eq!(
-            original.actions.move_files.len(),
-            restored.actions.move_files.len()
-        );
+        assert_eq!(original.actions.layout, restored.actions.layout);
     }
 
     /// Test that empty/default values serialize correctly

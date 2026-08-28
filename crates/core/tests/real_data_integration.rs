@@ -222,9 +222,8 @@ fn organize_via_plan(
         is_enabled: true,
         trigger: RuleTrigger::default(),
         actions: RuleActions {
-            root_folder: Some("$product_id".to_string()),
-            use_standard_layout: true,
-            ..Default::default()
+            output_name: None,
+            layout: arclain_core::features::organization::presets::product_layout("$product_id"),
         },
         ..Default::default()
     };
@@ -236,7 +235,12 @@ fn organize_via_plan(
         .unwrap_or("")
         .to_string();
     let info = archive.list().context("listing source archive")?;
-    let plan = RuleEngine::create_plan(&rule, &archive_name, &info.entries, Some(metadata))
+    // A product layout declares no file variables, so planning reads no
+    // entry out of the archive and the closure is never called.
+    let plan =
+        RuleEngine::create_plan(&rule, &archive_name, &info.entries, Some(metadata), &|_| {
+            None
+        })
         .context("building organization plan")?;
 
     let work = tempfile::tempdir().context("creating organize work directory")?;

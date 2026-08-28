@@ -45,9 +45,15 @@ pub fn stage_plan_downloads(
 ) -> Result<StagedPlan> {
     let mut staged = plan.clone();
     let mut unfetched = Vec::new();
-    staged.downloads = Vec::new();
+    for output in &mut staged.outputs {
+        output.downloads = Vec::new();
+    }
 
-    if plan.downloads.is_empty() {
+    if plan
+        .outputs
+        .iter()
+        .all(|output| output.downloads.is_empty())
+    {
         return Ok(StagedPlan {
             plan: staged,
             unfetched,
@@ -64,13 +70,18 @@ pub fn stage_plan_downloads(
         .context("staging directory name is not valid UTF-8")?
         .to_string();
 
-    for (index, download) in plan.downloads.iter().enumerate() {
-        match fetch(download) {
-            Ok(bytes) => {
-                let name = format!("{index:03}");
-                match std::fs::write(staging.join(&name), &bytes) {
+    // One staging directory for the whole plan, but the name inside it
+    // counts across outputs rather than restarting: two outputs' first
+    // screenshots would otherwise both be staged as `000`.
+    let mut staged_name = 0usize;
+    for (output, staged_output) in plan.outputs.iter().zip(staged.outputs.iter_mut()) {
+        for download in &output.downloads {
+            let name = format!("{staged_name:03}");
+            staged_name += 1;
+            match fetch(download) {
+                Ok(bytes) => match std::fs::write(staging.join(&name), &bytes) {
                     Ok(_) => {
-                        staged
+                        staged_output
                             .moves
                             .push((format!("{staging_name}/{name}"), download.dest_path.clone()));
                     }
@@ -81,14 +92,14 @@ pub fn stage_plan_downloads(
                             format!("{error:#}"),
                         ));
                     }
+                },
+                Err(error) => {
+                    unfetched.push((
+                        download.url.clone(),
+                        download.dest_path.clone(),
+                        format!("{error:#}"),
+                    ));
                 }
-            }
-            Err(error) => {
-                unfetched.push((
-                    download.url.clone(),
-                    download.dest_path.clone(),
-                    format!("{error:#}"),
-                ));
             }
         }
     }
@@ -265,7 +276,7 @@ fn read_bounded(body: &mut impl std::io::Read, limit: usize) -> Result<Vec<u8>> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::organization::engine::{OrganizationPlan, PendingDownload};
+    use crate::features::organization::engine::{OrganizationPlan, PendingDownload, PlannedOutput};
 
     /// The bound the boundary tests exercise. The cap is a comparison,
     /// so a few hundred bytes tests it exactly as well as
@@ -277,20 +288,33 @@ mod tests {
     fn plan_with_one_download() -> OrganizationPlan {
         OrganizationPlan {
             rule_name: "Test".to_string(),
-            root_folder: "Root".to_string(),
-            root_folder_template: "Root".to_string(),
-            moves: vec![("a.txt".to_string(), "Root/a.txt".to_string())],
-            generated_files: vec![],
-            downloads: vec![PendingDownload {
-                product_id: Some("RJ123456".to_string()),
-                url: "https://img.example.test/RJ123456_img_main.jpg".to_string(),
-                dest_path: "Root/screenshots/image_001.jpg".to_string(),
-                cache_key: "dlsite:RJ123456:screenshot_0".to_string(),
-                cached: false,
+            outputs: vec![PlannedOutput {
+                root_folder: "Root".to_string(),
+                root_folder_template: "Root".to_string(),
+                moves: vec![("a.txt".to_string(), "Root/a.txt".to_string())],
+                generated_files: vec![],
+                downloads: vec![PendingDownload {
+                    product_id: Some("RJ123456".to_string()),
+                    url: "https://img.example.test/RJ123456_img_main.jpg".to_string(),
+                    dest_path: "Root/screenshots/image_001.jpg".to_string(),
+                    cache_key: "dlsite:RJ123456:screenshot_0".to_string(),
+                    cached: false,
+                }],
+                resolved_variables: Default::default(),
+                reasoning: vec![],
             }],
-            use_standard_layout: false,
-            resolved_variables: Default::default(),
+            skipped_outputs: vec![],
         }
+    }
+
+    /// Every plan here has one output; staging is what turns downloads
+    /// into moves on it, so the assertions read that output's lists.
+    fn moves(plan: &OrganizationPlan) -> &[(String, String)] {
+        &plan.outputs[0].moves
+    }
+
+    fn downloads(plan: &OrganizationPlan) -> &[PendingDownload] {
+        &plan.outputs[0].downloads
     }
 
     /// A body sitting exactly on the limit is legitimate and must not be
@@ -328,19 +352,17 @@ mod tests {
         .expect("staging must succeed");
 
         assert!(
-            staged.plan.downloads.is_empty(),
+            downloads(&staged.plan).is_empty(),
             "downloads must be consumed"
         );
         assert!(staged.unfetched.is_empty());
         assert_eq!(
-            staged.plan.moves.len(),
+            moves(&staged.plan).len(),
             2,
             "one original move plus one staged image"
         );
 
-        let (source, destination) = staged
-            .plan
-            .moves
+        let (source, destination) = moves(&staged.plan)
             .iter()
             .find(|(_, d)| d == "Root/screenshots/image_001.jpg")
             .expect("the download must appear as a move to its declared destination");
@@ -361,9 +383,9 @@ mod tests {
         })
         .expect("a failed screenshot must not fail the run");
 
-        assert!(staged.plan.downloads.is_empty());
+        assert!(downloads(&staged.plan).is_empty());
         assert_eq!(
-            staged.plan.moves.len(),
+            moves(&staged.plan).len(),
             1,
             "only the original move survives"
         );
@@ -380,12 +402,12 @@ mod tests {
     fn a_plan_with_no_downloads_is_returned_unchanged_and_stages_nothing() {
         let work = tempfile::tempdir().unwrap();
         let mut plan = plan_with_one_download();
-        plan.downloads.clear();
+        plan.outputs[0].downloads.clear();
 
         let staged = stage_plan_downloads(&plan, work.path(), &|_| unreachable!("must not fetch"))
             .expect("staging must succeed");
 
-        assert_eq!(staged.plan.moves, plan.moves);
+        assert_eq!(moves(&staged.plan), moves(&plan));
         // The staging directory is not created if there are no downloads
         let staging_exists = work
             .path()
@@ -413,7 +435,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
 
         let mut plan = plan_with_one_download();
-        plan.downloads = vec![
+        plan.outputs[0].downloads = vec![
             PendingDownload {
                 product_id: Some("RJ123456".to_string()),
                 url: "https://img.example.test/RJ123456_img_1.jpg".to_string(),
@@ -452,19 +474,17 @@ mod tests {
         .expect("staging must succeed");
 
         // Downloads should be consumed
-        assert!(staged.plan.downloads.is_empty());
+        assert!(downloads(&staged.plan).is_empty());
 
         // Should have one original move plus two survivors (index 0 and 2)
         assert_eq!(
-            staged.plan.moves.len(),
+            moves(&staged.plan).len(),
             3,
             "one original plus two staged images"
         );
 
         // Verify the survivors have correct indices
-        let move_sources: Vec<_> = staged
-            .plan
-            .moves
+        let move_sources: Vec<_> = moves(&staged.plan)
             .iter()
             .filter(|(_, d)| d.contains("image_00"))
             .map(|(s, _)| s.clone())

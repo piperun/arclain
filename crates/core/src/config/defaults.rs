@@ -1,3 +1,4 @@
+use crate::features::organization::presets::product_layout;
 use crate::features::organization::{OrganizationRule, RuleActions, RuleTrigger};
 
 pub fn get_default_rules() -> Vec<OrganizationRule> {
@@ -11,10 +12,8 @@ pub fn get_default_rules() -> Vec<OrganizationRule> {
             has_file: None,
         },
         actions: RuleActions {
-            root_folder: Some("[$product_id][$circle] $title".to_string()),
-            use_standard_layout: true,
-            move_files: vec![],
-            ..Default::default()
+            output_name: None,
+            layout: product_layout("[$product_id][$circle] $title"),
         },
         ..Default::default()
     }]

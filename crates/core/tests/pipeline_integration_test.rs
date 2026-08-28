@@ -1318,16 +1318,24 @@ fn apply_plan_reorganizes_files() {
 
     let plan = OrganizationPlan {
         rule_name: "test".into(),
-        root_folder: "MyGame".into(),
-        root_folder_template: "MyGame".into(),
-        moves: vec![
-            ("game.exe".into(), "MyGame/game.exe".into()),
-            ("data/sprites.dat".into(), "MyGame/data/sprites.dat".into()),
+        outputs: vec![
+            arclain_core::features::organization::engine::PlannedOutput {
+                root_folder: "MyGame".into(),
+                root_folder_template: "MyGame".into(),
+                moves: vec![
+                    ("game.exe".into(), "MyGame/game.exe".into()),
+                    ("data/sprites.dat".into(), "MyGame/data/sprites.dat".into()),
+                ],
+                generated_files: vec![(
+                    "MyGame/metadata.json".into(),
+                    r#"{"title":"Test"}"#.into(),
+                )],
+                downloads: vec![],
+                resolved_variables: Default::default(),
+                reasoning: vec![],
+            },
         ],
-        generated_files: vec![("MyGame/metadata.json".into(), r#"{"title":"Test"}"#.into())],
-        downloads: vec![],
-        use_standard_layout: true,
-        resolved_variables: Default::default(),
+        skipped_outputs: vec![],
     };
 
     apply_plan_to_workdir(&plan, tmp.path()).unwrap();

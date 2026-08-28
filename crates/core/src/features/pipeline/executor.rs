@@ -462,6 +462,15 @@ fn run_one_inner(
 
                 let entries = scan_work_dir_as_entries(&work_dir)?;
 
+                // A pipeline plans after extracting, so a layout's file
+                // variables are read out of the work directory. Routed
+                // through `CheckedRelativePath` so a layout cannot name
+                // a path that climbs out of it or follows a symlink.
+                let read_entry = |path: &str| -> Option<Vec<u8>> {
+                    let checked = crate::utilities::CheckedRelativePath::new(path).ok()?;
+                    std::fs::read(checked.resolve_under(&work_dir).ok()?).ok()
+                };
+
                 // Reuse the metadata resolved at the top of run_one so we
                 // don't repeat the DB lookup for each Organize step.
                 let plan = RuleEngine::create_plan(
@@ -469,6 +478,7 @@ fn run_one_inner(
                     archive_name_for_meta,
                     &entries,
                     output_metadata,
+                    &read_entry,
                 )
                 .context("Rule plan failed")?;
 
@@ -710,21 +720,26 @@ mod tests {
     fn plan_scheduling_one_screenshot() -> crate::features::organization::engine::OrganizationPlan {
         use crate::features::organization::engine::{OrganizationPlan, PendingDownload};
 
+        use crate::features::organization::engine::PlannedOutput;
+
         OrganizationPlan {
             rule_name: "Test".to_string(),
-            root_folder: "Root".to_string(),
-            root_folder_template: "Root".to_string(),
-            moves: vec![("a.txt".to_string(), "Root/a.txt".to_string())],
-            generated_files: vec![],
-            downloads: vec![PendingDownload {
-                product_id: Some("RJ123456".to_string()),
-                url: "https://img.example.test/RJ123456_img_main.jpg".to_string(),
-                dest_path: "Root/screenshots/image_001.jpg".to_string(),
-                cache_key: "dlsite:RJ123456:screenshot_0".to_string(),
-                cached: false,
+            outputs: vec![PlannedOutput {
+                root_folder: "Root".to_string(),
+                root_folder_template: "Root".to_string(),
+                moves: vec![("a.txt".to_string(), "Root/a.txt".to_string())],
+                generated_files: vec![],
+                downloads: vec![PendingDownload {
+                    product_id: Some("RJ123456".to_string()),
+                    url: "https://img.example.test/RJ123456_img_main.jpg".to_string(),
+                    dest_path: "Root/screenshots/image_001.jpg".to_string(),
+                    cache_key: "dlsite:RJ123456:screenshot_0".to_string(),
+                    cached: false,
+                }],
+                resolved_variables: Default::default(),
+                reasoning: vec![],
             }],
-            use_standard_layout: false,
-            resolved_variables: Default::default(),
+            skipped_outputs: vec![],
         }
     }
 
@@ -778,7 +793,7 @@ mod tests {
         std::fs::write(work.path().join("a.txt"), b"x").unwrap();
 
         let mut plan = plan_scheduling_one_screenshot();
-        plan.downloads.push(PendingDownload {
+        plan.outputs[0].downloads.push(PendingDownload {
             product_id: Some("RJ123456".to_string()),
             url: "https://img.example.test/RJ123456_img_smp1.jpg".to_string(),
             dest_path: "Root/screenshots/image_002.jpg".to_string(),

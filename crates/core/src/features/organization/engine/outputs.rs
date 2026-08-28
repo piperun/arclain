@@ -12,13 +12,6 @@
 //! depend on a `HashMap`'s iteration order: roots are sorted, and
 //! templates drive their own expansion.
 
-// Naming outputs is half of resolving a layout, and the half that fills
-// them is what calls in here. That half now reads `ResolvedOutput` and
-// borrows `expand`, but nothing calls either half yet, so `resolve_outputs`
-// and everything only it reaches still read as dead. Narrow this back to
-// nothing once a plan is assembled from both halves.
-#![allow(dead_code)]
-
 use crate::archive::ArchiveEntry;
 use crate::features::conversion::modinfo::{self, ModInfo};
 use crate::features::organization::layout::{FileVariable, Layout, OutputSelector};

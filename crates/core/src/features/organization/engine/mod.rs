@@ -8,7 +8,7 @@
 //! - [`outputs`] — resolving a `Layout` to its named outputs: how many
 //!   there are, where each one's content starts, what each is called.
 //! - [`plan_builder`] — the `impl RuleEngine` block (rule matching,
-//!   plan generation, screenshot download list, glob/template helpers).
+//!   plan assembly, filling one output from its layout, glob helpers).
 //! - [`tree`] — the `TreeNode` path tree used by `prune_entries` and
 //!   `find_game_content_root_in_entries`.
 
@@ -59,32 +59,34 @@ pub struct PlannedOutput {
     pub reasoning: Vec<String>,
 }
 
+/// Everything one run of a rule will produce.
+///
+/// An archive is not one output: a mod pack is one folder per mod. The
+/// per-output fields therefore live on [`PlannedOutput`] and the plan
+/// itself carries only what is true of the whole run.
 #[derive(Debug, Clone)]
 pub struct OrganizationPlan {
     pub rule_name: String,
-    pub root_folder: String,
-    pub root_folder_template: String, // Original template pattern before variable expansion
-    pub moves: Vec<(String, String)>, // (source_path, dest_path)
-    pub generated_files: Vec<(String, String)>, // (path, content)
-    pub downloads: Vec<PendingDownload>,
-    /// Set by the rule. Nothing branches on it: the applier works from the
-    /// move list, so the flag survives only as data carried to the preview.
-    /// Kept because the `RuleActions::use_standard_layout` rule action it
-    /// mirrors is still live; both retire when layouts stop being a boolean.
-    pub use_standard_layout: bool,
-    /// Resolved template variables for UI display (e.g., "code" -> "RJ123456")
-    pub resolved_variables: HashMap<String, String>,
+    pub outputs: Vec<PlannedOutput>,
+    /// One `(root, reason)` per output that could not be named, so a
+    /// caller can say which folder was passed over and why. The same
+    /// shape `StagedPlan::unfetched` uses, for the same reason: a thing
+    /// the run skipped is not an error, but it must not be silent.
+    pub skipped_outputs: Vec<(String, String)>,
 }
 
 impl OrganizationPlan {
     /// Validate every filesystem path carried by this plan before it reaches
     /// an execution boundary.
+    ///
+    /// Destinations are pooled across outputs rather than checked one
+    /// output at a time. Two outputs cannot share a root name —
+    /// resolution refuses that — but pooling costs nothing and means a
+    /// layout that reaches past its own root still cannot land two files
+    /// on one path.
     pub fn validate_paths(&self) -> anyhow::Result<()> {
         use anyhow::Context;
         use std::collections::HashSet;
-
-        crate::utilities::CheckedRelativePath::new(&self.root_folder)
-            .context("invalid organization root_folder")?;
 
         let collision_key = |path: &crate::utilities::CheckedRelativePath| {
             path.as_path()
@@ -93,35 +95,48 @@ impl OrganizationPlan {
                 .to_uppercase()
         };
         let mut destinations = HashSet::new();
-        for (source, destination) in &self.moves {
-            crate::utilities::CheckedRelativePath::new(source)
-                .with_context(|| format!("invalid move source {source:?}"))?;
-            let destination = crate::utilities::CheckedRelativePath::new(destination)
-                .with_context(|| format!("invalid move destination {destination:?}"))?;
-            if !destinations.insert(collision_key(&destination)) {
-                anyhow::bail!(
-                    "duplicate organization destination {:?}",
-                    destination.as_path()
-                );
-            }
-        }
 
-        for (path, _) in &self.generated_files {
-            let path = crate::utilities::CheckedRelativePath::new(path)
-                .with_context(|| format!("invalid generated file path {path:?}"))?;
-            if !destinations.insert(collision_key(&path)) {
-                anyhow::bail!("duplicate organization destination {:?}", path.as_path());
+        for output in &self.outputs {
+            // An empty root folder means the output has no wrapper and
+            // its content sits at the top level, which resolution only
+            // permits for a lone output. There is no path to check.
+            if !output.root_folder.is_empty() {
+                crate::utilities::CheckedRelativePath::new(&output.root_folder)
+                    .context("invalid organization root_folder")?;
             }
-        }
 
-        for download in &self.downloads {
-            let destination = crate::utilities::CheckedRelativePath::new(&download.dest_path)
-                .with_context(|| format!("invalid download path {:?}", download.dest_path))?;
-            if !destinations.insert(collision_key(&destination)) {
-                anyhow::bail!(
-                    "duplicate organization destination {:?}",
-                    destination.as_path()
-                );
+            for (source, destination) in &output.moves {
+                crate::utilities::CheckedRelativePath::new(source)
+                    .with_context(|| format!("invalid move source {source:?}"))?;
+                let destination = crate::utilities::CheckedRelativePath::new(destination)
+                    .with_context(|| format!("invalid move destination {destination:?}"))?;
+                if !destinations.insert(collision_key(&destination)) {
+                    anyhow::bail!(
+                        "duplicate organization destination {:?}",
+                        destination.as_path()
+                    );
+                }
+            }
+
+            for (path, _) in &output.generated_files {
+                let path = crate::utilities::CheckedRelativePath::new(path)
+                    .with_context(|| format!("invalid generated file path {path:?}"))?;
+                if !destinations.insert(collision_key(&path)) {
+                    anyhow::bail!("duplicate organization destination {:?}", path.as_path());
+                }
+            }
+
+            for download in &output.downloads {
+                let destination = crate::utilities::CheckedRelativePath::new(&download.dest_path)
+                    .with_context(|| {
+                    format!("invalid download path {:?}", download.dest_path)
+                })?;
+                if !destinations.insert(collision_key(&destination)) {
+                    anyhow::bail!(
+                        "duplicate organization destination {:?}",
+                        destination.as_path()
+                    );
+                }
             }
         }
 
@@ -134,6 +149,10 @@ pub struct RuleEngine;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::organization::layout::{
+        FetchSource, Fetched, Generated, GeneratedContent, Layout, OutputSelector, Placement,
+        Source,
+    };
     use crate::features::organization::metadata::GameMetadata;
     use crate::features::organization::{OrganizationRule, RuleActions, RuleTrigger};
     use crate::ArchiveEntry;
@@ -147,6 +166,50 @@ mod tests {
             is_dir,
             encrypted: false,
             crc32: None,
+        }
+    }
+
+    /// No layout below declares a file variable, so nothing here reads a
+    /// byte out of the input.
+    fn no_reads(_: &str) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// The layout the retired `use_standard_layout: true` stood for,
+    /// written out rather than translated. A test that means "the
+    /// standard shape" must not pass merely because the translation
+    /// agrees with itself.
+    fn standard_layout(name: &str) -> Layout {
+        Layout {
+            outputs: OutputSelector::Whole,
+            file_variables: vec![],
+            name: name.to_string(),
+            place: vec![Placement {
+                from: Source::ContentRoot,
+                into: "Game".to_string(),
+            }],
+            generate: vec![Generated {
+                into: "metadata.json".to_string(),
+                content: GeneratedContent::MetadataDocument,
+            }],
+            fetch: vec![Fetched {
+                into: "screenshots".to_string(),
+                source: FetchSource::Screenshots,
+                name: "image_$index.$ext".to_string(),
+            }],
+        }
+    }
+
+    fn rule_named(name: &str, layout: Layout) -> OrganizationRule {
+        OrganizationRule {
+            name: name.to_string(),
+            is_enabled: true,
+            trigger: RuleTrigger::default(),
+            actions: RuleActions {
+                output_name: None,
+                layout,
+            },
+            ..Default::default()
         }
     }
 
@@ -295,48 +358,6 @@ mod tests {
     }
 
     // =========================================================================
-    // expand_variables
-    // =========================================================================
-
-    #[test]
-    fn test_expand_variables_basic() {
-        let mut vars = HashMap::new();
-        vars.insert("code".to_string(), "RJ123456".to_string());
-        vars.insert("title".to_string(), "My Game".to_string());
-
-        assert_eq!(
-            RuleEngine::expand_variables("[$code] $title", &vars),
-            "[RJ123456] My Game"
-        );
-    }
-
-    #[test]
-    fn test_expand_variables_version_present() {
-        let mut vars = HashMap::new();
-        vars.insert("version".to_string(), "1.2.3".to_string());
-
-        assert_eq!(
-            RuleEngine::expand_variables("Game v$version", &vars),
-            "Game v1.2.3"
-        );
-    }
-
-    #[test]
-    fn test_expand_variables_version_absent_is_stripped() {
-        let vars = HashMap::new();
-        assert_eq!(
-            RuleEngine::expand_variables("Game v$version", &vars),
-            "Game"
-        );
-    }
-
-    #[test]
-    fn test_expand_variables_no_match_leaves_placeholder() {
-        let vars = HashMap::new();
-        assert_eq!(RuleEngine::expand_variables("$unknown", &vars), "$unknown");
-    }
-
-    // =========================================================================
     // matches_glob
     // =========================================================================
 
@@ -427,96 +448,147 @@ mod tests {
 
     #[test]
     fn create_plan_rejects_escaping_root_folder() {
-        let rule = OrganizationRule {
-            name: "unsafe".into(),
-            actions: RuleActions {
-                root_folder: Some("../outside".into()),
-                use_standard_layout: false,
-                ..Default::default()
+        let rule = rule_named(
+            "unsafe",
+            Layout {
+                name: "../outside".to_string(),
+                ..Layout::default()
             },
-            ..Default::default()
-        };
+        );
 
-        let error = RuleEngine::create_plan(&rule, "game.zip", &[], None).unwrap_err();
+        let error = RuleEngine::create_plan(&rule, "game.zip", &[], None, &no_reads).unwrap_err();
         let error = format!("{error:#}");
 
         assert!(error.contains("root_folder"), "unexpected error: {error}");
     }
 
-    #[test]
-    fn validate_paths_rejects_case_insensitive_cross_category_collision() {
-        let plan = OrganizationPlan {
+    /// A plan carrying one output, for the validation tests. They are
+    /// about `validate_paths` refusing destination pairs a filesystem
+    /// would merge, not about how an output came to hold them.
+    fn plan_with(output: PlannedOutput) -> OrganizationPlan {
+        OrganizationPlan {
             rule_name: "unsafe".into(),
+            outputs: vec![output],
+            skipped_outputs: vec![],
+        }
+    }
+
+    fn output_holding(
+        moves: Vec<(String, String)>,
+        generated_files: Vec<(String, String)>,
+        downloads: Vec<PendingDownload>,
+    ) -> PlannedOutput {
+        PlannedOutput {
             root_folder: "MyGame".into(),
             root_folder_template: "MyGame".into(),
-            moves: vec![("game.exe".into(), "MyGame/Output.bin".into())],
-            generated_files: vec![("mygame/output.BIN".into(), "generated".into())],
-            downloads: vec![],
-            use_standard_layout: false,
+            moves,
+            generated_files,
+            downloads,
             resolved_variables: Default::default(),
-        };
+            reasoning: vec![],
+        }
+    }
+
+    #[test]
+    fn validate_paths_rejects_case_insensitive_cross_category_collision() {
+        let plan = plan_with(output_holding(
+            vec![("game.exe".into(), "MyGame/Output.bin".into())],
+            vec![("mygame/output.BIN".into(), "generated".into())],
+            vec![],
+        ));
 
         assert!(plan.validate_paths().is_err());
     }
 
     #[test]
     fn validate_paths_rejects_case_insensitive_download_collision() {
-        let plan = OrganizationPlan {
-            rule_name: "unsafe".into(),
-            root_folder: "MyGame".into(),
-            root_folder_template: "MyGame".into(),
-            moves: vec![("game.exe".into(), "MyGame/Cover.JPG".into())],
-            generated_files: vec![],
-            downloads: vec![PendingDownload {
+        let plan = plan_with(output_holding(
+            vec![("game.exe".into(), "MyGame/Cover.JPG".into())],
+            vec![],
+            vec![PendingDownload {
                 product_id: None,
                 url: "https://example.invalid/cover.jpg".into(),
                 dest_path: "mygame/cover.jpg".into(),
                 cache_key: "cover".into(),
                 cached: false,
             }],
-            use_standard_layout: false,
-            resolved_variables: Default::default(),
-        };
+        ));
 
         assert!(plan.validate_paths().is_err());
     }
 
     #[test]
     fn validate_paths_rejects_unicode_sigma_collision() {
-        let plan = OrganizationPlan {
-            rule_name: "unsafe".into(),
-            root_folder: "MyGame".into(),
-            root_folder_template: "MyGame".into(),
-            moves: vec![("game.exe".into(), "MyGame/σ.bin".into())],
-            generated_files: vec![("mygame/ς.BIN".into(), "generated".into())],
-            downloads: vec![],
-            use_standard_layout: false,
-            resolved_variables: Default::default(),
-        };
+        let plan = plan_with(output_holding(
+            vec![("game.exe".into(), "MyGame/σ.bin".into())],
+            vec![("mygame/ς.BIN".into(), "generated".into())],
+            vec![],
+        ));
 
         assert!(plan.validate_paths().is_err());
     }
 
     #[test]
     fn validate_paths_rejects_uppercase_expansion_collision() {
-        let plan = OrganizationPlan {
-            rule_name: "unsafe".into(),
-            root_folder: "MyGame".into(),
-            root_folder_template: "MyGame".into(),
-            moves: vec![("game.exe".into(), "MyGame/straße.bin".into())],
-            generated_files: vec![],
-            downloads: vec![PendingDownload {
+        let plan = plan_with(output_holding(
+            vec![("game.exe".into(), "MyGame/straße.bin".into())],
+            vec![],
+            vec![PendingDownload {
                 product_id: None,
                 url: "https://example.invalid/output".into(),
                 dest_path: "mygame/STRASSE.BIN".into(),
                 cache_key: "output".into(),
                 cached: false,
             }],
-            use_standard_layout: false,
-            resolved_variables: Default::default(),
+        ));
+
+        assert!(plan.validate_paths().is_err());
+    }
+
+    /// One output's destinations must not be checked in isolation from
+    /// its siblings'. A layout whose `into` reaches out of its own root
+    /// can put two outputs on one path, and each output alone looks
+    /// fine.
+    #[test]
+    fn validate_paths_rejects_a_collision_between_two_outputs() {
+        let mut first = output_holding(
+            vec![("a/game.exe".into(), "shared/Game.exe".into())],
+            vec![],
+            vec![],
+        );
+        first.root_folder = "First".into();
+        let mut second = output_holding(
+            vec![("b/game.exe".into(), "shared/Game.exe".into())],
+            vec![],
+            vec![],
+        );
+        second.root_folder = "Second".into();
+
+        let plan = OrganizationPlan {
+            rule_name: "unsafe".into(),
+            outputs: vec![first, second],
+            skipped_outputs: vec![],
         };
 
         assert!(plan.validate_paths().is_err());
+    }
+
+    /// An empty root folder means the output has no wrapper and its
+    /// content sits at the top level. That is a legal layout, and the
+    /// path check must not read it as an empty path.
+    #[test]
+    fn validate_paths_accepts_an_output_with_no_wrapper() {
+        let mut output = output_holding(
+            vec![("wrapper/Game.exe".into(), "Game.exe".into())],
+            vec![],
+            vec![],
+        );
+        output.root_folder = String::new();
+        output.root_folder_template = String::new();
+
+        plan_with(output)
+            .validate_paths()
+            .expect("no wrapper is legal");
     }
 
     /// Regression: screenshot cache keys must use `gm.product_id` directly
@@ -527,17 +599,7 @@ mod tests {
     fn test_screenshot_cache_keys_use_product_id_for_dlsite() {
         use crate::features::organization::metadata::ScreenshotData;
 
-        let rule = OrganizationRule {
-            name: "DLSite".to_string(),
-            is_enabled: true,
-            trigger: RuleTrigger::default(),
-            actions: RuleActions {
-                root_folder: Some("[$product_id] $title".to_string()),
-                use_standard_layout: false,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let rule = rule_named("DLSite", standard_layout("[$product_id] $title"));
 
         let meta = GameMetadata {
             product_id: "RJ123456".to_string(),
@@ -554,12 +616,13 @@ mod tests {
             metadata_json: String::new(),
         };
 
-        let plan = RuleEngine::create_plan(&rule, "RJ123456.zip", &[], Some(&meta))
+        let plan = RuleEngine::create_plan(&rule, "RJ123456.zip", &[], Some(&meta), &no_reads)
             .expect("plan should succeed");
 
-        assert_eq!(plan.downloads.len(), 2);
-        assert_eq!(plan.downloads[0].cache_key, "dlsite:RJ123456:screenshot_0");
-        assert_eq!(plan.downloads[1].cache_key, "dlsite:RJ123456:screenshot_1");
+        let downloads = &plan.outputs[0].downloads;
+        assert_eq!(downloads.len(), 2);
+        assert_eq!(downloads[0].cache_key, "dlsite:RJ123456:screenshot_0");
+        assert_eq!(downloads[1].cache_key, "dlsite:RJ123456:screenshot_1");
     }
 
     /// Non-dlsite sources use a different cache key prefix.
@@ -567,17 +630,7 @@ mod tests {
     fn test_screenshot_cache_keys_non_dlsite_source() {
         use crate::features::organization::metadata::ScreenshotData;
 
-        let rule = OrganizationRule {
-            name: "Other".to_string(),
-            is_enabled: true,
-            trigger: RuleTrigger::default(),
-            actions: RuleActions {
-                root_folder: Some("$product_id".to_string()),
-                use_standard_layout: false,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let rule = rule_named("Other", standard_layout("$product_id"));
 
         let meta = GameMetadata {
             product_id: "12345".to_string(),
@@ -593,11 +646,12 @@ mod tests {
             metadata_json: String::new(),
         };
 
-        let plan = RuleEngine::create_plan(&rule, "game.zip", &[], Some(&meta))
+        let plan = RuleEngine::create_plan(&rule, "game.zip", &[], Some(&meta), &no_reads)
             .expect("plan should succeed");
 
-        assert_eq!(plan.downloads.len(), 1);
-        assert_eq!(plan.downloads[0].cache_key, "screenshot:12345:0");
+        let downloads = &plan.outputs[0].downloads;
+        assert_eq!(downloads.len(), 1);
+        assert_eq!(downloads[0].cache_key, "screenshot:12345:0");
     }
 
     // =========================================================================
@@ -619,21 +673,12 @@ mod tests {
     }
 
     fn metadata_rule() -> OrganizationRule {
-        OrganizationRule {
-            name: "Standard".to_string(),
-            is_enabled: true,
-            trigger: RuleTrigger::default(),
-            actions: RuleActions {
-                root_folder: Some("$product_id".to_string()),
-                use_standard_layout: false,
-                ..Default::default()
-            },
-            ..Default::default()
-        }
+        rule_named("Standard", standard_layout("$product_id"))
     }
 
     fn generated_metadata_json(plan: &OrganizationPlan) -> &str {
-        plan.generated_files
+        plan.outputs[0]
+            .generated_files
             .iter()
             .find(|(path, _)| path == "RJ123456/metadata.json")
             .map(|(_, contents)| contents.as_str())
@@ -656,8 +701,14 @@ mod tests {
 }"#;
         let meta = placeholder_metadata(layered);
 
-        let plan = RuleEngine::create_plan(&metadata_rule(), "RJ123456.zip", &[], Some(&meta))
-            .expect("plan should succeed");
+        let plan = RuleEngine::create_plan(
+            &metadata_rule(),
+            "RJ123456.zip",
+            &[],
+            Some(&meta),
+            &no_reads,
+        )
+        .expect("plan should succeed");
         let contents = generated_metadata_json(&plan);
 
         assert_eq!(contents, layered);
@@ -674,8 +725,14 @@ mod tests {
         for empty in ["", "   \n"] {
             let meta = placeholder_metadata(empty);
 
-            let plan = RuleEngine::create_plan(&metadata_rule(), "RJ123456.zip", &[], Some(&meta))
-                .expect("plan should succeed");
+            let plan = RuleEngine::create_plan(
+                &metadata_rule(),
+                "RJ123456.zip",
+                &[],
+                Some(&meta),
+                &no_reads,
+            )
+            .expect("plan should succeed");
             let contents = generated_metadata_json(&plan);
 
             let parsed: serde_json::Value =
@@ -712,22 +769,15 @@ mod tests {
             entry("Placeholder Wrapper/readme.txt"),
         ];
 
-        let rule = OrganizationRule {
-            name: "Standard".to_string(),
-            is_enabled: true,
-            trigger: RuleTrigger::default(),
-            actions: RuleActions {
-                root_folder: Some("Out".to_string()),
-                use_standard_layout: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let rule = rule_named("Standard", standard_layout("Out"));
 
-        let plan = RuleEngine::create_plan(&rule, "placeholder.zip", &entries, None)
+        let plan = RuleEngine::create_plan(&rule, "placeholder.zip", &entries, None, &no_reads)
             .expect("plan should build");
-        let destinations: std::collections::BTreeSet<_> =
-            plan.moves.iter().map(|(_, to)| to.clone()).collect();
+        let destinations: std::collections::BTreeSet<_> = plan.outputs[0]
+            .moves
+            .iter()
+            .map(|(_, to)| to.clone())
+            .collect();
 
         assert!(
             destinations.contains("Out/Game/index.html"),
@@ -770,35 +820,276 @@ mod tests {
             entry("beta/js/main.js"),
         ];
 
-        let rule = OrganizationRule {
-            name: "Standard".to_string(),
-            is_enabled: true,
-            trigger: RuleTrigger::default(),
-            actions: RuleActions {
-                root_folder: Some("Out".to_string()),
-                use_standard_layout: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let rule = rule_named("Standard", standard_layout("Out"));
 
-        let first =
-            RuleEngine::create_plan(&rule, "placeholder.zip", &entries, None).expect("plan");
+        let first = RuleEngine::create_plan(&rule, "placeholder.zip", &entries, None, &no_reads)
+            .expect("plan");
         for _ in 0..20 {
             let again =
-                RuleEngine::create_plan(&rule, "placeholder.zip", &entries, None).expect("plan");
+                RuleEngine::create_plan(&rule, "placeholder.zip", &entries, None, &no_reads)
+                    .expect("plan");
             assert_eq!(
-                again.moves, first.moves,
+                again.outputs[0].moves, first.outputs[0].moves,
                 "a tie must not depend on hash order"
             );
         }
         assert!(
-            first
+            first.outputs[0]
                 .moves
                 .iter()
                 .any(|(from, _)| from.starts_with("alpha/")),
             "the lexicographically first candidate wins a tie: {:?}",
-            first.moves
+            first.outputs[0].moves
         );
+    }
+
+    // =========================================================================
+    // translation of rules stored under the old vocabulary
+    // =========================================================================
+
+    /// The product rule as a user's database holds it: the exact JSON
+    /// `config::defaults::get_default_rules()` serialized to before this
+    /// change, captured by serializing it rather than written by hand,
+    /// so the fixture is the real stored shape and not an approximation
+    /// of it.
+    const SHIPPED_PRODUCT_RULE_JSON: &str = r#"{"id":0,"name":"DLSite Archive","priority":100,"is_enabled":true,"trigger":{"metadata_source":"dlsite","filename_pattern":"\\[(RJ|BJ|VJ)\\d+\\]","has_file":null},"actions":{"root_folder":"[$product_id][$circle] $title","output_name":null,"move_files":[],"use_standard_layout":true}}"#;
+
+    /// The tree the engine built from that stored rule before layouts
+    /// were data, captured from a run of the retired code path. Every
+    /// assertion below is one line of that capture.
+    const SHIPPED_PRODUCT_ROOT: &str = "[RJ123456][Placeholder Circle] Placeholder Game";
+
+    /// Translation is the promise that nobody's library reorganizes
+    /// differently. Plan the shipped product rule — still stored in the
+    /// old vocabulary — and require the tree the old code path built.
+    ///
+    /// Download destinations are asserted, not only moves and generated
+    /// files. A translation that dropped `$index`'s zero-padding, or
+    /// spelled `.jpg` into the template instead of taking the extension
+    /// from the source URL, produces exactly the same moves and exactly
+    /// the same metadata.json; the screenshot names are the only place
+    /// it shows.
+    #[test]
+    fn the_shipped_product_rule_translates_to_an_identical_plan() {
+        use crate::archive::ArchiveEntry;
+        use crate::features::organization::metadata::ScreenshotData;
+
+        fn entry(path: &str) -> ArchiveEntry {
+            ArchiveEntry {
+                path: path.to_string(),
+                size: 10,
+                packed_size: 10,
+                modified: None,
+                is_dir: false,
+                encrypted: false,
+                crc32: None,
+            }
+        }
+
+        let entries = vec![
+            entry("RJ123456/[v1.2] Placeholder Game/Game.exe"),
+            entry("RJ123456/[v1.2] Placeholder Game/data/pack.bin"),
+            entry("RJ123456/readme.txt"),
+        ];
+        let metadata = GameMetadata {
+            product_id: "RJ123456".to_string(),
+            source: "dlsite".to_string(),
+            title: "Placeholder Game".to_string(),
+            description: None,
+            tags: vec![],
+            release_date: None,
+            creator: Some("Placeholder Circle".to_string()),
+            // One `.jpg` and one `.png`, because a template that spells
+            // the extension out passes a single-format list.
+            screenshots: vec![
+                ScreenshotData::Url("https://img.example.test/main.jpg".to_string()),
+                ScreenshotData::Url("https://img.example.test/sub.png".to_string()),
+            ],
+            metadata_json: "{}".to_string(),
+        };
+
+        // The rule as it is stored today, in the old vocabulary.
+        let stored: OrganizationRule = serde_json::from_str(SHIPPED_PRODUCT_RULE_JSON)
+            .expect("the shipped rule must still deserialize");
+
+        let plan = RuleEngine::create_plan(
+            &stored,
+            "[RJ123456] Placeholder Game.zip",
+            &entries,
+            Some(&metadata),
+            &no_reads,
+        )
+        .expect("plan");
+
+        assert_eq!(plan.outputs.len(), 1, "a product layout is one output");
+        assert!(
+            plan.skipped_outputs.is_empty(),
+            "nothing was skipped: {:?}",
+            plan.skipped_outputs
+        );
+        let output = &plan.outputs[0];
+        assert_eq!(output.root_folder, SHIPPED_PRODUCT_ROOT);
+        assert_eq!(output.root_folder_template, "[$product_id][$circle] $title");
+
+        let root = SHIPPED_PRODUCT_ROOT;
+        let destinations: std::collections::BTreeSet<_> =
+            output.moves.iter().map(|(_, to)| to.clone()).collect();
+        assert!(destinations.contains(&format!("{root}/Game/Game.exe")));
+        assert!(destinations.contains(&format!("{root}/Game/data/pack.bin")));
+        assert!(
+            !destinations.iter().any(|d| d.contains("readme.txt")),
+            "a file outside the content root is not carried: {destinations:?}"
+        );
+        assert_eq!(destinations.len(), 2, "and nothing else: {destinations:?}");
+
+        assert_eq!(
+            output
+                .generated_files
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec![format!("{root}/metadata.json")],
+            "the metadata document is still generated, in the same place"
+        );
+
+        assert_eq!(
+            output
+                .downloads
+                .iter()
+                .map(|download| (download.dest_path.as_str(), download.cache_key.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    format!("{root}/screenshots/image_001.jpg").as_str(),
+                    "dlsite:RJ123456:screenshot_0"
+                ),
+                (
+                    format!("{root}/screenshots/image_002.png").as_str(),
+                    "dlsite:RJ123456:screenshot_1"
+                ),
+            ],
+            "screenshot names are zero-padded and take their extension from the source URL"
+        );
+    }
+
+    /// A stored rule that never turned the boolean on routed its files
+    /// through `move_files` and fetched into a differently capitalised
+    /// folder. Both survive translation, capitalisation included: making
+    /// the two agree would move an existing rule's files.
+    ///
+    /// Two things this rule shape used to do are not reproduced, because
+    /// the layout vocabulary has no way to say either and inventing one
+    /// would be a second answer to a question `ContentRoot` already
+    /// answers:
+    ///
+    /// * The retired code stripped the entries' longest common path
+    ///   prefix before appending the target, so `wrapper/Game.exe` with
+    ///   a target of `bin` landed at `Out/bin/Game.exe`. A placement
+    ///   strips only what its own glob spells out, so the same file now
+    ///   lands at `Out/bin/wrapper/Game.exe` — asserted below, so the
+    ///   difference is pinned rather than discovered. Stripping a
+    ///   wrapper is what a `ContentRoot` placement is for, and it is
+    ///   a property of the archive rather than of the layout, which is
+    ///   why no field can carry it.
+    /// * A file no pattern matched used to fall through to a `game/`
+    ///   folder. Placements claim files and a file nothing claimed is
+    ///   not carried, which the output's `reasoning` says in as many
+    ///   words rather than leaving silent.
+    #[test]
+    fn a_stored_rule_without_the_standard_layout_keeps_its_own_screenshot_folder() {
+        use crate::features::organization::metadata::ScreenshotData;
+
+        let stored: OrganizationRule = serde_json::from_str(
+            r#"{"id":0,"name":"Explicit","priority":1,"is_enabled":true,
+                "trigger":{"metadata_source":null,"filename_pattern":null,"has_file":null},
+                "actions":{"root_folder":"Out","output_name":null,
+                    "move_files":[{"pattern":"*.exe","target":"bin"}],
+                    "use_standard_layout":false}}"#,
+        )
+        .expect("an old explicit rule must still deserialize");
+
+        let meta = GameMetadata {
+            product_id: "RJ999001".to_string(),
+            source: "dlsite".to_string(),
+            title: "Placeholder Game".to_string(),
+            description: None,
+            tags: vec![],
+            release_date: None,
+            creator: None,
+            screenshots: vec![ScreenshotData::Url(
+                "https://img.example.test/main.jpg".to_string(),
+            )],
+            metadata_json: "{}".to_string(),
+        };
+
+        let entries = vec![
+            make_entry("wrapper/Game.exe", 10, false),
+            make_entry("wrapper/readme.txt", 10, false),
+        ];
+        let plan = RuleEngine::create_plan(&stored, "game.zip", &entries, Some(&meta), &no_reads)
+            .expect("plan");
+
+        let output = &plan.outputs[0];
+        assert_eq!(output.root_folder, "Out");
+        assert_eq!(
+            output.moves,
+            vec![(
+                "wrapper/Game.exe".to_string(),
+                "Out/bin/wrapper/Game.exe".to_string()
+            )],
+            "the glob spells out no folder, so nothing is stripped"
+        );
+        assert!(
+            output
+                .reasoning
+                .iter()
+                .any(|line| line.contains("readme.txt") && line.contains("not carried")),
+            "the file no pattern claimed is named rather than dropped in silence: {:?}",
+            output.reasoning
+        );
+        assert_eq!(
+            output.downloads[0].dest_path,
+            "Out/Screenshots/image_001.jpg"
+        );
+    }
+
+    /// A rule saved after the change carries its layout and is read
+    /// back as written, with nothing translated on the way in.
+    #[test]
+    fn a_rule_stored_with_a_layout_is_read_as_written() {
+        let actions: RuleActions = serde_json::from_str(
+            r#"{"output_name":null,"layout":{"outputs":{"PerDirectoryContaining":{"marker":"modinfo.ini"}},
+                "file_variables":[{"as_name":"mod_name","file":"modinfo.ini","key":"name"}],
+                "name":"$mod_name","place":[{"from":"All","into":""}],
+                "generate":[],"fetch":[]}}"#,
+        )
+        .expect("a current rule must deserialize");
+
+        assert_eq!(
+            actions.layout.outputs,
+            OutputSelector::PerDirectoryContaining {
+                marker: "modinfo.ini".to_string()
+            }
+        );
+        assert_eq!(actions.layout.name, "$mod_name");
+        assert_eq!(actions.layout.place[0].from, Source::All);
+    }
+
+    /// The round trip a saved rule takes through the database: serialize
+    /// the current shape, read it back, and get the same layout. Without
+    /// this the translation could quietly become the only path that
+    /// works.
+    #[test]
+    fn a_layout_survives_being_serialized_and_read_back() {
+        let actions = RuleActions {
+            output_name: Some("$title.zip".to_string()),
+            layout: standard_layout("[$product_id] $title"),
+        };
+
+        let json = serde_json::to_string(&actions).expect("serialize");
+        let back: RuleActions = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(back.output_name.as_deref(), Some("$title.zip"));
+        assert_eq!(back.layout, actions.layout);
     }
 }

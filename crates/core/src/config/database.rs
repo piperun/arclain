@@ -134,10 +134,8 @@ pub fn ensure_default_rules(pool: &DieselPool) -> Result<()> {
             metadata_source: None,
         },
         actions: crate::features::organization::RuleActions {
-            root_folder: Some("Game".to_string()),
-            use_standard_layout: true,
-            move_files: vec![],
-            ..Default::default()
+            output_name: None,
+            layout: crate::features::organization::presets::product_layout("Game"),
         },
         ..Default::default()
     };
