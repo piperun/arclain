@@ -312,7 +312,9 @@ fn render_selection_area<R: Region>(
     // remove + done) — slightly different for the vertical case but
     // close enough that the user reads it as centered.
     ui.horizontal(|ui| {
-        ui.add_space(ui.available_width() / 2.0 - 200.0);
+        // Clamped: narrower than the toolbar itself, the offset goes
+        // negative and walks the cursor back over what came before.
+        ui.add_space((ui.available_width() / 2.0 - 200.0).max(0.0));
 
         ui.horizontal(|ui| {
             let prev_btn = ui.add_enabled(

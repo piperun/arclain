@@ -65,6 +65,10 @@ use crate::shared::theme::ThemeColors;
 use crate::shared::SharedState;
 use arclain_widgets::{Chips, TextInput, ThemedDropdown, ThemedSlider, ToggleSwitch};
 
+/// Width a list item holds back from its title for whatever trails it --
+/// a badge, a selection tick, a warning icon.
+const LIST_ITEM_TRAILING_WIDTH: f32 = 80.0;
+
 /// One thing the user did to a document this frame.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DocumentEvent {
@@ -973,7 +977,11 @@ fn render_list_item_text(
     subtitle: Option<&str>,
 ) {
     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-        ui.set_max_width(ui.available_width() - 80.0);
+        // Room for the trailing badge, but never more than half the
+        // row: below 80 points the subtraction went negative, and
+        // reserving everything would leave the title nothing to draw in.
+        let available = ui.available_width();
+        ui.set_max_width((available - LIST_ITEM_TRAILING_WIDTH.min(available / 2.0)).max(0.0));
         ui.add(
             egui::Label::new(egui::RichText::new(title).strong().color(colors.on_surface))
                 .truncate(),

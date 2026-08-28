@@ -710,3 +710,50 @@ fn a_sparse_sidebar_keeps_the_width_the_host_assigned() {
          got {sparse} and {filled}"
     );
 }
+
+/// A list item reserves width for whatever trails its title. In a pane
+/// narrower than that reservation the subtraction went negative, and the
+/// title was handed a width no label can be drawn in.
+///
+/// egui does not refuse a negative maximum width the way it refuses a
+/// negative height, so this never announced itself -- the row simply
+/// stopped showing its title.
+#[test]
+fn a_list_item_keeps_its_title_in_a_pane_narrower_than_its_trailing_space() {
+    let mut harness = Harness::builder()
+        .with_size(eframe::egui::vec2(48.0, 200.0))
+        .build_ui_state(
+            |ui, stage: &mut Stage| {
+                let ctx = DocumentContext {
+                    colors: &stage.theme.colors,
+                    shared_state: None,
+                    image_owner: None,
+                    extent: stage.extent,
+                };
+                let mut events = render_document(ui, &stage.document, ctx);
+                stage.events.append(&mut events);
+            },
+            Stage::new(document(vec![node(
+                "row",
+                PluginUiNodeKind::ListItem {
+                    title: "Placeholder".to_string(),
+                    subtitle: None,
+                    badge: None,
+                    image_key: None,
+                    image_url: None,
+                    selected: false,
+                    warning_icon: None,
+                },
+            )])),
+        );
+
+    harness.run();
+
+    assert!(
+        harness
+            .query_all_by_label_contains("Placeholder")
+            .next()
+            .is_some(),
+        "the title must still be rendered when the row is narrower than its reservation"
+    );
+}
