@@ -550,10 +550,15 @@ fn test_integration_data_full_workflow() {
     // Verify structure: Game/, metadata.json
     // A standard-layout plan creates: {product_id}/Game/...
     //
-    // There is no `screenshots/` to assert on: the plan applier only
-    // creates that folder for screenshots it was asked to place, and
-    // this metadata carries none. The organizer this test used to call
-    // made an empty one unconditionally.
+    // This used to assert a `screenshots/` folder too, and that
+    // assertion was dropped rather than lost. The fixed-layout organizer
+    // this test used to call created `screenshots/` unconditionally,
+    // empty folder and all; the plan applier creates it only for
+    // screenshots it was actually asked to place. The metadata built
+    // above carries none, so under the applier there is no such folder
+    // to find, and asserting one would only re-test the deleted
+    // organizer's habit. Give this test metadata with screenshots and
+    // the folder comes back, holding them.
     let product_dir = extract_dir.join(&test_meta.product_id);
     if !product_dir.exists() {
         println!("Expected product directory not found. Looking for actual structure...");
