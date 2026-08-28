@@ -779,7 +779,9 @@ fn internal_join_error(join_error: tokio::task::JoinError) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arclain_core::features::organization::engine::{OrganizationPlan, PlannedOutput};
+    use arclain_core::features::organization::engine::{
+        OrganizationPlan, PendingDownload, PlannedOutput,
+    };
 
     /// A named output with nothing in it, so a test about how many
     /// outputs survive the DTO is not also a test about their contents.
@@ -793,6 +795,61 @@ mod tests {
             resolved_variables: Default::default(),
             reasoning: Vec::new(),
         }
+    }
+
+    /// Both the panel's Apply gate and the applier ask whether a plan
+    /// would write anything, one over the DTO and one over the core
+    /// plan. They answer through one definition now, but the DTO is
+    /// still built by copying three lists across, and a conversion that
+    /// dropped one would make the panel offer Apply on a plan the
+    /// applier refuses. Checked over each list on its own, so a
+    /// conversion that dropped exactly one is not covered by another.
+    #[test]
+    fn a_plan_and_its_preview_agree_on_whether_it_stages_anything() {
+        let with = |fill: fn(&mut PlannedOutput)| {
+            let mut output = output_named("Red Mod");
+            fill(&mut output);
+            let plan = OrganizationPlan {
+                rule_name: "Mods".to_string(),
+                outputs: vec![output],
+                skipped_outputs: Vec::new(),
+            };
+            let preview = build_preview(
+                ArchiveSessionId::from_raw(1),
+                1,
+                "1".to_string(),
+                &plan,
+                IntegrityReport::default(),
+            );
+            (plan.stages_nothing(), preview.stages_nothing())
+        };
+
+        assert_eq!(with(|_| {}), (true, true), "an output filled with nothing");
+        assert_eq!(
+            with(|output| output
+                .moves
+                .push(("game.exe".to_string(), "Red Mod/game.exe".to_string()))),
+            (false, false),
+            "one placed file"
+        );
+        assert_eq!(
+            with(|output| output
+                .generated_files
+                .push(("Red Mod/metadata.json".to_string(), "{}".to_string()))),
+            (false, false),
+            "one generated document"
+        );
+        assert_eq!(
+            with(|output| output.downloads.push(PendingDownload {
+                product_id: Some("RJ123456".to_string()),
+                url: "https://example.invalid/0.jpg".to_string(),
+                dest_path: "Red Mod/screenshots/0.jpg".to_string(),
+                cache_key: "dlsite:RJ123456:screenshot_0".to_string(),
+                cached: false,
+            })),
+            (false, false),
+            "one scheduled image"
+        );
     }
 
     /// The preview a panel renders must describe every output the run

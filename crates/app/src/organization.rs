@@ -38,6 +38,7 @@
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::ids::ArchiveSessionId;
 
+use arclain_core::features::organization::engine::{plan_stages_nothing, StagedContent};
 use arclain_core::features::organization::layout::{
     FetchSource, Fetched, FileVariable, Generated, GeneratedContent, Layout, OutputSelector,
     Placement, Source,
@@ -512,20 +513,24 @@ pub struct OrganizePlanPreview {
 impl OrganizePlanPreview {
     /// Whether running this plan would put nothing on disk.
     ///
-    /// Not a plan that does nothing: applying one promotes what it
-    /// staged over the whole work directory, so a plan staging nothing
-    /// empties it and the run then packs an empty archive while
-    /// reporting success. A surface offering Apply has to ask this as
-    /// well as whether a plan is on screen -- a rule with no placements
-    /// previews perfectly well and describes exactly that run. Mirrors
-    /// `arclain_core`'s `OrganizationPlan::stages_nothing`, over the
-    /// same three lists.
+    /// A surface offering Apply has to ask this as well as whether a
+    /// plan is on screen -- a rule with no placements previews
+    /// perfectly well and describes exactly that run. Answered through
+    /// `arclain_core`'s `StagedContent`, which is the same definition
+    /// the core plan and the applier use, rather than a second copy of
+    /// it over the DTO's three lists.
     pub fn stages_nothing(&self) -> bool {
-        self.outputs.iter().all(|output| {
-            output.moves.is_empty()
-                && output.generated_files.is_empty()
-                && output.downloads.is_empty()
-        })
+        plan_stages_nothing(&self.outputs)
+    }
+}
+
+impl StagedContent for PlannedOutputDto {
+    fn staged_counts(&self) -> (usize, usize, usize) {
+        (
+            self.moves.len(),
+            self.generated_files.len(),
+            self.downloads.len(),
+        )
     }
 }
 

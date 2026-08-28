@@ -13,7 +13,7 @@
 
 use super::outputs::{expand, resolve_outputs, ResolvedOutput};
 use super::tree::TreeNode;
-use super::{OrganizationPlan, PendingDownload, PlannedOutput, RuleEngine};
+use super::{OrganizationPlan, PendingDownload, PlannedOutput, RuleEngine, StagedContent};
 use crate::features::organization::layout::{
     FetchSource, GeneratedContent, Layout, OutputSelector, Placement, Source,
 };

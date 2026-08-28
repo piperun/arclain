@@ -18,6 +18,45 @@ mod tree;
 
 use std::collections::HashMap;
 
+/// What "would put nothing on disk" means, written once.
+///
+/// Applying a plan promotes what it staged over the whole work
+/// directory, so a plan that stages nothing is not a plan that does
+/// nothing — it empties the work directory and the run then packs an
+/// empty result while reporting success. Every surface offering to run
+/// a plan gates on the answer and the applier refuses a plan that
+/// reached it anyway, so the answer has to be the same wherever it is
+/// asked.
+///
+/// It is asked over [`PlannedOutput`] here and over the DTO the
+/// application facade hands its surfaces: two types carrying the same
+/// three lists. Both answer through this trait, so a change to what
+/// counts as staging something reaches every caller or none of them.
+pub trait StagedContent {
+    /// How many files this output would move, write and fetch.
+    fn staged_counts(&self) -> (usize, usize, usize);
+
+    /// Whether this output would put nothing on disk.
+    ///
+    /// An output's folder is built by writing the files that go into
+    /// it, so one carrying no file, no generated document and no
+    /// fetched image is not an empty folder — it is no folder at all,
+    /// and nothing downstream would say it went missing. Its name does
+    /// not enter into it: a named output that carries nothing produces
+    /// exactly as much as an unnamed one, which is nothing.
+    fn stages_nothing(&self) -> bool {
+        self.staged_counts() == (0, 0, 0)
+    }
+}
+
+/// Whether running a plan made of `outputs` would put nothing on disk.
+///
+/// A plan with no outputs at all stages nothing by the same reasoning:
+/// there is no output left to write anything through.
+pub fn plan_stages_nothing<O: StagedContent>(outputs: &[O]) -> bool {
+    outputs.iter().all(StagedContent::stages_nothing)
+}
+
 /// A pending download with cache information
 #[derive(Debug, Clone)]
 pub struct PendingDownload {
@@ -59,17 +98,13 @@ pub struct PlannedOutput {
     pub reasoning: Vec<String>,
 }
 
-impl PlannedOutput {
-    /// Whether this output would put nothing on disk.
-    ///
-    /// An output's folder is built by writing the files that go into it,
-    /// so one carrying no file, no generated document and no fetched
-    /// image is not an empty folder — it is no folder at all, and
-    /// nothing downstream would say it went missing. Its `root_folder`
-    /// does not enter into it: a named output that carries nothing
-    /// produces exactly as much as an unnamed one, which is nothing.
-    pub fn stages_nothing(&self) -> bool {
-        self.moves.is_empty() && self.generated_files.is_empty() && self.downloads.is_empty()
+impl StagedContent for PlannedOutput {
+    fn staged_counts(&self) -> (usize, usize, usize) {
+        (
+            self.moves.len(),
+            self.generated_files.len(),
+            self.downloads.len(),
+        )
     }
 }
 
@@ -90,16 +125,10 @@ pub struct OrganizationPlan {
 }
 
 impl OrganizationPlan {
-    /// Whether applying this plan would put nothing on disk.
-    ///
-    /// The applier promotes what it staged over the whole work
-    /// directory, so this is not a plan that does nothing — it is a plan
-    /// that empties the work directory and reports success. Every
-    /// surface offering to run a plan gates on this, and the applier
-    /// refuses one that reached it anyway. A plan with no outputs at all
-    /// stages nothing by the same reasoning.
+    /// Whether applying this plan would put nothing on disk. See
+    /// [`StagedContent`], which is where the question is answered.
     pub fn stages_nothing(&self) -> bool {
-        self.outputs.iter().all(PlannedOutput::stages_nothing)
+        plan_stages_nothing(&self.outputs)
     }
 
     /// Validate every filesystem path carried by this plan before it reaches
