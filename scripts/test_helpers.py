@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import re
 import inspect
 import json
 import os
@@ -1022,7 +1023,12 @@ class TestReleaseWorkflows(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertNotIn("rust:1.94", woodpecker)
-        self.assertEqual(woodpecker.count("image: rust:1.98.0-bookworm"), 5)
+        # Every rust image is the pinned one, rather than a count of
+        # them: the invariant is that no step drifts onto a different
+        # toolchain, and a count also fails whenever a step is added,
+        # which says nothing about the pin.
+        images = set(re.findall(r"image: (rust:\S+)", woodpecker))
+        self.assertEqual(images, {"rust:1.98.0-bookworm"})
         self.assertIn(
             "FROM docker.io/library/rust:1.98.0-bookworm",
             container,
@@ -1048,7 +1054,12 @@ class TestReleaseWorkflows(unittest.TestCase):
 
         self.assertEqual(toolchain["channel"], "1.98.0")
         self.assertNotIn("components", toolchain)
-        self.assertEqual(woodpecker.count("image: rust:1.98.0-bookworm"), 5)
+        # Every rust image is the pinned one, rather than a count of
+        # them: the invariant is that no step drifts onto a different
+        # toolchain, and a count also fails whenever a step is added,
+        # which says nothing about the pin.
+        images = set(re.findall(r"image: (rust:\S+)", woodpecker))
+        self.assertEqual(images, {"rust:1.98.0-bookworm"})
 
     def test_headless_ci_runs_all_non_ui_test_targets(self):
         woodpecker = (REPO_ROOT / ".woodpecker.yml").read_text(encoding="utf-8")

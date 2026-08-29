@@ -7,8 +7,8 @@
 # with an MSRV error before any work starts.
 #
 # Keep this in step with the release runners, which pin the same version
-# five times in `.woodpecker.yml`, once in `Containerfile`, and once in
-# `.github/workflows/windows-build.yml`. `scripts/test_helpers.py`
+# on every `image:` in `.woodpecker.yml`, once in `Containerfile`, and
+# once in `.github/workflows/windows-build.yml`. `scripts/test_helpers.py`
 # asserts they agree.
 #
 # Channel only, no `components` list: rustup installs missing components
