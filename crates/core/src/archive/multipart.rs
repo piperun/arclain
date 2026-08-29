@@ -60,6 +60,40 @@ pub struct ValidationResult {
     pub total_size: u64,
 }
 
+/// The real path of the file in `parent` whose name is `name_lower`
+/// ignoring case, or `None` when no such file is there.
+///
+/// Detection matches a lowercased copy of a file name against the naming
+/// patterns, so every name derived from that match is lowercased too.
+/// Joining one straight onto the parent locates the file only where the
+/// filesystem folds case itself. On a case-sensitive one it does not, so
+/// a set named `Game.Part1.RAR` was neither detected nor enumerated, and
+/// merging it failed as a missing file.
+///
+/// Reading the directory is the whole method, with no `exists()` ahead
+/// of it: on a filesystem that folds case, joining the lowercased name
+/// *succeeds*, and hands back a path spelled differently from the file
+/// it just found. That is how the two platforms came to disagree about
+/// what a part is called. Scanning gives the same answer on both.
+///
+/// Detection runs once per archive a person opens or merges, not once
+/// per file in a listing, so a directory read per lookup is well within
+/// what this path can afford.
+fn resolve_ignoring_case(parent: &Path, name_lower: &str) -> Option<PathBuf> {
+    std::fs::read_dir(parent).ok()?.flatten().find_map(|entry| {
+        let name = entry.file_name();
+        (name.to_str()?.to_lowercase() == name_lower).then(|| entry.path())
+    })
+}
+
+/// The real path of `name_lower` in `parent`, or the literal join when
+/// nothing of that name is there. A detector reports a first part whether
+/// or not it exists -- a `.r00` names its `.rar` even when that member is
+/// the one missing -- so this cannot fail.
+fn resolve_or_literal(parent: &Path, name_lower: &str) -> PathBuf {
+    resolve_ignoring_case(parent, name_lower).unwrap_or_else(|| parent.join(name_lower))
+}
+
 impl MultiPartArchive {
     /// Detect if a file is part of a multi-part archive
     ///
@@ -101,7 +135,7 @@ impl MultiPartArchive {
 
         // First part is always part1
         let parent = path.parent()?;
-        let first_part = parent.join(format!("{}.part1.rar", base_name));
+        let first_part = resolve_or_literal(parent, &format!("{}.part1.rar", base_name));
 
         Some(Self {
             first_part,
@@ -125,14 +159,11 @@ impl MultiPartArchive {
         if ext == "rar" {
             // Check if .r00 exists to confirm it's multi-part
             let parent = path.parent()?;
-            let r00_path = parent.join(format!("{}.r00", base_name));
-            if !r00_path.exists() {
-                return None;
-            }
+            resolve_ignoring_case(parent, &format!("{}.r00", base_name))?;
         }
 
         let parent = path.parent()?;
-        let first_part = parent.join(format!("{}.rar", base_name));
+        let first_part = resolve_or_literal(parent, &format!("{}.rar", base_name));
 
         Some(Self {
             first_part,
@@ -151,7 +182,7 @@ impl MultiPartArchive {
         let base_name = captures.get(1)?.as_str().to_string();
 
         let parent = path.parent()?;
-        let first_part = parent.join(format!("{}.7z.001", base_name));
+        let first_part = resolve_or_literal(parent, &format!("{}.7z.001", base_name));
 
         Some(Self {
             first_part,
@@ -173,15 +204,12 @@ impl MultiPartArchive {
         // For .zip, check if .z01 exists to confirm split
         if ext == "zip" {
             let parent = path.parent()?;
-            let z01_path = parent.join(format!("{}.z01", base_name));
-            if !z01_path.exists() {
-                return None;
-            }
+            resolve_ignoring_case(parent, &format!("{}.z01", base_name))?;
         }
 
         // First part is .z01 (but extraction starts from .zip)
         let parent = path.parent()?;
-        let first_part = parent.join(format!("{}.zip", base_name));
+        let first_part = resolve_or_literal(parent, &format!("{}.zip", base_name));
 
         Some(Self {
             first_part,
@@ -206,7 +234,7 @@ impl MultiPartArchive {
         }
 
         let parent = path.parent()?;
-        let first_part = parent.join(format!("{}.001", base_name));
+        let first_part = resolve_or_literal(parent, &format!("{}.001", base_name));
 
         Some(Self {
             first_part,
@@ -239,12 +267,13 @@ impl MultiPartArchive {
         let mut part_num = 1u32;
 
         loop {
-            let part_path = parent.join(format!("{}.part{}.rar", self.base_name, part_num));
-            if part_path.exists() {
-                parts.push(part_path);
-                part_num += 1;
-            } else {
-                break;
+            match resolve_ignoring_case(parent, &format!("{}.part{}.rar", self.base_name, part_num))
+            {
+                Some(part_path) => {
+                    parts.push(part_path);
+                    part_num += 1;
+                }
+                None => break,
             }
         }
 
@@ -255,27 +284,25 @@ impl MultiPartArchive {
         let mut parts = Vec::new();
 
         // First file is always .rar
-        let rar_path = parent.join(format!("{}.rar", self.base_name));
-        if rar_path.exists() {
+        if let Some(rar_path) = resolve_ignoring_case(parent, &format!("{}.rar", self.base_name)) {
             parts.push(rar_path);
         }
 
         // Then .r00, .r01, etc.
         let mut num = 0u32;
         loop {
-            let part_path = parent.join(format!("{}.r{:02}", self.base_name, num));
-            if part_path.exists() {
-                parts.push(part_path);
-                num += 1;
-            } else {
-                // Also try 3-digit format .r000, .r001
-                let part_path_3 = parent.join(format!("{}.r{:03}", self.base_name, num));
-                if part_path_3.exists() {
-                    parts.push(part_path_3);
+            let two_digit =
+                resolve_ignoring_case(parent, &format!("{}.r{:02}", self.base_name, num));
+            // Also try 3-digit format .r000, .r001
+            let found = two_digit.or_else(|| {
+                resolve_ignoring_case(parent, &format!("{}.r{:03}", self.base_name, num))
+            });
+            match found {
+                Some(part_path) => {
+                    parts.push(part_path);
                     num += 1;
-                } else {
-                    break;
                 }
+                None => break,
             }
         }
 
@@ -287,12 +314,12 @@ impl MultiPartArchive {
         let mut part_num = 1u32;
 
         loop {
-            let part_path = parent.join(format!("{}.7z.{:03}", self.base_name, part_num));
-            if part_path.exists() {
-                parts.push(part_path);
-                part_num += 1;
-            } else {
-                break;
+            match resolve_ignoring_case(parent, &format!("{}.7z.{:03}", self.base_name, part_num)) {
+                Some(part_path) => {
+                    parts.push(part_path);
+                    part_num += 1;
+                }
+                None => break,
             }
         }
 
@@ -305,18 +332,17 @@ impl MultiPartArchive {
         // Find .z01, .z02, etc. first
         let mut num = 1u32;
         loop {
-            let part_path = parent.join(format!("{}.z{:02}", self.base_name, num));
-            if part_path.exists() {
-                parts.push(part_path);
-                num += 1;
-            } else {
-                break;
+            match resolve_ignoring_case(parent, &format!("{}.z{:02}", self.base_name, num)) {
+                Some(part_path) => {
+                    parts.push(part_path);
+                    num += 1;
+                }
+                None => break,
             }
         }
 
         // Last file is .zip
-        let zip_path = parent.join(format!("{}.zip", self.base_name));
-        if zip_path.exists() {
+        if let Some(zip_path) = resolve_ignoring_case(parent, &format!("{}.zip", self.base_name)) {
             parts.push(zip_path);
         }
 
@@ -328,12 +354,12 @@ impl MultiPartArchive {
         let mut part_num = 1u32;
 
         loop {
-            let part_path = parent.join(format!("{}.{:03}", self.base_name, part_num));
-            if part_path.exists() {
-                parts.push(part_path);
-                part_num += 1;
-            } else {
-                break;
+            match resolve_ignoring_case(parent, &format!("{}.{:03}", self.base_name, part_num)) {
+                Some(part_path) => {
+                    parts.push(part_path);
+                    part_num += 1;
+                }
+                None => break,
             }
         }
 
@@ -442,6 +468,61 @@ mod tests {
         let path = PathBuf::from("/test/normal.zip");
         let result = MultiPartArchive::detect(&path);
         assert!(result.is_none());
+    }
+
+    fn touch(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), b"x").expect("write fixture");
+    }
+
+    /// Detection matches on a lowercased copy of the file name, and every
+    /// path it reports used to be built from that copy. Those paths only
+    /// lead back to the files on a filesystem that folds case itself, so
+    /// a set named `Game.Part1.RAR` was undetectable on Linux and
+    /// unmergeable there.
+    ///
+    /// Asserted as an equality against the real name rather than through
+    /// `exists()`, so it holds on a case-insensitive filesystem too --
+    /// where the wrong path resolves anyway and the bug is invisible.
+    #[test]
+    fn reported_paths_carry_the_name_the_filesystem_actually_has() {
+        let temp = tempfile::tempdir().expect("create tempdir");
+        let dir = temp.path();
+        touch(dir, "RJ123456.Part1.RAR");
+        touch(dir, "RJ123456.Part2.RAR");
+
+        let mut detected = MultiPartArchive::detect(&dir.join("RJ123456.Part2.RAR"))
+            .expect("a .partN.rar member is detected");
+        assert_eq!(
+            detected.base_name, "rj123456",
+            "the identity stays lowercased; only the paths must be real"
+        );
+        assert_eq!(detected.first_part, dir.join("RJ123456.Part1.RAR"));
+
+        let parts = detected.find_all_parts().expect("enumerate parts");
+        assert_eq!(
+            parts,
+            vec![
+                dir.join("RJ123456.Part1.RAR"),
+                dir.join("RJ123456.Part2.RAR"),
+            ]
+        );
+    }
+
+    /// The `.rar` of a `.rar`/`.r00` set is only a member because the
+    /// `.r00` is beside it, and that check reads the disk.
+    #[test]
+    fn an_uppercase_rar_sequence_is_detected_from_either_end() {
+        let temp = tempfile::tempdir().expect("create tempdir");
+        let dir = temp.path();
+        touch(dir, "RJ222222.RAR");
+        touch(dir, "RJ222222.R00");
+
+        for member in ["RJ222222.RAR", "RJ222222.R00"] {
+            let detected = MultiPartArchive::detect(&dir.join(member))
+                .unwrap_or_else(|| panic!("{member} is a member of the set"));
+            assert_eq!(detected.format, MultiPartFormat::RarSequence);
+            assert_eq!(detected.first_part, dir.join("RJ222222.RAR"), "{member}");
+        }
     }
 
     #[test]

@@ -412,66 +412,41 @@ mod tests {
     /// rather than keyed off `cfg!(windows)`: a case-sensitive volume on
     /// Windows and a case-insensitive one on macOS both exist, and the
     /// behaviour under test depends on the volume, not the OS.
-    fn filesystem_is_case_insensitive(dir: &Path) -> bool {
-        let lower = dir.join("case-probe");
-        std::fs::write(&lower, b"").expect("write case probe");
-        let resolved = dir.join("CASE-PROBE").exists();
-        std::fs::remove_file(&lower).expect("remove case probe");
-        resolved
-    }
-
-    /// Pins a pre-existing `arclain_core` behaviour the facade passes
-    /// through unchanged, **and its platform consequence**: detection
-    /// lowercases the whole file name before matching, so every path it
-    /// reports (`first_part`, and therefore every enumerated part) is
-    /// lowercased whatever the real on-disk casing was.
+    /// A set named in upper case is detected, enumerated and mergeable,
+    /// and the paths reported for it are the names the filesystem
+    /// actually has.
     ///
-    /// That only round-trips back to the real files on a case-insensitive
-    /// filesystem. On a case-sensitive one, `rj123456.part1.rar` does not
-    /// resolve to `RJ123456.Part1.RAR`, enumeration finds nothing, and the
-    /// set is refused by `start_merge` as `NotFound`: **an
-    /// uppercase-named split archive is unmergeable there.** Both
-    /// outcomes are asserted rather than one of them being allowed to pass
-    /// vacuously through an `all()` over an empty list, so this test
-    /// states the limitation executably on every platform.
+    /// Detection matches a lowercased copy of the file name, and every
+    /// path it reported used to be built from that copy. Those resolved
+    /// back to the files only where the filesystem folds case; on a
+    /// case-sensitive one enumeration found nothing and `start_merge`
+    /// refused the set as `NotFound`, so an uppercase-named split archive
+    /// could not be merged on Linux at all.
+    ///
+    /// Asserted as equality against the real names rather than through
+    /// `exists()`, because a case-insensitive filesystem resolves the
+    /// wrong spelling too and would let the old behaviour pass.
     #[test]
-    fn reported_paths_carry_cores_lowercased_file_names() {
+    fn an_uppercase_set_reports_the_names_the_filesystem_has() {
         let temp = tempfile::tempdir().expect("create tempdir");
         let dir = temp.path();
         touch(dir, "RJ123456.Part1.RAR");
         touch(dir, "RJ123456.Part2.RAR");
 
         let dto = detect_multipart(&dir.join("RJ123456.Part2.RAR")).expect("member is detected");
-        assert_eq!(dto.base_name, "rj123456");
-        assert_eq!(dto.first_part, dir.join("rj123456.part1.rar"));
-        assert!(
-            dto.parts.iter().all(|part| {
-                part.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name == name.to_lowercase())
-            }),
-            "every reported part path carries a lowercased file name: {:?}",
-            dto.parts
+        assert_eq!(
+            dto.base_name, "rj123456",
+            "the set's identity stays lowercased; only the paths are real"
         );
-
-        if filesystem_is_case_insensitive(dir) {
-            assert_eq!(
-                dto.parts,
-                vec![
-                    dir.join("rj123456.part1.rar"),
-                    dir.join("rj123456.part2.rar"),
-                ],
-                "a case-insensitive filesystem resolves the lowercased names, so both parts \
-                 are found"
-            );
-        } else {
-            assert!(
-                dto.parts.is_empty(),
-                "on a case-sensitive filesystem the lowercased names resolve to nothing, so an \
-                 uppercase-named set enumerates no parts and start_merge refuses it: {:?}",
-                dto.parts
-            );
-        }
+        assert_eq!(dto.first_part, dir.join("RJ123456.Part1.RAR"));
+        assert_eq!(
+            dto.parts,
+            vec![
+                dir.join("RJ123456.Part1.RAR"),
+                dir.join("RJ123456.Part2.RAR"),
+            ],
+            "both parts are found whatever the case, on either platform"
+        );
     }
 
     /// Enumeration stops at the first gap, so a set entered from a member
