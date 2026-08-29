@@ -48,9 +48,9 @@ jobs:
       - name: Clone gameta (path-dep sibling)
         run: |
           git clone --no-checkout https://codeberg.org/0xdev/gameta.git codeberg/gameta
-          git -C codeberg/gameta fetch --depth 1 origin ffc09779e86671b2828f90c990c86393ca2a8e1d
+          git -C codeberg/gameta fetch --depth 1 origin 562c585a0f9e3814b2ce5173f3339f66cccd6d5f
           git -C codeberg/gameta checkout --detach FETCH_HEAD
-          test "$(git -C codeberg/gameta rev-parse HEAD)" = "ffc09779e86671b2828f90c990c86393ca2a8e1d"
+          test "$(git -C codeberg/gameta rev-parse HEAD)" = "562c585a0f9e3814b2ce5173f3339f66cccd6d5f"
 
       - name: Build Flatpak
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6

@@ -9,8 +9,8 @@ crate-type = ["cdylib"]
 [dependencies]
 wirt-sdk = { git = "https://codeberg.org/0xdev/wirt.git", rev = "1fc2a8edcbb17830a6c6f46604453ca9126dc387", version = "0.3.0" }
 # External gameta dependencies (https://codeberg.org/0xdev/gameta)
-gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", version = "=0.5.0", default-features = false, features = ["dlsite"] }
-gameta_core = { path = "../../../../codeberg/gameta/gameta_core", version = "=0.5.0" }
+gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", version = "=0.6.0", default-features = false, features = ["dlsite"] }
+gameta_core = { path = "../../../../codeberg/gameta/gameta_core", version = "=0.6.0" }
 serde = { version = "1", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1", features = ["alloc"], default-features = false }
 regex = "1.10"

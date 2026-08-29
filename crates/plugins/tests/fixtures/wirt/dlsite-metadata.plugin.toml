@@ -4,7 +4,7 @@ abi = "0.3.0"
 [plugin]
 id = "dlsite-metadata"
 name = "DLSite Metadata"
-version = "0.12.0"
+version = "0.11.0"
 author = "Archust Team"
 description = "Extracts DLSite product codes (RJ/VJ/BJ) from archive names and enriches them with metadata from DLSite API"
 

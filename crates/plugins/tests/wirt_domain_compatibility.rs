@@ -3,9 +3,15 @@ use std::collections::HashMap;
 use arclain_plugins::PluginManager;
 use tempfile::TempDir;
 
+// The manifest is pinned beside the component rather than read from
+// `plugins/dlsite-metadata/`. Both halves describe one frozen artifact,
+// and a package only loads when they agree on its version -- so pointing
+// at the live manifest made this legacy check fail the moment the plugin
+// was version-bumped, for a reason that had nothing to do with the host
+// contract it exists to verify.
 const DLSITE_MANIFEST: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../plugins/dlsite-metadata/plugin.toml"
+    "/tests/fixtures/wirt/dlsite-metadata.plugin.toml"
 ));
 const DLSITE_COMPONENT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),

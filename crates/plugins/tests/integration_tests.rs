@@ -59,13 +59,22 @@ fn bundled_plugins_dir() -> PathBuf {
             .to_path_buf();
         let directory = TempDir::new().expect("create flat bundled-package fixture");
         for plugin_id in ["dlsite-metadata", "ui-demo"] {
-            let manifest = fs::read(
+            // `dlsite-metadata`'s component is a frozen legacy input, so
+            // its manifest is frozen beside it: a package loads only when
+            // the two agree on a version, and the live manifest moves
+            // whenever the plugin is bumped. `ui-demo` is built from the
+            // maintained guest, so it reads the manifest that ships.
+            let manifest_path = if plugin_id == "dlsite-metadata" {
+                repository_root
+                    .join("crates/plugins/tests/fixtures/wirt")
+                    .join(format!("{plugin_id}.plugin.toml"))
+            } else {
                 repository_root
                     .join("plugins")
                     .join(plugin_id)
-                    .join("plugin.toml"),
-            )
-            .expect("read bundled plugin manifest");
+                    .join("plugin.toml")
+            };
+            let manifest = fs::read(manifest_path).expect("read bundled plugin manifest");
             let component = fs::read(
                 repository_root
                     .join("crates/plugins/tests/fixtures/wirt")

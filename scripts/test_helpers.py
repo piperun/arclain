@@ -258,8 +258,8 @@ class TestOwnedFormatting(unittest.TestCase):
 
 
 class TestGametaPin(unittest.TestCase):
-    VERSION = "=0.5.0"
-    REVISION = "ffc09779e86671b2828f90c990c86393ca2a8e1d"
+    VERSION = "=0.6.0"
+    REVISION = "562c585a0f9e3814b2ce5173f3339f66cccd6d5f"
 
     def test_gameta_dependencies_and_ci_checkouts_are_pinned(self):
         manifests = (

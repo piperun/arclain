@@ -61,7 +61,14 @@ post_bump_hooks = [
 path = "plugins/dlsite-metadata"
 public_api = false
 changelog_path = "plugins/dlsite-metadata/CHANGELOG.md"
+# Both manifests carry the version, and the loader reads plugin.toml
+# while cargo reads Cargo.toml. Bumping only one leaves the built
+# artifact named for a version its own crate disagrees with, which
+# `test_plugin_manifest_versions_match_cargo` refuses. `version` is the
+# only key spelled that way in plugin.toml -- the ABI line is `abi` --
+# so anchoring at the start of the line hits exactly one of them.
 pre_bump_hooks = [
     "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' plugin.toml",
 ]
 post_bump_hooks = []
