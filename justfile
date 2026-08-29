@@ -34,7 +34,7 @@ debug:
 # ─── test ─────────────────────────────────────────────────────────────────
 # `just test` (all), `just test rust`, `just test ui -- --nocapture`.
 
-# Run test suites. scope: all (default) | rust | ui | core | plugins | scripts.
+# Run test suites. scope: all (default) | lib | rust | ui | core | plugins | scripts.
 test scope="all" *args:
     just _test-{{scope}} {{args}}
 
@@ -44,6 +44,14 @@ _test-all:
 
 _test-rust *args:
     cargo test --workspace {{args}}
+
+# Everything the desktop shell sits on, and not the shell. Rebuilding
+# after a change to a library crate costs about 51s for these and another
+# 83s for `arclain_ui` -- the UI is the larger half of a round trip that
+# never touched it. Use this while working on the libraries; `just test`
+# still covers the lot before a commit.
+_test-lib *args:
+    cargo test --workspace --exclude arclain_ui {{args}}
 
 _test-ui *args:
     cargo test -p arclain_ui {{args}}
