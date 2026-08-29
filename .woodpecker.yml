@@ -101,8 +101,13 @@ steps:
       # thread-per-test) and cleaner output. Doctests are excluded
       # from nextest entirely and covered by the follow-up
       # `cargo test --doc` step below.
-      - su runner -c "cd /workspace/codeberg/arclain && cargo nextest run --workspace --exclude arclain_ui --locked"
-      - su runner -c "cd /workspace/codeberg/arclain && cargo nextest run -p arclain_ui --lib --locked"
+      # --no-fail-fast: nextest stops the whole run at the first
+      # failure by default, so a run reports one problem and cancels
+      # the rest. Three separate breakages here were found one per
+      # push because each was hiding the next. Every failure in one
+      # run is worth the extra minutes.
+      - su runner -c "cd /workspace/codeberg/arclain && cargo nextest run --workspace --exclude arclain_ui --locked --no-fail-fast"
+      - su runner -c "cd /workspace/codeberg/arclain && cargo nextest run -p arclain_ui --lib --locked --no-fail-fast"
       - su runner -c "cd /workspace/codeberg/arclain && cargo test --workspace --doc --locked"
     depends_on: [fetch-gameta]
 

@@ -73,7 +73,10 @@ jobs:
 
       - name: Run tests via nextest
         working-directory: codeberg/arclain
-        run: cargo nextest run --workspace --locked
+        # --no-fail-fast: without it nextest cancels the run at the
+        # first failure, so one push reveals one problem and hides
+        # whatever is behind it.
+        run: cargo nextest run --workspace --locked --no-fail-fast
 
       - name: Run doc-tests
         # nextest doesn't execute doctests; run them separately with
