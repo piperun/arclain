@@ -120,7 +120,21 @@ steps:
   wasm-plugins:
     image: rust:1.98.0-bookworm
     when:
-      - event: [push, tag]
+      # `dlsite-metadata` depends on wirt and gameta and on no arclain
+      # crate, so nothing in crates/ can change what this builds. Scoped
+      # to the plugin's own tree plus this file, which carries the gameta
+      # revision the build resolves against. A tag still builds it
+      # unconditionally, because a release ships the artifact.
+      #
+      # The test steps are deliberately not scoped this way: arclain_ui
+      # sits on arclain_app sits on core, so a change under crates/core
+      # can break a UI test, and a path filter there would hide it.
+      - event: push
+        path:
+          include:
+            - 'plugins/dlsite-metadata/**'
+            - '.woodpecker.yml'
+      - event: tag
     commands:
       # `rustup target add` modifies the toolchain at /usr/local/rustup/
       # which is owned by root in the exact Rust image — runner can't
