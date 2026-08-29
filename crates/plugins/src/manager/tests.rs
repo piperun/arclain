@@ -623,6 +623,21 @@ fn facade_fixture_package_with_manifest(
     fingerprint
 }
 
+/// How long a guest is given to reach its resource limit. Two seconds was
+/// enough on a developer machine and not on a shared runner, where the
+/// neighbouring plugin tests take twenty to forty seconds each; the wait
+/// then expired and the assertion failed for the machine's speed rather
+/// than for the behaviour under test.
+const GUEST_TRANSITION_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long the resource-disabled hook waits to be released before giving
+/// up. It exists only so the wait terminates: reaching it means an
+/// assertion already failed and the release is never coming. On the
+/// path where everything works the release arrives about 100ms later,
+/// so this is a hundredfold margin and still turns a wedged run into a
+/// prompt failure rather than an hour of held runner.
+const HOOK_RELEASE_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn trigger_fixture_result_quota(manager: &PluginManager) -> crate::types::PluginError {
     manager
         .execute_plugin(
@@ -746,14 +761,22 @@ fn enable_cannot_race_between_resource_disable_and_quarantine_recording() {
         .wirt_executor()
         .set_resource_disabled_before_ledger_hook(Box::new(move || {
             disabled_tx.send(()).unwrap();
-            release_rx.recv().unwrap();
+            // Bounded, and that bound is what keeps a failure a failure.
+            // This runs on a scoped thread, and `thread::scope` joins its
+            // threads before letting a panic out of the scope body -- so
+            // if an assertion below fires before `release_tx.send`, an
+            // unbounded wait here parks this thread forever and the join
+            // never returns. The test then hangs rather than failing: one
+            // CI run reported it still going after 900 seconds, against
+            // under a second locally.
+            let _ = release_rx.recv_timeout(HOOK_RELEASE_BUDGET);
         }));
 
     std::thread::scope(|scope| {
         let violation_manager = &manager;
         let violation = scope.spawn(move || trigger_fixture_result_quota(violation_manager));
         disabled_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(GUEST_TRANSITION_BUDGET)
             .expect("resource transition must reach the ledger boundary");
 
         let (enable_done_tx, enable_done_rx) = std::sync::mpsc::channel();
@@ -775,7 +798,7 @@ fn enable_cannot_race_between_resource_disable_and_quarantine_recording() {
         ));
         let enable_result = early_enable.unwrap_or_else(|| {
             enable_done_rx
-                .recv_timeout(std::time::Duration::from_secs(2))
+                .recv_timeout(GUEST_TRANSITION_BUDGET)
                 .unwrap()
         });
         assert!(matches!(
