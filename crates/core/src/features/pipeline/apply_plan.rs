@@ -84,7 +84,78 @@ fn rename_noclobber(source: &Path, destination: &Path) -> Result<()> {
         }
     }
 
-    fs::rename(source, destination).with_context(|| {
+    match fs::rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            rename_read_only_directory(source, destination, error)
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "move plan transaction path {:?} -> {:?}",
+                source, destination
+            )
+        }),
+    }
+}
+
+/// Second attempt at a move that was refused for permissions, for the one
+/// case where that is recoverable: a read-only directory.
+///
+/// Renaming a directory rewrites its `..` entry, so the kernel requires
+/// write permission on the directory *itself*, not merely on the parent.
+/// An archive can carry a mode-0555 folder, and extracting one leaves it
+/// that way -- so backing up the work directory failed on Linux with
+/// `Permission denied` even though every parent was writable. Windows has
+/// no equivalent rule, which is why this only ever appeared in CI.
+///
+/// Owner-write is granted for the duration of the rename and put back
+/// afterwards, on whichever path ends up holding the directory, so a
+/// rollback restores the mode the archive specified.
+#[cfg(unix)]
+fn rename_read_only_directory(
+    source: &Path,
+    destination: &Path,
+    refusal: std::io::Error,
+) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let context = || {
+        format!(
+            "move plan transaction path {:?} -> {:?}",
+            source, destination
+        )
+    };
+
+    let metadata = fs::symlink_metadata(source).with_context(context)?;
+    if !metadata.is_dir() {
+        return Err(refusal).with_context(context);
+    }
+
+    let original = metadata.permissions();
+    let mut writable = original.clone();
+    writable.set_mode(original.mode() | 0o200);
+    if fs::set_permissions(source, writable).is_err() {
+        return Err(refusal).with_context(context);
+    }
+
+    let moved = fs::rename(source, destination);
+    let restore_at = if moved.is_ok() { destination } else { source };
+    let restored = fs::set_permissions(restore_at, original);
+
+    moved.with_context(context)?;
+    restored.with_context(|| format!("restore permissions on moved directory {:?}", restore_at))?;
+    Ok(())
+}
+
+/// Windows has no rule that a directory must be writable to be renamed,
+/// so a refusal here is the refusal.
+#[cfg(not(unix))]
+fn rename_read_only_directory(
+    source: &Path,
+    destination: &Path,
+    refusal: std::io::Error,
+) -> Result<()> {
+    Err(refusal).with_context(|| {
         format!(
             "move plan transaction path {:?} -> {:?}",
             source, destination
