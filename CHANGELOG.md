@@ -2,6 +2,18 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 3.0.2 - 2026-08-29
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.12.0
+### Global changes
+#### Bug Fixes
+- (**core**) back up a read-only directory instead of failing on it - (e9e8610) - 0xdev
+#### Continuous Integration
+- report every test failure in a run, not just the first - (b9b939f) - 0xdev
+- install 7-Zip so the extraction tests can run - (48d56c2) - 0xdev
+
+- - -
+
 ## 3.0.1 - 2026-08-29
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.12.0
