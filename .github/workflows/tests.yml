@@ -42,12 +42,16 @@ jobs:
         # Matches `.woodpecker.yml` cargo-test step. Needed by
         # arclain_ui's egui/eframe deps and arclain-network's TLS
         # stack. pkg-config is the glue cargo's build scripts use to
-        # find them.
+        # find them. p7zip-full provides /usr/bin/7z: the CLI
+        # integration tests shell out to `7z` to build a
+        # header-encrypted fixture, and `sevenz_cli::runner`
+        # searches PATH for 7zz/7z/7za to extract at all.
         run: |
           sudo apt-get update -qq
           sudo apt-get install -yqq \
             libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config \
+            p7zip-full
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

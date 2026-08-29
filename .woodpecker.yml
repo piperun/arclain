@@ -70,10 +70,16 @@ steps:
     when:
       - event: [push, tag]
     commands:
+      # p7zip-full provides /usr/bin/7z. Both the CLI integration tests
+      # and the extraction backend need a real 7-Zip: the tests shell out
+      # to `7z` to build a header-encrypted fixture, and
+      # `sevenz_cli::runner` searches PATH for 7zz/7z/7za. Without it
+      # eight tests fail on a missing tool rather than on behaviour.
       - apt-get update -qq
       - apt-get install -yqq
           libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev
           libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+          p7zip-full
       # Drop to a non-root user before running tests. Several tests
       # verify user-level permission denial (chmod 0o500 / 0o555 + assert
       # the operation errors); root bypasses those bits, so the tests
