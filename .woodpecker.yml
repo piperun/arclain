@@ -15,8 +15,14 @@ workspace:
   path: codeberg/arclain
 
 when:
+  # A release pushes the branch and the tag together, which is two events
+  # and so two pipelines on one commit -- and the push one would repeat
+  # every test the tag one runs, on a shared runner someone else is
+  # waiting for. cog's bump commit is the only thing that carries this
+  # subject, and it is always tagged in the same breath, so skipping it
+  # here leaves the tag pipeline as the single run for a release.
   - event: push
-    evaluate: 'not (CI_COMMIT_MESSAGE matches "^docs:")'
+    evaluate: 'not (CI_COMMIT_MESSAGE matches "^(docs|chore[(]version[)]):")'
   - event: tag
     # Match app release tags only. WASM plugins are bundled with
     # the desktop app until the plugin ABI has an explicit
