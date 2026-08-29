@@ -1,0 +1,18 @@
+# Test-runner limits.
+#
+# `terminate-after` is the important one, and it is here for the shared
+# runners rather than for the developer box. A test that wedges instead of
+# failing used to sit there until the pipeline's own 60-minute timeout:
+# `enable_cannot_race_between_resource_disable_and_quarantine_recording`
+# was still reported SLOW past 900 seconds on one Codeberg run, against
+# 0.95 seconds on a developer machine. Every wait inside it is bounded
+# except the join on the thread driving the guest, so when that thread
+# does not return, nothing in the test stops it.
+#
+# Five periods of 120 seconds gives the genuinely slow tests room -- the
+# `arclain_app::ui` harness has taken 287 seconds on a loaded runner --
+# while capping a wedged one at ten minutes instead of an hour. A test
+# killed this way is reported as a timeout, so the run says which one
+# hung rather than only that the pipeline ran out of time.
+[profile.default]
+slow-timeout = { period = "120s", terminate-after = 5 }

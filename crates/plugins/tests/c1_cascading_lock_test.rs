@@ -42,6 +42,20 @@ const HOLD_DURATION: Duration = Duration::from_millis(300);
 /// `HOLD_DURATION + slack`, no cycle. Currently this test detects the
 /// cycle (test passes, asserting deadlock).
 #[test]
+// Demonstrates the hazard the fix removed; it is not a regression test
+// and must not gate CI.
+//
+// It asserts that the deadlock *reproduces* -- so it fails on the runs
+// where scheduling happens to avoid it, which is the outcome nobody
+// should be paged for. Its own message says as much: "this test happened
+// to schedule lucky". A shared runner reported it as a red build for a
+// race that did not occur.
+//
+// `c1_snapshot_then_release_avoids_cycle` below is the real guard: it
+// asserts the post-fix shape holds, and it is deterministic. Run this one
+// deliberately with `cargo test -- --ignored` when reasoning about the
+// lock order.
+#[ignore = "asserts a race reproduces, so it fails whenever scheduling is kind"]
 fn c1_nested_lock_acquisition_can_cycle() {
     let plugins: Arc<RwLock<()>> = Arc::new(RwLock::new(()));
     let whitelist: Arc<RwLock<()>> = Arc::new(RwLock::new(()));
