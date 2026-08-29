@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 3.0.1 - 2026-08-29
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.12.0
+### Global changes
+#### Bug Fixes
+- (**core**) find a split archive's parts whatever their case - (8ccd0bc) - 0xdev
+#### Build system
+- depend on gameta 0.6.0 - (8f1131c) - 0xdev
+
+- - -
+
 ## 3.0.0 - 2026-08-28
 ### Package updates
 - dlsite-metadata bumped to dlsite-metadata-0.12.0
