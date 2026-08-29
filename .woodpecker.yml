@@ -164,6 +164,37 @@ steps:
     # paying for).
     depends_on: [cargo-check, cargo-test]
 
+  # ── Compile-fail contract, when the crate that decides it changes ───
+
+  compile-fail:
+    image: rust:1.98.0-bookworm
+    when:
+      # The harness proves `SecretInput` implements neither `Clone` nor
+      # either Serde trait. Both are decided by `crates/app`'s own source:
+      # the orphan rule stops any other crate adding those impls to a type
+      # this one declares, so nothing outside can change the answer. That
+      # is why this is scoped and the ordinary test suites are not.
+      #
+      # It is scoped at all because trybuild invokes the compiler per
+      # case: 310s of a 360s step, against 58s for the next slowest test
+      # in the workspace.
+      - event: push
+        path:
+          include:
+            - 'crates/app/**'
+      - event: tag
+    commands:
+      - apt-get update -qq
+      - apt-get install -yqq
+          libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev
+          libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+      - useradd -m runner
+      - chown -R runner:runner /workspace
+      - su runner -c "cd /workspace/codeberg/arclain && cargo test -p arclain_app --test ui --locked -- --ignored"
+    # Same chown race as wasm-plugins: serialize behind the steps that
+    # chown /workspace rather than race them.
+    depends_on: [cargo-check, cargo-test]
+
   # ── Linux release build on tag ──────────────────────────────────────
 
   build-linux-x86_64:
