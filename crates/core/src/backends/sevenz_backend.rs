@@ -19,6 +19,48 @@ fn sevenz_host_io(error: std::io::Error, context: String) -> sevenz_rust2::Error
     sevenz_rust2::Error::Io(error, Cow::Owned(context))
 }
 
+/// Copies an entry's bytes from the archive reader into `sink`, and fails
+/// when the stream ends before the size the header declares.
+///
+/// The reader the archive hands over reports a stream that ends early as a
+/// plain end of file: its CRC check only runs once the declared size has
+/// been read in full. Without this check a truncated archive, or an
+/// encrypted block decrypted with the wrong password whose first byte
+/// happens to decode as the LZMA2 end-of-stream marker, comes out as a
+/// short file and a successful extraction.
+fn copy_entry_stream<R: Read + ?Sized, W: Write + ?Sized>(
+    entry: &sevenz_rust2::ArchiveEntry,
+    reader: &mut R,
+    sink: &mut W,
+) -> std::result::Result<(), sevenz_rust2::Error> {
+    let entry_name = &entry.name;
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut copied = 0_u64;
+    loop {
+        // Archive-reader I/O must remain context-free so BlockDecoder can
+        // classify encrypted read failures as MaybeBadPassword.
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        copied += read as u64;
+        sink.write_all(&buffer[..read]).map_err(|error| {
+            sevenz_host_io(error, format!("write archive entry {entry_name:?}"))
+        })?;
+    }
+    if copied < entry.size {
+        // Context-free for the same reason as the reads above.
+        return Err(sevenz_rust2::Error::from(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!(
+                "7z entry {entry_name:?} ended after {copied} of {} bytes",
+                entry.size
+            ),
+        )));
+    }
+    Ok(())
+}
+
 fn write_archive_entry<R: Read + ?Sized>(
     dest: &Path,
     entry: &sevenz_rust2::ArchiveEntry,
@@ -61,18 +103,7 @@ fn write_archive_entry<R: Read + ?Sized>(
         )
     })?;
 
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        // Archive-reader I/O must remain context-free so BlockDecoder can
-        // classify encrypted read failures as MaybeBadPassword.
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        staged.write_all(&buffer[..read]).map_err(|error| {
-            sevenz_host_io(error, format!("write staged archive entry {entry_name:?}"))
-        })?;
-    }
+    copy_entry_stream(entry, reader, &mut staged)?;
     staged
         .flush()
         .map_err(|error| sevenz_host_io(error, format!("flush archive entry {entry_name:?}")))?;
@@ -655,7 +686,7 @@ impl ArchiveBackend for SevenZBackend {
 
         reader.for_each_entries(|entry, reader| {
             if entry.name == path_in_archive {
-                std::io::copy(reader, &mut content_bytes)?;
+                copy_entry_stream(entry, reader, &mut content_bytes)?;
                 found = true;
                 Ok(false) // Stop iteration
             } else {
@@ -845,7 +876,7 @@ impl ArchiveBackend for SevenZBackend {
 
         reader.for_each_entries(|entry, reader| {
             if entry.name == path_in_archive {
-                std::io::copy(reader, writer)?;
+                copy_entry_stream(entry, reader, writer)?;
                 found = true;
                 Ok(false) // Stop iteration
             } else {
@@ -891,6 +922,31 @@ mod path_safety_tests {
             )
             .unwrap();
         writer.finish().unwrap();
+    }
+
+    /// Writes an LZMA2 archive holding one file, then overwrites the first
+    /// byte of its packed stream with the LZMA2 end-of-stream marker, so the
+    /// decoder yields nothing before the entry's declared size. Decrypting an
+    /// AES block with the wrong password produces the same stream shape
+    /// whenever the first plaintext byte happens to be zero.
+    fn write_truncated_test_archive(archive: &Path, entry_name: &str, contents: &[u8]) {
+        // A 7z file opens with a 32-byte signature header; the first packed
+        // stream follows it directly.
+        const FIRST_PACKED_BYTE: usize = 32;
+
+        write_test_archive(
+            archive,
+            sevenz_rust2::ArchiveEntry::new_file(entry_name),
+            contents,
+        );
+        let mut bytes = std::fs::read(archive).unwrap();
+        let control = bytes[FIRST_PACKED_BYTE];
+        assert!(
+            control == 0x01 || control >= 0xE0,
+            "packed stream does not open with an LZMA2 first chunk: {control:#04x}"
+        );
+        bytes[FIRST_PACKED_BYTE] = 0x00;
+        std::fs::write(archive, bytes).unwrap();
     }
 
     fn assert_time_close(actual: SystemTime, expected: SystemTime) {
@@ -999,6 +1055,90 @@ mod path_safety_tests {
             "unexpected wrong-password error: {error:#}"
         );
         assert!(!dest.join("secret.txt").exists());
+    }
+
+    #[test]
+    fn native_entry_writer_rejects_a_stream_shorter_than_the_declared_size() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut entry = sevenz_rust2::ArchiveEntry::new_file("short.bin");
+        entry.size = 19;
+        let mut body = Cursor::new(b"class".to_vec());
+
+        let error = write_archive_entry(&dest, &entry, &mut body).unwrap_err();
+
+        // Context-free, so the block decoder reports it as a password
+        // failure when the block was encrypted.
+        assert!(
+            matches!(
+                &error,
+                sevenz_rust2::Error::Io(cause, context)
+                    if context.is_empty() && cause.kind() == std::io::ErrorKind::UnexpectedEof
+            ),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("5 of 19 bytes"),
+            "unexpected error: {error}"
+        );
+        assert!(!dest.join("short.bin").exists());
+        assert_eq!(
+            std::fs::read_dir(&dest).unwrap().count(),
+            0,
+            "a staged file was left behind"
+        );
+    }
+
+    #[test]
+    fn native_extract_all_rejects_an_entry_stream_that_ends_early() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("truncated.7z");
+        let dest = temp.path().join("dest");
+        write_truncated_test_archive(&archive, "secret.txt", b"classified contents");
+
+        let error = SevenZBackend::new()
+            .extract_all(&archive, &dest, None)
+            .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("0 of 19 bytes"),
+            "unexpected error: {error:#}"
+        );
+        assert!(!dest.join("secret.txt").exists());
+    }
+
+    #[test]
+    fn native_text_read_rejects_an_entry_stream_that_ends_early() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("truncated.7z");
+        write_truncated_test_archive(&archive, "notes.txt", b"classified contents");
+
+        let error = SevenZBackend::new()
+            .read_text_file(&archive, "notes.txt", None)
+            .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("0 of 19 bytes"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn native_entry_streaming_rejects_an_entry_stream_that_ends_early() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("truncated.7z");
+        write_truncated_test_archive(&archive, "notes.txt", b"classified contents");
+        let mut sink = Vec::new();
+
+        let error = SevenZBackend::new()
+            .extract_entry_to_writer(&archive, "notes.txt", None, &mut sink)
+            .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("0 of 19 bytes"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]
