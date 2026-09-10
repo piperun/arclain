@@ -1,14 +1,26 @@
 use crate::ImportError;
+#[cfg(not(windows))]
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
+/// The archive being read, held so it cannot change underneath the read.
+///
+/// On Windows the handle is opened with a share mode that refuses every
+/// other writer and deleter for as long as it is held, so the bytes read
+/// are the bytes on disk; the length and modification time are checked as
+/// well. Elsewhere a writer cannot be kept out, so the whole file is hashed
+/// when it is opened and again before the result is reported, and a
+/// difference is reported as the source having changed. A hash is a full
+/// read of the archive, twice, which is why it is not done where the share
+/// mode already answers the question.
 pub(super) struct Source {
     pub file: File,
     #[cfg(windows)]
     path: PathBuf,
+    #[cfg(not(windows))]
     digest: [u8; 32],
     length: u64,
     modified: std::time::SystemTime,
@@ -32,15 +44,21 @@ impl Source {
         if metadata.len() > max {
             return Err(ImportError::Limit);
         }
-        let mut source = Self {
+        let source = Self {
             file,
             #[cfg(windows)]
             path: path.to_path_buf(),
+            #[cfg(not(windows))]
             digest: [0; 32],
             length: metadata.len(),
             modified: metadata.modified()?,
         };
-        source.digest = source.hash()?;
+        #[cfg(not(windows))]
+        let source = {
+            let mut source = source;
+            source.digest = source.hash()?;
+            source
+        };
         source.check_metadata()?;
         Ok(source)
     }
@@ -51,6 +69,7 @@ impl Source {
         }
         Ok(())
     }
+    #[cfg(not(windows))]
     fn hash(&mut self) -> Result<[u8; 32], ImportError> {
         self.file.seek(SeekFrom::Start(0))?;
         let mut digest = Sha256::new();
@@ -81,9 +100,12 @@ impl Source {
         Ok(bytes[..n].to_vec())
     }
     pub fn verify(&mut self) -> Result<(), ImportError> {
-        self.check_metadata()?;
-        if self.hash()? != self.digest {
-            return Err(ImportError::SourceChanged);
+        #[cfg(not(windows))]
+        {
+            self.check_metadata()?;
+            if self.hash()? != self.digest {
+                return Err(ImportError::SourceChanged);
+            }
         }
         self.check_metadata()
     }
