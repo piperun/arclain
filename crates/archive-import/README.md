@@ -25,9 +25,10 @@ The memory default is half the machine's physical memory, clamped to 1 to
 8 GiB; the worker accepts a cap from 32 MiB to 64 GiB and refuses anything
 outside that range with exit status 2, before it reads anything else. There
 is no total deadline. The other defaults are a 60-second stall timeout and a
-1 MiB/s decode-rate floor: a worker that sends no frame for the timeout
-while a request is outstanding is killed, as is one that streams entry data
-below the floor over a window of the timeout, after a decode's first. Time
+1 MiB/s decode-rate floor, both counting only the time the client spends
+waiting on the worker: a worker that sends no frame for the timeout while a
+request is outstanding is killed, as is one that streams entry data below
+the floor over a window of the timeout, after a decode's first. Time
 between entries and the source verification before COMPLETE owe no rate; the
 worker's heartbeats keep them under the stall rule, and the worker writes a
 HEARTBEAT frame after five silent seconds. OS limits are established before

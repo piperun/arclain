@@ -283,7 +283,9 @@ mod tests {
         thread::sleep(Duration::from_millis(20));
         assert!(written().is_empty(), "the beat waits out a whole interval");
 
-        thread::sleep(Duration::from_millis(100));
+        // Checked 45 ms after the beat is due, and 50 ms before the next one
+        // could be, so a loaded machine has room on both sides.
+        thread::sleep(Duration::from_millis(130));
         let frames = written();
         assert_eq!(frames.len(), 1, "one silent interval is one beat");
         assert_eq!(frames[0].1, BEAT, "the beat is a frame with no payload");
@@ -297,7 +299,7 @@ mod tests {
         assert_eq!(frames.len(), 2, "a write restarts the interval");
         assert_eq!(frames[1].1, [DATA, 1, 0, 0, 0, b'x']);
 
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(120));
         let frames = written();
         assert_eq!(frames.len(), 3, "silence after a write beats again");
         assert_eq!(frames[2].1, BEAT);
