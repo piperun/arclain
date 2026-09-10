@@ -2,6 +2,40 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 3.1.0 - 2026-09-10
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.12.1
+### Global changes
+#### Features
+- (**archive-import**) size the worker's memory cap from the machine - (c1e019e) - 0xdev
+- (**archive-import**) kill a stalled or trickling worker, not a slow one - (74cee2b) - 0xdev
+- (**archive-import**) send a heartbeat while the worker is silent - (6ac6f86) - 0xdev
+- (**archive-import**) add the bounded archive import client and worker - (88a1b65) - 0xdev
+#### Bug Fixes
+- (**archive-import**) judge the decode rate only while an entry streams - (e335433) - 0xdev
+- (**archive-import**) read the archives WinRAR and 7-Zip write - (05d23e9) - 0xdev
+#### Performance Improvements
+- (**archive-import**) hash the source only where it cannot be held - (558d331) - 0xdev
+#### Documentation
+- (**archive-import**) state what the accrual order guarantees - (c7f1d60) - 0xdev
+#### Tests
+- (**archive-import**) give the heartbeat test room on both sides - (722f8b3) - 0xdev
+- (**archive-import**) pin the memory default's clamp - (234d61d) - 0xdev
+- (**archive-import**) time the heartbeat reset from before the write - (ab44626) - 0xdev
+- (**archive-import**) drive the heartbeat through the frame encoder - (6800c05) - 0xdev
+- (**plugins**) make a slow runner fail this test instead of wedging it - (a9fa238) - 0xdev
+- (**plugins**) stop gating CI on a race that has to lose - (0b8b22d) - 0xdev
+- (**scripts**) assert every rust image is pinned, not how many there are - (de1f3f3) - 0xdev
+#### Build system
+- (**archive-import**) pin unboxer to its published revision - (0173bd3) - 0xdev
+- add a test scope that skips the desktop shell - (dc5ee72) - 0xdev
+#### Continuous Integration
+- run the compile-fail harness when the crate deciding it changes - (20c3148) - 0xdev
+- build the wasm plugin only when the wasm plugin changed - (713490a) - 0xdev
+- run one pipeline for a release, not two - (3831f77) - 0xdev
+
+- - -
+
 ## 3.0.2 - 2026-08-29
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.12.0
