@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/archive-import",
     "crates/ui",
     "crates/db",
     "crates/plugins",
