@@ -2,6 +2,21 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 3.1.1 - 2026-09-10
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.12.1
+### Global changes
+#### Bug Fixes
+- (**app**) report a missing archive as not found, never as a password - (317c797) - 0xdev
+- (**core**) report a failed 7-Zip run by exit code and reason, not stderr - (2df2ecf) - 0xdev
+- (**core**) answer a missing archive before any backend tier runs - (08cd5a3) - 0xdev
+#### Tests
+- (**ui**) park the cancelled-open test on a real password challenge - (aafefb0) - 0xdev
+#### Build system
+- lock gameta_dlsite_core as the committed gameta declares it - (bc78344) - 0xdev
+
+- - -
+
 ## 3.1.0 - 2026-09-10
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.12.1
