@@ -15,6 +15,9 @@ pub(crate) const DATA: u8 = 9;
 pub(crate) const END: u8 = 10;
 pub(crate) const COMPLETE: u8 = 11;
 pub(crate) const FAILURE: u8 = 12;
+/// Written by the worker when nothing else was written for five seconds, so
+/// a long silent phase is not read as a stalled worker. Carries nothing.
+pub(crate) const HEARTBEAT: u8 = 13;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum ImportError {
@@ -84,9 +87,13 @@ pub(crate) fn frame(writer: &mut dyn Write, tag: u8, bytes: &[u8]) -> Result<(),
     if bytes.len() > MAX_FRAME {
         return Err(ImportError::Limit);
     }
-    writer.write_all(&[tag])?;
-    writer.write_all(&(bytes.len() as u32).to_le_bytes())?;
-    writer.write_all(bytes)?;
+    // One write per frame: the worker's stdout is shared with its heartbeat
+    // thread, and two frames must never interleave.
+    let mut out = Vec::with_capacity(5 + bytes.len());
+    out.push(tag);
+    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(bytes);
+    writer.write_all(&out)?;
     writer.flush()?;
     Ok(())
 }
@@ -134,5 +141,24 @@ mod tests {
         for bytes in [&[DATA][..], &[DATA, 2, 0, 0, 0, 1][..]] {
             assert!(read_frame(&mut &*bytes).is_err());
         }
+    }
+
+    #[test]
+    fn a_frame_is_one_write() {
+        struct Counting(Vec<u8>, usize);
+        impl Write for Counting {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.1 += 1;
+                self.0.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut sink = Counting(vec![], 0);
+        frame(&mut sink, DATA, b"abc").unwrap();
+        assert_eq!(sink.1, 1, "a shared writer must never see half a frame");
+        assert_eq!(sink.0, [DATA, 3, 0, 0, 0, b'a', b'b', b'c']);
     }
 }

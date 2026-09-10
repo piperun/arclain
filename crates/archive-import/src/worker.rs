@@ -6,8 +6,80 @@ mod sevenz;
 mod source;
 mod zip;
 use crate::protocol::*;
-use std::io::{Read, Write};
+use std::{
+    io::{self, Read, Write},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
+};
 use unboxer::{Inventory, Limits};
+
+/// The worker's output, shared with a thread that writes a HEARTBEAT frame
+/// whenever five seconds pass with nothing else written. Every frame is one
+/// `write`, so the lock taken per write keeps frames whole.
+struct Heartbeat {
+    shared: Arc<Mutex<(Box<dyn Write + Send>, Instant)>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+impl Heartbeat {
+    const INTERVAL: Duration = Duration::from_secs(5);
+    fn start(writer: Box<dyn Write + Send>) -> Self {
+        let shared = Arc::new(Mutex::new((writer, Instant::now())));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (beat_shared, beat_stop) = (shared.clone(), stop.clone());
+        let thread = thread::spawn(move || {
+            while !beat_stop.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(250));
+                let Ok(mut guard) = beat_shared.lock() else {
+                    return;
+                };
+                if guard.1.elapsed() >= Self::INTERVAL {
+                    if guard.0.write_all(&[HEARTBEAT, 0, 0, 0, 0]).is_err()
+                        || guard.0.flush().is_err()
+                    {
+                        return;
+                    }
+                    guard.1 = Instant::now();
+                }
+            }
+        });
+        Self {
+            shared,
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+impl Write for Heartbeat {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut guard = self
+            .shared
+            .lock()
+            .map_err(|_| io::Error::other("poisoned"))?;
+        guard.0.write_all(bytes)?;
+        guard.1 = Instant::now();
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        let mut guard = self
+            .shared
+            .lock()
+            .map_err(|_| io::Error::other("poisoned"))?;
+        guard.0.flush()
+    }
+}
+impl Drop for Heartbeat {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
 
 pub fn main() -> i32 {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
@@ -31,7 +103,7 @@ pub fn main() -> i32 {
         }
     };
     let mut input = std::io::stdin().lock();
-    let mut output = std::io::stdout().lock();
+    let mut output = Heartbeat::start(Box::new(std::io::stdout()));
     let result = run(&mut input, &mut output);
     if let Err(error) = result {
         let _ = json(&mut output, FAILURE, &error);
