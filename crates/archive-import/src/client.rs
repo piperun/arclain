@@ -26,11 +26,14 @@ pub struct WorkerOptions {
     pub path: PathBuf,
     pub memory_bytes: u64,
     /// How long the worker may go without a frame while a request is
-    /// outstanding before it is killed.
+    /// outstanding before it is killed. A request stays outstanding until
+    /// the worker has exited after COMPLETE, so this must exceed the
+    /// worker's exit latency: its heartbeat thread joins within 250 ms.
     pub stall_timeout: Duration,
-    /// Bytes of entry data per second the worker must average, measured
-    /// over windows of `stall_timeout` spent waiting on it, after the first
-    /// such window of a decode. Zero disables the floor.
+    /// Bytes of entry data per second the worker must average while an
+    /// entry streams, between its BEGIN and its END, measured over windows
+    /// of `stall_timeout` spent waiting on it, after the first such window
+    /// of a decode. Zero disables the floor.
     pub min_decode_rate: u64,
 }
 impl WorkerOptions {
@@ -59,10 +62,12 @@ struct Liveness {
     /// Milliseconds since `started` at which the current `read_frame`
     /// began, or `u64::MAX` when the reader is not waiting on the worker.
     waiting_since_ms: AtomicU64,
-    /// Whether DATA can still arrive: from DECODE to COMPLETE or FAILURE.
+    /// Whether the rate floor applies: from DECODE to COMPLETE or FAILURE.
     decoding: AtomicBool,
     /// Milliseconds spent waiting on the worker, and bytes of DATA payload
-    /// received, while decoding.
+    /// received, while an entry streams: between a BEGIN and its END. The
+    /// seek to the next entry and the source re-hash before COMPLETE owe
+    /// no rate; heartbeats keep them under the stall rule instead.
     decode_wait_ms: AtomicU64,
     decode_bytes: AtomicU64,
     /// Set by the watchdog before it kills the worker for a stall or for
@@ -135,40 +140,51 @@ impl ArchiveClient {
         let (tx, rx) = mpsc::sync_channel(2);
         let liveness = Arc::new(Liveness::new());
         let reader_liveness = liveness.clone();
-        let reader = thread::spawn(move || loop {
-            let began = reader_liveness.now_ms();
-            reader_liveness
-                .waiting_since_ms
-                .store(began, Ordering::Release);
-            let value = read_frame(&mut stdout);
-            reader_liveness
-                .waiting_since_ms
-                .store(u64::MAX, Ordering::Release);
-            // Accounted before the send below, which may block on a slow
-            // consumer for as long as it likes through no fault of the worker.
-            if reader_liveness.decoding.load(Ordering::Acquire) {
-                // A read that began before DECODE was sent spent the earlier
-                // part of its wait on an idle worker; only the rest counts.
-                let since = reader_liveness.outstanding_since_ms.load(Ordering::Acquire);
-                let waited = reader_liveness.now_ms().saturating_sub(began.max(since));
+        let reader = thread::spawn(move || {
+            // BEGIN and END both pass through here, so the reader itself
+            // knows when an entry is streaming, and only then does the wait
+            // for a frame, or the payload of one, count towards the rate.
+            let mut streaming = false;
+            loop {
+                let began = reader_liveness.now_ms();
                 reader_liveness
-                    .decode_wait_ms
-                    .fetch_add(waited, Ordering::AcqRel);
-                if let Ok((DATA, data)) = &value {
+                    .waiting_since_ms
+                    .store(began, Ordering::Release);
+                let value = read_frame(&mut stdout);
+                reader_liveness
+                    .waiting_since_ms
+                    .store(u64::MAX, Ordering::Release);
+                // Accounted before the send below, which may block on a slow
+                // consumer for as long as it likes through no fault of the
+                // worker. Bytes first: the watchdog reads the wait before the
+                // bytes, so a window is never judged on waiting time whose
+                // bytes it has not yet seen.
+                if streaming {
+                    if let Ok((DATA, data)) = &value {
+                        reader_liveness
+                            .decode_bytes
+                            .fetch_add(data.len() as u64, Ordering::AcqRel);
+                    }
+                    let waited = reader_liveness.now_ms().saturating_sub(began);
                     reader_liveness
-                        .decode_bytes
-                        .fetch_add(data.len() as u64, Ordering::AcqRel);
+                        .decode_wait_ms
+                        .fetch_add(waited, Ordering::AcqRel);
                 }
-            }
-            // A heartbeat only refreshes the wait; nothing downstream sees
-            // it. One with a payload breaks the protocol and is passed on to
-            // be refused like any other unexpected frame.
-            if matches!(&value, Ok((HEARTBEAT, data)) if data.is_empty()) {
-                continue;
-            }
-            let failed = value.is_err();
-            if tx.send(value).is_err() || failed {
-                break;
+                match &value {
+                    Ok((BEGIN, _)) => streaming = true,
+                    Ok((END, _)) => streaming = false,
+                    _ => {}
+                }
+                // A heartbeat only refreshes the wait; nothing downstream sees
+                // it. One with a payload breaks the protocol and is passed on
+                // to be refused like any other unexpected frame.
+                if matches!(&value, Ok((HEARTBEAT, data)) if data.is_empty()) {
+                    continue;
+                }
+                let failed = value.is_err();
+                if tx.send(value).is_err() || failed {
+                    break;
+                }
             }
         });
         let errors = thread::spawn(move || {
@@ -188,7 +204,9 @@ impl ArchiveClient {
         let guard_liveness = liveness.clone();
         // A blocked pipe write is covered as well: while the caller is stuck
         // writing a request, the reader is waiting on the worker, so the stall
-        // rule kills a worker that does not read, and that fails the write.
+        // rule kills a worker that does not read. That fails the write, whose
+        // error reaches the caller as `Io`: nothing on that path consults
+        // `stalled`, so the kill is not reported as `TimedOut`.
         let watchdog = thread::spawn(move || {
             // The rate window in progress: the waiting time at which it
             // closes, and the waiting time and bytes at the previous close.
@@ -390,7 +408,9 @@ impl ArchiveSession {
                         error
                     }))
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(ImportError::WorkerFailed),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(self.interrupted().unwrap_or(ImportError::WorkerFailed))
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
@@ -415,7 +435,7 @@ impl ArchiveSession {
             if !data.is_empty() {
                 return Err(ImportError::Corrupt);
             }
-            // No DATA follows COMPLETE, so the rate floor ends here. The
+            // COMPLETE ends the decode, and with it the rate floor. The
             // request stays outstanding until the process has exited:
             // completion requires a successful exit, and the stall rule
             // bounds a child that hangs on its way out.

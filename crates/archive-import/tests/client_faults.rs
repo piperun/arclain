@@ -97,6 +97,15 @@ fn broken_worker() {
     }
     frame(&mut out, 9, b"abc");
     frame(&mut out, 10, &0u64.to_le_bytes());
+    if scenario == "slow-verify" {
+        // Extraction done, then a long silent phase before COMPLETE, as the
+        // source re-hash on Linux: heartbeats only, no DATA, for four stall
+        // timeouts.
+        for _ in 0..16 {
+            std::thread::sleep(Duration::from_millis(50));
+            frame(&mut out, 13, b"");
+        }
+    }
     if scenario != "missing-complete" {
         frame(
             &mut out,
@@ -107,6 +116,9 @@ fn broken_worker() {
                 b""
             },
         );
+    }
+    if scenario == "hang-after-complete" {
+        std::thread::sleep(Duration::from_secs(60));
     }
 }
 fn options() -> WorkerOptions {
@@ -168,7 +180,7 @@ fn main() {
     std::io::copy(&mut entry.reader, &mut std::io::sink()).unwrap();
     drop(entry);
     drop(session);
-    let mut session = ArchiveClient::new(config)
+    let mut session = ArchiveClient::new(config.clone())
         .open(
             std::path::Path::new("trickle"),
             limits(),
@@ -179,6 +191,55 @@ fn main() {
     assert!(std::io::copy(&mut entry.reader, &mut std::io::sink()).is_err());
     drop(entry);
     assert_eq!(session.take_error(), Some(ImportError::TimedOut));
+    let mut session = ArchiveClient::new(config.clone())
+        .open(
+            std::path::Path::new("slow-consumer"),
+            limits(),
+            Cancellation::default(),
+        )
+        .unwrap();
+    let mut entry = session.next_entry().unwrap().unwrap();
+    entry.reader.read_exact(&mut [0; 1]).unwrap();
+    // Three stall timeouts spent not reading: the worker is done and waits
+    // on the consumer, which is no fault of its own.
+    std::thread::sleep(Duration::from_millis(600));
+    std::io::copy(&mut entry.reader, &mut std::io::sink()).unwrap();
+    drop(entry);
+    assert!(
+        matches!(session.next_entry(), Ok(None)),
+        "a slow consumer is not a stalled worker"
+    );
+    assert_eq!(session.take_error(), None);
+    let mut session = ArchiveClient::new(config.clone())
+        .open(
+            std::path::Path::new("hang-after-complete"),
+            limits(),
+            Cancellation::default(),
+        )
+        .unwrap();
+    let mut entry = session.next_entry().unwrap().unwrap();
+    std::io::copy(&mut entry.reader, &mut std::io::sink()).unwrap();
+    drop(entry);
+    assert!(
+        session.next_entry().is_err(),
+        "a worker that never exits after COMPLETE is killed"
+    );
+    assert_eq!(session.take_error(), Some(ImportError::TimedOut));
+    let mut session = ArchiveClient::new(config)
+        .open(
+            std::path::Path::new("slow-verify"),
+            limits(),
+            Cancellation::default(),
+        )
+        .unwrap();
+    let mut entry = session.next_entry().unwrap().unwrap();
+    std::io::copy(&mut entry.reader, &mut std::io::sink()).unwrap();
+    drop(entry);
+    assert!(
+        matches!(session.next_entry(), Ok(None)),
+        "a silent phase after the last entry is not trickling"
+    );
+    assert_eq!(session.take_error(), None);
     let started = Instant::now();
     let mut session = ArchiveClient::new(options())
         .open(
@@ -192,5 +253,5 @@ fn main() {
     drop(entry);
     drop(session);
     assert!(started.elapsed() < Duration::from_secs(2));
-    println!("10 client protocol/liveness/sink-abandonment cases passed");
+    println!("13 client protocol/liveness/sink-abandonment cases passed");
 }

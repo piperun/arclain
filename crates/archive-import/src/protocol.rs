@@ -39,7 +39,7 @@ pub enum ImportError {
     Limit,
     #[error("archive import was cancelled")]
     Cancelled,
-    #[error("archive worker exceeded its time limit")]
+    #[error("archive worker stopped making progress")]
     TimedOut,
     #[error("archive input or worker pipe could not be read")]
     Io,
