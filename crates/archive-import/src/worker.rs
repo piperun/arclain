@@ -17,33 +17,50 @@ use std::{
 };
 use unboxer::{Inventory, Limits};
 
+/// The worker's output and the moment it was last written to, held by both the
+/// worker and its heartbeat thread.
+struct Shared {
+    out: Box<dyn Write + Send>,
+    last_write: Instant,
+}
 /// The worker's output, shared with a thread that writes a HEARTBEAT frame
-/// whenever five seconds pass with nothing else written. Every frame is one
+/// whenever the interval passes with nothing else written. Every frame is one
 /// `write`, so the lock taken per write keeps frames whole.
 struct Heartbeat {
-    shared: Arc<Mutex<(Box<dyn Write + Send>, Instant)>>,
+    shared: Arc<Mutex<Shared>>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 impl Heartbeat {
     const INTERVAL: Duration = Duration::from_secs(5);
     fn start(writer: Box<dyn Write + Send>) -> Self {
-        let shared = Arc::new(Mutex::new((writer, Instant::now())));
+        Self::with_interval(writer, Self::INTERVAL)
+    }
+    fn with_interval(writer: Box<dyn Write + Send>, interval: Duration) -> Self {
+        let shared = Arc::new(Mutex::new(Shared {
+            out: writer,
+            last_write: Instant::now(),
+        }));
         let stop = Arc::new(AtomicBool::new(false));
         let (beat_shared, beat_stop) = (shared.clone(), stop.clone());
+        // Twenty wakes per interval is 250 ms at the worker's five seconds, and
+        // that is how long a drop can wait for the thread to see the stop flag.
+        let tick = (interval / 20).max(Duration::from_millis(1));
         let thread = thread::spawn(move || {
             while !beat_stop.load(Ordering::Acquire) {
-                thread::sleep(Duration::from_millis(250));
+                thread::sleep(tick);
+                // A drop during that sleep must not let one more beat out.
+                if beat_stop.load(Ordering::Acquire) {
+                    return;
+                }
                 let Ok(mut guard) = beat_shared.lock() else {
                     return;
                 };
-                if guard.1.elapsed() >= Self::INTERVAL {
-                    if guard.0.write_all(&[HEARTBEAT, 0, 0, 0, 0]).is_err()
-                        || guard.0.flush().is_err()
-                    {
+                if guard.last_write.elapsed() >= interval {
+                    if frame(&mut *guard.out, HEARTBEAT, &[]).is_err() {
                         return;
                     }
-                    guard.1 = Instant::now();
+                    guard.last_write = Instant::now();
                 }
             }
         });
@@ -60,8 +77,8 @@ impl Write for Heartbeat {
             .shared
             .lock()
             .map_err(|_| io::Error::other("poisoned"))?;
-        guard.0.write_all(bytes)?;
-        guard.1 = Instant::now();
+        guard.out.write_all(bytes)?;
+        guard.last_write = Instant::now();
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -69,7 +86,7 @@ impl Write for Heartbeat {
             .shared
             .lock()
             .map_err(|_| io::Error::other("poisoned"))?;
-        guard.0.flush()
+        guard.out.flush()
     }
 }
 impl Drop for Heartbeat {
@@ -232,4 +249,62 @@ pub(super) fn emit(
         return Err(ImportError::Corrupt);
     }
     frame(out, END, &(index as u64).to_le_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Log = Arc<Mutex<Vec<(Instant, Vec<u8>)>>>;
+    /// Records what was written and when, so a test can see both the bytes and
+    /// the gap the heartbeat waited out.
+    struct Recorder(Log);
+    impl Write for Recorder {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let mut log = self.0.lock().map_err(|_| io::Error::other("poisoned"))?;
+            log.push((Instant::now(), bytes.to_vec()));
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_beat_waits_out_its_interval_and_a_write_resets_it() {
+        const INTERVAL: Duration = Duration::from_millis(100);
+        const BEAT: [u8; 5] = [HEARTBEAT, 0, 0, 0, 0];
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let written = || log.lock().unwrap().clone();
+
+        let started = Instant::now();
+        let mut output = Heartbeat::with_interval(Box::new(Recorder(log.clone())), INTERVAL);
+
+        thread::sleep(Duration::from_millis(20));
+        assert!(written().is_empty(), "the beat waits out a whole interval");
+
+        thread::sleep(Duration::from_millis(100));
+        let frames = written();
+        assert_eq!(frames.len(), 1, "one silent interval is one beat");
+        assert_eq!(frames[0].1, BEAT, "the beat is a frame with no payload");
+        assert!(frames[0].0.duration_since(started) >= INTERVAL);
+
+        frame(&mut output, DATA, b"x").unwrap();
+        let wrote_at = Instant::now();
+        thread::sleep(Duration::from_millis(30));
+        let frames = written();
+        assert_eq!(frames.len(), 2, "a write restarts the interval");
+        assert_eq!(frames[1].1, [DATA, 1, 0, 0, 0, b'x']);
+
+        thread::sleep(Duration::from_millis(100));
+        let frames = written();
+        assert_eq!(frames.len(), 3, "silence after a write beats again");
+        assert_eq!(frames[2].1, BEAT);
+        assert!(frames[2].0.duration_since(wrote_at) >= INTERVAL);
+
+        drop(output);
+        let at_drop = written().len();
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(written().len(), at_drop, "a dropped heartbeat is silent");
+    }
 }

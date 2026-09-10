@@ -145,20 +145,40 @@ mod tests {
 
     #[test]
     fn a_frame_is_one_write() {
-        struct Counting(Vec<u8>, usize);
+        struct Counting {
+            bytes: Vec<u8>,
+            writes: usize,
+        }
         impl Write for Counting {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.1 += 1;
-                self.0.extend_from_slice(bytes);
+                self.writes += 1;
+                self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
             fn flush(&mut self) -> io::Result<()> {
                 Ok(())
             }
         }
-        let mut sink = Counting(vec![], 0);
+        let mut sink = Counting {
+            bytes: vec![],
+            writes: 0,
+        };
         frame(&mut sink, DATA, b"abc").unwrap();
-        assert_eq!(sink.1, 1, "a shared writer must never see half a frame");
-        assert_eq!(sink.0, [DATA, 3, 0, 0, 0, b'a', b'b', b'c']);
+        assert_eq!(
+            sink.writes, 1,
+            "a shared writer must never see half a frame"
+        );
+        assert_eq!(sink.bytes, [DATA, 3, 0, 0, 0, b'a', b'b', b'c']);
+
+        let oversized = vec![0; MAX_FRAME + 1];
+        frame(&mut sink, DATA, &oversized[..MAX_FRAME]).unwrap();
+        assert_eq!(sink.writes, 2, "the largest frame is one write too");
+        assert_eq!(sink.bytes.len(), 5 + 3 + 5 + MAX_FRAME);
+
+        assert_eq!(
+            frame(&mut sink, DATA, &oversized).unwrap_err(),
+            ImportError::Limit
+        );
+        assert_eq!(sink.writes, 2, "an oversized frame writes nothing at all");
     }
 }
