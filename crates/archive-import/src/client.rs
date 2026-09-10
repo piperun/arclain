@@ -40,10 +40,36 @@ impl WorkerOptions {
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
-            memory_bytes: 1 << 30,
+            // Half the machine, within a floor a game archive needs and a
+            // ceiling past which a decoder is asking for something else.
+            memory_bytes: physical_memory()
+                .map_or(1 << 30, |ram| (ram / 2).clamp(1 << 30, 8 << 30)),
             stall_timeout: Duration::from_secs(60),
             min_decode_rate: 1 << 20,
         }
+    }
+}
+
+/// The machine's physical memory, or `None` where it cannot be read.
+fn physical_memory() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+        status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+        // SAFETY: the structure is sized and zeroed as the call requires.
+        (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.ullTotalPhys)
+    }
+    #[cfg(unix)]
+    {
+        // SAFETY: sysconf takes no pointers.
+        let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        (pages > 0 && page > 0).then(|| pages as u64 * page as u64)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        None
     }
 }
 

@@ -372,3 +372,20 @@ fn entry_archive_and_metadata_limits_are_enforced() {
         }
     }
 }
+
+#[test]
+fn the_default_memory_cap_is_half_the_machine_within_its_clamp() {
+    let default = options().memory_bytes;
+    assert!((1u64 << 30..=8u64 << 30).contains(&default), "{default}");
+}
+
+#[test]
+fn a_worker_accepts_a_cap_above_four_gibibytes() {
+    let mut config = options();
+    config.memory_bytes = 5 << 30;
+    let session = ArchiveClient::new(config)
+        .open(&fixture("game.zip"), limits(), Cancellation::default())
+        .unwrap();
+    // The physical inventory of game.zip: two directories and two files.
+    assert_eq!(session.inventory().entries.len(), 4);
+}

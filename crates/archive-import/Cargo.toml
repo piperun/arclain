@@ -7,7 +7,7 @@ description = "Bounded archive import client and isolated native decoder worker"
 
 [features]
 default = []
-worker = ["dep:sevenz-rust2", "dep:unrar_sys", "dep:crc32fast", "dep:sha2", "dep:libc", "dep:windows-sys"]
+worker = ["dep:sevenz-rust2", "dep:unrar_sys", "dep:crc32fast", "dep:sha2"]
 
 [dependencies]
 serde.workspace = true
@@ -20,10 +20,10 @@ crc32fast = { version = "1", optional = true }
 sha2 = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = { version = "0.2", optional = true }
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_Debug"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_Debug", "Win32_System_SystemInformation"] }
 
 [dev-dependencies]
 tempfile.workspace = true

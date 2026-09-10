@@ -104,7 +104,7 @@ pub fn main() -> i32 {
         [flag, number] if flag == "--memory-limit" => number.parse::<u64>().ok(),
         _ => None,
     };
-    let Some(memory) = memory.filter(|n| (32 << 20..=4u64 << 30).contains(n)) else {
+    let Some(memory) = memory.filter(|n| (32 << 20..=64u64 << 30).contains(n)) else {
         return 2;
     };
     // No archive path or request is read before this succeeds.

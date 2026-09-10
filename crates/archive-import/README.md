@@ -21,26 +21,32 @@ Arclain application decoder versions are independent of this package.
 
 ## Bounds and source identity
 
-Defaults are 1 GiB process memory, a 60-second stall timeout and a 1 MiB/s
-decode-rate floor: a worker that sends no frame for the timeout while a
-request is outstanding is killed, as is one that streams entry data below the
-floor over a window of the timeout, after a decode's first. Time between
-entries and the source re-hash before COMPLETE owe no rate; the worker's
-heartbeats keep them under the stall rule. OS limits are established
-before reading the source request: a process memory Job Object on
-Windows, RLIMIT_AS on Linux. The helper disables its own crash dialogs/core
-dumps. Frames are at most 64 KiB, the reader queue holds two frames, metadata
-is capped at 64 MiB and physical count at 200,000; caller limits can be lower.
-Unboxer also charges retained destination and path metadata against its index
-budget. These controls bound decoder resource use; they are not a general
-security sandbox. Allocation termination may report WorkerFailed because the
-OS does not reliably distinguish it from another native crash.
+The memory default is half the machine's physical memory, clamped to 1 to
+8 GiB; the worker accepts up to 64 GiB. There is no total deadline. The other
+defaults are a 60-second stall timeout and a 1 MiB/s decode-rate floor: a
+worker that sends no frame for the timeout while a request is outstanding is
+killed, as is one that streams entry data below the floor over a window of
+the timeout, after a decode's first. Time between entries and the source
+verification before COMPLETE owe no rate; the worker's heartbeats keep them
+under the stall rule. OS limits are established before reading the source
+request: a process memory Job Object on Windows, RLIMIT_AS on Linux. The
+helper disables its own crash dialogs/core dumps. Frames are at most 64 KiB,
+the reader queue holds two frames, metadata is capped at 64 MiB and physical
+count at 200,000; caller limits can be lower. The worker writes a HEARTBEAT
+frame after five silent seconds. Unboxer also charges retained destination
+and path metadata against its index budget. These controls bound decoder
+resource use; they are not a general security sandbox. Allocation termination
+may report WorkerFailed because the OS does not reliably distinguish it from
+another native crash.
 
-Windows retains a read-only source handle denying writes and deletion. Linux
-uses the held `/proc/self/fd` inode for UnRAR, including after pathname
-replacement. Before/after metadata and full streaming SHA-256 checks detect
-persistent source changes. Linux does not claim immunity to hostile in-place
-writes followed by restoration. Hashing adds full source read passes.
+Windows opens the source with a share mode that refuses every other writer
+and deleter for as long as the handle is held, so it does not hash: length
+and modification time are checked at open and again before COMPLETE. Linux
+cannot keep a writer out, so it hashes the whole source with SHA-256 at open
+and again before COMPLETE and reports a difference as the source having
+changed; that is two full read passes. Linux uses the held `/proc/self/fd`
+inode for UnRAR, including after pathname replacement, and does not claim
+immunity to hostile in-place writes followed by restoration.
 
 ## Supported formats
 
