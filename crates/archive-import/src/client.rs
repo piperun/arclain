@@ -3,7 +3,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc, Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
@@ -25,15 +25,80 @@ impl Cancellation {
 pub struct WorkerOptions {
     pub path: PathBuf,
     pub memory_bytes: u64,
-    pub timeout: Duration,
+    /// How long the worker may go without a frame while a request is
+    /// outstanding before it is killed.
+    pub stall_timeout: Duration,
+    /// Bytes of entry data per second the worker must average, measured
+    /// over windows of `stall_timeout` spent waiting on it, after the first
+    /// such window of a decode. Zero disables the floor.
+    pub min_decode_rate: u64,
 }
 impl WorkerOptions {
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
             memory_bytes: 1 << 30,
-            timeout: Duration::from_secs(600),
+            stall_timeout: Duration::from_secs(60),
+            min_decode_rate: 1 << 20,
         }
+    }
+}
+
+/// What the reader thread has seen of the worker, read by the watchdog.
+/// Time spent inside `read_frame` is time the worker is the bottleneck;
+/// time the reader spends handing a frame to a slow consumer is not.
+struct Liveness {
+    started: Instant,
+    /// Whether a request is outstanding: from the spawn to INVENTORY_END,
+    /// and from DECODE to the worker's exit after COMPLETE, or to FAILURE.
+    outstanding: AtomicBool,
+    /// Milliseconds since `started` at which the outstanding request was
+    /// sent. Nothing before it counts against the worker: between requests
+    /// the reader waits on a worker that is idle, not stalled.
+    outstanding_since_ms: AtomicU64,
+    /// Milliseconds since `started` at which the current `read_frame`
+    /// began, or `u64::MAX` when the reader is not waiting on the worker.
+    waiting_since_ms: AtomicU64,
+    /// Whether DATA can still arrive: from DECODE to COMPLETE or FAILURE.
+    decoding: AtomicBool,
+    /// Milliseconds spent waiting on the worker, and bytes of DATA payload
+    /// received, while decoding.
+    decode_wait_ms: AtomicU64,
+    decode_bytes: AtomicU64,
+    /// Set by the watchdog before it kills the worker for a stall or for
+    /// trickling, so the failure is reported as `TimedOut`.
+    stalled: AtomicBool,
+}
+impl Liveness {
+    /// READY answers the spawn, so a request is outstanding and the reader
+    /// counts as waiting from the start.
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            outstanding: AtomicBool::new(true),
+            outstanding_since_ms: AtomicU64::new(0),
+            waiting_since_ms: AtomicU64::new(0),
+            decoding: AtomicBool::new(false),
+            decode_wait_ms: AtomicU64::new(0),
+            decode_bytes: AtomicU64::new(0),
+            stalled: AtomicBool::new(false),
+        }
+    }
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+    /// DECODE is about to be sent. The mark is stored before the flags so
+    /// that whoever sees a flag set also sees the mark.
+    fn decode_sent(&self) {
+        self.outstanding_since_ms
+            .store(self.now_ms(), Ordering::Release);
+        self.decoding.store(true, Ordering::Release);
+        self.outstanding.store(true, Ordering::Release);
+    }
+    /// The worker has answered the outstanding request.
+    fn answered(&self) {
+        self.decoding.store(false, Ordering::Release);
+        self.outstanding.store(false, Ordering::Release);
     }
 }
 
@@ -68,8 +133,39 @@ impl ArchiveClient {
         let mut stderr = child.stderr.take().ok_or(ImportError::Io)?;
         let child = Arc::new(Mutex::new(child));
         let (tx, rx) = mpsc::sync_channel(2);
+        let liveness = Arc::new(Liveness::new());
+        let reader_liveness = liveness.clone();
         let reader = thread::spawn(move || loop {
+            let began = reader_liveness.now_ms();
+            reader_liveness
+                .waiting_since_ms
+                .store(began, Ordering::Release);
             let value = read_frame(&mut stdout);
+            reader_liveness
+                .waiting_since_ms
+                .store(u64::MAX, Ordering::Release);
+            // Accounted before the send below, which may block on a slow
+            // consumer for as long as it likes through no fault of the worker.
+            if reader_liveness.decoding.load(Ordering::Acquire) {
+                // A read that began before DECODE was sent spent the earlier
+                // part of its wait on an idle worker; only the rest counts.
+                let since = reader_liveness.outstanding_since_ms.load(Ordering::Acquire);
+                let waited = reader_liveness.now_ms().saturating_sub(began.max(since));
+                reader_liveness
+                    .decode_wait_ms
+                    .fetch_add(waited, Ordering::AcqRel);
+                if let Ok((DATA, data)) = &value {
+                    reader_liveness
+                        .decode_bytes
+                        .fetch_add(data.len() as u64, Ordering::AcqRel);
+                }
+            }
+            // A heartbeat only refreshes the wait; nothing downstream sees
+            // it. One with a payload breaks the protocol and is passed on to
+            // be refused like any other unexpected frame.
+            if matches!(&value, Ok((HEARTBEAT, data)) if data.is_empty()) {
+                continue;
+            }
             let failed = value.is_err();
             if tx.send(value).is_err() || failed {
                 break;
@@ -84,15 +180,50 @@ impl ArchiveClient {
             }
         });
         let done = Arc::new(AtomicBool::new(false));
-        let deadline = Instant::now() + self.options.timeout;
+        let stall_ms = u64::try_from(self.options.stall_timeout.as_millis()).unwrap_or(u64::MAX);
+        let min_rate = self.options.min_decode_rate;
         let guard_child = child.clone();
         let guard_done = done.clone();
         let guard_cancel = cancel.clone();
-        // Covers pipe writes as well as reads: even a wedged worker cannot
-        // retain the caller forever while it is sending its source request.
+        let guard_liveness = liveness.clone();
+        // A blocked pipe write is covered as well: while the caller is stuck
+        // writing a request, the reader is waiting on the worker, so the stall
+        // rule kills a worker that does not read, and that fails the write.
         let watchdog = thread::spawn(move || {
+            // The rate window in progress: the waiting time at which it
+            // closes, and the waiting time and bytes at the previous close.
+            let mut window_end_ms = stall_ms;
+            let mut window_wait_ms = 0u64;
+            let mut window_bytes = 0u64;
+            let mut first_window = true;
             while !guard_done.load(Ordering::Acquire) {
-                if guard_cancel.is_cancelled() || Instant::now() >= deadline {
+                let now = guard_liveness.now_ms();
+                let outstanding = guard_liveness.outstanding.load(Ordering::Acquire);
+                let waiting = guard_liveness.waiting_since_ms.load(Ordering::Acquire);
+                let since = guard_liveness.outstanding_since_ms.load(Ordering::Acquire);
+                let stalled = outstanding
+                    && waiting != u64::MAX
+                    && now.saturating_sub(waiting.max(since)) >= stall_ms;
+                let mut trickling = false;
+                if guard_liveness.decoding.load(Ordering::Acquire) {
+                    let wait = guard_liveness.decode_wait_ms.load(Ordering::Acquire);
+                    if wait >= window_end_ms {
+                        let bytes = guard_liveness.decode_bytes.load(Ordering::Acquire);
+                        // Judged over the window's own waiting time, which a
+                        // long read and the poll interval stretch past stall_ms.
+                        let floor =
+                            min_rate.saturating_mul(wait.saturating_sub(window_wait_ms)) / 1000;
+                        trickling = !first_window && bytes.saturating_sub(window_bytes) < floor;
+                        first_window = false;
+                        window_wait_ms = wait;
+                        window_bytes = bytes;
+                        window_end_ms = wait.saturating_add(stall_ms);
+                    }
+                }
+                if guard_cancel.is_cancelled() || stalled || trickling {
+                    if stalled || trickling {
+                        guard_liveness.stalled.store(true, Ordering::Release);
+                    }
                     if let Ok(mut child) = guard_child.lock() {
                         let _ = child.kill();
                         let _ = child.wait();
@@ -111,7 +242,7 @@ impl ArchiveClient {
             watchdog: Some(watchdog),
             done,
             cancel,
-            deadline,
+            liveness,
             inventory: Inventory {
                 container: unboxer::Container::Unknown,
                 entries: vec![],
@@ -172,6 +303,7 @@ impl ArchiveClient {
                 _ => return Err(ImportError::Corrupt),
             }
         }
+        session.liveness.answered();
         // Storage policy runs in Unboxer at the caller, but malformed inventory
         // identities must also be refused before exposing any stream.
         if session
@@ -198,7 +330,7 @@ pub struct ArchiveSession {
     watchdog: Option<JoinHandle<()>>,
     done: Arc<AtomicBool>,
     cancel: Cancellation,
-    deadline: Instant,
+    liveness: Arc<Liveness>,
     inventory: Inventory,
     started: bool,
     finished: bool,
@@ -217,6 +349,17 @@ impl ArchiveSession {
     pub fn process_id(&self) -> u32 {
         self.child.lock().unwrap().id()
     }
+    /// Why the caller should stop waiting on the worker, if it should:
+    /// cancellation first, then the watchdog having killed it for a stall.
+    fn interrupted(&self) -> Option<ImportError> {
+        if self.cancel.is_cancelled() {
+            Some(ImportError::Cancelled)
+        } else if self.liveness.stalled.load(Ordering::Acquire) {
+            Some(ImportError::TimedOut)
+        } else {
+            None
+        }
+    }
     fn receive(&mut self) -> Result<(u8, Vec<u8>), ImportError> {
         let result = self.receive_inner();
         if let Err(error) = result {
@@ -226,11 +369,8 @@ impl ArchiveSession {
     }
     fn receive_inner(&mut self) -> Result<(u8, Vec<u8>), ImportError> {
         loop {
-            if self.cancel.is_cancelled() {
-                return Err(ImportError::Cancelled);
-            }
-            if Instant::now() >= self.deadline {
-                return Err(ImportError::TimedOut);
+            if let Some(error) = self.interrupted() {
+                return Err(error);
             }
             match self
                 .rx
@@ -238,18 +378,17 @@ impl ArchiveSession {
                 .ok_or(ImportError::Corrupt)?
                 .recv_timeout(Duration::from_millis(25))
             {
-                Ok(Ok((FAILURE, data))) => return Err(parse(&data)?),
+                Ok(Ok((FAILURE, data))) => {
+                    self.liveness.answered();
+                    return Err(parse(&data)?);
+                }
                 Ok(Ok(frame)) => return Ok(frame),
                 Ok(Err(error)) => {
-                    return Err(if self.cancel.is_cancelled() {
-                        ImportError::Cancelled
-                    } else if Instant::now() >= self.deadline {
-                        ImportError::TimedOut
-                    } else if error == ImportError::Io {
+                    return Err(self.interrupted().unwrap_or(if error == ImportError::Io {
                         ImportError::WorkerFailed
                     } else {
                         error
-                    })
+                    }))
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Err(ImportError::WorkerFailed),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -257,11 +396,8 @@ impl ArchiveSession {
         }
     }
     fn next(&mut self) -> Result<Option<usize>, ImportError> {
-        if self.cancel.is_cancelled() {
-            return Err(ImportError::Cancelled);
-        }
-        if Instant::now() >= self.deadline {
-            return Err(ImportError::TimedOut);
+        if let Some(error) = self.interrupted() {
+            return Err(error);
         }
         if self.active.is_some() {
             return Err(ImportError::Corrupt);
@@ -270,6 +406,7 @@ impl ArchiveSession {
             return Ok(None);
         }
         if !self.started {
+            self.liveness.decode_sent();
             frame(&mut self.stdin, DECODE, &[])?;
             self.started = true;
         }
@@ -278,24 +415,25 @@ impl ArchiveSession {
             if !data.is_empty() {
                 return Err(ImportError::Corrupt);
             }
-            // Completion also requires successful process exit. The watchdog
-            // remains live until that verdict, including a child hanging here.
+            // No DATA follows COMPLETE, so the rate floor ends here. The
+            // request stays outstanding until the process has exited:
+            // completion requires a successful exit, and the stall rule
+            // bounds a child that hangs on its way out.
+            self.liveness.decoding.store(false, Ordering::Release);
             loop {
                 let result = self.child.lock().map_err(|_| ImportError::Io)?.try_wait()?;
                 if let Some(status) = result {
                     if !status.success() {
-                        return Err(ImportError::WorkerFailed);
+                        return Err(self.interrupted().unwrap_or(ImportError::WorkerFailed));
                     }
                     break;
                 }
-                if self.cancel.is_cancelled() {
-                    return Err(ImportError::Cancelled);
-                }
-                if Instant::now() >= self.deadline {
-                    return Err(ImportError::TimedOut);
+                if let Some(error) = self.interrupted() {
+                    return Err(error);
                 }
                 thread::sleep(Duration::from_millis(10));
             }
+            self.liveness.answered();
             self.finished = true;
             self.done.store(true, Ordering::Release);
             return Ok(None);

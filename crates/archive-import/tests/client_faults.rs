@@ -33,6 +33,13 @@ fn broken_worker() {
         std::thread::sleep(Duration::from_secs(60));
         return;
     }
+    if scenario == "heartbeats" {
+        // Silent for three stall timeouts, but never without a frame.
+        for _ in 0..12 {
+            std::thread::sleep(Duration::from_millis(50));
+            frame(&mut out, 13, b"");
+        }
+    }
     json(&mut out, 3, &Container::Zip);
     json(
         &mut out,
@@ -64,6 +71,15 @@ fn broken_worker() {
         return;
     }
     frame(&mut out, 8, &0u64.to_le_bytes());
+    if scenario == "trickle" {
+        // One byte every 50 ms against a declared 3: the second window of
+        // waiting has far fewer bytes than a mebibyte a second allows.
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(50));
+            frame(&mut out, 9, b"a");
+        }
+        return;
+    }
     if scenario == "oversized" {
         out.write_all(&[9, 1, 0, 1, 0]).unwrap();
         out.flush().unwrap();
@@ -128,15 +144,41 @@ fn main() {
         assert!(session.take_error().is_some(), "lost {scenario} cause");
     }
     let mut config = options();
-    config.timeout = Duration::from_millis(200);
+    config.stall_timeout = Duration::from_millis(200);
     assert!(matches!(
-        ArchiveClient::new(config).open(
+        ArchiveClient::new(config.clone()).open(
             std::path::Path::new("hang"),
             limits(),
             Cancellation::default()
         ),
         Err(ImportError::TimedOut)
     ));
+    let mut session = ArchiveClient::new(config.clone())
+        .open(
+            std::path::Path::new("heartbeats"),
+            limits(),
+            Cancellation::default(),
+        )
+        .expect("heartbeats keep a silent worker alive");
+    std::thread::sleep(Duration::from_millis(600));
+    let mut entry = session
+        .next_entry()
+        .expect("an idle session between requests is not killed")
+        .unwrap();
+    std::io::copy(&mut entry.reader, &mut std::io::sink()).unwrap();
+    drop(entry);
+    drop(session);
+    let mut session = ArchiveClient::new(config)
+        .open(
+            std::path::Path::new("trickle"),
+            limits(),
+            Cancellation::default(),
+        )
+        .unwrap();
+    let mut entry = session.next_entry().unwrap().unwrap();
+    assert!(std::io::copy(&mut entry.reader, &mut std::io::sink()).is_err());
+    drop(entry);
+    assert_eq!(session.take_error(), Some(ImportError::TimedOut));
     let started = Instant::now();
     let mut session = ArchiveClient::new(options())
         .open(
@@ -150,5 +192,5 @@ fn main() {
     drop(entry);
     drop(session);
     assert!(started.elapsed() < Duration::from_secs(2));
-    println!("7 client protocol/deadline/sink-abandonment cases passed");
+    println!("10 client protocol/liveness/sink-abandonment cases passed");
 }

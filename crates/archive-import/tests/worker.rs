@@ -102,7 +102,7 @@ fn cancellation_and_drop_reap_the_worker() {
 #[test]
 fn zero_timeout_does_not_hang() {
     let mut config = options();
-    config.timeout = Duration::ZERO;
+    config.stall_timeout = Duration::ZERO;
     assert!(ArchiveClient::new(config)
         .open(&fixture("game.zip"), limits(), Cancellation::default())
         .is_err());
@@ -254,18 +254,15 @@ fn stream_cancellation_retains_the_worker_cause() {
 }
 
 #[test]
-fn deadline_after_inventory_retains_the_worker_cause() {
+fn an_idle_session_outlives_the_stall_timeout_and_still_decodes() {
     let mut config = options();
-    config.timeout = Duration::from_secs(1);
+    config.stall_timeout = Duration::from_millis(300);
     let mut session = ArchiveClient::new(config)
         .open(&fixture("game.zip"), limits(), Cancellation::default())
         .unwrap();
-    std::thread::sleep(Duration::from_millis(1100));
-    assert!(session.next_entry().is_err());
-    assert_eq!(
-        session.take_error(),
-        Some(arclain_archive::ImportError::TimedOut)
-    );
+    std::thread::sleep(Duration::from_millis(1000));
+    let mut entry = session.next_entry().unwrap().unwrap();
+    std::io::copy(&mut entry.reader, &mut std::io::sink()).unwrap();
 }
 
 #[test]

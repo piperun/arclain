@@ -21,8 +21,11 @@ Arclain application decoder versions are independent of this package.
 
 ## Bounds and source identity
 
-Defaults are 1 GiB process memory and a ten-minute deadline. OS limits are
-established before reading the source request: a process memory Job Object on
+Defaults are 1 GiB process memory, a 60-second stall timeout and a 1 MiB/s
+decode-rate floor: a worker that sends no frame for the timeout while a
+request is outstanding is killed, as is one that averages less than the floor
+over a window of the timeout after a decode's first. OS limits are established
+before reading the source request: a process memory Job Object on
 Windows, RLIMIT_AS on Linux. The helper disables its own crash dialogs/core
 dumps. Frames are at most 64 KiB, the reader queue holds two frames, metadata
 is capped at 64 MiB and physical count at 200,000; caller limits can be lower.
