@@ -275,6 +275,12 @@ impl ExtractRunner for SevenZipRunner {
     }
 
     fn spawn(&self, plan: &ExtractPlan) -> Result<Box<dyn RunningExtraction>, ApplicationError> {
+        // 7-Zip exits with the same code for a missing archive as for a
+        // wrong password, so the file is checked here, where the answer is
+        // still unambiguous, instead of read back out of the exit status.
+        if !plan.source_path().exists() {
+            return Err(ApplicationError::archive_not_found(plan.source_path()));
+        }
         // Unreachable through the operation worker, which checks
         // `tool_available()` immediately before every spawn -- but this
         // is the only honest answer for a direct caller, and it is the
@@ -1040,6 +1046,27 @@ pub(crate) async fn run_extract(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawning_an_extraction_of_a_missing_archive_fails_as_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = ExtractPlan {
+            source_path: dir.path().join("gone.7z"),
+            destination: dir.path().join("out"),
+            password: None,
+            selection: ExtractSelection::WholeArchive,
+        };
+
+        // With no CLI at all: the missing archive is answered before the
+        // tool would be consulted, and it is not a password problem.
+        let error = match SevenZipRunner::new(None).spawn(&plan) {
+            Err(error) => error,
+            Ok(_) => panic!("a missing archive must not spawn anything"),
+        };
+
+        assert_eq!(error.kind, ApplicationErrorKind::NotFound);
+        assert_eq!(error.recoverability, Recoverability::Fatal);
+    }
 
     #[test]
     fn collision_policy_serializes_snake_case() {

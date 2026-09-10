@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use arclain_core::archive::{ArchiveKind, MultiPartArchive};
+use arclain_core::archive::{is_archive_not_found, ArchiveKind, MultiPartArchive};
 use arclain_core::backends::BackendSelector;
 use arclain_core::utilities::{auto_password_for, PassRule};
 use arclain_core::{ArchiveBackend, ArchiveInfo};
@@ -155,6 +155,11 @@ fn attempt_initial(
                 }
             }
         }
+        // A file that is not there is not a password problem, whatever the
+        // tool's exit code says; no password retry can change that.
+        Err(error) if is_archive_not_found(&error) => {
+            AttemptOutcome::Failed(ApplicationError::archive_not_found(path))
+        }
         Err(error) => {
             if let Some(password) = auto_password_for(pass_rules, archive_name, &[]) {
                 match backend.list(path, Some(&password)) {
@@ -163,6 +168,9 @@ fn attempt_initial(
                         info,
                         password_used: Some(password),
                     },
+                    Err(retry_error) if is_archive_not_found(&retry_error) => {
+                        AttemptOutcome::Failed(ApplicationError::archive_not_found(path))
+                    }
                     Err(retry_error) => {
                         if is_password_error(&format!("{retry_error:#}")) {
                             AttemptOutcome::PasswordRequired
@@ -198,6 +206,9 @@ fn attempt_with_password(
             info,
             password_used: Some(password.to_string()),
         },
+        Err(error) if is_archive_not_found(&error) => {
+            AttemptOutcome::Failed(ApplicationError::archive_not_found(path))
+        }
         Err(error) => {
             if is_password_error(&format!("{error:#}")) {
                 AttemptOutcome::PasswordRequired
@@ -834,6 +845,8 @@ mod tests {
         /// models a genuinely broken/corrupt archive, distinct from a
         /// merely-encrypted one.
         AlwaysFailsWithNonPasswordError,
+        /// `list` answers with the core's typed not-found: the file is gone.
+        ArchiveMissing,
     }
 
     struct FakeBackend {
@@ -862,6 +875,13 @@ mod tests {
                 behavior: ListBehavior::AlwaysFailsWithNonPasswordError,
             }
         }
+
+        fn archive_missing() -> Self {
+            Self {
+                correct_password: String::new(),
+                behavior: ListBehavior::ArchiveMissing,
+            }
+        }
     }
 
     fn fake_info(headers_encrypted: bool) -> ArchiveInfo {
@@ -885,9 +905,15 @@ mod tests {
         fn identify(&self, _path: &Path) -> anyhow::Result<ArchiveKind> {
             Ok(ArchiveKind::Zip)
         }
-        fn list(&self, _path: &Path, password: Option<&str>) -> anyhow::Result<ArchiveInfo> {
+        fn list(&self, path: &Path, password: Option<&str>) -> anyhow::Result<ArchiveInfo> {
             if matches!(self.behavior, ListBehavior::AlwaysFailsWithNonPasswordError) {
                 return Err(anyhow::anyhow!("disk read error: I/O failure"));
+            }
+            if matches!(self.behavior, ListBehavior::ArchiveMissing) {
+                return Err(arclain_core::archive::ArchiveNotFound {
+                    path: path.to_path_buf(),
+                }
+                .into());
             }
             match password {
                 Some(candidate) if candidate == self.correct_password => Ok(fake_info(false)),
@@ -897,7 +923,8 @@ mod tests {
                     ListBehavior::FailsOutright => {
                         Err(anyhow::anyhow!("Wrong password for archive"))
                     }
-                    ListBehavior::AlwaysFailsWithNonPasswordError => unreachable!("handled above"),
+                    ListBehavior::AlwaysFailsWithNonPasswordError
+                    | ListBehavior::ArchiveMissing => unreachable!("handled above"),
                 },
             }
         }
@@ -993,6 +1020,36 @@ mod tests {
 
     fn as_backend(fake: FakeBackend) -> Arc<dyn ArchiveBackend> {
         Arc::new(fake)
+    }
+
+    #[test]
+    fn a_missing_archive_fails_as_not_found_instead_of_asking_for_a_password() {
+        let backend = as_backend(FakeBackend::archive_missing());
+
+        match attempt_initial(&backend, Path::new("gone.zip"), &[]) {
+            AttemptOutcome::Failed(error) => {
+                assert_eq!(error.kind, ApplicationErrorKind::NotFound);
+                assert_eq!(error.recoverability, Recoverability::Fatal);
+            }
+            AttemptOutcome::PasswordRequired => {
+                panic!("a file that is not there must not raise a password challenge")
+            }
+            AttemptOutcome::Success { .. } => panic!("nothing to succeed with"),
+        }
+
+        // An auto-detected password retries the listing; the answer is the same.
+        match attempt_initial(
+            &backend,
+            Path::new("gone.zip"),
+            &[matching_rule("gone.zip", "pw")],
+        ) {
+            AttemptOutcome::Failed(error) => assert_eq!(error.kind, ApplicationErrorKind::NotFound),
+            _ => panic!("expected a not-found failure with a matching password rule"),
+        }
+        match attempt_with_password(&backend, Path::new("gone.zip"), "pw") {
+            AttemptOutcome::Failed(error) => assert_eq!(error.kind, ApplicationErrorKind::NotFound),
+            _ => panic!("expected a not-found failure on the explicit-password attempt"),
+        }
     }
 
     #[test]

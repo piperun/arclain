@@ -142,6 +142,15 @@ impl ApplicationError {
         }
     }
 
+    /// The archive file at `path` does not exist. Fatal rather than
+    /// retryable: nothing the operation can do brings the file back, and
+    /// it is not a password problem however the tool reported it.
+    pub fn archive_not_found(path: &std::path::Path) -> Self {
+        Self::new(ApplicationErrorKind::NotFound, "no such archive file")
+            .with_recoverability(Recoverability::Fatal)
+            .with_path(path.to_path_buf())
+    }
+
     /// Sets `diagnostic`, redacting path-like tokens (see
     /// [`redact_path_like_tokens`]) and truncating to 4 KiB (see
     /// [`truncate_diagnostic`]). Safe to call with a full backend error
