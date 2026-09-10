@@ -157,8 +157,13 @@ impl ArchiveClient {
                 // Accounted before the send below, which may block on a slow
                 // consumer for as long as it likes through no fault of the
                 // worker. Bytes first: the watchdog reads the wait before the
-                // bytes, so a window is never judged on waiting time whose
-                // bytes it has not yet seen.
+                // bytes, so the window it is closing is never judged on
+                // waiting time whose bytes it has not yet seen. The other
+                // tear remains: the watchdog can take a frame's bytes into
+                // the closing window without its wait, and the next window
+                // then carries that wait without its bytes. The order
+                // guarantees only that the current window is never judged
+                // strict.
                 if streaming {
                     if let Ok((DATA, data)) = &value {
                         reader_liveness
