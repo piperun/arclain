@@ -82,6 +82,7 @@ impl Archive {
                 matches!(
                     c.encoder_method_id(),
                     [0] | [0x21]
+                        | [3]
                         | [3, 1, 1]
                         | [3, 3, 1, 3]
                         | [3, 3, 1, 0x1b]

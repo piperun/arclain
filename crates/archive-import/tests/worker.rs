@@ -126,6 +126,97 @@ fn rar4_ascii_and_rar5_utf8_decode_without_native_output_paths() {
 }
 
 #[test]
+fn rar_headers_winrar_writes_decode_to_the_names_and_bytes_unrar_reports() {
+    // RAR4 with an extended time record, a Unicode name, and sub-blocks
+    // around the entry; RAR5 as WinRAR 7 writes it: an extra area on every
+    // header, a locator in the main header, and the archive's own name and
+    // time when asked for.
+    for (name, expected) in [
+        ("rar4-exttime.rar", "Game/game.exe"),
+        ("rar4-unicode.rar", "Game/日本.txt"),
+        ("rar4-unicode-runs.rar", "Game/ゲーム.txt"),
+        ("rar4-subblocks.rar", "Game/game.exe"),
+        ("rar5-winrar.rar", "benign.txt"),
+        ("rar5-winrar-unicode.rar", "日本語.txt"),
+        ("rar5-winrar-metadata.rar", "benign.txt"),
+    ] {
+        let mut session = ArchiveClient::new(options())
+            .open(&fixture(name), limits(), Cancellation::default())
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        let validated = inspect_inventory(session.inventory(), &limits()).unwrap();
+        assert_eq!(validated.entries.len(), 1, "{name}");
+        assert_eq!(validated.entries[0].path.join("/"), expected, "{name}");
+        let mut stream = session.next_entry().unwrap().unwrap();
+        let mut bytes = Vec::new();
+        stream.reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"benign archive fixture", "{name}");
+        drop(stream);
+        assert!(session.next_entry().unwrap().is_none());
+    }
+}
+
+#[test]
+fn a_solid_rar5_with_quick_open_and_recovery_records_lists_only_its_entries() {
+    let mut session = ArchiveClient::new(options())
+        .open(
+            &fixture("rar5-winrar-solid-rr.rar"),
+            limits(),
+            Cancellation::default(),
+        )
+        .unwrap();
+    let validated = inspect_inventory(session.inventory(), &limits()).unwrap();
+    assert_eq!(
+        validated
+            .entries
+            .iter()
+            .map(|entry| entry.path.join("/"))
+            .collect::<Vec<_>>(),
+        vec!["benign.txt", "日本語.txt"]
+    );
+    let mut count = 0;
+    while let Some(mut entry) = session.next_entry().unwrap() {
+        let mut bytes = Vec::new();
+        entry.reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"benign archive fixture");
+        count += 1;
+    }
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn an_encrypted_rar_is_reported_as_encrypted_before_anything_is_decoded() {
+    for name in [
+        "rar4-password.rar",
+        "rar4-encrypted-headers.rar",
+        "rar5-winrar-encrypted.rar",
+        "rar5-winrar-encrypted-headers.rar",
+    ] {
+        let error = ArchiveClient::new(options())
+            .open(&fixture(name), limits(), Cancellation::default())
+            .err()
+            .unwrap_or_else(|| panic!("{name} opened"));
+        assert_eq!(error, arclain_archive::ImportError::Encrypted, "{name}");
+    }
+}
+
+#[test]
+fn a_delta_filtered_7z_entry_decodes() {
+    let mut session = ArchiveClient::new(options())
+        .open(&fixture("delta.7z"), limits(), Cancellation::default())
+        .unwrap();
+    let validated = inspect_inventory(session.inventory(), &limits()).unwrap();
+    assert_eq!(validated.entries[0].path, vec!["sound.bin".to_owned()]);
+    let mut stream = session.next_entry().unwrap().unwrap();
+    let mut bytes = Vec::new();
+    stream.reader.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes.len(), 4096);
+    assert!(bytes
+        .iter()
+        .enumerate()
+        .all(|(index, byte)| *byte == ((index * 7) % 256) as u8));
+}
+
+#[test]
 fn rar_native_name_rewriting_is_never_accepted_as_original_metadata() {
     for name in [
         "rar5-invalid-utf8.rar",
