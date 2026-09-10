@@ -53,6 +53,41 @@ fn bootstrap_real_app(temp: &tempfile::TempDir) -> arclain_app::ArclainApp {
     .expect("bootstrap the test facade")
 }
 
+/// A real header-encrypted 7z at `temp/<name>`: without the password even
+/// the entry names are unreadable, which is exactly the shape that forces
+/// the open-time password ladder. Built with the real 7-Zip these tests
+/// require.
+fn build_header_encrypted_fixture(
+    temp: &tempfile::TempDir,
+    runtime: &tokio::runtime::Handle,
+    app: &arclain_app::ArclainApp,
+    name: &str,
+    password: &str,
+) -> std::path::PathBuf {
+    let sevenzip_path = runtime
+        .block_on(app.capabilities())
+        .expect("read application capabilities")
+        .external_tools
+        .into_iter()
+        .find(|tool| tool.tool == "7z" && tool.available)
+        .and_then(|tool| tool.resolved_path)
+        .expect("these tests require a real 7-Zip executable");
+    let content_dir = temp.path().join(format!("{name}-content"));
+    std::fs::create_dir_all(&content_dir).unwrap();
+    std::fs::write(content_dir.join("payload.txt"), b"locked payload").unwrap();
+    let archive_path = temp.path().join(name);
+    let status = std::process::Command::new(&sevenzip_path)
+        .arg("a")
+        .arg(format!("-p{password}"))
+        .arg("-mhe=on")
+        .arg(&archive_path)
+        .arg(content_dir.join("payload.txt"))
+        .status()
+        .expect("run 7z to build the encrypted fixture");
+    assert!(status.success(), "7z must build the fixture");
+    archive_path
+}
+
 /// Blocks until `operation_id` fails. The mirror of
 /// [`wait_for_open_completion`], and the way a test reaches the bridge's
 /// failed-open handler through the real facade rather than by calling into
@@ -408,31 +443,10 @@ fn a_rule_protected_archive_opens_and_reads_without_the_ui_holding_its_password(
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
     let runtime = shared.services.tokio_runtime.handle().clone();
-    let sevenzip_path = runtime
-        .block_on(app.capabilities())
-        .expect("read application capabilities")
-        .external_tools
-        .into_iter()
-        .find(|tool| tool.tool == "7z" && tool.available)
-        .and_then(|tool| tool.resolved_path)
-        .expect("these tests require a real 7-Zip executable");
-
-    // A real header-encrypted 7z: without the password even the entry
-    // names are unreadable, which is exactly the shape that forces the
-    // open-time ladder (list fails -> consult stored rules -> retry).
-    let content_dir = temp.path().join("content");
-    std::fs::create_dir_all(&content_dir).unwrap();
-    std::fs::write(content_dir.join("payload.txt"), b"locked payload").unwrap();
-    let archive_path = temp.path().join("RJ123456.7z");
-    let status = std::process::Command::new(&sevenzip_path)
-        .arg("a")
-        .arg(format!("-p{FIXTURE_PASSWORD}"))
-        .arg("-mhe=on")
-        .arg(&archive_path)
-        .arg(content_dir.join("payload.txt"))
-        .status()
-        .expect("run 7z to build the encrypted fixture");
-    assert!(status.success(), "7z must build the fixture");
+    // The open-time ladder (list fails -> consult stored rules -> retry)
+    // needs an archive that cannot be listed without its password.
+    let archive_path =
+        build_header_encrypted_fixture(&temp, &runtime, &app, "RJ123456.7z", FIXTURE_PASSWORD);
 
     runtime
         .block_on(
@@ -839,13 +853,20 @@ fn a_cancelled_open_leaves_a_tab_that_never_listed_holding_no_archive() {
     let runtime = shared.services.tokio_runtime.handle().clone();
     arclain_ui::core::operation_bridge::spawn(&shared);
 
-    // The archive the tab was pointed at is not there any more -- exactly
-    // what a reopened or restored tab finds when the file moved between
-    // sessions.
-    let vanished = temp.path().join("RJ123456.zip");
+    // An archive the tab cannot read without a password nobody stored: the
+    // open parks on a challenge, which is where this test cancels from. (A
+    // file that is not there at all fails outright instead, without a
+    // challenge; that case has its own test in the app crate.)
+    let locked = build_header_encrypted_fixture(
+        &temp,
+        &runtime,
+        &app,
+        "RJ123456.7z",
+        "a-password-no-rule-knows",
+    );
     let tab_id = {
         let mut collection = shared.signals().tabs.get();
-        let id = collection.open(Some(vanished.clone()));
+        let id = collection.open(Some(locked.clone()));
         shared.signals().tabs.set(collection);
         id
     };
@@ -864,7 +885,7 @@ fn a_cancelled_open_leaves_a_tab_that_never_listed_holding_no_archive() {
         async move {
             let operation_id = app
                 .start_open_archive(arclain_app::archive::OpenArchiveRequest {
-                    source_path: vanished,
+                    source_path: locked,
                     password: None,
                 })
                 .await
