@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 3.1.2 - 2026-09-10
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.12.1
+### Global changes
+#### Build system
+- depend on gameta 0.7.0 - (ade95e7) - 0xdev
+
+- - -
+
 ## 3.1.1 - 2026-09-10
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.12.1

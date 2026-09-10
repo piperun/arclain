@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "arclain-network"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "parking_lot",
  "porxi",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_app"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "anyhow",
  "arclain-network",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_app_fs"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_archive"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "crc32fast",
  "libc",
@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_checksum"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "anyhow",
  "crc32fast",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_cli"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "arclain_app",
  "clap",
@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_core"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "anyhow",
  "arclain-network",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_data"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "anyhow",
  "arclain-network",
@@ -526,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_db"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -551,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_plugins"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "anyhow",
  "arclain-network",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_signals"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "parking_lot",
  "tracing",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_theme"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "egui",
  "egui-phosphor",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_ui"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "anyhow",
  "arboard",
@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_widgets"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "arclain_theme",
  "eframe",
