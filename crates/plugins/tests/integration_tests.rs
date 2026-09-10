@@ -6,7 +6,7 @@ use arclain_plugins::{PluginEvent, PluginManager};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tempfile::TempDir;
 
@@ -45,18 +45,55 @@ http_requests_per_minute = 10
     temp_dir
 }
 
+#[test]
+fn bundled_plugin_dir_from_the_environment_resolves_against_the_repository_root() {
+    // The release check hands the test a path relative to the repository,
+    // while cargo starts test binaries in the crate directory. A relative
+    // value therefore means "from the repository root", never "from here".
+    let root = Path::new("/repo");
+    assert_eq!(
+        resolve_bundled_dir(Path::new("release/pkg/plugins"), root),
+        root.join("release/pkg/plugins")
+    );
+    let absolute = std::env::temp_dir().join("bundled");
+    assert_eq!(resolve_bundled_dir(&absolute, root), absolute);
+}
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("crates/plugins should live two levels below repo root")
+        .to_path_buf()
+}
+
+/// A relative `ARCLAIN_BUNDLED_PLUGIN_DIR` counts from the repository root,
+/// the directory the release scripts and CI steps run in; cargo starts this
+/// binary in the crate directory, where such a path names nothing.
+fn resolve_bundled_dir(directory: &Path, repository_root: &Path) -> PathBuf {
+    if directory.is_absolute() {
+        directory.to_path_buf()
+    } else {
+        repository_root.join(directory)
+    }
+}
+
 fn bundled_plugins_dir() -> PathBuf {
     if let Some(directory) = env::var_os("ARCLAIN_BUNDLED_PLUGIN_DIR") {
-        return PathBuf::from(directory);
+        let directory = resolve_bundled_dir(Path::new(&directory), &repository_root());
+        // The manager creates a missing directory and then finds no plugin in
+        // it, which reads as a loading failure; name the real mistake instead.
+        assert!(
+            directory.is_dir(),
+            "ARCLAIN_BUNDLED_PLUGIN_DIR names no directory: {}",
+            directory.display()
+        );
+        return directory;
     }
 
     static FLAT_PACKAGES: OnceLock<TempDir> = OnceLock::new();
     let packages = FLAT_PACKAGES.get_or_init(|| {
-        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|path| path.parent())
-            .expect("crates/plugins should live two levels below repo root")
-            .to_path_buf();
+        let repository_root = repository_root();
         let directory = TempDir::new().expect("create flat bundled-package fixture");
         for plugin_id in ["dlsite-metadata", "ui-demo"] {
             // `dlsite-metadata`'s component is a frozen legacy input, so
