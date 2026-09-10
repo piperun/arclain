@@ -431,12 +431,29 @@ pub(crate) fn get_cached_dlsite_metadata(
     Some((json_data, Some(scraped)))
 }
 
+pub(crate) fn parse_product_api(product_id: &str, json: &str) -> Result<serde_json::Value, String> {
+    let code = gameta_lib::providers::dlsite::DlsiteProductCode::parse(product_id)
+        .map_err(|e| e.to_string())?;
+    gameta_lib::providers::dlsite::parse_api_product(&code, json.as_bytes())
+        .map(serde_json::Value::Object)
+        .map_err(|e| e.to_string())
+}
+
+/// The plugin keeps its legacy ScrapedData boundary, with shared bounded
+/// extraction and product identity checks for newly fetched pages.
+pub(crate) fn parse_product_page(product_id: &str, html: &str) -> Result<ScrapedData, String> {
+    let code = gameta_lib::providers::dlsite::DlsiteProductCode::parse(product_id)
+        .map_err(|e| e.to_string())?;
+    gameta_lib::providers::dlsite::parse_product_html(&code, html.as_bytes())
+        .map_err(|e| e.to_string())
+}
+
 /// Fetch metadata from DLSite network (for new entries or search results)
 /// Uses gameta_lib orchestrator for logic.
 pub(crate) fn fetch_dlsite_metadata(
     product_id: &str,
 ) -> Option<(serde_json::Value, Option<ScrapedData>)> {
-    use gameta_lib::providers::dlsite::{parse_html, plan_fetch, DlsiteFetchOptions, FetchStep};
+    use gameta_lib::providers::dlsite::{plan_fetch, DlsiteFetchOptions, FetchStep};
     use wirt_sdk::{fetch_string_blocking, log_network_activity};
 
     // Use the orchestrator to plan our fetch
@@ -462,16 +479,11 @@ pub(crate) fn fetch_dlsite_metadata(
                             body.len(),
                             body.chars().take(100).collect::<String>()
                         ));
-                        match serde_json::from_str::<serde_json::Value>(&body) {
+                        match parse_product_api(product_id, &body) {
                             Ok(val) => {
                                 info("[DEBUG] JSON parsed successfully");
-                                // Store the raw API object for the plugin's legacy
-                                // rendering path. DLSite sometimes wraps it in an
-                                // array; an empty array remains valid but has no item.
-                                json_data = val
-                                    .as_array()
-                                    .and_then(|items| items.first().cloned())
-                                    .unwrap_or(val);
+                                // Shared bounded selection retains the raw legacy fields.
+                                json_data = val;
                                 fetch_success = true;
                                 info("[DEBUG] fetch_success = true (JSON)");
                             }
@@ -503,7 +515,7 @@ pub(crate) fn fetch_dlsite_metadata(
                 if let Ok(body) = fetch_string_blocking(&cache_key, &url) {
                     info(&format!("[DEBUG] HTML fetched: {} bytes", body.len()));
                     log_network_activity(&format!("HTML response ({} bytes)", body.len()));
-                    scraped_data = parse_html(&body);
+                    scraped_data = parse_product_page(product_id, &body).ok();
                     if let Some(data) = &scraped_data {
                         info(&format!(
                             "[DEBUG] HTML parsed: title={:?}, geo_blocked={}",
@@ -1045,5 +1057,30 @@ mod tests {
         assert_eq!(next_cache_page_offset(200, 250, 100), 200);
         assert_eq!(previous_cache_page_offset(0, 100), 0);
         assert_eq!(previous_cache_page_offset(200, 100), 100);
+    }
+}
+
+#[cfg(test)]
+mod rich_parser_tests {
+    #[test]
+    fn shared_product_parser_retains_legacy_plugin_serialization() {
+        let raw=super::parse_product_api("RJ123456",r#"{"RJ123456":{"workno":"RJ123456","work_name":"API title","intro_s":"Legacy intro"}}"#).unwrap();
+        assert_eq!(raw["intro_s"], "Legacy intro");
+        assert!(super::parse_product_api("RJ123456", r#"[{"workno":"RJ999999"}]"#).is_err());
+        assert!(super::parse_product_api("RJ123456", &" ".repeat(512 * 1024 + 1)).is_err());
+        let html = r#"<link rel="canonical" href="https://www.dlsite.com/maniax/work/=/product_id/RJ123456.html"><h1 id="work_name">Title</h1><div class="product-slider-data"><div data-src="//img.dlsite.jp/sample.jpg"></div></div><div class="work_parts_container"><p>Description</p><img src="data:image/gif;base64,AAAA" data-src="//img.dlsite.jp/description.jpg"></div>"#;
+        let scraped = super::parse_product_page("RJ123456", html).unwrap();
+        let output =
+            gameta_lib::providers::dlsite::build_plugin_json("RJ123456", None, Some(&scraped));
+        assert_eq!(output["description"], "Description");
+        assert_eq!(
+            output["screenshots"][0]["FilePath"],
+            "https://img.dlsite.jp/sample.jpg"
+        );
+        assert_eq!(
+            scraped.description_images,
+            vec!["https://img.dlsite.jp/description.jpg"]
+        );
+        assert!(super::parse_product_page("RJ999999", html).is_err());
     }
 }
