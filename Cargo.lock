@@ -7007,7 +7007,8 @@ dependencies = [
 
 [[package]]
 name = "unboxer"
-version = "0.1.0"
+version = "0.2.0"
+source = "git+https://codeberg.org/0xdev/crateyard?rev=d737e2d893614d4e45cd71d6dda7711c3c62bcad#d737e2d893614d4e45cd71d6dda7711c3c62bcad"
 dependencies = [
  "crc32fast",
  "encoding_rs",
