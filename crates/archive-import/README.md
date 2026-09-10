@@ -22,22 +22,23 @@ Arclain application decoder versions are independent of this package.
 ## Bounds and source identity
 
 The memory default is half the machine's physical memory, clamped to 1 to
-8 GiB; the worker accepts up to 64 GiB. There is no total deadline. The other
-defaults are a 60-second stall timeout and a 1 MiB/s decode-rate floor: a
-worker that sends no frame for the timeout while a request is outstanding is
-killed, as is one that streams entry data below the floor over a window of
-the timeout, after a decode's first. Time between entries and the source
-verification before COMPLETE owe no rate; the worker's heartbeats keep them
-under the stall rule. OS limits are established before reading the source
-request: a process memory Job Object on Windows, RLIMIT_AS on Linux. The
-helper disables its own crash dialogs/core dumps. Frames are at most 64 KiB,
-the reader queue holds two frames, metadata is capped at 64 MiB and physical
-count at 200,000; caller limits can be lower. The worker writes a HEARTBEAT
-frame after five silent seconds. Unboxer also charges retained destination
-and path metadata against its index budget. These controls bound decoder
-resource use; they are not a general security sandbox. Allocation termination
-may report WorkerFailed because the OS does not reliably distinguish it from
-another native crash.
+8 GiB; the worker accepts a cap from 32 MiB to 64 GiB and refuses anything
+outside that range with exit status 2, before it reads anything else. There
+is no total deadline. The other defaults are a 60-second stall timeout and a
+1 MiB/s decode-rate floor: a worker that sends no frame for the timeout
+while a request is outstanding is killed, as is one that streams entry data
+below the floor over a window of the timeout, after a decode's first. Time
+between entries and the source verification before COMPLETE owe no rate; the
+worker's heartbeats keep them under the stall rule, and the worker writes a
+HEARTBEAT frame after five silent seconds. OS limits are established before
+reading the source request: a process memory Job Object on Windows,
+RLIMIT_AS on Linux. The helper disables its own crash dialogs/core dumps.
+Frames are at most 64 KiB, the reader queue holds two frames, metadata is
+capped at 64 MiB and physical count at 200,000; caller limits can be lower.
+Unboxer also charges retained destination and path metadata against its
+index budget. These controls bound decoder resource use; they are not a
+general security sandbox. Allocation termination may report WorkerFailed
+because the OS does not reliably distinguish it from another native crash.
 
 Windows opens the source with a share mode that refuses every other writer
 and deleter for as long as the handle is held, so it does not hash: length

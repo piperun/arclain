@@ -40,14 +40,18 @@ impl WorkerOptions {
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
-            // Half the machine, within a floor a game archive needs and a
-            // ceiling past which a decoder is asking for something else.
-            memory_bytes: physical_memory()
-                .map_or(1 << 30, |ram| (ram / 2).clamp(1 << 30, 8 << 30)),
+            memory_bytes: default_memory_bytes(physical_memory()),
             stall_timeout: Duration::from_secs(60),
             min_decode_rate: 1 << 20,
         }
     }
+}
+
+/// Half the machine, clamped at both ends: under 1 GiB is less than a game
+/// archive's dictionary can need, and over 8 GiB is not a dictionary size
+/// any game archive uses. An unreadable RAM figure takes the floor.
+fn default_memory_bytes(ram: Option<u64>) -> u64 {
+    ram.map_or(1 << 30, |ram| (ram / 2).clamp(1 << 30, 8 << 30))
 }
 
 /// The machine's physical memory, or `None` where it cannot be read.
@@ -55,9 +59,11 @@ fn physical_memory() -> Option<u64> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-        let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
-        status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
-        // SAFETY: the structure is sized and zeroed as the call requires.
+        let mut status = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: the structure is sized as the call requires.
         (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.ullTotalPhys)
     }
     #[cfg(unix)]
@@ -92,8 +98,10 @@ struct Liveness {
     decoding: AtomicBool,
     /// Milliseconds spent waiting on the worker, and bytes of DATA payload
     /// received, while an entry streams: between a BEGIN and its END. The
-    /// seek to the next entry and the source re-hash before COMPLETE owe
-    /// no rate; heartbeats keep them under the stall rule instead.
+    /// seek to the next entry and the source verification before COMPLETE
+    /// (a re-hash on Linux; a length and modification time check on
+    /// Windows, which holds the source with a share mode instead) owe no
+    /// rate; heartbeats keep them under the stall rule instead.
     decode_wait_ms: AtomicU64,
     decode_bytes: AtomicU64,
     /// Set by the watchdog before it kills the worker for a stall or for
@@ -584,5 +592,23 @@ impl Drop for ArchiveSession {
                 let _ = handle.join();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_memory_default_takes_half_the_ram_between_its_two_clamps() {
+        // An unreadable or absurd RAM figure falls to the floor.
+        assert_eq!(default_memory_bytes(None), 1 << 30);
+        assert_eq!(default_memory_bytes(Some(0)), 1 << 30);
+        // 1.5 GiB: half is under the floor, so the floor wins.
+        assert_eq!(default_memory_bytes(Some(3 << 29)), 1 << 30);
+        // 8 GiB: half is inside the clamp, so half is the default.
+        assert_eq!(default_memory_bytes(Some(8 << 30)), 4 << 30);
+        // 64 GiB: half is over the ceiling, so the ceiling wins.
+        assert_eq!(default_memory_bytes(Some(64 << 30)), 8 << 30);
     }
 }
