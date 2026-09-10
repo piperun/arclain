@@ -126,6 +126,7 @@ impl ArchiveBackend for SevenZipCli {
     }
 
     fn list(&self, path: &Path, password: Option<&str>) -> Result<ArchiveInfo> {
+        crate::archive::require_archive_file(path)?;
         info!("Listing archive contents: {}", path.display());
         if password.is_some() {
             debug!("Using password for archive listing");

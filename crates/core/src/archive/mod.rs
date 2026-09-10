@@ -18,6 +18,41 @@ use std::path::{Path, PathBuf};
 pub use handle::Archive;
 pub use info::{ArchiveEntry, ArchiveInfo, ArchiveKind};
 pub use multipart::{detect_multipart, is_multipart_archive, MultiPartArchive, MultiPartFormat};
+
+/// The archive file is not there.
+///
+/// Answered before any backend runs, so a missing file never reads as
+/// "both tiers refused" or, through the 7-Zip CLI's exit code, as a
+/// password failure.
+#[derive(Debug, thiserror::Error)]
+#[error("no such archive file: {}", .path.display())]
+pub struct ArchiveNotFound {
+    pub path: PathBuf,
+}
+
+/// Fails with [`ArchiveNotFound`] when nothing exists at `path`.
+pub fn require_archive_file(path: &Path) -> Result<()> {
+    if path.exists() {
+        Ok(())
+    } else {
+        Err(ArchiveNotFound {
+            path: path.to_path_buf(),
+        }
+        .into())
+    }
+}
+
+/// Whether `error` says the archive file is missing: the typed answer, or
+/// an io not-found from a tier that opened the file itself (the zip tier
+/// keeps its `File::open` error as the cause under its context).
+pub fn is_archive_not_found(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<ArchiveNotFound>().is_some()
+            || cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+    })
+}
 pub use navigation::{NavigationState, VisibleArchiveEntry};
 
 /// Reference to an archive entry for extraction
