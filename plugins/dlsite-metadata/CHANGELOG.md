@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## dlsite-metadata-0.12.1 - 2026-09-10
+#### Bug Fixes
+- (**dlsite-metadata**) parse fetched pages through the shared parsers - (e952b12) - 0xdev
+#### Build system
+- depend on gameta 0.6.0 - (8f1131c) - 0xdev
+
+- - -
+
 ## dlsite-metadata-0.12.0 - 2026-08-27
 #### Features
 - <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>(**wirt**) a badge names what it means, not what colour to be - (f3f56ab) - 0xdev
