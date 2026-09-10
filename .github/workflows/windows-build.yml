@@ -55,9 +55,9 @@ jobs:
         # the exact gameta package version in the Cargo manifests.
         run: |
           git clone --no-checkout https://codeberg.org/0xdev/gameta.git codeberg/gameta
-          git -C codeberg/gameta fetch --depth 1 origin 562c585a0f9e3814b2ce5173f3339f66cccd6d5f
+          git -C codeberg/gameta fetch --depth 1 origin dd60b392f216e019c302a35c72feb13a8f9cc3cf
           git -C codeberg/gameta checkout --detach FETCH_HEAD
-          if ((git -C codeberg/gameta rev-parse HEAD) -ne "562c585a0f9e3814b2ce5173f3339f66cccd6d5f") {
+          if ((git -C codeberg/gameta rev-parse HEAD) -ne "dd60b392f216e019c302a35c72feb13a8f9cc3cf") {
             throw "gameta checkout did not resolve to the audited revision"
           }
 
