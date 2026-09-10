@@ -11,6 +11,88 @@ use std::sync::mpsc;
 use tracing::{debug, error, info};
 use which::which;
 
+/// Why a 7-Zip run failed, as far as its exit status and its own English
+/// messages say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SevenZipFailureReason {
+    WrongPassword,
+    DataError,
+    NotAnArchive,
+    Unsupported,
+    /// The tool could not open the archive file: the operating system
+    /// refused it (missing, locked, permission denied).
+    CannotOpen,
+    Other,
+}
+
+/// A 7-Zip process that exited with a failure.
+///
+/// The message carries the exit code and the classified reason only. The
+/// tool's stderr is not part of it: it quotes the archive path and, for
+/// anything the operating system refused, the operating system's text in
+/// the user's display language, which is neither bounded nor readable by
+/// the classifiers downstream. It is logged in full where the failure
+/// happens.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("7z failed (code {code:?}): {}", reason_text(*reason))]
+pub struct SevenZipFailure {
+    pub code: Option<i32>,
+    pub reason: SevenZipFailureReason,
+}
+
+fn reason_text(reason: SevenZipFailureReason) -> &'static str {
+    match reason {
+        // Verbatim 7-Zip wording: the password classifiers downstream read it.
+        SevenZipFailureReason::WrongPassword => "Wrong password",
+        SevenZipFailureReason::DataError => {
+            "data error in the archive (the tool's message is in the log)"
+        }
+        SevenZipFailureReason::NotAnArchive => {
+            "the file is not an archive 7-Zip can read (the tool's message is in the log)"
+        }
+        SevenZipFailureReason::Unsupported => {
+            "unsupported archive method (the tool's message is in the log)"
+        }
+        SevenZipFailureReason::CannotOpen => {
+            "the archive file could not be opened (the operating system's message is in the log)"
+        }
+        SevenZipFailureReason::Other => "the tool's message is in the log",
+    }
+}
+
+/// Classifies one failed run from its exit code and stderr. Only 7-Zip's
+/// own English phrases are matched; a "System ERROR" block is the tool
+/// relaying the operating system, whose text is localized.
+pub(crate) fn classify_failure(code: Option<i32>, stderr: &str) -> SevenZipFailure {
+    let has = |needle: &str| stderr.contains(needle);
+    let reason = if has("Wrong password")
+        || has("Can not open encrypted")
+        || has("Cannot open encrypted")
+        || has("Password for encrypted archive")
+        || has("Enter password")
+    {
+        SevenZipFailureReason::WrongPassword
+    } else if has("Data Error")
+        || has("CRC Failed")
+        || has("Headers Error")
+        || has("Unexpected end")
+    {
+        SevenZipFailureReason::DataError
+    } else if has("Can not open the file as")
+        || has("Cannot open the file as")
+        || has("Is not archive")
+    {
+        SevenZipFailureReason::NotAnArchive
+    } else if has("Unsupported") {
+        SevenZipFailureReason::Unsupported
+    } else if has("System ERROR") || has("Can not open the file") || has("Cannot open the file") {
+        SevenZipFailureReason::CannotOpen
+    } else {
+        SevenZipFailureReason::Other
+    };
+    SevenZipFailure { code, reason }
+}
+
 /// 7-Zip CLI wrapper for archive operations
 #[derive(Clone)]
 pub struct SevenZipCli {
@@ -186,11 +268,7 @@ impl SevenZipCli {
             );
             error!("7-Zip stderr: {}", err.trim());
             error!("7-Zip stdout: {}", stdout.trim());
-            return Err(anyhow!(
-                "7z failed (code {:?}): {}",
-                out.status.code(),
-                err.trim()
-            ));
+            return Err(classify_failure(out.status.code(), &err).into());
         }
 
         match String::from_utf8(out.stdout) {
@@ -227,11 +305,7 @@ impl SevenZipCli {
                 output.status.code(),
                 err
             );
-            return Err(anyhow!(
-                "7z failed (code {:?}): {}",
-                output.status.code(),
-                err
-            ));
+            return Err(classify_failure(output.status.code(), &err).into());
         }
         Ok(())
     }
@@ -255,14 +329,101 @@ impl SevenZipCli {
                 output.status.code(),
                 err
             );
-            return Err(anyhow!(
-                "7z failed (code {:?}): {}",
-                output.status.code(),
-                err
-            ));
+            return Err(classify_failure(output.status.code(), &err).into());
         }
 
         debug!("7-Zip command completed successfully");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::{classify_failure, SevenZipFailureReason};
+
+    const SWEDISH_MISSING_FILE: &str = "ERROR: Det g\u{e5}r inte att hitta filen.\nD:\\tmp\\project.zip\n\n\nSystem ERROR:\nDet g\u{e5}r inte att hitta filen.";
+
+    #[test]
+    fn a_localized_open_failure_becomes_a_bounded_english_summary() {
+        let failure = classify_failure(Some(2), SWEDISH_MISSING_FILE);
+        let text = failure.to_string();
+
+        assert_eq!(failure.reason, SevenZipFailureReason::CannotOpen);
+        assert!(text.starts_with("7z failed (code Some(2)): "), "{text}");
+        assert!(
+            !text.contains("hitta"),
+            "the tool's localized text stays in the log: {text}"
+        );
+        assert!(
+            !text.contains("project.zip"),
+            "the path stays in the log: {text}"
+        );
+        assert!(text.len() < 160, "{}: {text}", text.len());
+    }
+
+    #[test]
+    fn a_wrong_password_keeps_the_phrase_the_classifiers_read() {
+        for stderr in [
+            "ERROR: Wrong password : secret.7z",
+            "ERROR: Can not open encrypted archive. Wrong password?",
+            "Enter password (will not be echoed):",
+        ] {
+            let failure = classify_failure(Some(2), stderr);
+            assert_eq!(
+                failure.reason,
+                SevenZipFailureReason::WrongPassword,
+                "{stderr}"
+            );
+            assert!(
+                failure.to_string().contains("Wrong password"),
+                "{}",
+                failure
+            );
+        }
+    }
+
+    #[test]
+    fn data_and_format_failures_are_named_without_the_tool_text() {
+        assert_eq!(
+            classify_failure(
+                Some(2),
+                "ERROR: Data Error in encrypted file. Wrong password?"
+            )
+            .reason,
+            SevenZipFailureReason::WrongPassword,
+            "a data error that asks about the password is a password failure"
+        );
+        assert_eq!(
+            classify_failure(
+                Some(2),
+                "ERROR: Data Error : broken.7z\nSub items Errors: 1"
+            )
+            .reason,
+            SevenZipFailureReason::DataError
+        );
+        assert_eq!(
+            classify_failure(
+                Some(2),
+                "ERROR: odd.bin\nCan not open the file as [7z] archive"
+            )
+            .reason,
+            SevenZipFailureReason::NotAnArchive
+        );
+        assert_eq!(
+            classify_failure(Some(2), "ERROR: Unsupported Method : x.7z").reason,
+            SevenZipFailureReason::Unsupported
+        );
+    }
+
+    #[test]
+    fn anything_else_is_reported_by_exit_code_alone() {
+        let failure = classify_failure(Some(7), "garbage the tool printed");
+        assert_eq!(failure.reason, SevenZipFailureReason::Other);
+        assert_eq!(failure.code, Some(7));
+        assert!(!failure.to_string().contains("garbage"));
+
+        let killed = classify_failure(None, "");
+        assert_eq!(killed.code, None);
+        assert!(killed.to_string().starts_with("7z failed (code None)"));
     }
 }
