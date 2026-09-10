@@ -289,8 +289,9 @@ mod tests {
         assert_eq!(frames[0].1, BEAT, "the beat is a frame with no payload");
         assert!(frames[0].0.duration_since(started) >= INTERVAL);
 
-        frame(&mut output, DATA, b"x").unwrap();
         let wrote_at = Instant::now();
+        frame(&mut output, DATA, b"x").unwrap();
+
         thread::sleep(Duration::from_millis(30));
         let frames = written();
         assert_eq!(frames.len(), 2, "a write restarts the interval");
