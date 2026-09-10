@@ -2917,11 +2917,8 @@ version = "0.6.0"
 dependencies = [
  "gameta_core",
  "regex",
- "scraper",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
- "url",
 ]
 
 [[package]]
