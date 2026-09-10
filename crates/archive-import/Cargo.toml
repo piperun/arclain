@@ -1,0 +1,39 @@
+[package]
+name = "arclain_archive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bounded archive import client and isolated native decoder worker"
+
+[features]
+default = []
+worker = ["dep:sevenz-rust2", "dep:unrar_sys", "dep:crc32fast", "dep:sha2", "dep:libc", "dep:windows-sys"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+unboxer = { git = "https://codeberg.org/0xdev/crateyard", rev = "6286bd9baab14f02d265482e46240ababfc9603c", default-features = false, features = ["serde"] }
+sevenz-rust2 = { version = "=0.22.2", default-features = false, features = ["bzip2", "ppmd", "deflate"], optional = true }
+unrar_sys = { version = "=0.5.8", optional = true }
+crc32fast = { version = "1", optional = true }
+sha2 = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_Debug"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "arclain-archive-worker"
+path = "src/main.rs"
+required-features = ["worker"]
+
+[[test]]
+name = "client_faults"
+harness = false
+required-features = ["worker"]
