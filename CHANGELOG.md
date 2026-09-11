@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 3.1.4 - 2026-09-10
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.12.1
+### Global changes
+#### Bug Fixes
+- (**core**) fail a 7z entry whose stream ends before its declared size - (0e7eb88) - 0xdev
+
+- - -
+
 ## 3.1.3 - 2026-09-10
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.12.1
