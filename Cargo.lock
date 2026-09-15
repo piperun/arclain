@@ -7019,7 +7019,7 @@ dependencies = [
 [[package]]
 name = "unboxer"
 version = "0.3.0"
-source = "git+https://codeberg.org/0xdev/crateyard?rev=a7eef8774268de7265aa66f7a2d93825092c471b#a7eef8774268de7265aa66f7a2d93825092c471b"
+source = "git+https://codeberg.org/0xdev/crateyard?rev=71af100ac787f65f679d451420c2f49fe2a15a41#71af100ac787f65f679d451420c2f49fe2a15a41"
 dependencies = [
  "chardetng",
  "crc32fast",
