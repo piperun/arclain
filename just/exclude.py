@@ -141,10 +141,25 @@ def tsconfig_with_excludes(obj: dict, entries: list[str]) -> dict:
     return out
 
 
-def editor_settings_with_excludes(obj: dict, preset: str = "worktrees") -> dict:
+def editor_settings_with_excludes(
+    obj: dict,
+    preset: str = "worktrees",
+    toolchains: list[str] | tuple[str, ...] | None = None,
+) -> dict:
+    """Merge worktree excludes into VS Code settings. Analyzer settings are
+    written only for `toolchains`; None means both Dart and Rust, and an empty
+    list means neither, so a repo with no detected toolchain gets only the
+    watcher/search excludes."""
     p = PRESETS[preset]
     out = copy.deepcopy(obj)
-    for key in ("rust-analyzer.files.excludeDirs", "dart.analysisExcludedFolders"):
+    selected = {"dart", "rust"} if toolchains is None else set(toolchains)
+    analyzer_settings = {
+        "rust": "rust-analyzer.files.excludeDirs",
+        "dart": "dart.analysisExcludedFolders",
+    }
+    for toolchain, key in analyzer_settings.items():
+        if toolchain not in selected:
+            continue
         current = list(out.get(key, []))
         for d in p["dirs"]:
             if d not in current:
@@ -253,7 +268,13 @@ def apply(repo: Path, preset: str = "worktrees", scope: str = "auto") -> list[st
             except json.JSONDecodeError:
                 changed.append("SKIPPED (not strict JSON, edit by hand): .vscode/settings.json")
             else:
-                write(f, json.dumps(editor_settings_with_excludes(obj, preset), indent=2) + "\n")
+                editor_toolchains = want if scope == "auto" else ["dart", "rust"]
+                settings = editor_settings_with_excludes(
+                    obj,
+                    preset,
+                    toolchains=editor_toolchains,
+                )
+                write(f, json.dumps(settings, indent=2) + "\n")
 
     return changed
 
