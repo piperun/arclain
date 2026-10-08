@@ -18,6 +18,7 @@ import copy
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 # preset -> (glob entries for analyzers, bare dir names, watcher globs)
 PRESETS = {
@@ -118,7 +119,7 @@ def analysis_options_with_excludes(text: str, entries: list[str], preset: str = 
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def tsconfig_needs_excludes(obj: dict) -> bool:
+def tsconfig_needs_excludes(obj: dict[str, Any]) -> bool:
     """Whether this tsconfig could pick up a worktree in the first place.
 
     An `include` listing rooted paths (`src/**/*.ts`) can never match `.worktrees/`,
@@ -131,7 +132,7 @@ def tsconfig_needs_excludes(obj: dict) -> bool:
     return any(p.startswith("*") or p.startswith(".") or p.startswith("/") for p in include)
 
 
-def tsconfig_with_excludes(obj: dict, entries: list[str]) -> dict:
+def tsconfig_with_excludes(obj: dict[str, Any], entries: list[str]) -> dict[str, Any]:
     out = copy.deepcopy(obj)
     current = list(out.get("exclude", []))
     for e in entries:
@@ -142,10 +143,10 @@ def tsconfig_with_excludes(obj: dict, entries: list[str]) -> dict:
 
 
 def editor_settings_with_excludes(
-    obj: dict,
+    obj: dict[str, Any],
     preset: str = "worktrees",
     toolchains: list[str] | tuple[str, ...] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Merge worktree excludes into VS Code settings. Analyzer settings are
     written only for `toolchains`; None means both Dart and Rust, and an empty
     list means neither, so a repo with no detected toolchain gets only the
@@ -280,10 +281,15 @@ def apply(repo: Path, preset: str = "worktrees", scope: str = "auto") -> list[st
 
 
 def main(argv=None) -> int:
-    try:
-        sys.stdout.reconfigure(errors="replace")
-    except (AttributeError, ValueError):
-        pass
+    # A repo's folder name can hold a character a legacy console codepage
+    # cannot encode (cp932 here); degrade the character, not the run. Only a
+    # real text stream has reconfigure(), which the TextIO type does not name.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        try:
+            reconfigure(errors="replace")
+        except ValueError:
+            pass
     ap = argparse.ArgumentParser(prog="exclude.py")
     ap.add_argument("preset", nargs="?", default="worktrees", choices=sorted(PRESETS))
     ap.add_argument("--scope", default="auto",
