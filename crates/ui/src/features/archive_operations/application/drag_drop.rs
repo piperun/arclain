@@ -43,8 +43,8 @@ pub fn update_drag_progress(
     _shared: &crate::shared::SharedState,
     ctx: &egui::Context,
 ) {
-    // Drag dialog lives on the originating tab now (post 2026-05-20 B3
-    // reframed slice 2). Without an origin tab there's no dialog to
+    // Drag dialog lives on the originating tab now.
+    // Without an origin tab there's no dialog to
     // update — bail out early.
     let Some(origin_tab) = state.drag_origin_tab.clone() else {
         return;

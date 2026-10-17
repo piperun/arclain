@@ -1,4 +1,4 @@
-//! Regression test for C5 from `docs/AUDIT_2026-05-03.md`.
+//! Regression test.
 //!
 //! Pre-fix, `SecretsService::move_vault` used `let _ =` to discard
 //! `set_config` failures after copying the secrets DB to the new path

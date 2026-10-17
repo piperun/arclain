@@ -222,8 +222,8 @@ pub struct TabState {
     /// naturally; switching back restores it.
     pub lightbox_state: Signal<crate::shared::dialogs::LightboxState>,
     /// Password-dialog state for unlocking encrypted archives.
-    /// Migrated from the global `AppSignals.password_dialog` in the
-    /// 2026-05-20 B3 reframed slice — the prompt is bound to the
+    /// Migrated from the global `AppSignals.password_dialog`.
+    /// The prompt is bound to the
     /// archive being opened (and therefore the tab loading it).
     /// Two encrypted archives in two tabs no longer overwrite each
     /// other's prompt; closing a tab drops its pending request.
@@ -242,8 +242,8 @@ pub struct TabState {
     pub pending_open_after_unlock: Signal<Option<String>>,
     /// Progress-dialog state for the three long-running op flavours
     /// (extraction / conversion / drag-out). Migrated from the global
-    /// `AppSignals.progress_dialogs` in the 2026-05-20 B3 reframed
-    /// slice — the dialog visualises an op that always originates on
+    /// `AppSignals.progress_dialogs`.
+    /// The dialog visualises an op that always originates on
     /// a specific tab (the one that owns the archive). Closing the
     /// tab during an in-flight op drops the dialog with it; the
     /// background worker still kills its subprocess via `tab_cancel`.
@@ -261,8 +261,7 @@ pub struct TabState {
     /// when the user confirms closing a tab that has in-flight ops. Long-
     /// running ops (extraction, conversion, plugin calls, etc.) should
     /// periodically check this flag and abort + clean up partial output
-    /// when set, per the ACID contract documented in the Phase 2 design
-    /// spec.
+    /// when set, per the ACID contract.
     ///
     /// v1 is best-effort: not all op types check the flag yet. A future
     /// audit pass migrates each spawn site. Ops that ignore the flag

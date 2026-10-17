@@ -12,8 +12,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
 
     // Fall back to 0 rather than unwrapping: a misconfigured system
     // clock (one set before the epoch) should not bring down the UI
-    // thread, and this only gates a trace-level FPS log (audit finding
-    // H5).
+    // thread, and this only gates a trace-level FPS log.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since_epoch| since_epoch.as_secs())
@@ -313,7 +312,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // === Lifecycle: Handle extraction progress from native backends ===
     {
         // Use a block to limit scope of extracted signals.
-        // Post 2026-05-20 B3 reframed slice 2 the extraction dialog lives
+        // The extraction dialog lives
         // on the active tab — the native-backend path drives a singleton
         // `extraction_progress` signal, and only the active tab's dialog
         // can be visible. The path that originates an extraction is the

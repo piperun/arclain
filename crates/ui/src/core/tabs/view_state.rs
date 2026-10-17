@@ -5,8 +5,7 @@
 //! `TabState` is the source of truth. It was previously misfiled under
 //! `features/archive_browser/domain/types.rs`, which forced
 //! `core/tabs/tab_state.rs` to import from `features/` (violating the
-//! `core/ ⊥ features/` invariant — see
-//! docs/audits/2026-05-19-dependencies.md §2 + §5 medium #9).
+//! `core/ ⊥ features/` invariant).
 //!
 //! All fields are `shared/` types (file entries, sort state, toolbar
 //! state, tree panel state) — none are archive_browser-specific — so

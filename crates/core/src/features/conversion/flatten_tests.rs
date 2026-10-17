@@ -365,7 +365,7 @@ fn test_flatten_finds_archives_in_subfolders() {
     assert!(!sub.join("Patch.rar").exists());
 }
 
-// ---- Recursive flatten tests (Phase 1 of pipeline-collision plan) ----
+// ---- Recursive flatten tests ----
 
 /// Helper: "extracts" by writing a dest marker and optionally dropping
 /// additional archive files at known paths. Tracks how many times it ran.

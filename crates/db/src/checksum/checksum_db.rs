@@ -434,4 +434,4 @@ pub fn delete_checksum_operation(conn: &Connection, op_id: &OpId) -> Result<()> 
 // `set_checksum_algorithm_diesel` (plus `_mode_*`) mirrors here, but
 // `ChecksumDb` is rusqlite-only and nothing else ever called the
 // Diesel versions. They were deleted as part of the dual-CRUD
-// collapse (see docs/audits/2026-05-19-dependencies.md §5 #6).
+// collapse.

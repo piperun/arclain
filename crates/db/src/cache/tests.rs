@@ -104,7 +104,7 @@ fn upsert_reclassifies_existing_entry_and_product() {
     assert_eq!(entry.product_id.as_deref(), Some("product-b"));
 }
 
-/// Regression test for C6 from `docs/AUDIT_2026-05-03.md`.
+/// Regression test.
 ///
 /// Pre-fix, `CacheDb::open`'s recovery path used `let _ =` to discard
 /// failures from removing `.sqlite-wal` and `.sqlite-shm` after the

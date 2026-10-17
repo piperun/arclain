@@ -142,7 +142,7 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                 // status_bar write happens after action handler completes,
                 // not during render — controller-pattern write, not the
                 // render-mutate-write smell the audit flagged. Kept as
-                // correct (audit B3 reframing).
+                // correct.
                 shared_state.signals().status_bar.set_if_changed(status_info);
             }
         }

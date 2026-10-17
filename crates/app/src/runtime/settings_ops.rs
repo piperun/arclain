@@ -59,12 +59,12 @@
 //! on disk, but the in-memory commit (phase 3) never runs, so `settings()`
 //! keeps reporting the pre-patch values until a *later* successful
 //! `update_settings` call catches the cache up (its own step 1 re-reads
-//! the current on-disk row -- see the "C1" doc note above -- which
+//! the current on-disk row -- see the note on re-reading the `user_config` row above -- which
 //! picks up whatever step 1 previously wrote) or the process restarts
 //! (which re-reads everything from disk fresh). This divergence is
 //! narrow (steps 2/3 only run for security-patch fields, a small
 //! fraction of calls) and matches this codebase's existing "propagate
-//! the first failure, don't silently swallow it" standard (the H4 audit
+//! the first failure, don't silently swallow it" standard (the
 //! fix) rather than full cross-engine ACID -- reordering to make the
 //! in-memory commit strictly last-and-only-on-total-success would still
 //! leave the *disk* itself inconsistent across engines/files in the same
@@ -689,7 +689,7 @@ fn probe_report(result: ConnectionTestResult) -> NetworkProbeReport {
 /// Reads the *current on-disk* `user_config` row fresh -- not this
 /// instance's cached copy -- before using it as `save`'s "candidate":
 /// the same fix `run_update_settings` applies for the same reason (see
-/// its own "C1" doc note). This call carries no settings patch of its
+/// its own note on re-reading the `user_config` row). This call carries no settings patch of its
 /// own (only the secret changes), but it is reachable directly through
 /// the facade API on its own, not only after an `update_settings` call
 /// that would have just refreshed the cache -- the egui `SaveNetwork`
@@ -758,7 +758,7 @@ pub(super) async fn run_set_socks5_password(
     // this, the new credential only takes effect after the next
     // `update_settings` call (which re-applies routing for identity
     // changes) or a restart, even though it is already correctly
-    // persisted. See this module's own "I3" note. Uses the same fresh
+    // persisted. See this module's own note on SOCKS5 proxy routing. Uses the same fresh
     // `user_config` just committed above, not a stale cached one -- see
     // this function's own doc comment for why (the "NB1" fix).
     apply_live_proxy_routing(inner, &dbs, &user_config).await;
@@ -1016,7 +1016,7 @@ pub(super) async fn run_set_plugin_enabled(
         .ok_or_else(shutdown_mid_request_error)?;
 
     // Re-read the current on-disk row fresh, matching `run_update_settings`'s
-    // own "C1" rationale -- this call carries no patch of its own, only
+    // own note on re-reading the `user_config` row -- this call carries no patch of its own, only
     // the plugin-enabled snapshot, so every other column must survive
     // untouched.
     let read_config_service = config_service.clone();
@@ -1912,7 +1912,7 @@ async fn repoint_vault_paths(
         .spawn_blocking(move || {
             // `Clear` on either field means "reset to `defaults`", not
             // "unset" -- see `settings::apply_vault_path_patch`'s own
-            // doc comment (the "I6" fix) for why a vault path can never
+            // doc comment (on applying `secrets_database_path`/`key_file_path`) for why a vault path can never
             // simply be absent the way a directory override can.
             let paths = patched_vault_paths(current_db_paths, &default_db_paths, &security_patch);
 

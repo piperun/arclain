@@ -45,7 +45,7 @@ const MMAP_THRESHOLD: u64 = 10 * 1024 * 1024;
 /// **Synchronous: do not call from inside an async task** — the
 /// `std::fs` operations and the actual hashing both block the calling
 /// thread. From a tokio context use
-/// `tokio::task::spawn_blocking(|| hash_file(...))` (audit finding M2).
+/// `tokio::task::spawn_blocking(|| hash_file(...))`.
 pub fn hash_file(path: &Path, algorithm: Algorithm) -> Result<Hash> {
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("Failed to read metadata for {}", path.display()))?;

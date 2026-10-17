@@ -32,7 +32,7 @@ pub enum CloseResult {
 
 impl TabsCollection {
     /// Create a collection with one empty tab (id = TabId(1)). Matches
-    /// the Phase 2a single-tab assumption.
+    /// the single-tab assumption.
     pub fn new() -> Self {
         let first = Arc::new(TabState::new(TabId(1)));
         Self {
@@ -83,7 +83,7 @@ impl TabsCollection {
     /// state object, which is no longer in the collection — the results
     /// are silently discarded. Callers should either avoid replace_active
     /// while ops are in flight, or wire a per-tab cancellation token
-    /// that the ops honor (Phase 2c).
+    /// that the ops honor.
     pub fn replace_active(&mut self, archive_path: PathBuf) {
         let active_id = self.active;
         let idx = self

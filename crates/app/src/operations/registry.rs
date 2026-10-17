@@ -604,7 +604,7 @@ mod tests {
         assert_eq!(err.kind, ApplicationErrorKind::Conflict);
     }
 
-    /// Finding: `serializing_every_operation_state_cannot_contain_the_supplied_password`
+    /// `serializing_every_operation_state_cannot_contain_the_supplied_password`
     /// in `tests/operation_registry.rs` defined a marker password but never
     /// routed it anywhere, so `!json.contains(MARKER)` held unconditionally
     /// -- the test could not fail regardless of the registry's behavior.
@@ -879,7 +879,7 @@ mod tests {
         );
     }
 
-    /// Finding: concurrent `transition` calls on the *same* `operation_id`
+    /// Concurrent `transition` calls on the *same* `operation_id`
     /// could previously deliver their broadcasts out of order relative to
     /// their assigned sequence numbers, because the write-lock guard was
     /// dropped before `publish` ran -- two transitions could each finish

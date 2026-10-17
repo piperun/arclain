@@ -962,7 +962,7 @@ mod tests {
         );
     }
 
-    /// The "fold 3" privacy fix: disabling `restore_tabs_on_launch`
+    /// The privacy fix: disabling `restore_tabs_on_launch`
     /// must remove any `session.json` left over from an earlier
     /// session (not just skip writing a new one) -- `tabs.json` (the
     /// GUI-only visual arrangement) is unaffected.

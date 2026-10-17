@@ -182,8 +182,8 @@ pub struct AppSignals {
     /// [NEW] Status Bar State
     pub status_bar: Signal<crate::shared::components::status_bar::StatusBarInfo>,
 
-    // `password_dialog` migrated to `TabState` in the 2026-05-20 B3
-    // reframed slice. Read via `signals.tabs.get().active().password_dialog`.
+    // `password_dialog` migrated to `TabState`.
+    // Read via `signals.tabs.get().active().password_dialog`.
     // Two encrypted archives in two tabs no longer overwrite each
     // other's prompt — the dialog lives on the tab that triggered it.
     // `file_edit_dialog` migrated to `TabState` in the 2026-05-19 audit.
@@ -194,8 +194,8 @@ pub struct AppSignals {
     // queued for opening" is inherently per-tab — closing the tab cleanly
     // drops the request.
 
-    // `progress_dialogs` migrated to `TabState` in the 2026-05-20 B3
-    // reframed slice 2. Read via `signals.tabs.get().active().extraction_dialog()`
+    // `progress_dialogs` migrated to `TabState`.
+    // Read via `signals.tabs.get().active().extraction_dialog()`
     // (or `.drag_dialog()`). The A3 slot-struct + proxy pattern
     // (commit 9975481) is preserved — only the location changes.
     // Extraction reaches the right tab through the operation bridge's
@@ -207,7 +207,7 @@ pub struct AppSignals {
     pub process_run: Signal<ProcessRunState>,
     pub search_focus_requested: Signal<bool>,
 
-    /// [NEW] Plugin Dialog State (Phase 3)
+    /// [NEW] Plugin Dialog State
     pub plugin_dialog_state: Signal<crate::features::plugins::domain::state::PluginDialogState>,
 
     /// [NEW] Signal to reload hotkeys when settings change
@@ -314,7 +314,7 @@ pub struct AppSignals {
 /// (`tab.extraction_dialog()`) to get a proxy; chain `.get()` /
 /// `.set(d)` / `.set_if_changed(d)` as before.
 ///
-/// Post 2026-05-20 B3 reframed slice 2: the proxy now points at a
+/// The proxy now points at a
 /// `TabState`-owned signal rather than `AppSignals`. Callers
 /// determine which tab to address (active for UI-thread paths, the
 /// operation bridge's own origin map or `drag_origin_tab` for
@@ -489,11 +489,9 @@ impl AppSignals {
         signal_ctx.bind_named(&self.security_settings, "security_settings");
         signal_ctx.bind_named(&self.status_bar, "status_bar");
         // Note: per-tab password_dialog is not bound here — it lives in TabState
-        // (post 2026-05-20 B3 reframed slice)
         // Note: per-tab browser_view_state is not bound here — it lives in TabState and
         // is mutated during render, so binding it would cause repaint loops
         // Note: per-tab progress_dialogs is not bound here — it lives in TabState
-        // (post 2026-05-20 B3 reframed slice 2)
         signal_ctx.bind_named(&self.process_run, "process_run");
         // Note: plugin_dialog_state is not bound - it's mutated during render (cache) so would cause repaint loops
         // Plugin dialogs/pages are rendered in render_overlays after the signal is updated anyway

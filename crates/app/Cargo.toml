@@ -26,7 +26,7 @@ tracing.workspace = true
 url = "2"
 zeroize.workspace = true
 
-# Runtime composition (Task 4) pulls in the headless crates whose
+# Runtime composition pulls in the headless crates whose
 # construction it now owns. All are HEADLESS_CRATES per
 # scripts/frontend_boundary.py -- headless-to-headless dependencies are
 # unrestricted, so this does not create a boundary violation.
@@ -34,12 +34,12 @@ arclain_app_fs = { path = "../app_fs" }
 arclain_core = { path = "../core", default-features = false }
 arclain_plugins = { path = "../plugins", default-features = false, optional = true }
 wirt = { workspace = true, optional = true }
-# Task 10 (settings facade) reuses `ProxyConfig::validate_for_storage` for
+# (settings facade) reuses `ProxyConfig::validate_for_storage` for
 # `update_settings`'s SOCKS5 validation instead of re-deriving the same
 # userinfo-rejection logic a second time. Headless-to-headless, so this
 # adds no frontend_boundary violation (see that script's HEADLESS_CRATES).
 arclain-network = { path = "../network" }
-# `read_plugin_image` (Task 11) resolves a plugin-scoped cache_key
+# `read_plugin_image` resolves a plugin-scoped cache_key
 # through `arclain_data::CacheOwner`, which `arclain_core` does not
 # re-export.
 arclain_data = { path = "../data", default-features = false }

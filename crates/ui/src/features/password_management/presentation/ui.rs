@@ -6,7 +6,7 @@ use eframe::egui;
 
 pub fn handle_password_dialogs(ctx: &egui::Context, shared: &SharedState) -> PasswordFeatureAction {
     let mut action = PasswordFeatureAction::None;
-    // password_dialog is per-tab now (post 2026-05-20 B3 reframed slice).
+    // password_dialog is per-tab now.
     // Render the active tab's dialog — the originating tab is implicit
     // because each tab owns its own dialog state.
     let active_tab = shared.signals().tabs.get().active().clone();

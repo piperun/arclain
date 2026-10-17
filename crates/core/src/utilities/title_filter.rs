@@ -131,7 +131,7 @@ pub fn refresh_cache(pool: &DieselPool) -> anyhow::Result<()> {
 
         // Update cache. parking_lot::RwLock has no poisoning, so a panic
         // somewhere upstream while holding the guard does not break
-        // subsequent sanitize_title calls (audit finding M3).
+        // subsequent sanitize_title calls.
         let mut cache = FILTER_CACHE.write();
         *cache = TitleFilterConfig {
             filters,
@@ -409,7 +409,7 @@ mod tests {
         );
     }
 
-    /// Regression test for M3 from `docs/AUDIT_2026-05-03.md`.
+    /// Regression test.
     ///
     /// `FILTER_CACHE` originally used `std::sync::RwLock` and called
     /// `.write().unwrap()` / `.read().unwrap()` everywhere. If any

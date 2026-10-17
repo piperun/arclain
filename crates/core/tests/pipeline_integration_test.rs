@@ -183,7 +183,7 @@ fn preview_flags_empty_folder() {
 #[test]
 #[ignore = "requires 7z CLI on PATH — run with: cargo test -- --ignored"]
 fn executor_end_to_end_idempotent_rerun() {
-    // Full end-to-end proof of Phase 3 idempotency:
+    // Full end-to-end proof of idempotency:
     // 1. Build a synthetic zip via the `zip` crate (no fixture checkin).
     // 2. Convert it to .7z via the real pipeline → expect Completed, DB row.
     // 3. Re-run same pipeline on same input → expect FileSkipped, no work done.
@@ -466,7 +466,7 @@ fn collision_fail_errors_when_output_exists() {
 
 #[test]
 fn collision_smart_degrades_to_fail_pre_phase_3() {
-    // Phase 2: Smart has no DB to consult, so it must fall back to Fail
+    // Smart has no DB to consult, so it must fall back to Fail
     // behavior rather than silently skipping.
     let tmp = tempfile::tempdir().unwrap();
     let input = tmp.path().join("mod.rar");
@@ -583,7 +583,7 @@ fn pipeline_deserializes_without_collision_policy() {
     assert!(pipeline.collision_policy.is_none());
 }
 
-// ---- Phase 3: DB + dedup tests ----
+// ---- DB + dedup tests ----
 
 fn open_pipeline_runs_db() -> Arc<SqliteDb> {
     let db = SqliteDb::open_in_memory().unwrap();

@@ -1,4 +1,4 @@
-//! Characterization test for C1 from `docs/AUDIT_2026-05-03.md`.
+//! Characterization test.
 //!
 //! Pre-fix, `PluginManager::set_async_http_client` held
 //! `self.plugins.read()` while iterating, locking per-plugin

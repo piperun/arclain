@@ -1117,7 +1117,7 @@ mod tests {
         );
     }
 
-    /// The M4 case: the plugin rejected the toggle and replied with the
+    /// The case: the plugin rejected the toggle and replied with the
     /// value it already had. A value-match rule would leave the optimistic
     /// entry in place forever; a revision rule retires it.
     #[test]

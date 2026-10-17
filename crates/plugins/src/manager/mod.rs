@@ -102,7 +102,7 @@ pub struct PluginManager {
     pub(crate) active_tab_bridge: Option<Arc<dyn crate::ActiveTabBridge>>,
     /// Cached result of `get_all_top_tabs` — invalidated whenever a
     /// plugin is loaded, enabled, or disabled. Avoids the per-frame
-    /// WASM call into every enabled plugin (audit finding P3).
+    /// WASM call into every enabled plugin.
     pub(crate) cached_top_tabs:
         Arc<parking_lot::Mutex<Option<Vec<(String, crate::types::TopTabConfig)>>>>,
     pub(crate) cached_top_tabs_epoch: Arc<std::sync::atomic::AtomicU64>,

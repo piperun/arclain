@@ -99,7 +99,7 @@
 //!   of it, are now the single resolution shared with the preset CRUD
 //!   surface, so what a caller lists is what a run resolves.
 //! - **Organize's password handling matches the open flow, not a
-//!   second, divergent implementation.** An undisclosed regression: an
+//!   second, divergent implementation.** An
 //!   earlier version of this module's Organize support called
 //!   `backend.list(input, None)` directly with no retry at all, so an
 //!   encrypted input simply failed outright -- unlike the pre-facade

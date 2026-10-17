@@ -198,7 +198,7 @@ impl PluginManager {
     /// Returns tabs sorted by priority (lower priority = earlier in list).
     ///
     /// Result is cached and re-used until `invalidate_top_tabs_cache` is
-    /// called (audit finding P3 — pre-fix this WASM-called every enabled
+    /// called (pre-fix this WASM-called every enabled
     /// plugin every render frame). Cache is dropped automatically on
     /// `enable_plugin` / `disable_plugin` / `load_plugin`.
     pub fn get_all_top_tabs(&self) -> Vec<(String, crate::types::TopTabConfig)> {

@@ -286,8 +286,7 @@ pub fn render_status_bar_panel(
             let has_metadata = tab.metadata.read().is_some();
 
             // Status bar only needs counts. Use the cheap status_summary
-            // path so we don't clone every plugin's manifest per frame
-            // (audit finding P5).
+            // path so we don't clone every plugin's manifest per frame.
             let plugin_info = shared_state
                 .plugin_ui_jobs
                 .chrome_snapshot()

@@ -350,7 +350,7 @@ where
                 // fails (typical cause: another process has a file in
                 // dest_folder open), surface it in the failure report
                 // so the user knows there's leftover state to clean up
-                // manually (audit finding M6).
+                // manually.
                 if let Err(rm_err) = fs::remove_dir_all(&dest_folder) {
                     tracing::warn!(
                         "[flatten] cleanup of {:?} after extract failure failed: {}",

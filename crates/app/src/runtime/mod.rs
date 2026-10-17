@@ -440,7 +440,7 @@ impl AppRuntime {
 /// The application facade. Cheap to clone (an `Arc` internally); every
 /// clone refers to the same running application instance.
 ///
-/// This is the crate's headline export: the entire point of Stage 1's
+/// This is the crate's headline export: the entire point of
 /// facade extraction is that a frontend depends on `arclain_app` and
 /// this type instead of `arclain_core`/`arclain_plugins` directly.
 #[derive(Clone)]

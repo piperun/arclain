@@ -2705,7 +2705,7 @@ fn reload_and_unload_replace_only_manifest_owned_domains() {
     assert_eq!(client.plugin_network_policy("ui-demo"), None);
 }
 
-/// Regression test for P5 from `docs/AUDIT_2026-05-03.md`.
+/// Regression test.
 ///
 /// `status_summary()` is the cheap counts-only path the status bar
 /// uses every render frame. Pre-fix, the status bar called
@@ -2724,7 +2724,7 @@ fn p5_status_summary_returns_counts_for_empty_manager() {
     assert_eq!(summary.enabled, 0);
 }
 
-/// Regression test for P3 from `docs/AUDIT_2026-05-03.md`.
+/// Regression test.
 ///
 /// `get_all_top_tabs` results are now cached so the toolbar render
 /// path no longer issues a WASM `get_top_tabs` call into every
@@ -2838,7 +2838,7 @@ fn p3_enable_disable_invalidates_top_tabs_cache() {
     assert!(manager.cached_top_tabs.lock().is_none());
 }
 
-/// Regression test for P7 from `docs/AUDIT_2026-05-03.md`.
+/// Regression test.
 ///
 /// `get_settings_for(plugin_id)` is the per-plugin-settings query
 /// detail_view's UI event handler now uses instead of the

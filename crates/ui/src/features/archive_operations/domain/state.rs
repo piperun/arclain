@@ -29,8 +29,7 @@ pub struct ArchiveOperationsState {
     /// The tab that originated this drag-out op. Captured at spawn time
     /// so `update_drag_progress` can route progress events to the
     /// originating tab's `drag_dialog` slot after the dialog migrated
-    /// from `AppSignals.progress_dialogs` to `TabState.progress_dialogs`
-    /// in the 2026-05-20 B3 reframed slice 2.
+    /// from `AppSignals.progress_dialogs` to `TabState.progress_dialogs`.
     pub drag_origin_tab: Option<Arc<TabState>>,
 }
 

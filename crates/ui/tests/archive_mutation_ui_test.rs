@@ -9,7 +9,7 @@
 //! backend via `BootstrapConfig::archive_backend_override` to test the
 //! *operation's* own orchestration), the happy-path test here uses a
 //! real, on-disk ZIP file and no backend override at all. That is a
-//! deliberate consequence of a real characterization finding: this
+//! deliberate consequence of this
 //! crate's own archive-browser refresh
 //! (`crate::core::operation_bridge::refresh_entries_after_mutation`, and
 //! `relist_for_browser_signals` before it, for `OpenArchive`) resolves

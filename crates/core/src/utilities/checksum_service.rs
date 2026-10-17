@@ -358,7 +358,7 @@ pub enum RecoveryAction {
 }
 
 fn now() -> i64 {
-    // Audit finding H6: panic-free; a misconfigured system clock
+    // Panic-free; a misconfigured system clock
     // should not crash a checksum operation.
     crate::utilities::unix_seconds_i64()
 }

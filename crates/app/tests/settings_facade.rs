@@ -501,7 +501,7 @@ fn raw_pass_rule_password(app: &ArclainApp, name: &str) -> Option<String> {
 
 /// Installs a `BEFORE INSERT ON user_config` trigger that aborts every
 /// write, the same technique `crates/ui`'s pre-facade
-/// `settings_controller.rs` test suite already uses (H4 regression /
+/// `settings_controller.rs` test suite already uses (regression /
 /// `config_persistence_failure_rolls_back_secret_and_does_not_apply`) to
 /// force a deterministic persistence failure without depending on OS-
 /// level permission tricks.
@@ -529,7 +529,7 @@ fn install_failing_user_config_trigger(app: &ArclainApp) {
 /// trigger here fails only those two write steps, leaving the
 /// `user_config` row write (a different table) unaffected -- needed to
 /// isolate each of `update_settings`'s independent write steps for its
-/// own forced-failure test (see the "I5" doc note in `settings_ops.rs`).
+/// own forced-failure test (see the note on the precise atomicity guarantee in `settings_ops.rs`).
 fn install_failing_app_config_trigger(app: &ArclainApp) {
     let legacy = app.take_legacy_composition().expect("legacy composition");
     let dbs = legacy.dbs.expect("vault must be available");
@@ -1011,7 +1011,7 @@ fn repoint_vault_paths_failure_leaves_settings_unchanged_in_memory() {
 /// installs) is active, so the `user_config` row write (step 1) still
 /// succeeds normally. This isolates the failure to the CRC-policy write
 /// alone and proves the same "phase 3 never commits" guarantee holds
-/// for it too -- the regression coverage the deleted H4-era test class
+/// for it too -- the regression coverage the deleted test class
 /// had for this exact persistence path.
 #[test]
 fn persist_encrypted_crc_policy_failure_leaves_settings_unchanged_in_memory() {
@@ -1052,7 +1052,7 @@ fn persist_encrypted_crc_policy_failure_leaves_settings_unchanged_in_memory() {
 /// `set_socks5_password` now routes through the *same* journaled
 /// `NetworkProxyPersistenceService::save` path `run_update_settings`'s
 /// identity-touching branch uses (see `run_set_socks5_password`'s own
-/// "I4" doc note), instead of a bare `set_secret` call that never
+/// note on the SOCKS5 password), instead of a bare `set_secret` call that never
 /// consulted any pending recovery marker at all. This proves the
 /// difference that routing makes: a stale/corrupt marker left behind by
 /// an interrupted *earlier, unrelated* identity-changing save (a
@@ -1253,7 +1253,7 @@ fn invalid_enabled_proxy_address_is_rejected_before_any_write() {
 
 /// `validate_proxy_for_storage` now validates the SOCKS5 identity
 /// fields against the *real* currently-stored password instead of
-/// always passing `password: None` (the "fold 1" fix -- see
+/// always passing `password: None` (the fix -- see
 /// `settings_ops.rs`'s own doc comment on `validate_proxy_for_storage`).
 /// This cannot be pinned as a "used to wrongly accept X, now rejects
 /// X" regression test the way
@@ -1596,7 +1596,7 @@ fn gameta_connection_status_uses_configuration_and_composed_client_state() {
     );
 }
 
-/// The "fold 2" fix: a patch that changes *only* the per-plugin proxy
+/// The fix: a patch that changes *only* the per-plugin proxy
 /// map (no SOCKS5 identity field) must still reach the live
 /// `AsyncHttpClient` immediately, the same way
 /// `update_settings_applies_live_proxy_routing_to_the_shared_http_client`
@@ -1700,7 +1700,7 @@ fn socks5_password_set_and_clear_are_reflected_and_never_leak() {
 /// The password is never observable from the client's own API, so this
 /// proves the fix through the closest real observable: a fake SOCKS5
 /// proxy that captures the actual credential bytes a live request
-/// authenticates with. Before the I3 fix, `set_socks5_password` wrote
+/// authenticates with. Before the fix, `set_socks5_password` wrote
 /// the new secret to storage but never re-applied live routing, so the
 /// shared `AsyncHttpClient` kept using whatever password was live at the
 /// last `update_settings` call until the next identity-touching save or

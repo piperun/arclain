@@ -2,7 +2,7 @@
 //!
 //! Processes files dropped onto the application window.
 //!
-//! NOTE: As of Phase 2b, the drop overlay in `dialog_handler::render_overlays`
+//! NOTE: the drop overlay in `dialog_handler::render_overlays`
 //! handles all archive drops (single-tab and multi-tab alike). This function
 //! now only handles multi-part archive detection, which the overlay does not
 //! handle. Plain single-archive drops are skipped here to avoid double-opens.

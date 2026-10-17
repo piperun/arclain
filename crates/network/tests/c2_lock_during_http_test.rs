@@ -1,4 +1,4 @@
-//! Characterization tests for C2 from `docs/AUDIT_2026-05-03.md`.
+//! Characterization tests.
 //!
 //! Pre-fix, `crates/plugins/src/manager/dispatch.rs::event_worker` held
 //! `instance.lock()` across blocking `client.get_metadata` calls, forcing

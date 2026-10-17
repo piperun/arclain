@@ -1574,7 +1574,7 @@ mod tests {
         assert!(security_patch_touches_vault_paths(&clears_one));
     }
 
-    /// Pins the "fold 2" contract: a patch touching *only* the
+    /// Pins the contract: a patch touching *only* the
     /// per-plugin proxy map (no SOCKS5 identity field) must still be
     /// detected as needing a live-routing refresh --
     /// `network_patch_touches_socks5_identity` alone would say `false`
@@ -1606,7 +1606,7 @@ mod tests {
         );
     }
 
-    /// Pins the "I6" bridge contract: unlike every other `Option<T>`-
+    /// Pins the bridge contract: unlike every other `Option<T>`-
     /// shaped field in this module, `Clear` on `secrets_database_path`/
     /// `key_file_path` resets to the computed default location, not to
     /// `None`/unset. See both `PatchValue`'s and `SecuritySettingsPatch`'s

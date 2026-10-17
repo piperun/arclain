@@ -140,7 +140,7 @@ mod tests {
         .unwrap()
     }
 
-    /// Regression test for P14 from `docs/AUDIT_2026-05-03.md`.
+    /// Regression test.
     ///
     /// `PluginManager::get_all_settings` used to lock and full-clone
     /// every plugin's settings hashmap on every call, even for plugins

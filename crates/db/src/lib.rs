@@ -6,8 +6,8 @@ pub use sqlite_db::SqliteDb;
 
 /// redb K/V wrapper. Internal plumbing for the secrets store —
 /// `SecretsDb` is the only intended consumer. Demoted from the public
-/// re-export (`pub use redb_wrapper::ReDb`) per
-/// docs/audits/2026-05-19-dependencies.md §3 + §5 medium #7: the type
+/// re-export (`pub use redb_wrapper::ReDb`).
+/// The type
 /// has no external users and exposing it broadened the public surface
 /// without buying anything. `secrets_db.rs` references it via
 /// `crate::redb_wrapper::ReDb` directly; module visibility is enough.
@@ -17,7 +17,7 @@ mod redb_wrapper;
 // maintained). Internal plumbing: consumers should call the typed CRUD
 // helpers (`save_profile`, `get_cache_entry`, etc.), not run raw Diesel
 // against the tables. Demoting to `pub(crate)` prevents the dual-CRUD
-// collapse (Wave 3) from being undone by a downstream module rolling
+// collapse from being undone by a downstream module rolling
 // its own `schema::*::dsl::*` query.
 pub(crate) mod diesel_schema;
 
@@ -121,8 +121,7 @@ pub use secrets_key::SecretsKey;
 
 /// Simple K/V config helpers (stored in plain `app_config` table).
 ///
-/// Strategy (b) survival of the dual-CRUD collapse (see
-/// `docs/audits/2026-05-19-dependencies.md` §5 #6): both
+/// Strategy (b) survival of the dual-CRUD collapse: both
 /// `get_config` (rusqlite) and `get_config_diesel` below are kept
 /// because each has live callers that cannot easily switch sides.
 /// Rusqlite path is used by the early-boot vault/secrets bootstrap

@@ -299,7 +299,7 @@ pub enum OutputCollisionPolicy {
     Skip,
     /// Unconditionally overwrite.
     Overwrite,
-    /// Phase 3: consult `pipeline_runs` + hash. Until Phase 3 lands, `Smart`
+    /// Not done yet: consult `pipeline_runs` + hash. Until it lands, `Smart`
     /// degrades to `Fail` so users never get silent unexpected behavior.
     Smart,
 }
@@ -348,8 +348,8 @@ impl OutputCollisionPolicy {
 pub const COLLISION_POLICY_CONFIG_KEY: &str = "pipeline.default_collision_policy";
 
 /// What a producing step is about to write. Computed just before the step
-/// runs so the collision gate can consult the filesystem (and in Phase 3,
-/// the pipeline_runs DB).
+/// runs so the collision gate can consult the filesystem.
+/// Not done yet: the pipeline_runs DB.
 #[derive(Debug, Clone)]
 pub struct OutputIdentity {
     pub kind: OutputKind,

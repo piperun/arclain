@@ -14,7 +14,7 @@
 //! left here is the frontend's own half: the cross-plugin key guard, the
 //! "is anything able to receive this" check, and handing the work to the
 //! shared image-asset state machine, which repaints once the decoded
-//! pixels are ready. Audit `docs/audits/2026-05-19-dependencies.md` §2
+//! pixels are ready.
 //! (shared/→features/ leak class).
 
 use crate::shared::SharedState;

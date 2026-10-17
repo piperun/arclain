@@ -15,7 +15,7 @@ use tracing::{debug, error, info};
 /// read locks, then drops them before returning so callers can iterate
 /// without holding the maps. Used by every dispatch path
 /// (`dispatch_event_async`, `event_worker`, `dispatch_event`) — keeps
-/// the lock-acquire-drop semantics consistent (audit finding D4).
+/// the lock-acquire-drop semantics consistent.
 fn enabled_plugin_snapshot(
     plugins: &Arc<RwLock<HashMap<PluginIdentityKey, ManagedPlugin>>>,
     enabled_plugins: &Arc<RwLock<HashMap<PluginIdentityKey, bool>>>,

@@ -545,7 +545,7 @@ mod tests {
         assert_eq!(count, 2, "migration committed only a subset of rows");
     }
 
-    /// Regression test for C4 from `docs/AUDIT_2026-05-03.md`.
+    /// Regression test.
     ///
     /// Pre-fix, `migrate_to_gameta_schema` only logged a warning when the
     /// `.sqlite.bak` backup failed and proceeded with the destructive

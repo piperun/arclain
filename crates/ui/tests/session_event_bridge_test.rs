@@ -450,7 +450,7 @@ fn a_metadata_write_whose_session_event_is_never_handled_still_lands_once_the_ta
     );
 }
 
-/// I2: a plugin-triggered rename (`set_archive_path`) publishes a
+/// A plugin-triggered rename (`set_archive_path`) publishes a
 /// `SessionEvent` just like a metadata write, and the consumer applies
 /// the new path to `tab.archive_path` -- not just `tab.metadata` --
 /// since the event carries no way to distinguish "a rename happened"

@@ -268,7 +268,7 @@ mod tests {
         assert!(!resolver.is_available());
     }
 
-    /// Regression test for P6 from `docs/AUDIT_2026-05-03.md`.
+    /// Regression test.
     ///
     /// Pre-fix, `try_resolve` held the resolver's `Mutex<Option<...>>`
     /// guard across the blocking `client.get_metadata` HTTP call.

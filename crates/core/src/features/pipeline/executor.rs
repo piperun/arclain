@@ -215,7 +215,7 @@ fn run_one(
             .resolve_folder_with_metadata(input, output_metadata.as_ref()),
     };
 
-    // Phase 3: Smart consults the DB. If we already completed this exact
+    // Smart consults the DB. If we already completed this exact
     // input+pipeline AND the output is still on disk, skip. No matching row
     // OR missing output → treat as a fresh run.
     //

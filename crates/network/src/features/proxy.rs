@@ -158,7 +158,7 @@ impl ProxyConfig {
 
     /// Build a `reqwest::Proxy` from this config. Returns `None` when
     /// the config is disabled OR when the address fails to parse —
-    /// callers can't tell these two cases apart, which is the M4
+    /// callers can't tell these two cases apart, which is the
     /// silent-disable bug. Use [`ProxyConfig::validate`] when the
     /// distinction matters (e.g. saving user-entered settings).
     pub fn to_proxy(&self) -> Option<reqwest::Proxy> {
@@ -846,7 +846,7 @@ mod tests {
         assert!(config.to_proxy().is_some());
     }
 
-    /// Regression test for M4 from `docs/AUDIT_2026-05-03.md`.
+    /// Regression test.
     ///
     /// Pre-fix, an invalid proxy address silently dropped to `None`
     /// from `to_proxy()`, indistinguishable from "proxy disabled". The

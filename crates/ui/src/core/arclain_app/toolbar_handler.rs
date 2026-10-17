@@ -144,8 +144,8 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     open_tab.merge_dialog.set(merge_dialog);
                 }
                 if actions.extract {
-                    // extraction_dialog is per-tab now (post 2026-05-20 B3
-                    // reframed slice 2). The button is on the active tab's
+                    // extraction_dialog is per-tab now.
+                    // The button is on the active tab's
                     // toolbar, so the dialog lives on the active tab.
                     let active_tab = shared_state.signals().tabs.get().active().clone();
                     let view_state = active_tab.browser_view_state.get();

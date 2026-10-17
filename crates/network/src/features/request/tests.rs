@@ -1710,7 +1710,7 @@ async fn test_runtime_config_update() {
     );
 }
 
-/// Regression test for P2 from `docs/AUDIT_2026-05-03.md`.
+/// Regression test.
 ///
 /// Pre-fix, image_fetch and other callers polled `client.status(id)`
 /// every 100ms in a 30-second loop. With ~10 carousel images that's
@@ -1999,7 +1999,7 @@ fn late_worker_updates_do_not_overwrite_terminal_states() {
     ));
 }
 
-/// Regression test for P19 from `docs/AUDIT_2026-05-03.md`.
+/// Regression test.
 ///
 /// Pre-fix, `AsyncHttpClient::cancel(id)` flipped the entry's status
 /// to `Cancelled` and left the entry inside the `pending` map. Long
