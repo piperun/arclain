@@ -2,10 +2,9 @@
 
 use crate::ids::{ArchiveSessionId, CorrelationId, EntryId, OperationId};
 
-/// Coarse-grained classification of what went wrong. Later tasks match on
-/// this to decide how a frontend should react -- for example, prompting
-/// for a password on `PasswordRequired` rather than showing a generic
-/// failure dialog.
+/// Coarse-grained classification of what went wrong. Frontends match on
+/// this to decide how to react -- for example, prompting for a password
+/// on `PasswordRequired` rather than showing a generic failure dialog.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplicationErrorKind {
@@ -47,8 +46,8 @@ pub enum SuggestedAction {
 
 /// The single error type every facade method returns.
 ///
-/// All fields are public: later tasks and call sites across the facade
-/// build these directly as well as through the `with_*` helpers below.
+/// All fields are public: call sites across the facade build these
+/// directly as well as through the `with_*` helpers below.
 /// Construction still goes through [`ApplicationError::new`] plus the
 /// `with_*` methods whenever the value needs anything more than a plain
 /// literal, because that is where the invariants documented per field are

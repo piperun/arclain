@@ -10,8 +10,7 @@
 //! extraction through the CLI runner genuinely needs a real 7-Zip
 //! executable to produce real files, which would make these tests
 //! dependent on what happens to be installed on the machine running
-//! them. Real 7z/ZIP/RAR extraction is exercised manually instead (see
-//! this task's report).
+//! them. Real 7z/ZIP/RAR extraction is exercised manually instead.
 //!
 //! Every test is a plain (synchronous) `#[test]`, not `#[tokio::test]`,
 //! for the same reason `archive_sessions.rs` uses this shape: dropping

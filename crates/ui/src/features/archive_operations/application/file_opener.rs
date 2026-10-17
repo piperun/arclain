@@ -47,8 +47,8 @@ use arclain_app::ArclainApp;
 /// an arbitrary combination of the two); folding it in would mean either
 /// a second, separate materialization call per stray dependency file
 /// (defeating the point of co-locating them for the launched process to
-/// find) or growing the facade's request shape well beyond what this
-/// task's contract defines. Materializing the target's own directory
+/// find) or growing the facade's request shape well beyond one entry (or
+/// the whole archive) per request. Materializing the target's own directory
 /// (nested case) or the whole archive (root-level case) still covers the
 /// overwhelmingly common real layouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

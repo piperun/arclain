@@ -63,7 +63,7 @@ struct LoggerState {
     /// Last observed current-file length. The authoritative cap check rereads
     /// metadata while holding the cross-instance coordination lock.
     bytes_written: u64,
-    /// Lines dropped since the last summary flush (Task 1.4).
+    /// Lines dropped since the last summary flush.
     dropped_since_summary: u64,
     /// Last time we emitted a "dropped N lines" summary to arclain log.
     last_summary: std::time::Instant,
@@ -252,7 +252,7 @@ impl PluginLogger {
                 }
                 Err(_) => {
                     // Fall back to dropping silently — surfaced by the
-                    // summary timer (Task 1.4).
+                    // summary timer.
                     self.maybe_report_io_failure(&mut s, "open");
                     s.dropped_since_summary += 1;
                     drop(s);

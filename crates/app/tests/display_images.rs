@@ -187,13 +187,13 @@ fn png_body(len: usize, fill: u8) -> Vec<u8> {
 ///
 /// Every bootstrapped application in this binary shares one *physical*
 /// blob store, because the content cache's root comes from the real
-/// per-user cache directory rather than from `paths_override` (see this
-/// task's report). Two tests using one key therefore share one cache
-/// entry -- and since blobs are content-addressed, two tests using one
-/// *body* share one physical blob even under different keys. Either way,
-/// whichever test discards or evicts first deletes the blob out from under
-/// a peer that still references it, and the peer's next read fails with
-/// its index row intact and the file gone.
+/// per-user cache directory rather than from `paths_override`. Two tests
+/// using one key therefore share one cache entry -- and since blobs are
+/// content-addressed, two tests using one *body* share one physical blob
+/// even under different keys. Either way, whichever test discards or
+/// evicts first deletes the blob out from under a peer that still
+/// references it, and the peer's next read fails with its index row
+/// intact and the file gone.
 ///
 /// So: one key and one body per test, both named after the test. This is
 /// isolation on its own merits, not a dodge around the shared root -- a

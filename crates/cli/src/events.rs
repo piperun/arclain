@@ -110,7 +110,7 @@
 //! (no echo); every other variant is answered via [`Interactive::confirm`]
 //! (a plain yes/no prompt). Both are refused outright -- the operation is
 //! cancelled and this process exits [`exit_code::USER_ACTION_REQUIRED`],
-//! matching Task 12's own read-command convention -- unless
+//! matching the read commands' own convention -- unless
 //! [`Interactive::is_interactive`] reports a real controlling terminal.
 //! **No command in this crate ever accepts a password as a command-line
 //! argument or flag**: the only way to answer a [`Challenge::Password`]
@@ -467,8 +467,8 @@ async fn respond(
 /// Everything [`drive_until_terminal`] (and, through it, [`drive_operation`])
 /// needs to drive one already-started operation -- bundled into one
 /// value so neither function's own parameter list keeps growing one at a
-/// time as this module gains a new global concern (this task added
-/// `cancel`/`budget` alongside the original `app`/`events`/`operation_id`/
+/// time as this module gains a new global concern (currently
+/// `cancel`/`budget`, on top of `app`/`events`/`operation_id`/
 /// `interactive`), the same way `crate::commands::Invocation` bundles the
 /// equivalent concern one layer up.
 ///
@@ -683,13 +683,12 @@ mod tests {
     //! running attached to a real console, not a pipe-redirected test
     //! harness -- fragile to automate and prone to hanging or silently
     //! no-op'ing in a CI sandbox with no console at all (confirmed
-    //! empirically: this task's own manual verification attempts, using
-    //! both `kill -INT` and a proper Win32 `AttachConsole`/
-    //! `GenerateConsoleCtrlEvent` P/Invoke, could not reliably land a
-    //! real signal against a real running extraction in this sandbox --
-    //! see this task's own report). Driving these functions directly, in
-    //! process, with a scripted [`CancelSignal`] and a scripted
-    //! [`Interactive`] fake instead exercises the *exact* production
+    //! empirically: manual verification attempts, using both `kill -INT`
+    //! and a proper Win32 `AttachConsole`/`GenerateConsoleCtrlEvent`
+    //! P/Invoke, could not reliably land a real signal against a real
+    //! running extraction in a sandbox). Driving these functions
+    //! directly, in process, with a scripted [`CancelSignal`] and a
+    //! scripted [`Interactive`] fake instead exercises the *exact* production
     //! logic (the same functions `crate::commands::extract::run` and
     //! `crate::commands::open_archive_and_wait` call) deterministically
     //! and portably.

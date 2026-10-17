@@ -82,7 +82,7 @@ pub struct HealthSnapshot {
 /// own `capabilities()` impl, which reports full read/write support
 /// unconditionally regardless of which archive format it is actually
 /// backing (7-Zip's CLI cannot, for example, truly *create* a `.rar`
-/// archive). That modeling choice predates this task; mirrored here
+/// archive). That modeling choice predates the facade; mirrored here
 /// rather than corrected, since correcting it is a behavior change this
 /// refactor does not make.
 ///
@@ -226,10 +226,10 @@ pub struct LegacyComposition {
     /// `None` only if bootstrap itself could not open the encrypted
     /// vault (no key file, corrupt databases, ...). Otherwise always
     /// `Some` -- including on a second or later call to
-    /// [`ArclainApp::take_legacy_composition`]: unlike before this task,
-    /// this is a clone of the facade's own live vault state, not a
-    /// one-shot-taken value, so `crates/ui` can call this again to
-    /// refresh its mirror after a facade-driven settings/vault mutation.
+    /// [`ArclainApp::take_legacy_composition`]: this is a clone of the
+    /// facade's own live vault state, not a one-shot-taken value, so
+    /// `crates/ui` can call this again to refresh its mirror after a
+    /// facade-driven settings/vault mutation.
     pub dbs: Option<ConfigDbs>,
     #[cfg(feature = "plugin-host")]
     pub plugin_event_scheduler: Option<PluginEventScheduler>,
@@ -265,19 +265,19 @@ pub(crate) struct SessionStore {
     /// something a live vault move/rekey should ever change back to
     /// `false` (a *working* vault only ever moves to another working
     /// vault -- see `crate::settings::security_dto`'s own
-    /// `vault_available`, which *does* read `mutable.dbs.is_some()` live,
-    /// for the settings-facing signal this task actually needs).
+    /// `vault_available`, which *does* read `mutable.dbs.is_some()` live
+    /// because the settings-facing signal needs the live value).
     pub(crate) database_ready: bool,
-    /// Everything Task 10 (settings/secrets/vault) can change at
+    /// Everything the settings/secrets/vault surface can change at
     /// runtime, behind one lock so a vault move/rekey -- which changes
     /// `dbs`, `db_paths`, and `pass_rules` together -- can never be
-    /// observed half-updated. This is the single-authority fix
-    /// `crate::settings`'s own module doc comment describes: before this
-    /// task, the fields now bundled here were either bootstrap-frozen
+    /// observed half-updated. This is the single-authority design
+    /// `crate::settings`'s own module doc comment describes: bundling
+    /// the fields here, rather than leaving them bootstrap-frozen
     /// (`user_config`, `pass_rules`) or one-shot-taken by
-    /// `take_legacy_composition` (`dbs`), so nothing behind the facade
-    /// itself could observe a settings/vault change `crates/ui` made
-    /// after bootstrap.
+    /// `take_legacy_composition` (`dbs`), lets everything behind the
+    /// facade observe a settings/vault change `crates/ui` makes after
+    /// bootstrap.
     pub(crate) mutable: parking_lot::RwLock<crate::settings::MutableSettings>,
 }
 
@@ -327,9 +327,9 @@ impl SessionStore {
     /// Builds a fresh [`LegacyComposition`] snapshot for `crates/ui`'s
     /// legacy `AppState`/`Services` construction. Non-destructive --
     /// every field here is cloned out of live state, never taken -- so
-    /// this is safe to call more than once: once at startup (as before
-    /// this task), and again any time `crates/ui`'s own mirror needs to
-    /// catch up with a facade-driven settings/vault mutation (see
+    /// this is safe to call more than once: once at startup, and again
+    /// any time `crates/ui`'s own mirror needs to catch up with a
+    /// facade-driven settings/vault mutation (see
     /// `crate::settings`'s module doc comment). `dbs`/`db_paths`/
     /// `user_config`/`pass_rules`/`encrypted_crc_policy` all come from
     /// the same `mutable` lock a concurrent settings mutation also goes

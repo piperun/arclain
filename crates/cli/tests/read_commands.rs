@@ -35,7 +35,7 @@
 //! without ever needing a password -- raw metadata access never touches
 //! ciphertext), a header-encrypted 7z archive's directory itself is
 //! ciphertext, so listing it at all requires the password, deterministically
-//! reaching this task's read-surface Challenge/exit-3 path through the
+//! reaching the read commands' Challenge/exit-3 path through the
 //! exact backend chain (native 7z reader fails closed, falls back to the
 //! real 7z CLI, which reports "Cannot open encrypted archive. Wrong
 //! password?" -- a string `arclain_app::runtime::archive_ops::
@@ -400,7 +400,7 @@ fn no_ansi_escape_codes_appear_in_json_output() {
 }
 
 // ---------------------------------------------------------------------
-// password challenge -- this task's read commands supply no interactive
+// password challenge -- the read commands supply no interactive
 // input, so any challenge (a password prompt above all) must exit 3.
 // ---------------------------------------------------------------------
 

@@ -164,7 +164,8 @@ fn existing_data_bootstraps_successfully_on_a_second_run() {
 /// A `config.sqlite` that exists but is not a valid SQLite file at all
 /// must be tolerated (falls back to defaults everywhere that reads it),
 /// not propagated as a fatal error -- matching every existing tolerant
-/// read in the composition this task moved (`unwrap_or`, `if let Ok`).
+/// read in the composition bootstrap took over from `crates/ui`
+/// (`unwrap_or`, `if let Ok`).
 #[test]
 fn corrupt_configuration_database_is_tolerated() {
     let temp = tempfile::tempdir().unwrap();

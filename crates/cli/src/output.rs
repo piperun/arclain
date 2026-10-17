@@ -53,8 +53,7 @@ impl<T> CliEnvelope<T> {
 /// would see success even for a run that silently converted zero files.
 /// This is *not* a full fix -- there is still no *structured*
 /// success/failure count to build a reliable non-zero exit code from,
-/// only this free-text tally message -- see this task's own report for
-/// the architectural gap it surfaces.
+/// only this free-text tally message.
 ///
 /// `new_revision` is `archive add`/`archive delete`'s own counterpart:
 /// `Some` when the mutation actually changed the archive (an
@@ -106,9 +105,9 @@ pub mod exit_code {
     /// executable fact instead of an unchecked comment.
     #[allow(dead_code)]
     pub const INVOCATION_ERROR: i32 = 2;
-    /// The command cannot proceed without input this task's read surface
-    /// has no way to supply interactively (a password challenge, or any
-    /// other in-flight challenge kind).
+    /// The command cannot proceed without input it has no way to supply
+    /// interactively (a password challenge, or any other in-flight
+    /// challenge kind).
     pub const USER_ACTION_REQUIRED: i32 = 3;
     /// The user-supplied input is invalid, unsupported, or does not
     /// resolve to anything (an archive path that does not exist, an

@@ -46,9 +46,8 @@
 //! batch extraction above it. That defense moves here with the
 //! extraction call itself -- dropping it would have made large drags
 //! silently incomplete. (The same hazard exists independently in
-//! `run_materialize`'s whole-archive path; surfaced in this task's
-//! report rather than silently fixed, since that worker is another
-//! task's surface.)
+//! `run_materialize`'s whole-archive path; it is not fixed here, since
+//! that worker is outside this module.)
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;

@@ -1,8 +1,7 @@
 //! `OrganizeRequest`: the facade request DTO for the batch archive-
 //! organization operation ([`crate::ArclainApp::start_organize`]).
 //!
-//! ## Adjudicated characterization (amended from this task's first
-//! submission)
+//! ## Rule and profile: two independent selections
 //!
 //! The pre-facade UI's single-archive "quick action"
 //! (`crates/ui/src/features/organization/presentation/controllers/
@@ -20,10 +19,10 @@
 //!   extension from `profile.format`.
 //!
 //! `OrganizeRequest` therefore carries **both** ids: `rule_id` (layout)
-//! and `profile_id` (output format/compression) -- this task's first
-//! submission collapsed the two into one `profile_id` field parsed as a
-//! rule id, which was incorrect; see `crate::runtime::processing_ops`'s
-//! own doc comment for the corrected flow this now drives.
+//! and `profile_id` (output format/compression). One `profile_id` field
+//! parsed as a rule id would conflate the two; see
+//! `crate::runtime::processing_ops`'s own doc comment for the flow this
+//! drives.
 //!
 //! ## Binding one organize to one open archive session
 //!
@@ -55,13 +54,12 @@
 //! `archive.backend().create_archive_with_profile(...)` directly onto
 //! `dest` -- no `StagedOutput`, no atomic commit, no rollback. This
 //! matches the pre-facade quick action's own behavior precisely (it
-//! never had a transaction either); this task's first submission
-//! incorrectly assumed Organize went through the transactional
-//! `execute_pipeline`/`PipelineStep::Organize` path instead. The
-//! absence is preserved and characterized honestly here, not
-//! papered over -- see `crate::runtime::processing_ops`'s tests for
-//! what this means in practice (a colliding destination is genuinely at
-//! risk; there is no rollback to protect it).
+//! never had a transaction either); it does not go through the
+//! transactional `execute_pipeline`/`PipelineStep::Organize` path. The
+//! absence is preserved and characterized here, not papered over -- see
+//! `crate::runtime::processing_ops`'s tests for what this means in
+//! practice (a colliding destination is genuinely at risk; there is no
+//! rollback to protect it).
 
 use std::path::PathBuf;
 

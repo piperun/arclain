@@ -1238,10 +1238,10 @@ fn open_plugin_session_rejects_an_unknown_plugin_id() {
     assert_eq!(error.kind, ApplicationErrorKind::NotFound);
 }
 
-/// One test per current WIT extension point kind, per the amended
-/// contract's `open_plugin_session(plugin_id, extension_point)` signature
-/// -- proving every kind actually opens a session and tags its document
-/// with the extension point/region it was asked for. `Panel` and
+/// One test per current WIT extension point kind, through
+/// `open_plugin_session(plugin_id, extension_point)` -- proving every
+/// kind actually opens a session and tags its document with the
+/// extension point/region it was asked for. `Panel` and
 /// `PluginButton` additionally assert on `ui-demo`'s real, non-empty
 /// layout content for that extension point (`MainPage`/`Dialog`/`Page`
 /// aren't implemented by the fixture and fall through to an empty
@@ -1670,8 +1670,8 @@ fn stale_document_action_is_rejected_before_guest_execution() {
     );
 }
 
-/// **Plugin crash containment** (brief-mandated, previously only argued
-/// structurally, not proven). `facade-test-fixture`'s `"trigger-trap"`
+/// **Plugin crash containment** (proven here, not only argued
+/// structurally). `facade-test-fixture`'s `"trigger-trap"`
 /// button panics unconditionally inside `on-ui-event`, which -- under
 /// this workspace's `panic = "abort"` plugin release profile -- compiles
 /// to a genuine WASM `unreachable` trap.
@@ -1680,8 +1680,8 @@ fn stale_document_action_is_rejected_before_guest_execution() {
 /// poisons a *component* instance's `Store` after **any** trap (a second
 /// call into the same store fails with wasmtime's own internal "cannot
 /// enter component instance", not a fresh attempt) -- there is no sense
-/// in which the exact same `Store` becomes call-able again. Before this
-/// task, `arclain_plugins::runtime::resource_quota_reason` only
+/// in which the exact same `Store` becomes call-able again. Previously,
+/// `arclain_plugins::runtime::resource_quota_reason` only
 /// classified the two quota-shaped trap variants (`OutOfFuel`/
 /// `Interrupt`) as terminal; a genuine guest panic fell through
 /// unclassified, so a *second* call would have silently re-attempted the
@@ -1823,9 +1823,9 @@ fn resource_limit_state_and_explicit_retry_are_exposed_by_the_app_facade() {
     assert_eq!(summary.last_reason, None);
 }
 
-/// **Action ordering** (brief-mandated, previously only structurally
-/// true via a plain `for` loop, never asserted). `facade-test-fixture`'s
-/// `"multi-action"` button returns three different actions
+/// **Action ordering** (structurally true via a plain `for` loop;
+/// asserted here). `facade-test-fixture`'s `"multi-action"` button
+/// returns three different actions
 /// (`ShowToast`, `CopyToClipboard`, `SetPageDisplayName`) from one
 /// `on-ui-event` response; the resulting `PluginUiUpdate::intents` must
 /// preserve that exact order.
@@ -1869,8 +1869,8 @@ fn multiple_actions_in_one_response_apply_in_order() {
     );
 }
 
-/// **Refresh coalescing** (brief-mandated, previously only a doc-comment
-/// claim). `facade-test-fixture`'s `"multi-refresh"` button returns
+/// **Refresh coalescing** (asserted here, not only claimed in a doc
+/// comment). `facade-test-fixture`'s `"multi-refresh"` button returns
 /// *three* `RefreshPanel` actions from one response; exactly one
 /// re-fetch of `get-ui-layout` must follow -- not zero, not three. The
 /// fixture bakes its own `get-ui-layout` call count into the returned
@@ -2427,8 +2427,8 @@ fn write_plugin_image_rejects_an_asset_over_the_size_cap() {
 }
 
 /// Exhaustive serialization coverage for the `OperationResult` variant
-/// this task adds. `ArchiveOpened`/`None` are already covered by earlier
-/// tasks' own tests; this only needs to prove `PluginUiUpdated` itself
+/// `PluginUiUpdated`. `ArchiveOpened`/`None` are already covered by
+/// their own tests; this only needs to prove `PluginUiUpdated` itself
 /// round-trips and does not leak anything unexpected into its JSON shape.
 #[test]
 fn plugin_ui_updated_operation_result_round_trips_through_serde() {

@@ -59,10 +59,9 @@ use crate::runtime::AppRuntime;
 /// `start_materialization` rejects two or more as `InvalidInput`: a
 /// materialization lease always resolves to one coherent extracted
 /// subtree with one `local_path`, and there is no principled way to
-/// combine several unrelated entries into that shape (see this task's own
-/// report for why a caller needing several *specific* files together
-/// should materialize their common containing directory instead, not ask
-/// for an arbitrary combination).
+/// combine several unrelated entries into that shape (a caller needing
+/// several *specific* files together should materialize their common
+/// containing directory instead, not ask for an arbitrary combination).
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct MaterializeRequest {
     pub session_id: ArchiveSessionId,
@@ -130,11 +129,11 @@ pub(crate) fn current_unix_ms() -> i64 {
 /// The background task `ArclainApp::bootstrap` spawns once, for the life of
 /// the application runtime, to remove expired materialization leases.
 ///
-/// Holds a [`Weak`], not an [`Arc`]: this task runs *on* the very runtime
+/// Holds a [`Weak`], not an [`Arc`]: the cleanup task runs *on* the very runtime
 /// `AppRuntime` itself owns (through `RuntimeOwner`), and `tokio::time::interval`
 /// fires forever with nothing to naturally end the loop -- an `Arc<AppRuntime>`
 /// held here would therefore never let its strong count reach zero on its
-/// own (`AppRuntime` -> its own runtime -> this task -> `Arc<AppRuntime>`,
+/// own (`AppRuntime` -> its own runtime -> the cleanup task -> `Arc<AppRuntime>`,
 /// a closed cycle), which meant `AppRuntime` -- and everything it composes
 /// (the plugin manager, database pools, caches, every worker thread) --
 /// was never actually dropped for the life of the process, no matter how

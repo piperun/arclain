@@ -63,8 +63,8 @@ fn event(operation_id: u64, state: OperationState) -> OperationEvent {
 /// A terminal completion carrying a result this path does not recognize
 /// must still drain the registry.
 ///
-/// `OperationResult` is a shared enum that grows with every task that adds
-/// an operation kind, so "completed with something other than
+/// `OperationResult` is a shared enum that grows whenever an operation
+/// kind is added, so "completed with something other than
 /// `PluginUiUpdated`" is a state the bridge must survive rather than
 /// assume away. Holding the entry would leak the operation->slot index and
 /// the slot's `inflight` list for the life of the process.

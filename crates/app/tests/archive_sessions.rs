@@ -195,8 +195,7 @@ async fn recv_state(
 }
 
 /// Reads events until one is NOT a `Progress` tick (progress ticks are
-/// not part of this task's characterization -- only the coarse lifecycle
-/// states are asserted on).
+/// not asserted on -- only the coarse lifecycle states are).
 async fn recv_non_progress_state(
     receiver: &mut tokio::sync::broadcast::Receiver<arclain_app::event::OperationEvent>,
 ) -> OperationState {

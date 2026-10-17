@@ -87,8 +87,8 @@ pub fn trigger_image_fetch(
     let image_assets = shared.image_assets.clone();
     shared.services.tokio_runtime.spawn(async move {
         // Awaited, not called: `fetch_into_cache` moves the (blocking)
-        // facade round trip onto the blocking pool itself. This task runs
-        // *on* the store's own runtime, so blocking inline here panicked
+        // facade round trip onto the blocking pool itself. The spawned task
+        // runs *on* the store's own runtime, so blocking inline here panicked
         // with "Cannot start a runtime from within a runtime".
         if let Err(error) = image_assets
             .fetch_into_cache(plugin_id.clone(), key.clone(), url, ctx)

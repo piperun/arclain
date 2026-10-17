@@ -1837,14 +1837,13 @@ fn granted_archive_metadata_capabilities_reach_read_and_write_hostcalls() {
     );
 }
 
-/// Regression coverage for the review finding that the panel-driven
-/// (non-event-context) `emit_metadata` path silently dropped the write
-/// whenever the active tab had no archive open, where the pre-decoupling
-/// behavior wrote to the active tab's signal unconditionally. This test
-/// covers the *first* branch of the fix: when the active tab *does* have
-/// a session (`active_archive_session_id` is `Some`), the write must go
-/// through `set_session_metadata` with that exact session id -- not
-/// `set_active_tab_metadata`.
+/// The panel-driven (non-event-context) `emit_metadata` path must not
+/// silently drop the write whenever the active tab has no archive open:
+/// the pre-decoupling behavior wrote to the active tab's signal
+/// unconditionally. This test covers the *first* branch of the fix: when
+/// the active tab *does* have a session (`active_archive_session_id` is
+/// `Some`), the write must go through `set_session_metadata` with that
+/// exact session id -- not `set_active_tab_metadata`.
 #[cfg(feature = "gameta")]
 #[test]
 fn panel_driven_emit_with_an_active_session_writes_via_set_session_metadata() {

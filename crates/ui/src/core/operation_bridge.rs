@@ -314,9 +314,10 @@ fn is_terminal(state: &OperationState) -> bool {
 /// Best-effort classification of a facade error into the existing
 /// archive-error dialog's coarser kind. `Generic` (showing the raw
 /// diagnostic text) is always a safe fallback -- the dialog was designed
-/// around a raw-string classifier before the facade existed; this task
-/// does not attempt to grow it a new variant per `ApplicationErrorKind`,
-/// only maps onto the ones that already have a dedicated dialog branch.
+/// around a raw-string classifier before the facade existed; this
+/// function does not attempt to grow it a new variant per
+/// `ApplicationErrorKind`, only maps onto the ones that already have a
+/// dedicated dialog branch.
 fn archive_error_kind(kind: arclain_app::error::ApplicationErrorKind) -> ArchiveErrorKind {
     use arclain_app::error::ApplicationErrorKind;
     match kind {
@@ -1544,7 +1545,7 @@ async fn handle_event(
                 message,
             );
         }
-        // ============ Task c9: multi-part archive merge (start) ==========
+        // ============ multi-part archive merge (start) ==========
         // A merge shares extraction's per-tab progress dialog and its
         // `active_extraction_operation` slot (see
         // `crate::core::operations::merge::start_merge`), so it routes
@@ -1607,7 +1608,7 @@ async fn handle_event(
                 message,
             );
         }
-        // ============= Task c9: multi-part archive merge (end) ===========
+        // ============= multi-part archive merge (end) ===========
         (
             OperationKind::OpenArchive,
             OperationState::Completed {

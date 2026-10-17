@@ -11,12 +11,8 @@
 //! [`MAX_TERMINAL_HISTORY`]-style bounding, independent of whether every
 //! intermediate event reached every subscriber.
 //!
-//! Not wired to anything yet: the facade (`ArclainApp`, added by a later
-//! task) is the only intended caller, and it does not exist yet either.
-//! Nothing outside this crate's own tests constructs an `OperationRegistry`
-//! for the moment, hence the blanket `#[allow(dead_code)]` below -- the
-//! same pattern already used for other not-yet-wired-up `pub(crate)` types
-//! in this workspace (see `crates/data/src/features/resolver/memory.rs`).
+//! The facade (`ArclainApp`) is the only caller: bootstrap constructs the
+//! one registry every operation is tracked through.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

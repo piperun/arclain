@@ -7,8 +7,8 @@
 //! stable, guessable identity of its own to name on a command line the
 //! way a saved preset's own name does, and building one would mean this
 //! command growing its own flag surface for every current and future
-//! `PipelineStepDto` variant; that is deliberately out of this task's
-//! scope, not an oversight.
+//! `PipelineStepDto` variant; leaving it out is deliberate, not an
+//! oversight.
 
 use std::path::PathBuf;
 

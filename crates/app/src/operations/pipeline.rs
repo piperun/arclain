@@ -2,20 +2,19 @@
 //! preset or an ad-hoc, Process-page-style step list
 //! ([`crate::ArclainApp::start_pipeline`]).
 //!
-//! ## Amended shape
+//! ## Shape
 //!
-//! This task's first submission modeled `PipelineRequest` as "run a
-//! saved preset only" (`{ inputs, destination: PathBuf, preset_id:
-//! String }`), reasoning that the stable, serializable surface a bridge
-//! needs is "run this named pipeline", not a step-builder API. The
-//! amended contract disagrees: `crates/ui/src/features/process/view.rs`'s
+//! A request that could only run a saved preset (`{ inputs,
+//! destination: PathBuf, preset_id: String }`) would reduce the stable,
+//! serializable surface a bridge needs to "run this named pipeline",
+//! with no step-builder API -- but `crates/ui/src/features/process/view.rs`'s
 //! Process page lets a user assemble an *ad-hoc* step list interactively
 //! (the "+ Flatten"/"+ Organize"/"+ Convert" buttons in
 //! `render_pipeline_panel`) and separately choose its own output
 //! location (`PipelineOutput::SameFolder` or a picked folder) and
 //! per-run collision policy (the "If output exists:" dropdown) --
 //! independent of whether a preset was ever loaded. `PipelineSpecDto`
-//! now expresses both cases (`Preset { id }` for a saved
+//! expresses both cases (`Preset { id }` for a saved
 //! `arclain_core::SavedPreset`, `Steps { steps }` for an ad-hoc list),
 //! and `destination`/`collision_policy` are top-level request fields
 //! mirroring exactly what the Process page's UI state already lets a
@@ -69,8 +68,8 @@ impl CompressionLevelDto {
 /// on a `Serialize`/`Deserialize` DTO would be inconsistent with every
 /// other secret this facade carries (`crate::challenge::SecretInput`,
 /// deliberately never serializable), for a field that does not actually
-/// do anything yet. Omitted rather than half-wired; a future task that
-/// makes the executor actually encrypt can add it back deliberately.
+/// do anything yet. Omitted rather than half-wired; it can be added back
+/// deliberately once the executor actually encrypts.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PipelineStepDto {

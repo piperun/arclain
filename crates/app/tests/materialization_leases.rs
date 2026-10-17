@@ -606,7 +606,7 @@ fn materializing_a_directory_entry_extracts_the_whole_subtree() {
 
 #[test]
 fn empty_entry_ids_materializes_the_whole_archive_so_a_root_level_exes_sibling_dll_comes_along() {
-    // Regression test for a real behavior gap a review caught: the
+    // Regression test for a real behavior gap: the
     // pre-facade implementation's own directory filter degenerated to
     // "match every entry" for a root-level target (its `dir.is_empty()`
     // branch), so a root-level game executable extracted the *entire*

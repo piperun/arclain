@@ -22,9 +22,8 @@
 //! else the `default_collision_policy` app setting, else `Smart`), and
 //! DB-recorded run dedup.
 //!
-//! `OrganizeRequest` is different, by adjudication (this task's first
-//! submission got this wrong -- see `crate::operations::organize`'s own
-//! doc comment for the full correction). The pre-facade UI actually had
+//! `OrganizeRequest` is different (see `crate::operations::organize`'s
+//! own doc comment for the full account). The pre-facade UI actually had
 //! a *second*, older, single-archive "quick action" pair of flows that
 //! predate the Pipeline executor and never went through
 //! `execute_pipeline`/`StagedOutput` at all:
@@ -44,7 +43,7 @@
 //! destination for Organize is genuinely at risk, exactly as it always
 //! was pre-facade.
 //!
-//! # Orchestration decisions this task makes
+//! # Orchestration decisions
 //!
 //! - **Per-file invocation (Convert/Pipeline).** `execute_pipeline`
 //!   takes a whole `Vec<PathBuf>` and loops internally with *no*
@@ -81,9 +80,8 @@
 //!   for a colliding output -- collision handling was, and stays,
 //!   resolved by `OutputCollisionPolicy`/direct-overwrite semantics
 //!   chosen ahead of time, never a mid-run confirmation dialog.
-//! - **`OperationResult::None` only.** The facade contract enumerates
-//!   every `OperationResult` variant and which task adds it; none is
-//!   attributed to this task. These operations complete with
+//! - **`OperationResult::None` only.** `OperationResult` has no variant
+//!   for Convert, Organize or Pipeline. These operations complete with
 //!   `OperationResult::None`; the human-readable outcome lives entirely
 //!   in the final `OperationState::Progress` message.
 //! - **Presets resolve via `AppPaths`, not `arclain_core::
@@ -117,7 +115,7 @@
 //!   next_challenge_id`, `OperationRegistry::wait_until_cancelled`, and
 //!   `archive_ops::is_password_error` rather than re-deriving them (the
 //!   first two are already centralized -- reused by `start_extract` as
-//!   well, not something this task introduced), but does *not* reuse
+//!   well), but does *not* reuse
 //!   `archive_ops::attempt_initial`/`AttemptOutcome` directly -- see
 //!   [`list_attempt_initial`]'s own doc comment for why. Whichever
 //!   password resolves the listing is threaded into the archive handle
@@ -903,18 +901,16 @@ fn resolve_backend(
 /// matched metadata, regardless of title, falling back to the plain
 /// detected-code stem every time, in Convert/Pipeline/Organize alike.
 /// Confirmed by direct inspection of both types, not inferred: a
-/// genuine, pre-existing `arclain_core` bug, not something this task
-/// introduced, caught because this task was the first to test metadata-
-/// driven naming against a real seeded `ProductMetadata` row rather
-/// than an empty test database. Both copies now call
+/// genuine, pre-existing `arclain_core` bug, exposed only by testing
+/// metadata-driven naming against a real seeded `ProductMetadata` row
+/// rather than an empty test database. Both copies now call
 /// `product.to_plugin_json_string()` -- the method that actually
 /// produces `GameMetadata::from_json`'s expected shape -- instead of the
 /// raw derive: this one directly, and `executor.rs`'s own copy fixed
 /// separately, proven by its own regression test
 /// (`executor::tests::resolve_metadata_recovers_the_seeded_title_not_just_the_detected_product_code`).
-/// The duplication between the two copies is itself left alone this
-/// round -- deliberately not deduplicated into one shared function,
-/// flagged as its own follow-up rather than folded into this fix.
+/// The duplication between the two copies is itself left alone --
+/// deliberately not deduplicated into one shared function.
 ///
 /// Shared with `process_ops`'s pipeline preview, which must resolve each
 /// input's metadata *exactly* the way the executor resolves it or the

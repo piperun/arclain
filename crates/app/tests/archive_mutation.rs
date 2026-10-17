@@ -1287,7 +1287,7 @@ fn a_relist_failure_after_a_successful_mutation_desyncs_the_session_and_blocks_e
 /// while the first is still stuck inside its gated, about-to-fail
 /// relist. Only once that is confirmed is the gate released. If
 /// `mutation_lock` were ever dropped before `mark_desynced()` records the
-/// desync (the exact bug this round fixes), the queued second mutation
+/// desync (the exact bug this test guards against), the queued second mutation
 /// could win the race for the lock and observe `is_desynced() == false`
 /// and the not-yet-bumped revision, passing both gates against an index
 /// that is, by then, already provably stale.

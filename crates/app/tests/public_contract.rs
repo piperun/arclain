@@ -2,17 +2,16 @@
 //!
 //! This file is an integration test: it compiles against `arclain_app` as
 //! an external crate, so it can only see what the crate actually exports as
-//! `pub`. That is the point -- it proves Task 2's DTOs are constructible
+//! `pub`. That is the point -- it proves the DTOs are constructible
 //! and readable from outside the crate (CLI, bridge, frontend) using only
 //! `from_raw`/`into_raw` for opaque IDs, with no way to reach a private
 //! field even by accident.
 //!
-//! Deferred by design: this task does not test "rejection of a
-//! reconstructed ID that does not exist in its owning store" -- the
-//! archive-session, entry, operation, plugin-session, challenge, and lease
-//! stores that would reject an unknown ID do not exist until later tasks
-//! (5, 7, 11). Only the raw `from_raw`/`into_raw` round trip is covered
-//! here.
+//! Deferred by design: this file does not test "rejection of a
+//! reconstructed ID that does not exist in its owning store" -- that is a
+//! property of the archive-session, entry, operation, plugin-session,
+//! challenge, and lease stores, not of the ID types. Only the raw
+//! `from_raw`/`into_raw` round trip is covered here.
 
 use std::path::PathBuf;
 
@@ -27,7 +26,7 @@ use arclain_app::ids::{
 };
 use arclain_app::{ApplicationApiVersion, APPLICATION_API_VERSION};
 
-/// Builds one instance of every public DTO this task introduces. Compiling
+/// Builds one instance of each public DTO this file covers. Compiling
 /// this function is most of the test: it proves the public surface is
 /// constructible and readable from outside the crate.
 #[test]

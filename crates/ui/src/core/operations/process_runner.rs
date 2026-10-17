@@ -169,10 +169,9 @@ async fn drive_run(
                 });
             }
             // A pipeline raises neither of these: `start_pipeline` has no
-            // password ladder (see this module's own note in the task
-            // report) and touches no archive session. Logged rather than
-            // silently dropped so a future facade change that starts
-            // raising one is visible instead of appearing to hang.
+            // password ladder and touches no archive session. Logged
+            // rather than silently dropped so a future facade change that
+            // starts raising one is visible instead of appearing to hang.
             OperationState::Challenge { challenge } => {
                 tracing::warn!(
                     "[process] a pipeline run raised an unhandled challenge: {challenge:?}"
@@ -209,7 +208,7 @@ async fn drive_run(
 /// tracked operation so a stale id can never be cancelled.
 ///
 /// `expected` guards against a second run having replaced this one in
-/// the signal while this task was finishing: only the run that still
+/// the signal while this run's task was finishing: only the run that still
 /// owns the slot writes its own ending into it.
 fn finish<F>(signal: &arclain_app::Signal<ProcessRunState>, expected: OperationId, describe: F)
 where

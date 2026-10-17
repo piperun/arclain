@@ -190,8 +190,8 @@ pub trait RunningExtraction: Send {
 /// duplicated rather than shared for the reason that function's own doc
 /// comment gives: `arclain_app` cannot depend on `arclain_ui` or vice
 /// versa, and centralizing this specific classifier into
-/// `arclain_core::utilities` would touch call sites outside this task's
-/// scope. This copy is intra-crate (both live in `arclain_app`), but kept
+/// `arclain_core::utilities` would touch call sites in other crates. This
+/// copy is intra-crate (both live in `arclain_app`), but kept
 /// as its own private copy anyway: `archive_ops`'s classifier reads a
 /// `list()` error chain, this one reads a CLI exit diagnostic -- same
 /// patterns, different callers, and each is small enough that sharing a

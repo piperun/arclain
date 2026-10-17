@@ -68,7 +68,7 @@ impl ReDb {
     /// shared slot directly, so the moment the facade calls it, every
     /// other clone's *next* `with_connection` call fails cleanly with
     /// "database is closed" instead of racing a half-moved file. This
-    /// also restores the pre-facade behavior the reviewer asked for: the
+    /// also restores the pre-facade behavior: the
     /// facade's own copy and any externally-held mirror now go dark
     /// *together*, exactly like the single-owner `AppState.dbs.take()`
     /// this replaced always did.

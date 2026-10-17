@@ -1,5 +1,5 @@
-//! End-to-end coverage for the UI-side archive-mutation wiring added in
-//! this task: `crate::core::operations::file::start_add_files`/
+//! End-to-end coverage for the UI-side archive-mutation wiring:
+//! `crate::core::operations::file::start_add_files`/
 //! `start_replace_text` and `crate::features::archive_browser::
 //! application::FileOpsService::delete_files`, driven through a real
 //! bootstrapped `ArclainApp` the same way

@@ -35,14 +35,13 @@ use super::AppRuntime;
 ///
 /// Ported verbatim from `crates/ui/src/core/operations/archive.rs::
 /// is_password_error` (which stays in place there for its own remaining
-/// caller, the extraction-progress handler -- extraction is not part of
-/// this task's scope). Cannot be shared with `crates/ui` via a
-/// dependency in either direction (`arclain_app` must not depend on
-/// `arclain_ui`, and the reverse already holds); duplicated from there
-/// rather than left unreachable from this crate. A shared
-/// `is_password_error`-style classifier in `arclain_core::utilities`
-/// would remove that cross-crate duplication, but moving it touches
-/// extraction's call site too, which is out of scope here.
+/// caller, the extraction-progress handler). Cannot be shared with
+/// `crates/ui` via a dependency in either direction (`arclain_app` must
+/// not depend on `arclain_ui`, and the reverse already holds);
+/// duplicated from there rather than left unreachable from this crate.
+/// A shared `is_password_error`-style classifier in
+/// `arclain_core::utilities` would remove that cross-crate duplication,
+/// but moving it touches extraction's call site in `crates/ui` too.
 ///
 /// `pub(crate)`, reused by `processing_ops::list_attempt_initial`/
 /// `list_attempt_with_password` and by `crate::operations::merge`: unlike
@@ -116,8 +115,7 @@ enum AttemptOutcome {
 /// open before this one on the same shared `AppState`). That cross-archive
 /// coupling has no equivalent in a multi-session-aware store where two
 /// archives can legitimately be open at once with no ordering relationship
-/// -- matching only the archive's own filename is the behavior this task
-/// keeps.
+/// -- matching only the archive's own filename is the behavior kept here.
 fn attempt_initial(
     backend: &Arc<dyn ArchiveBackend>,
     path: &Path,
@@ -264,7 +262,7 @@ async fn fail(inner: &Arc<AppRuntime>, operation_id: OperationId, error: Applica
 }
 
 /// Builds the archive-open plugin event. Pure and separate from actually
-/// scheduling it so this task's requirement -- the event now carries the
+/// scheduling it so the event's contract -- it carries the
 /// application-owned `archive_session_id` rather than a UI-signal handle
 /// (see `PluginEvent::OnArchiveOpen`'s own doc comment) -- is directly
 /// unit-testable without needing a running `PluginEventScheduler`.

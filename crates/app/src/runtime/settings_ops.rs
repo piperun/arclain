@@ -1,10 +1,11 @@
 //! `AppRuntime`-touching execution logic for the settings/secrets/vault
 //! facade surface. `crate::settings` holds the DTOs and pure
 //! validation/patch-application logic this module calls into;
-//! `crate::runtime`'s own `impl ArclainApp` (its delimited "Task 10"
-//! section) exposes the thin public methods that dispatch to the
-//! functions here, exactly the way `runtime::processing_ops` backs
-//! `start_convert`/`start_organize`/`start_pipeline`.
+//! `crate::runtime`'s own `impl ArclainApp` (its delimited "settings,
+//! secrets, vault" section) exposes the thin public methods that
+//! dispatch to the functions here, exactly the way
+//! `runtime::processing_ops` backs `start_convert`/`start_organize`/
+//! `start_pipeline`.
 //!
 //! ## Serializing mutations
 //!

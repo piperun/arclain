@@ -23,8 +23,8 @@
 //!   fails only after real work -- extraction, staging -- has already
 //!   happened) holds through the facade exactly as it does in
 //!   `arclain_core`'s own `StagedOutput` test suite.
-//! - Organize has **no** output transaction at all (by adjudication --
-//!   see `crate::operations::organize`'s doc comment): it matches the
+//! - Organize has **no** output transaction at all (see
+//!   `crate::operations::organize`'s doc comment): it matches the
 //!   pre-facade single-archive "quick action", which packs straight
 //!   onto the destination with no staging/rollback. This suite proves
 //!   the absence explicitly (a colliding destination *is* overwritten),
@@ -421,8 +421,8 @@ fn seed_zero_step_preset(paths: &AppPaths, preset_name: &str) {
 /// archived -- letting Organize's happy-path tests avoid depending on a
 /// real, writable archive backend (the real native `ZipBackend` is
 /// read-only; a real 7-Zip-backed pack would depend on an installed,
-/// non-buggy 7-Zip -- see `crates/app/src/backends`'s own known-issue
-/// note in this task's report). When constructed via [`Self::gated`],
+/// non-buggy 7-Zip -- see `detect_unaffected_sevenzip` for the known
+/// bug). When constructed via [`Self::gated`],
 /// `extract_all` for one specific input path blocks on a channel until
 /// the test explicitly releases it, so a test can land `cancel_operation`
 /// deterministically while that input is still being processed, instead
@@ -1461,7 +1461,7 @@ fn start_organize_extraction_failure_leaves_destination_untouched() {
     );
 }
 
-/// Characterizes the adjudicated absence of an output transaction for
+/// Characterizes the absence of an output transaction for
 /// Organize (see `crate::operations::organize`'s own doc comment): a
 /// colliding destination is genuinely overwritten, unlike Convert/
 /// Pipeline (which refuse to touch an unrecognized destination, or roll
@@ -1739,12 +1739,12 @@ fn start_organize_a_wrong_password_response_raises_another_challenge_then_the_co
 /// dry-run preview's reported output path and the real run's actual
 /// produced path are the exact same path, computed independently here
 /// rather than parsed back out of either message. This also pins the
-/// duplicated dest-path computation the reviewer flagged
-/// (`pack_organize_input` vs `preview_organize_input`, the post-review
-/// split of what used to be `organize_one_input`/`preview_one_input`):
-/// if those two ever computed the sanitized stem differently in the
-/// future, this test's independently-computed `expected_dest_path`
-/// would stop matching one of them.
+/// dest-path computation that `pack_organize_input` and
+/// `preview_organize_input` each duplicate (what used to be
+/// `organize_one_input`/`preview_one_input`): if those two ever computed
+/// the sanitized stem differently in the future, this test's
+/// independently-computed `expected_dest_path` would stop matching one
+/// of them.
 #[cfg(feature = "gameta")]
 #[test]
 fn start_organize_dry_run_preview_path_matches_the_real_runs_output_path_when_metadata_exists() {
@@ -1851,11 +1851,11 @@ fn start_organize_dry_run_preview_path_matches_the_real_runs_output_path_when_me
 /// `executor::tests::resolve_metadata_recovers_the_seeded_title_not_just_the_detected_product_code`,
 /// in `arclain_core`). Both copies had the identical JSON-shape bug and
 /// both are now fixed the same way, but they remain two separate
-/// functions in two separate crates (deliberately not deduplicated this
-/// round -- flagged as a follow-up) -- this test is the guard that
-/// proves they still agree on the same title-based stem for the
-/// identical seeded metadata, rather than trusting that two
-/// independently-fixed copies stay in sync by construction. Uses
+/// functions in two separate crates (deliberately not deduplicated) --
+/// this test is the guard that proves they still agree on the same
+/// title-based stem for the identical seeded metadata, rather than
+/// trusting that two independently-fixed copies stay in sync by
+/// construction. Uses
 /// Pipeline's `Folder` artifact mode (not Convert/Archive mode): both
 /// `OutputArtifact` variants resolve through the exact same
 /// `resolve_metadata`/`stem_from` chain in `arclain_core`
@@ -2457,10 +2457,10 @@ fn start_convert_cancellation_stops_unstarted_inputs_and_leaves_no_partial_outpu
 }
 
 /// Locates a real, working 7-Zip CLI on this machine, if any, that does
-/// **not** exhibit the known bug reported alongside this task (7-Zip
-/// 26.02 silently appends the format extension to an extensionless
-/// destination path, which breaks `StagedOutput`'s internal, always-
-/// extensionless staging artifact). Probed empirically rather than
+/// **not** exhibit the known bug (7-Zip 26.02 silently appends the
+/// format extension to an extensionless destination path, which breaks
+/// `StagedOutput`'s internal, always-extensionless staging artifact).
+/// Probed empirically rather than
 /// version-matched, so this self-corrects whichever way a future
 /// 7-Zip release goes, and this test never depends on -- or
 /// reintroduces reliance on -- the known-buggy path.
@@ -2500,11 +2500,11 @@ fn detect_unaffected_sevenzip() -> Option<PathBuf> {
 /// A real, real-7z-backed end-to-end proof of `ConvertRequest`'s Archive-
 /// output path: also proves the Overwrite collision policy actually
 /// replaces a pre-existing, different destination file (a "happy
-/// overwrite", not a rollback-after-failure proof -- see this task's
-/// report for why a genuine post-write, pre-rename *failure* injection
-/// for Archive output has no available seam independent of the known
-/// 7-Zip bug). Gated on a real, unaffected 7-Zip so the whole suite
-/// never depends on one being installed.
+/// overwrite", not a rollback-after-failure proof: a genuine
+/// post-write, pre-rename *failure* injection for Archive output has no
+/// available seam independent of the known 7-Zip bug). Gated on a real,
+/// unaffected 7-Zip so the whole suite never depends on one being
+/// installed.
 #[test]
 fn start_convert_real_happy_path_and_overwrite_when_7z_is_available_and_unaffected() {
     let Some(sevenzip_path) = detect_unaffected_sevenzip() else {
@@ -2701,7 +2701,7 @@ fn start_pipeline_runs_an_ad_hoc_step_list_end_to_end_producing_a_folder() {
     );
 }
 
-/// The other artifact mode Finding 6 restored: an ad-hoc step list with
+/// The other artifact mode: an ad-hoc step list with
 /// no `Convert` step, but an explicit `output_artifact: Archive`, must
 /// still pack into a real zip (the Process page's own documented,
 /// intended default) rather than silently landing as a folder. Gated on
@@ -3146,7 +3146,7 @@ fn report_plugin_title(
     );
 }
 
-/// THE invariant this task exists for: **what you preview is what you
+/// THE invariant this test exists for: **what you preview is what you
 /// apply.**
 ///
 /// A session whose plugin metadata says one thing while the DLsite

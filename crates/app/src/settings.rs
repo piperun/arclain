@@ -10,22 +10,22 @@
 //! `crate::runtime::settings_ops`, a submodule of `runtime` that can see
 //! `AppRuntime`'s private fields; `crate::runtime`'s own `impl ArclainApp`
 //! exposes the thin public `settings`/`update_settings`/... methods in
-//! its delimited "Task 10" section.
+//! its delimited "settings, secrets, vault" section.
 //!
 //! ## Single-authority vault state
 //!
-//! Earlier tasks' `SessionStore` handed its one copy of `ConfigDbs` to
+//! A `SessionStore` that handed its one copy of `ConfigDbs` to
 //! `crates/ui` via `take_legacy_composition` and never retained a live
-//! copy of its own -- fine as long as nothing behind the facade needed
-//! to read or write settings/secrets/pass-rules after bootstrap, but
-//! this task's whole job is exactly that. [`MutableSettings`] is the
-//! fix: `SessionStore` now retains its own live, mutable copy of
-//! everything this task's facade surface can change (`user_config`,
+//! copy of its own would be fine as long as nothing behind the facade
+//! needed to read or write settings/secrets/pass-rules after bootstrap,
+//! but the settings surface does exactly that. [`MutableSettings`] is
+//! the fix: `SessionStore` retains its own live, mutable copy of
+//! everything the settings facade surface can change (`user_config`,
 //! `pass_rules`, `encrypted_crc_policy`, `default_collision_policy`,
 //! `db_paths`, `dbs`), behind one
 //! lock so a vault move/rekey -- which changes `dbs`, `db_paths`, and
 //! `pass_rules` together -- can never be observed half-updated.
-//! `take_legacy_composition` now *clones* out of this store instead of
+//! `take_legacy_composition` *clones* out of this store instead of
 //! taking it, so it can be called again to refresh `crates/ui`'s mirror
 //! after a facade-driven mutation (see `ConfigDbs`'s own doc comment in
 //! `arclain_db::bootstrap` for why cloning it is cheap and never opens a
@@ -40,8 +40,8 @@ use crate::challenge::SecretInput;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 
 // ============================================================================
-// DTOs (see task-10-brief.md / contract.md -- field shapes are load-bearing,
-// other Stage 1 tasks and any future frontend code against these exactly).
+// DTOs (field shapes are load-bearing: every frontend codes against these
+// exactly).
 // ============================================================================
 
 /// A full, point-in-time view of every non-secret application setting.
@@ -726,12 +726,11 @@ fn persistence_io_error(path: &Path, error: std::io::Error) -> ApplicationError 
 // MutableSettings: the single-authority live vault/settings state.
 // ============================================================================
 
-/// Everything this task's facade surface can change at runtime, behind
+/// Everything the settings facade surface can change at runtime, behind
 /// one lock in `SessionStore` (`parking_lot::RwLock<MutableSettings>`).
-/// See this module's top-level doc comment for why this replaced the
-/// previous one-shot-taken `dbs` field and the bootstrap-frozen
-/// `user_config`/`pass_rules` fields `SessionStore` held before this
-/// task.
+/// See this module's top-level doc comment for why these live here
+/// instead of in a one-shot-taken `dbs` field and bootstrap-frozen
+/// `user_config`/`pass_rules` fields on `SessionStore`.
 pub(crate) struct MutableSettings {
     /// Bumped by every mutation that changes anything reachable through
     /// [`SettingsSnapshot`] -- `update_settings` itself, and also

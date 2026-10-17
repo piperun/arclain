@@ -654,7 +654,7 @@ impl Drop for ImageStub {
 ///
 /// `tint` keeps each test's bytes distinct. Cache blobs are
 /// content-addressed in a store every bootstrapped application shares (the
-/// cache root ignores `paths_override` — see this task's report), so two
+/// cache root ignores `paths_override`), so two
 /// tests with identical bytes would share one physical blob and could
 /// delete it out from under each other.
 fn fetchable_png(tint: u8) -> Vec<u8> {

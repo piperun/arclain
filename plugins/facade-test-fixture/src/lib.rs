@@ -1,6 +1,6 @@
 //! Deterministic plugin fixture used only by `arclain_app`'s own facade
 //! tests (`crates/app/tests/plugin_sessions.rs`). Not a user-facing
-//! plugin: it exists purely to exercise brief-mandated behaviors a
+//! plugin: it exists purely to exercise behaviors a
 //! "real" demo plugin (`ui-demo`, whose `on-ui-event` always returns an
 //! empty action list) cannot exercise:
 //!

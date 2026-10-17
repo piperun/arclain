@@ -1,5 +1,5 @@
 //! On-demand, real end-to-end smoke test for the open-file-from-archive
-//! pipeline this fix round rewired: a real facade bootstrap, a real
+//! pipeline: a real facade bootstrap, a real
 //! archive fixture, the real `start_archive_open` -> `open_file_from_
 //! archive` call chain, a real OS-level file open, and real shutdown-
 //! driven cleanup.
@@ -60,8 +60,8 @@ fn bootstrap_real_facade(temp: &tempfile::TempDir) -> ArclainApp {
     .expect("bootstrap a real ArclainApp for the open-file-from-archive smoke test")
 }
 
-/// Builds a real ZIP fixture with a root-level layout matching the I3
-/// regression this fix round covers (an executable and its DLL sitting
+/// Builds a real ZIP fixture with a root-level layout matching the
+/// regression this smoke test covers (an executable and its DLL sitting
 /// directly at the archive root, alongside a self-contained text file).
 fn build_zip_fixture(path: &Path) {
     let file = std::fs::File::create(path).expect("create zip fixture file");

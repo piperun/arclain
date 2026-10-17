@@ -75,7 +75,7 @@ pub struct BootstrapConfig {
     /// depending on a real encrypted archive fixture. Always `None` in
     /// `system_default()`.
     ///
-    /// Reused by the Task 9 processing operations (`start_convert`/
+    /// Reused by the processing operations (`start_convert`/
     /// `start_organize`/`start_pipeline`) for exactly the same reason:
     /// `arclain_core::PipelineContext::backend_for` needs to resolve an
     /// extraction backend for each input, and this is the one seam that
@@ -397,7 +397,8 @@ pub(crate) fn run(
     // Read-only PATH/well-known-install-location probe, added solely to
     // populate `capabilities()`/`health()`. Does not change any archive
     // operation's behavior: the per-format backend chain still resolves
-    // unrar lazily at archive-open time, exactly as before this task.
+    // unrar lazily at archive-open time, exactly as it would without the
+    // probe.
     // Availability only, not a resolved path: `UnrarCli` exposes no path
     // accessor (unlike `SevenZipCli::exe_path()`) -- see
     // `session_store::compute_capabilities`'s doc comment.

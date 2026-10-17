@@ -1,5 +1,4 @@
-//! Public-contract tests for the operation-event and challenge types Task
-//! 3 introduces.
+//! Public-contract tests for the operation-event and challenge types.
 //!
 //! `OperationRegistry` itself is `pub(crate)` (crate-private): an
 //! integration test under `tests/` is compiled as its own separate crate
@@ -10,7 +9,7 @@
 //! `pub(crate)` type in this workspace is tested (see e.g.
 //! `crates/plugins/src/manager/mod.rs`'s `#[cfg(test)] mod tests;`).
 //!
-//! This file instead exercises everything Task 3 adds that IS public: the
+//! This file instead exercises everything that IS public: the
 //! `Challenge`/`ChallengeResponse`/`OperationKind`/`OperationState`/
 //! `OperationEvent`/`OperationSnapshot`/`OperationResult` read models a
 //! frontend or bridge actually receives.

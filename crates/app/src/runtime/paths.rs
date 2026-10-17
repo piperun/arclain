@@ -243,7 +243,8 @@ impl AppPaths {
 /// here (env override, then an executable-adjacent `plugins/` folder if
 /// it exists, then a dev-repo-relative fallback for `cargo run`, then
 /// the executable-adjacent path regardless) matches exactly what
-/// `crates/ui/src/core/state/init.rs` did before this task moved it.
+/// `crates/ui/src/core/state/init.rs` did before this resolution moved
+/// here.
 pub(crate) fn resolve_plugins_dir() -> PathBuf {
     let override_dir = std::env::var_os(PLUGINS_DIR_ENV)
         .filter(|value| !value.is_empty())

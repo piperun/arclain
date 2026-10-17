@@ -64,9 +64,8 @@ pub struct Cli {
 
 /// Everything every command's own `run`/`dispatch` function needs beyond
 /// `app` and its own parsed arguments -- bundled into one value so a new
-/// global concern (this task added `cancel`/`budget` alongside Task 12's
-/// own `json`) does not keep growing every command function's own
-/// parameter list one at a time.
+/// global concern (`json`, `cancel`, `budget`) does not keep growing
+/// every command function's own parameter list one at a time.
 #[derive(Clone)]
 pub(crate) struct Invocation {
     pub(crate) json: bool,
@@ -230,8 +229,8 @@ pub(crate) async fn open_archive_and_wait(
 /// entries"), this resolves to whichever one `list_entries` returns
 /// first for that name; there is no syntax in this CLI for addressing a
 /// second, third, ... duplicate at the same path independently. A real
-/// fix needs its own selection syntax (an ordinal suffix, for example)
-/// and is out of this task's scope.
+/// fix needs its own selection syntax (an ordinal suffix, for example),
+/// which this CLI does not have.
 pub(crate) async fn resolve_entry_id(
     app: &ArclainApp,
     session_id: ArchiveSessionId,

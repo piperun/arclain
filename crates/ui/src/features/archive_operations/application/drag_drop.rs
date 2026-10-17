@@ -19,7 +19,7 @@ use std::path::Path;
 /// `AddFiles` against the active tab's open archive, rather than the
 /// existing "open a dropped archive" routing
 /// (`crate::core::arclain_app::dialog_handler::render_overlays`'s own
-/// zone/`DropBehavior` logic, unchanged by this task).
+/// zone/`DropBehavior` logic, unchanged by this check).
 ///
 /// True exactly when an archive is already open in the active tab *and*
 /// the dropped path is not itself a recognized archive extension.

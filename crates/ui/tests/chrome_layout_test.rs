@@ -7,9 +7,8 @@
 //! two ends the user actually sees — the rendered toolbar and a save that
 //! survives a reload.
 //!
-//! Kept in its own file rather than appended to `archive_browser_test.rs`
-//! (which already renders a toolbar for an unrelated reason): concurrent
-//! worktrees also edit that file.
+//! Kept apart from `archive_browser_test.rs`, which already renders a
+//! toolbar for an unrelated reason.
 
 mod common;
 

@@ -5,7 +5,7 @@
 //! internals directly. It must stay usable without any GUI toolkit --
 //! nothing here may depend on egui, eframe, or a Flutter/Dart bridge.
 //!
-//! Earlier tasks added the identifier ([`ids`]), error-envelope
+//! The crate defines the identifier ([`ids`]), error-envelope
 //! ([`error`]), archive read-model ([`archive`]), secret/challenge
 //! ([`challenge`]), and operation-event ([`event`]) types, plus the
 //! [`operations`] registry those events are broadcast through, and
@@ -20,13 +20,13 @@
 //! never named by a frontend directly -- but it also hosts one
 //! submodule per operation *kind* (starting with `operations::extract`),
 //! each contributing its own genuinely public request type
-//! (`operations::ExtractRequest`, and so on as later tasks add
+//! (`operations::ExtractRequest`, and likewise one for each of
 //! `start_convert`/`start_organize`/etc.).
 //!
 //! [`settings`] adds the settings/secrets/vault surface: the
 //! `SettingsSnapshot`/`SettingsPatch` DTOs, password-rule and
 //! organization-profile summaries, and the `ArclainApp` methods declared
-//! in `crate::runtime`'s own delimited "Task 10" section.
+//! in `crate::runtime`'s own delimited "settings, secrets, vault" section.
 //!
 //! `plugins` exposes renderer-neutral plugin sessions when the
 //! `plugin-host` feature is enabled: see `plugins::PluginUiDocument` and

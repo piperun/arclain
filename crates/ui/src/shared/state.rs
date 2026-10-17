@@ -28,8 +28,8 @@ pub struct SharedState {
     /// headless service. `app_state` above is still populated from its
     /// transitional composition snapshot; `services` is independent and
     /// frontend-only. Plugin UI and the migrated archive workflows read
-    /// through this handle; later Stage 1 tasks retire the remaining
-    /// `app_state` readers incrementally.
+    /// through this handle; the remaining `app_state` readers are being
+    /// retired incrementally.
     ///
     /// `Option` rather than a bare `ArclainApp`: several test fixtures
     /// (`crates/ui/tests/common/mod.rs`, `settings_controller.rs`'s own

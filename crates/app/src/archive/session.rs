@@ -2,9 +2,9 @@
 //! read-only queries (`list_entries`, `snapshot`) the facade serves from
 //! it.
 //!
-//! [`EntryIndex`] is built once per revision (at open time; a future
-//! mutation-aware task rebuilds it and bumps [`ArchiveSession::revision`]
-//! after any change). Building it is the only place archive-entry paths
+//! [`EntryIndex`] is built once per revision (at open time; a mutation
+//! rebuilds it and bumps [`ArchiveSession::revision`] after any
+//! change). Building it is the only place archive-entry paths
 //! are walked and folder totals aggregated -- `list_entries` itself is a
 //! pure in-memory sort/filter/paginate over the already-built index, so
 //! repeated queries (pagination, re-sorting) never re-touch the backend.
@@ -136,8 +136,8 @@ fn parse_modified_to_unix_ms(value: &str) -> Option<i64> {
 /// is NOT a "folders first" grouping -- it interleaves alphabetically with
 /// file extensions (a file extension earlier in the alphabet than
 /// "directory", such as `.bat`, sorts before every folder in ascending
-/// order). Reproduced as-is rather than "fixed" because this task
-/// characterizes existing behavior, not redesigns it.
+/// order). Reproduced as-is rather than "fixed" because the facade
+/// carries existing behavior over instead of redesigning it.
 fn kind_sort_key(dto: &ArchiveEntryDto) -> String {
     match dto.kind {
         EntryKind::Directory => "directory".to_string(),
@@ -809,7 +809,7 @@ pub(crate) struct ArchiveSession {
     /// file can therefore still race each other's whole-archive
     /// extract-modify-recompress rewrites, exactly as a concurrent
     /// extraction reading that same file mid-rewrite already could
-    /// pre-facade -- this is a pre-existing weakness this task does not
+    /// pre-facade -- this is a pre-existing weakness this lock does not
     /// attempt to close; a real fix needs serialization keyed on the
     /// resolved path itself (e.g. a process-wide `Mutex` map in
     /// `ArchiveSessionStore`), which is a larger change than this lock's
@@ -924,12 +924,12 @@ impl ArchiveSession {
         *self.metadata.write() = metadata;
     }
 
-    /// Not called by anything this task adds: a future mutation-aware
-    /// reindex rebuilds `entry_index` and needs this same assigner
-    /// (locked for the rebuild's duration) so ids stay stable across it --
-    /// see [`EntryIdAssigner`]'s own doc comment. Kept as the seam that
-    /// future task reuses rather than re-deriving its own way to reach
-    /// this session's id-assignment state.
+    /// Not called by anything: [`Self::reindex`] locks the field directly.
+    /// A caller outside this type that rebuilds `entry_index` would need
+    /// this same assigner (locked for the rebuild's duration) so ids stay
+    /// stable across it -- see [`EntryIdAssigner`]'s own doc comment. Kept
+    /// as the seam such a caller reuses rather than re-deriving its own
+    /// way to reach this session's id-assignment state.
     #[allow(dead_code)]
     pub(crate) fn id_assigner(&self) -> &Mutex<EntryIdAssigner> {
         &self.id_assigner
@@ -1092,7 +1092,7 @@ impl ArchiveSession {
             encryption_method: self.encryption.encryption_method.clone(),
             // Neither `arclain_core::archive::ArchiveInfo` nor any backend
             // in this workspace reports an archive comment today; always
-            // `None` until a future task adds a real source for it.
+            // `None` until a backend reports one.
             comment: None,
             metadata: self.metadata.read().clone(),
         }

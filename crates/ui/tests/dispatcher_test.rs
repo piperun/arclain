@@ -7,8 +7,8 @@
 //!
 //! Most tests run against a minimal `SharedState` with `dbs: None`
 //! and `services.*` empty, exercising the "no DB / no service"
-//! branches. Adding in-memory DB setup (a follow-up task) would
-//! unlock the meaty round-trip tests for save/delete/etc.
+//! branches. Adding in-memory DB setup would unlock the meaty
+//! round-trip tests for save/delete/etc.
 
 mod common;
 use common::{

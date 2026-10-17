@@ -10,9 +10,6 @@
 //! each case is then rendered through the real `render_archive_browser`
 //! so the decision demonstrably reaches a frame rather than only a match
 //! arm.
-//!
-//! Kept in its own file rather than appended to `archive_browser_test.rs`
-//! -- concurrent worktrees also edit that one.
 
 mod common;
 

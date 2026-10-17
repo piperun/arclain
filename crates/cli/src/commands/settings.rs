@@ -118,8 +118,7 @@ fn print_settings_human(snapshot: &SettingsSnapshot) {
 /// Reads a fresh `SettingsSnapshot` to learn the current `revision`,
 /// applies `mutate` to an all-`Keep` `ArchiveSettingsPatch`, and submits
 /// it as a `SettingsPatch` touching only the `archive` section -- shared
-/// by every `settings set-*` command this task adds (`set-sevenzip-path`,
-/// `set-backend-mode`).
+/// by `settings set-sevenzip-path` and `settings set-backend-mode`.
 async fn run_set_archive_field(
     app: &ArclainApp,
     json: bool,

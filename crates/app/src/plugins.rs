@@ -23,7 +23,7 @@
 //! look dangerous -- and both mirror `arclain-network` shapes so that no
 //! frontend needs that crate to ask it.
 //!
-//! ## What this task ports faithfully, and what it does not (yet)
+//! ## What is ported faithfully, and what is not
 //!
 //! Moved into this module, and fully tested here:
 //! - Session lifecycle (open/query/close), one normalized document per
@@ -62,8 +62,8 @@
 //!   through whichever archive session the frontend currently reports as
 //!   active, since the user is looking at that document right now.
 //!
-//! Deliberately **not** ported in this pass, and named here rather than
-//! silently dropped:
+//! Deliberately **not** ported, and named here rather than silently
+//! dropped:
 //! - `arclain_plugins::types::PluginArchiveAccess` (the `PluginArchiveContextId`
 //!   -keyed trait [`ArchiveContextAccess`] implements) has no installation
 //!   point anywhere in `arclain_plugins` today -- no `PluginManager`/
@@ -661,9 +661,7 @@ pub struct PluginSessionSnapshot {
 // ============================================================================
 // The two network-owned shapes a frontend needs to render a plugin's
 // "Domain Access" section, mirrored into this crate so no frontend has to
-// depend on `arclain-network` for them. Kept in its own delimited section
-// for the same reason as the task sections in `crate::runtime`: a
-// concurrent worktree may be touching this same shared file.
+// depend on `arclain-network` for them.
 
 /// One entry of a plugin's domain whitelist, as reported by
 /// [`crate::ArclainApp::plugin_domain_whitelist`]. Mirrors
@@ -910,9 +908,6 @@ pub fn analyze_url(url: &str) -> Result<DomainAnalysisDto, ApplicationError> {
 // Plugin chrome: the status counts and top-tab strip an application frame
 // renders, plus the aggregated plugin network log
 // ============================================================================
-// Kept in its own delimited section for the same reason as the domain-access
-// section above: a concurrent worktree may be touching this same shared file.
-//
 // Two *separate* read models, deliberately not one call. A frontend polls
 // them on different cadences -- the top-tab strip's badges are chrome that
 // redraws with the window, the network log is a diagnostics page that only
@@ -2681,8 +2676,8 @@ impl PluginArchiveAccess for ArchiveContextAccess {
         // `ArchiveSession` retains only its indexed metadata, not a
         // read-entry-bytes operation -- extracting a single entry's
         // content goes through `crate::operations::extract` today, not
-        // through this trait. Reserved for a future task that wires a
-        // real single-entry read.
+        // through this trait. Reserved for wiring a real
+        // single-entry read.
         Err(PluginError::Unavailable(
             "reading a single archive entry is not yet implemented".to_string(),
         ))
@@ -3271,8 +3266,7 @@ mod tests {
         );
     }
 
-    /// Regression test for the fix making `set_active_tab_metadata` a real
-    /// write instead of the no-op it was before this task -- see
+    /// `set_active_tab_metadata` is a real write, not a no-op -- see
     /// `ActiveTabBridge::set_active_tab_metadata`'s own doc comment
     /// mandating exactly this for "every production implementation".
     #[tokio::test(flavor = "multi_thread")]
@@ -3335,9 +3329,8 @@ mod tests {
         bridge.set_session_metadata(999_999, Some(serde_json::json!({"ignored": true})));
     }
 
-    /// Regression test for the fix making `set_archive_path` a real write
-    /// instead of the no-op it was before this task -- the `rename_archive`
-    /// host function's only write sink.
+    /// `set_archive_path` is a real write, not a no-op -- the
+    /// `rename_archive` host function's only write sink.
     #[tokio::test(flavor = "multi_thread")]
     async fn archive_context_bridge_set_archive_path_renames_the_active_session() {
         let sessions = Arc::new(crate::archive::ArchiveSessionStore::new());
@@ -4230,10 +4223,10 @@ mod tests {
         );
     }
 
-    /// Regression test for the review finding that `OpenLightbox` images
-    /// left their `cache_key` raw (unlike every other image-bearing node
-    /// `rewrite_cache_keys` encodes at normalization time), so every
-    /// lightbox image would fail `read_plugin_image` with `NotFound`.
+    /// `OpenLightbox` images carry an encoded `cache_key`, like every other
+    /// image-bearing node `rewrite_cache_keys` encodes at normalization
+    /// time; a raw key would make every lightbox image fail
+    /// `read_plugin_image` with `NotFound`.
     /// Proves the full round trip: the intent's encoded key resolves
     /// through `read_plugin_image` to the exact bytes the plugin's own
     /// namespace has cached.

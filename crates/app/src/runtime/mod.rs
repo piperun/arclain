@@ -277,10 +277,7 @@ pub(crate) struct AppRuntime {
     /// cannot obtain a live `Services` either.
     shut_down: AtomicBool,
 
-    // ==================== Task 11: plugin sessions (start) ====================
-    // Kept in its own clearly-delimited section for the same reason as the
-    // Task 9 sections elsewhere in this file: a concurrent worktree may be
-    // touching this same shared file for an unrelated task.
+    // ==================== plugin sessions (start) ====================
     /// Every open renderer-neutral plugin session.
     #[cfg(feature = "plugin-host")]
     plugin_sessions: crate::plugins::PluginSessionStore,
@@ -288,7 +285,7 @@ pub(crate) struct AppRuntime {
     /// [`ArclainApp::set_active_archive_session`].
     #[cfg(feature = "plugin-host")]
     active_archive_session: crate::plugins::ActiveArchiveSession,
-    // ==================== Task 11: plugin sessions (end) ====================
+    // ==================== plugin sessions (end) ====================
     tokio_runtime: RuntimeOwner,
 }
 
@@ -369,10 +366,7 @@ impl AppRuntime {
         self.session.plugin_event_scheduler.clone()
     }
 
-    // ---- Task 9: processing operations (Convert/Organize/Pipeline) ----
-    // Everything in this section is this task's own addition; kept
-    // together so a concurrent task touching this same shared file has a
-    // small, predictable diff to merge around.
+    // ---- processing operations (Convert/Organize/Pipeline) ----
 
     /// The app's composed headless services (`arclain_core::services::
     /// Services`) -- `runtime::processing_ops::build_pipeline_context`
@@ -395,7 +389,7 @@ impl AppRuntime {
         &self.paths
     }
 
-    // ==================== Task 11: plugin sessions (start) ====================
+    // ==================== plugin sessions (start) ====================
 
     #[cfg(feature = "plugin-host")]
     pub(crate) fn plugin_manager(
@@ -418,9 +412,9 @@ impl AppRuntime {
         &self.active_archive_session
     }
 
-    // ==================== Task 11: plugin sessions (end) ====================
+    // ==================== plugin sessions (end) ====================
 
-    // ============ Task 12: host-owned display images (start) ================
+    // ============ host-owned display images (start) ================
 
     /// Backs [`ArclainApp::materialized_resource_limit`].
     ///
@@ -440,7 +434,7 @@ impl AppRuntime {
             })
     }
 
-    // ============= Task 12: host-owned display images (end) =================
+    // ============= host-owned display images (end) =================
 }
 
 /// The application facade. Cheap to clone (an `Arc` internally); every
@@ -542,8 +536,8 @@ impl ArclainApp {
             // for why holding a strong reference here would keep
             // `AppRuntime` permanently alive. The join handle's own
             // `AbortHandle` is retained separately so `shutdown()` can stop
-            // this task promptly and explicitly, rather than only via the
-            // task noticing `upgrade()` fail on its own next timer tick.
+            // the cleanup task promptly and explicitly, rather than only via
+            // the task noticing `upgrade()` fail on its own next timer tick.
             let cleanup_inner = Arc::downgrade(&inner);
             let join_handle = handle.spawn(crate::materialization::run_cleanup_task(
                 cleanup_inner,
@@ -887,10 +881,7 @@ impl ArclainApp {
         .await?
     }
 
-    // ============= Task 6: extraction operation (start) =============
-    // Kept in its own clearly-delimited section: a concurrent worktree
-    // for a different task also edits this file, and this delimiter
-    // minimizes merge friction between the two.
+    // ============= extraction operation (start) =============
 
     /// Starts extracting entries (or, with an empty `entry_ids`, the
     /// whole archive) from an open session as a cancellable, event-
@@ -922,9 +913,9 @@ impl ArclainApp {
         .await
     }
 
-    // ============== Task 6: extraction operation (end) ==============
+    // ============== extraction operation (end) ==============
 
-    // ========= Task 8: archive mutation operation (start) ==========
+    // ========= archive mutation operation (start) ==========
 
     /// Starts an archive-mutating operation (`AddFiles`/`DeleteEntries`/
     /// `ReplaceText`) as a cancellable, event-broadcasting operation.
@@ -958,11 +949,9 @@ impl ArclainApp {
         .await
     }
 
-    // ========== Task 8: archive mutation operation (end) ===========
+    // ========== archive mutation operation (end) ===========
 
-    // ============ Task c9: multi-part archive merge (start) ===========
-    // Kept in its own clearly-delimited section for the same reason as
-    // every other section in this file: concurrent worktrees edit it too.
+    // ============ multi-part archive merge (start) ===========
 
     /// Merges a split multi-part archive set into one archive, as a
     /// cancellable, event-broadcasting operation. Returns as soon as the
@@ -1009,9 +998,9 @@ impl ArclainApp {
         .await
     }
 
-    // ============= Task c9: multi-part archive merge (end) ============
+    // ============= multi-part archive merge (end) ============
 
-    // ============= Task 7: materialization leases (start) =============
+    // ============= materialization leases (start) =============
 
     /// Starts materializing one archive entry onto a real local disk path
     /// as a cancellable, event-broadcasting operation. Returns as soon as
@@ -1122,7 +1111,7 @@ impl ArclainApp {
         .await?
     }
 
-    // ============== Task 7: materialization leases (end) ==============
+    // ============== materialization leases (end) ==============
 
     /// Subscribes to the operation-event stream. See
     /// `OperationRegistry::subscribe`.
@@ -1200,10 +1189,8 @@ impl ArclainApp {
         .await
     }
 
-    // ---- Task 9: processing operations (Convert/Organize/Pipeline) ----
-    // Everything in this section is this task's own addition; kept
-    // together for the same reason as `AppRuntime`'s own Task 9 section
-    // above. See `crate::operations::{convert, organize, pipeline}` for
+    // ---- processing operations (Convert/Organize/Pipeline) ----
+    // See `crate::operations::{convert, organize, pipeline}` for
     // each request type's own characterization/design notes, and
     // `runtime::processing_ops` for the shared execution loop and
     // background workers these three dispatch to.
@@ -1348,17 +1335,11 @@ impl ArclainApp {
         .await?
     }
 
-    // ============= Task 10: settings, secrets, vault (start) ============
-    // Kept in its own clearly-delimited section for the same reason as
-    // Task 9's own section above: a concurrent worktree (Task 11,
-    // plugins) also edits this file. Every method here is a thin
-    // dispatch wrapper; the actual logic lives in
-    // `crate::settings` (pure DTOs/validation) and
+    // ============= settings, secrets, vault (start) ============
+    // Every method here is a thin dispatch wrapper; the actual logic
+    // lives in `crate::settings` (pure DTOs/validation) and
     // `runtime::settings_ops` (the `AppRuntime`-touching execution
     // layer) -- see both modules' own doc comments.
-    //
-    // The plugins section immediately below this one is Task 11's own
-    // equally delimited block, kept separate for the same reason.
 
     /// A full, point-in-time view of every non-secret application
     /// setting.
@@ -1546,13 +1527,11 @@ impl ArclainApp {
         .await?
     }
 
-    // ============== Task 10: settings, secrets, vault (end) ==============
+    // ============== settings, secrets, vault (end) ==============
 
-    // ============ Task c5: organization rules/profiles (start) ===========
-    // Kept in its own clearly-delimited section for the same reason as
-    // the sections above and below it: concurrent worktrees also edit
-    // this file. Every method here is a thin dispatch wrapper; the logic
-    // lives in `crate::organization` (pure DTOs/validation) and
+    // ============ organization rules/profiles (start) ===========
+    // Every method here is a thin dispatch wrapper; the logic lives in
+    // `crate::organization` (pure DTOs/validation) and
     // `runtime::organization_ops` (the `AppRuntime`-touching execution
     // layer) -- see both modules' own doc comments.
 
@@ -1804,11 +1783,9 @@ impl ArclainApp {
         .await?
     }
 
-    // ============= Task c5: organization rules/profiles (end) ============
+    // ============= organization rules/profiles (end) ============
 
-    // ============== Task c7: the Process page's surface (start) ==========
-    // Kept in its own clearly-delimited section for the same reason as
-    // the sections around it: concurrent worktrees also edit this file.
+    // ============== the Process page's surface (start) ==========
     // Every method here is a thin dispatch wrapper; the logic lives in
     // `crate::process` (pure DTOs/validation) and `runtime::process_ops`
     // (the `AppRuntime`-touching execution layer) -- see both modules'
@@ -2048,12 +2025,10 @@ impl ArclainApp {
         .await?
     }
 
-    // =============== Task c7: the Process page's surface (end) ===========
+    // =============== the Process page's surface (end) ===========
 
     // ============= chrome layout and display options (start) =============
-    // Kept in its own clearly-delimited section for the same reason as the
-    // sections around it: concurrent worktrees also edit this file. Every
-    // method here is a thin dispatch wrapper; the logic lives in
+    // Every method here is a thin dispatch wrapper; the logic lives in
     // `crate::layout` (pure DTOs/validation) and `runtime::layout_ops`
     // (the `AppRuntime`-touching execution layer) -- see both modules'
     // own doc comments.
@@ -2151,12 +2126,10 @@ impl ArclainApp {
 
     // ============== chrome layout and display options (end) ==============
 
-    // ==================== Task 11: plugin sessions (start) ====================
-    // Kept in its own clearly-delimited section for the same reason as the
-    // Task 9 sections above: a concurrent worktree may be touching this
-    // same shared file for an unrelated task. See `crate::plugins`'s own
-    // module doc comment for what this section does and does not port
-    // from the pre-facade `crates/ui` plugin-UI machinery.
+    // ==================== plugin sessions (start) ====================
+    // See `crate::plugins`'s own module doc comment for what this section
+    // does and does not port from the pre-facade `crates/ui` plugin-UI
+    // machinery.
 
     /// Every plugin the application's plugin runtime knows about,
     /// successfully loaded or not (see `arclain_plugins::manager::
@@ -2487,7 +2460,7 @@ impl ArclainApp {
                         };
                     // `tokio_handle()` returning `None` here would mean the
                     // runtime finished tearing down in the instant between
-                    // this task being spawned and this line -- see
+                    // the worker being spawned and this line -- see
                     // `AppRuntime::tokio_handle`'s doc comment for why that
                     // is only a theoretical race in a real bootstrapped app.
                     // Matches `archive_ops::run_open_archive`'s identical
@@ -2679,9 +2652,9 @@ impl ArclainApp {
         .await?
     }
 
-    // ==================== Task 11: plugin sessions (end) ====================
+    // ==================== plugin sessions (end) ====================
 
-    // ============ Task 12: host-owned display images (start) ================
+    // ============ host-owned display images (start) ================
     // The host half of the image surface, so a frontend holds neither a
     // content-cache handle nor an HTTP client of its own. See
     // `crate::plugins`'s "Display images" section for why the two image
@@ -2837,9 +2810,9 @@ impl ArclainApp {
         self.inner.materialized_resource_limit()
     }
 
-    // ============= Task 12: host-owned display images (end) =================
+    // ============= host-owned display images (end) =================
 
-    // ============ Task 14n: boundary-zero network surface (start) ===========
+    // ============ boundary-zero network surface (start) ===========
     // The application-owned halves of the network surface a frontend used
     // to reach `arclain-network` directly for. The remaining piece
     // (`crate::plugins::analyze_url`) needs no application state at all
@@ -2971,14 +2944,11 @@ impl ArclainApp {
         .await?
     }
 
-    // ============= Task 14n: boundary-zero network surface (end) ============
+    // ============= boundary-zero network surface (end) ============
 
-    // ========== Task P1: plugin management surfaces (start) =================
+    // ========== plugin management surfaces (start) =================
     // Install, plus the two read models an application frame draws its
-    // plugin-owned chrome and its network-diagnostics page from. Kept in
-    // its own clearly-delimited section for the same reason as the
-    // sections above: a concurrent worktree may be touching this same
-    // shared file.
+    // plugin-owned chrome and its network-diagnostics page from.
 
     /// Validate a selected `.wirt` package and return the exact metadata and
     /// fingerprint the renderer must present for approval.
@@ -3079,7 +3049,7 @@ impl ArclainApp {
         .await
     }
 
-    // =========== Task P1: plugin management surfaces (end) ==================
+    // =========== plugin management surfaces (end) ==================
 
     /// Runs `work` against the composed session state on this app's own
     /// Tokio runtime, then awaits the result -- so the computation

@@ -1163,7 +1163,7 @@ mod tests {
         // A single renewer/sweeper thread pair racing one lease was
         // tried first and never reproduced this, even against the
         // genuinely reverted two-step implementation (confirmed
-        // directly during this round) -- two bare `std::thread::spawn`
+        // directly) -- two bare `std::thread::spawn`
         // calls don't create enough scheduler contention on their own to
         // land in a gap this narrow. Many pairs racing *simultaneously*
         // does: with real contention from dozens of threads at once, the

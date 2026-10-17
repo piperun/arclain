@@ -2493,7 +2493,7 @@ fn move_vault_relocates_the_secrets_file_and_the_legacy_mirror_observes_it() {
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].name, "before move");
 
-    // ...and this task's single-authority fix means the legacy mirror
+    // ...and the single-authority design means the legacy mirror
     // `crates/ui` reads from is the SAME live state, not a stale
     // bootstrap-time snapshot: a fresh `take_legacy_composition` call
     // must see the moved vault's contents too.
@@ -2730,7 +2730,7 @@ fn settings_and_password_rules_survive_shutdown_and_a_fresh_bootstrap() {
 
 // ============================================================================
 // Public-DTO constructibility, mirroring `public_contract.rs`'s pattern
-// for earlier tasks but scoped to this task's own additions.
+// but scoped to the settings DTOs.
 // ============================================================================
 
 #[test]
