@@ -59,7 +59,7 @@
 //! on disk, but the in-memory commit (phase 3) never runs, so `settings()`
 //! keeps reporting the pre-patch values until a *later* successful
 //! `update_settings` call catches the cache up (its own step 1 re-reads
-//! the current on-disk row -- see the note on re-reading the `user_config` row above -- which
+//! the current on-disk row -- see the note on re-reading the `user_config` row below -- which
 //! picks up whatever step 1 previously wrote) or the process restarts
 //! (which re-reads everything from disk fresh). This divergence is
 //! narrow (steps 2/3 only run for security-patch fields, a small
