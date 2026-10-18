@@ -2,6 +2,28 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 3.1.5 - 2026-10-18
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.12.1
+### Global changes
+#### Bug Fixes
+- separate worker input and path validation budgets - (c0e9fa6) - 0xdev
+#### Documentation
+- point the settings module doc at the note below it - (f4a48aa) - 0xdev
+- drop review and audit labels from comments - (6480382) - 0xdev
+- drop plan task and review references from code comments - (cec9ed4) - 0xdev
+#### Build system
+- (**archive-import**) pin unboxer 0.4.0 for shared archive types - (9c343a0) - 0xdev
+- (**archive-import**) pin unboxer 0.3.0 - (6f4537f) - 0xdev
+#### Miscellaneous Chores
+- update the vendored exclude script - (1387c28) - 0xdev
+- update vendored exclude script - (6f3a617) - 0xdev
+- pin archive imports to atomic storage revision - (725d7cc) - 0xdev
+#### Style
+- format worker budget regression tests - (11938bc) - 0xdev
+
+- - -
+
 ## 3.1.4 - 2026-09-10
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.12.1
