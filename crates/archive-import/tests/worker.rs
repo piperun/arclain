@@ -1,4 +1,6 @@
 #![cfg(feature = "worker")]
+#[path = "worker/large_archives.rs"]
+mod large_archives;
 use arclain_archive::{ArchiveClient, Cancellation, WorkerOptions};
 use std::{io::Read, path::PathBuf, time::Duration};
 use unboxer::{inspect_inventory, SequentialArchive};

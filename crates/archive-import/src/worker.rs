@@ -162,12 +162,31 @@ fn run(input: &mut dyn Read, output: &mut dyn Write) -> Result<(), ImportError> 
     }
     // Refuse unsafe inventory independently of the caller too; this does not
     // confer write authority, and no output path exists in this process.
-    unboxer::inspect_inventory(archive.inventory(), &limits)
-        .map_err(|_| ImportError::Unsupported)?;
+    unboxer::inspect_inventory(archive.inventory(), &validation_limits(limits))
+        .map_err(|error| limit_or(error, ImportError::Unsupported))?;
     archive.decode(output)?;
     source.verify()?;
     frame(output, COMPLETE, &[])?;
     Ok(())
+}
+
+// Encoded input and inventory frames retain the caller's smaller budget.
+// Path validation accounts for expanded destination components separately.
+fn validation_limits(mut limits: Limits) -> Limits {
+    limits.max_index_bytes = 512 << 20;
+    limits
+}
+
+fn limit_or(error: unboxer::UnboxerError, fallback: ImportError) -> ImportError {
+    match error {
+        unboxer::UnboxerError::TooManyEntries { .. }
+        | unboxer::UnboxerError::TooLarge { .. }
+        | unboxer::UnboxerError::ArchiveTooLarge { .. }
+        | unboxer::UnboxerError::RatioExceeded { .. }
+        | unboxer::UnboxerError::DeclaredSizeExceeded { .. }
+        | unboxer::UnboxerError::IndexTooLarge => ImportError::Limit,
+        _ => fallback,
+    }
 }
 
 enum Backend {

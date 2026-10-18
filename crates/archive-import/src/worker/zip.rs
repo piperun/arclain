@@ -10,7 +10,8 @@ pub(super) struct Archive {
 }
 impl Archive {
     pub fn open(file: File, limits: &Limits) -> Result<Self, ImportError> {
-        let mut reader = ZipReader::open_file(file, limits).map_err(|_| ImportError::Corrupt)?;
+        let mut reader = ZipReader::open_file(file, limits)
+            .map_err(|error| super::limit_or(error, ImportError::Corrupt))?;
         let mut inventory = Inventory {
             container: Container::Zip,
             entries: vec![],
