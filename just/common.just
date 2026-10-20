@@ -17,6 +17,7 @@ set allow-duplicate-variables := true    # …and override the config vars below
 #   sakka: "{{version}}"   chrysalis/filer: "v{{version}}"
 tag_template := ""
 python := if os_family() == "windows" { "python" } else { "python3" }
+flutter_profile := "packaging/release.json"
 _A := if tag_template == "" { "" } else { "-A '" + tag_template + "'" }
 
 # ── cocogitto ──
@@ -51,6 +52,50 @@ typecheck:
 exclude preset="worktrees" scope="auto":
     {{python}} just/exclude.py {{preset}} --scope {{scope}}
 
+# ── Flutter desktop releases (opt in with packaging/release.json) ──
+# Compile against the matching Flatpak SDK; forwarded paths retain spaces.
+[linux]
+[positional-arguments]
+flatpak *args:
+    {{python}} just/flutter.py --profile "{{flutter_profile}}" flatpak "$@"
+
+# Print the runtime refs for an explicit Flatpak SDK installation.
+[linux]
+flatpak-runtimes:
+    {{python}} just/flutter.py --profile "{{flutter_profile}}" sdk-refs
+
+# Build a Windows x64 ZIP, including the Visual C++ runtime DLLs.
+[windows]
+windows-release:
+    {{python}} just/flutter.py --profile "{{flutter_profile}}" windows
+
+# Verify a clean version-tag checkout before any release build.
+release-check tag="":
+    {{python}} just/release.py --profile "{{flutter_profile}}" check "{{tag}}"
+
+# Report the selected release unit, pinned SDK and version.
+release-info:
+    {{python}} just/release.py --profile "{{flutter_profile}}" info
+
+# Use optional CODEBERG_READ_TOKEN credentials only during CI builds.
+release-auth:
+    {{python}} just/release.py --profile "{{flutter_profile}}" auth
+
+release-auth-clean:
+    {{python}} just/release.py --profile "{{flutter_profile}}" auth-clean
+
+# Collect one built package with its tag/commit/checksum record.
+release-stage target:
+    {{python}} just/release.py --profile "{{flutter_profile}}" stage "{{target}}"
+
+# Verify all required packages and write SHA256SUMS and release notes.
+release-collect:
+    {{python}} just/release.py --profile "{{flutter_profile}}" collect
+
+# Publish the same packages on GitHub and Codeberg (requires scoped tokens).
+release-publish:
+    {{python}} just/release.py --profile "{{flutter_profile}}" publish
+
 # ── just meta ──
 # List recipes (projects can do `default: list`).
 list:
@@ -59,3 +104,33 @@ list:
 # Validate this repo's just setup: justfile + vendored lib parse & imports resolve.
 test-just:
     @just --summary
+
+# Test and archive a native Rust unit: just package --unit tool.
+[unix]
+[script("python3")]
+[positional-arguments]
+package *args:
+    import subprocess, sys
+    raise SystemExit(subprocess.call([sys.executable, "just/rust_package.py", *sys.argv[1:]]))
+
+[windows]
+[script("python")]
+[positional-arguments]
+package *args:
+    import subprocess, sys
+    raise SystemExit(subprocess.call([sys.executable, "just/rust_package.py", *sys.argv[1:]]))
+
+# Publish configured registry packages; use --dry-run for verification only.
+[unix]
+[script("python3")]
+[positional-arguments]
+publish *args:
+    import subprocess, sys
+    raise SystemExit(subprocess.call([sys.executable, "just/publish.py", *sys.argv[1:]]))
+
+[windows]
+[script("python")]
+[positional-arguments]
+publish *args:
+    import subprocess, sys
+    raise SystemExit(subprocess.call([sys.executable, "just/publish.py", *sys.argv[1:]]))
